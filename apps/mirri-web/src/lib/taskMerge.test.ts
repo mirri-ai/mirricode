@@ -38,6 +38,85 @@ describe('restCompletesLiveRow phase mapping', () => {
   });
 });
 
+describe('keepLiveSubagents render silence on no-op REST folds (ADR-011 ④)', () => {
+  it('should keep the identical row reference when the REST fold changes nothing', () => {
+    // Given a running member row and a REST copy that agrees on every field
+    // the fold may write (the poll's ordinary steady state).
+    const live = liveTask({ id: 'agent-p', agentId: 'agent-p', subagentPhase: 'working' });
+    const rest = liveTask({ id: 'task-9', agentId: 'agent-p' });
+
+    // When the 1Hz poll folds the REST copy in.
+    const merged = keepLiveSubagents([rest], [live]);
+
+    // Then the row object itself is untouched — a no-op write-back must not
+    // wake the panel's narrative recompute on every tick.
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toBe(live);
+  });
+
+  it('should keep the identical row reference when a stale running REST row folds into a terminal live row', () => {
+    // Given a terminal member row and a lagging REST copy that still says
+    // running — terminal stickiness makes the fold a no-op.
+    const live = liveTask({
+      id: 'agent-p',
+      agentId: 'agent-p',
+      status: 'completed',
+      subagentPhase: 'completed',
+      completedAt: '2025-01-01T00:05:00.000Z',
+    });
+    const rest = liveTask({ id: 'task-9', agentId: 'agent-p', status: 'running' });
+
+    // When the poll folds the stale copy in.
+    const merged = keepLiveSubagents([rest], [live]);
+
+    // Then the finished row keeps its identity — nothing about it changed.
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toBe(live);
+  });
+
+  it('should produce a new reference when REST completes the row', () => {
+    // Given a running member row and a REST copy that has settled.
+    const live = liveTask({ id: 'agent-p', agentId: 'agent-p', subagentPhase: 'working' });
+    const rest = liveTask({
+      id: 'task-9',
+      agentId: 'agent-p',
+      status: 'completed',
+      completedAt: '2025-01-01T00:05:00.000Z',
+    });
+
+    // When the poll folds the settled copy in.
+    const merged = keepLiveSubagents([rest], [live]);
+
+    // Then the fold lands a new row carrying the terminal state, and the live
+    // row it came from is left untouched.
+    expect(merged[0]).not.toBe(live);
+    expect(merged[0]!.status).toBe('completed');
+    expect(merged[0]!.subagentPhase).toBe('completed');
+    expect(merged[0]!.completedAt).toBe('2025-01-01T00:05:00.000Z');
+    expect(live.status).toBe('running');
+  });
+
+  it('should produce a new reference when REST supplies the authoritative output', () => {
+    // Given a running member row with a partial preview and a REST copy
+    // carrying the authoritative result.
+    const live = liveTask({
+      id: 'agent-p',
+      agentId: 'agent-p',
+      subagentPhase: 'working',
+      outputPreview: 'partial',
+    });
+    const rest = liveTask({ id: 'task-9', agentId: 'agent-p', outputPreview: 'final result' });
+
+    // When the poll folds the REST output in.
+    const merged = keepLiveSubagents([rest], [live]);
+
+    // Then the output change is a semantic change — the detail panel's Result
+    // consumes it, so the row must re-render.
+    expect(merged[0]).not.toBe(live);
+    expect(merged[0]!.outputPreview).toBe('final result');
+  });
+});
+
 describe('mergeSnapshotSubagents preserves the event-derived phase', () => {
   it('should keep a parked member awaiting when the roster row carries no phase', () => {
     // F5: the engine's REST task rows carry no subagent_phase; the roster
@@ -146,7 +225,7 @@ describe('mergeSnapshotSubagents preserves the live narrative fields (ADR-009)',
     // Given a member whose live run accumulated structured tool steps before a
     // reload's roster merge (the roster row never carries steps).
     const live = liveTask({
-      steps: [{ id: 'tc_1', name: 'Read', arg: 'a.ts', status: 'ok', outputLines: ['body'] }],
+      steps: [{ id: 'tc_1', name: 'Read', arg: 'a.ts', status: 'ok', outputLines: ['body'], seq: 0 }],
     });
     const roster: AppTask = { ...live, id: live.id };
     delete (roster as Partial<AppTask>).steps;
@@ -156,35 +235,72 @@ describe('mergeSnapshotSubagents preserves the live narrative fields (ADR-009)',
 
     // Then the member's tool cards survive — same rule as outputLines/text.
     expect(merged[0]?.steps).toEqual([
-      { id: 'tc_1', name: 'Read', arg: 'a.ts', status: 'ok', outputLines: ['body'] },
+      { id: 'tc_1', name: 'Read', arg: 'a.ts', status: 'ok', outputLines: ['body'], seq: 0 },
     ]);
   });
 
   it('should keep the live thinking narrative and step marks when the roster row carries none (ADR-015 b)', () => {
-    // Given an existing live subagent task whose turn accumulated thinking,
-    // step-start marks and an armed tail guard, and a snapshot roster row
+    // Given an existing live subagent task whose turn accumulated narrative
+    // segments and the step-start segment mark, and a snapshot roster row
     // that lacks all of them (the wire mapper never carries them).
-    const live = liveTask({
-      thinking: 'reasoning',
-      stepTextLen: 5,
-      stepThinkLen: 8,
-      tailGuard: true,
-    });
+    const segments = [
+      { id: 'agent-p-g0-seg-0', kind: 'thinking' as const, text: 'reasoning', seq: 0 },
+    ];
+    const live = liveTask({ segments, stepSegMark: { count: 1, openLen: 8 } });
     const roster: AppTask = { ...live, id: live.id };
-    delete (roster as Partial<AppTask>).thinking;
-    delete (roster as Partial<AppTask>).stepTextLen;
-    delete (roster as Partial<AppTask>).stepThinkLen;
-    delete (roster as Partial<AppTask>).tailGuard;
+    delete (roster as Partial<AppTask>).segments;
+    delete (roster as Partial<AppTask>).stepSegMark;
 
     // When the snapshot roster merges over the live row.
     const merged = mergeSnapshotSubagents([roster], [live]);
 
-    // Then all four survive the merge — a delta-gap resync must not wipe
-    // the member's thinking narrative or its retry bookkeeping.
-    expect(merged[0]?.thinking).toBe('reasoning');
-    expect(merged[0]?.stepTextLen).toBe(5);
-    expect(merged[0]?.stepThinkLen).toBe(8);
-    expect(merged[0]?.tailGuard).toBe(true);
+    // Then the narrative and its retry anchor survive the merge — a delta-gap
+    // resync must not wipe the member's thinking narrative or the anchor.
+    expect(merged[0]?.segments).toEqual(segments);
+    expect(merged[0]?.stepSegMark).toEqual({ count: 1, openLen: 8 });
+  });
+
+  it('should keep live narrative segments when the roster row replaces the task', () => {
+    // Given a member whose live run already interleaved thinking and text
+    // segments (with the step-start segment mark they anchor to), and a
+    // snapshot roster row that carries neither — the wire mapper never does.
+    const segments = [
+      { id: 'agent-p-g0-seg-0', kind: 'thinking' as const, text: 'why', seq: 0 },
+      { id: 'agent-p-g0-seg-2', kind: 'text' as const, text: 'answer', seq: 2 },
+    ];
+    const live = liveTask({ segments, stepSegMark: { count: 2, openLen: 6 } });
+    const roster: AppTask = { ...live, id: live.id };
+    delete (roster as Partial<AppTask>).segments;
+    delete (roster as Partial<AppTask>).stepSegMark;
+
+    // When the snapshot roster merges over the live row.
+    const merged = mergeSnapshotSubagents([roster], [live]);
+
+    // Then the arrival-ordered narrative survives (the panel keeps its true
+    // interleaving with the tool steps) and so does the retry truncation's
+    // segment anchor — a refresh must not blank the member's live timeline.
+    expect(merged[0]?.segments).toEqual(segments);
+    expect(merged[0]?.stepSegMark).toEqual({ count: 2, openLen: 6 });
+  });
+
+  it('should keep the run-scoped segment tombstones when the roster row replaces the task', () => {
+    // Given a member whose retry boundary already dropped a failed attempt's
+    // segments, and a roster row without the tombstone list.
+    const live = liveTask({
+      segments: [{ id: 'agent-p-g0-seg-2', kind: 'text', text: 'retry', seq: 2 }],
+      truncatedSegmentIds: ['agent-p-g0-seg-1'],
+    });
+    const roster: AppTask = { ...live, id: live.id };
+    delete (roster as Partial<AppTask>).segments;
+    delete (roster as Partial<AppTask>).truncatedSegmentIds;
+
+    // When the snapshot roster merges over the live row.
+    const merged = mergeSnapshotSubagents([roster], [live]);
+
+    // Then the tombstones survive too — the projector never truncates its own
+    // list, so dropping them here would let the next taskCreated replay
+    // re-adopt the failed attempt's segments (same invariant as the truncation).
+    expect(merged[0]?.truncatedSegmentIds).toEqual(['agent-p-g0-seg-1']);
   });
 });
 
@@ -278,8 +394,8 @@ describe('keepLiveSubagents ghost-row reconciliation closure (ADR-010 ④)', () 
       status: 'completed',
       subagentPhase: 'completed',
       outputLines: ['line-1'],
-      text: 'live text',
-      steps: [{ id: 'tc_1', name: 'Read', arg: 'a.ts', status: 'ok', outputLines: ['body'] }],
+      segments: [{ id: 'agent-1-g0-seg-0', kind: 'text', text: 'live text', seq: 0 }],
+      steps: [{ id: 'tc_1', name: 'Read', arg: 'a.ts', status: 'ok', outputLines: ['body'], seq: 0 }],
     });
     const roster = [rosterRow({ id: 'agent-1', status: 'running' })];
     const next = mergeSnapshotSubagents(roster, [live]);
@@ -287,9 +403,11 @@ describe('keepLiveSubagents ghost-row reconciliation closure (ADR-010 ④)', () 
     expect(next[0]!.subagentPhase).toBe('completed');
     // N-6: the live accumulated narrative must survive the roster merge.
     expect(next[0]!.outputLines).toEqual(['line-1']);
-    expect(next[0]!.text).toBe('live text');
+    expect(next[0]!.segments).toEqual([
+      { id: 'agent-1-g0-seg-0', kind: 'text', text: 'live text', seq: 0 },
+    ]);
     expect(next[0]!.steps).toEqual([
-      { id: 'tc_1', name: 'Read', arg: 'a.ts', status: 'ok', outputLines: ['body'] },
+      { id: 'tc_1', name: 'Read', arg: 'a.ts', status: 'ok', outputLines: ['body'], seq: 0 },
     ]);
   });
 

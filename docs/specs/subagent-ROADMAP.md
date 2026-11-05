@@ -9,7 +9,7 @@
 |---|---|---|---|---|
 | E1 派发与角色/型号选择 | ✅ 已覆盖（v1 基线） | ✅ | ✅ | |
 | E2 前台执行与结果 | ✅ | ✅ | ✅ | 2026-09-12 增补：摘要提炼（SDR-004/ADR-007） |
-| E3 后台执行 | ✅ | ✅ | ✅ | 2026-09-12 增补：输出上限、宽限停止细节 |
+| E3 后台执行 | ✅ | ✅ | ✅ | 2026-09-12 增补：输出上限、宽限停止细节 · 2026-11-03 增补：US3.5 派发路径选择引导（SDR-016/ADR-016） |
 | E4 续作 | ✅ | ✅ | ✅ | 2026-09-12 增补：批量续作名单映射（SDR-004/ADR-007） |
 | E5 时长上限与中断 | ✅ | ✅ | ✅ | |
 | E6 批量派发 | ✅ | ✅ | ✅ | |
@@ -36,7 +36,7 @@
 | O7 | ~~E11/US11.4 与 ADR-005 的「fork 克隆定时任务」表述与既有跨域裁决矛盾~~ | 收口 review（2026-09-12，F-1） | **已解除（2026-09-12，B0）**：SDR-006 裁决 fork 不携带定时任务（对齐会话管理域 SDR-007），US11.4/ADR-005/glossary A9 已同步修订为终态 |
 | O8 | `cron.fired` 事件与 `cron_job` origin 不区分手动触发与自然触发（B6 D-3/SDR-B6-01 的有意裁决——避免 event_projection/web projector/SDK translate/ACP 四端同步；当前零消费者）。若产品后续要求对话区/账本区分「手动触发」，需扩 origin（如加 `manual` 键）并四端同步 | SDR-B6-01（2026-11，B6） | 触发时再立 SDR；四端同步成本为已知代价声明 |
 | O9 | ~~提案 P6（后台任务阻塞等待入口）与 P7（goal 续航与后台任务协调）待裁决~~ | requirements §17（2026-09-13 增补） | **已裁决（2026-09-13）**：A+B 组合采纳——等待挂起（主）+ 阻塞等待入口（辅），SDR-011/ADR-008 落档，P6/P7 转正为 E13（US13.1–13.3 + N16）；goal 域侧承接见 O11 |
-| O10 | Rust HEAD 事实漂移：`agent_tool.rs` 后台派发结果文案仍为轮询指引（"Use TaskOutput to check progress and retrieve the result."，agent_tool.rs:502-525），与 TS v2 no-polling 契约相悖；no-polling 对齐修复在未合并分支 `feat/rust-tool-calling`（f51213ad，含 `suppress_notification` 参数）。合并/移植前 Rust 后台派发持续违背契约 | context §6.13（2026-09-13） | Rust 侧合并时机裁决；~~若 P6 采纳，其入口文案与本项一并处理~~（P6 已采纳为 E13/US13.1，本项随 ADR-008 落地时一并处理） |
+| O10 | ~~Rust HEAD 事实漂移：`agent_tool.rs` 后台派发结果文案仍为轮询指引（"Use TaskOutput to check progress and retrieve the result."，agent_tool.rs:502-525），与 TS v2 no-polling 契约相悖；no-polling 对齐修复在未合并分支 `feat/rust-tool-calling`（f51213ad，含 `suppress_notification` 参数）。合并/移植前 Rust 后台派发持续违背契约~~ | context §6.13（2026-09-13） | **已裁决（2026-11-03，派发引导批次）**：SDR-016/ADR-016 将其并入派发路径选择引导面——后台返回正文的轮询催促随三文案层对齐（说明面/参数说明/返回正文）一并收敛，不再依赖未合并分支；实发反模式形态与三处文案原文登记 context §8。实现批次待落地（本表 §5 变更历史） |
 | O11 | ~~目标（goal）域无规格落点——SDR-011/ADR-008 中目标循环侧的挂起态、看门狗、预算计费（挂起期不计回合预算）需该域承接落地~~ | SDR-011（2026-09-13） | **已解除（2026-09-13）**：goal 域四件套建立（`goal-{requirements,architecture,context,ROADMAP}.md`，SDR-001/ADR-001），等待挂起的产品语义由其 E5 正式承接；回合调度域（turn-scheduling）同期建立承载机制侧（ADR-001 统一唤醒源契约收编本域 ADR-008 机制侧）。落地排期见 goal-ROADMAP O2。**落地（2026-09-14）**：goal 域 E5 批次完成——US13.1（TaskWait）/US13.2（任务清单）/US13.3（挂起、看门狗、预算口径）全部随 TS v2 落地（commit 6c664e1d..bdce4843，见 goal-context §1.3）；goal-ROADMAP O2 已关闭 |
 | O12 | 跨重启恢复的子代理无嵌套派发面（B4 评审轮 SF-5 记档）：`restore_subagents` 重建的 AgentScope 不带 `subagent_host`（其工具面无 Agent/AgentSwarm），恢复子代理可 resume 续作但不能再派发孙代理；`subagent.registered` 不携带 `nesting_depth`，重启后逐层重建嵌套 host 需按 `parentAgentId` 链推算深度。修复位置：embedded resume 装配处重建 per-child 嵌套 host + 工具注册 | SDR-B4-03 §4（2026-09-13，B4 评审轮） | 后续批次落地；rust+web 实跑（B12 R1–R3）不含该面，验收前不阻塞 |
 | O13 | 子代理址通知的 journal 记录与账本跨重启错位（B4 复审二轮 F-1 记档）：子代理收件人的通知 turn 记录（`turn.prompt`/`context.append_message`/`turn.ended`）与 busy-park 的 `turn.steer` 写**主 journal**，送达/停靠账本却读**收件人**自己的记忆与 buffer——跨重启时通知重复投递、投递消息污染主代理上下文、崩溃停靠双收、`restore_task_notifications` 按主账本算 due（详见 SDR-B4-04 d）。非 B4 修复引入（pre-B4 同样错位）。修复面：通知 turn 记录经 `RoutedWireRecorder` 路由到收件人子 journal + restore 侧对账与 steer 重停按 addressee 解析（registry seed 先行，可行）| SDR-B4-04 d（2026-09-13，B4 复审二轮） | 后续批次落地；B12 rust+web 实跑（含跨重启场景）先行验证现象与验收口径 |
@@ -74,6 +74,7 @@
 
 ## 5. 变更历史
 
+- 2026-11-03（派发引导批次）：起因本机会话实发反模式——主回合后台派发子代理后**无任何穿插工作**即调用 `TaskOutput {block: true}` 阻塞等待，把一步前台派发拆成两步、多付工具调用开销（串行形态下再多为一轮模型请求；形态与三层文案原文见 context §8）。requirements 追加 US3.5（派发前的路径选择引导）+ SDR-016（默认等待契约显式化、后台判据依赖导向、返回正文时机引导——判据为数据依赖非忙碌度）；architecture 追补 ADR-016（三文案层对齐：说明面/参数说明/后台返回正文，目标决策流与反模式/目标路径时序图，执行链路零改动）；O10（后台结果轮询指引漂移）并入本批收敛登记。实现批次待落地。**双 reviewer 评审修复（2026-11-03）**：US3.5 与 US13.1 的「等待」同名异义消歧（前台内联等待 vs 后台取回显式等待）、「取回入口」未定义术语改为点名 US13.1/US3.4、US3.5 第 4 条改验收主语为文案面、SDR-016 动机量化措辞对齐实发形态、US3.1 交叉指针补注、「fire-and-forget」改中文表述、US3.5 移至 US3.4 后恢复编号顺序；context §8 行号按同日提交 `71dbb22ae` 后 HEAD 校准（schema 162-165 / unwrap_or 196-199 / format_background_result 718-741）、实发形态改为同组两步串联的准确描述、TS 历史行号标注退役快照口径、tool-calling §3.1 三处分歧登记；ADR-016 判据措辞与 SDR 同构（「前提是且仅是」+ 充分性方向由 US3.5 验收末条承载）、时序图去日期化、tool-calling 不可照抄警示。
 - 2026-10-14（重启孤儿治理设计批次）：起因 agent 后台发起的全量 rust 测试在服务重启后遗留无主进程、持续占用机器资源数十小时的实发事故（详见 context §7 触发事件）。requirements 增补 Epic E14（US14.1–14.6：进程身份指纹、启动普查、处置策略与安全边界、总寿命兜底、关闭决策点、资源可见性）+ SDR-013（指纹三元组 / 普查仅报告缺省 / 总寿命上限缺省 4h）；architecture 增补 ADR-012（普查器、指纹校验、跨平台启动时刻来源、组长死亡边界）；context 新增 §7 快照；glossary 同批注册 A15（进程身份指纹）。「退出保留」（keepAliveOnExit，G33 既有配置）任务成为普查候选；Q8 的 b 路线如未来裁决通过同走此衔接（本次不预裁 Q8）。
 - 2026-10-15（E14 落地批次，feat/orphan-task-governance）：8 任务实施（每任务实现+评审+修复轮，全程 TDD）。落地物：`mirri-os` 指纹探测/组枚举/重验组终止 API（macOS libproc + Linux /proc）；`AgentTask.fingerprint` 档案落盘 + 带指纹 Running 档案不再被加载调谐（普查先行）；bash 双路径采集（后台直启+前台转后台）；`[task]` 配置 `orphanDisposePolicy`/`maxTaskLifetimeS`；`orphan_sweep.rs` 三分支判定（LiveOrphan/已死含 pid 复用/组内残留）+ 报告归档 + ReportAndTerminate 重验处置；embedded 装配（首 RPC 前完成 census——OnceCell 收紧并发、60s 磁盘寿命清扫经 spawn_blocking）；`lifetime_exempt` 单次豁免 + keepAlive 关闭路径默认打标豁免。遗留（ledger）：once-guard 重试语义、4h 缺省值产品确认、首 RPC 延迟实测、`!` 命令路径指纹采集、walk glob 收窄、web/desktop 呈现面与 mirri-proto 契约登记（消费端批）。
 

@@ -48,7 +48,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::OrphanDisposePolicy;
 use crate::task::{AgentTask, TaskKind, TaskStatus};
-use crate::task_persist::TaskPersistence;
 
 /// Annotation written into a settled archive's output stream when the
 /// sweep disposes of a verified live orphan.
@@ -107,6 +106,12 @@ pub struct SweepReport {
     pub scanned_at: chrono::DateTime<chrono::Utc>,
     /// The disposal policy in effect during the sweep.
     pub policy: OrphanDisposePolicyArchive,
+    /// How many task archives the candidate load visited (every settled
+    /// archive's head was probe-read; candidates were read in full).
+    /// Observability only (ADR-003 d) — it never filters anything, and
+    /// reports archived before the counter deserialize as 0.
+    #[serde(default)]
+    pub scanned_archives: usize,
     /// One entry per candidate archive.
     pub entries: Vec<SweepEntry>,
 }
@@ -165,8 +170,10 @@ pub fn sweep_orphans_with_fs(
 ) -> SweepReport {
     let scanned_at = chrono::Utc::now();
     let mut entries = Vec::new();
+    let mut scanned_archives = 0usize;
 
-    for Candidate { task, tasks_dir } in load_running_process_tasks_with_fs(sessions_root, fs) {
+    let candidates = walk_candidate_archives(sessions_root, fs, &mut scanned_archives);
+    for Candidate { task, tasks_dir } in candidates {
         let mut task = task;
         match task.fingerprint.clone() {
             // Legacy archive (e.g. `!`-path bash tasks from before
@@ -219,6 +226,7 @@ pub fn sweep_orphans_with_fs(
         epoch: current_epoch.to_string(),
         scanned_at,
         policy: (&policy).into(),
+        scanned_archives,
         entries,
     };
     archive_report(sessions_root, &report, fs.as_ref());
@@ -494,14 +502,274 @@ pub fn load_running_process_tasks(sessions_root: &Path) -> Vec<Candidate> {
     load_running_process_tasks_with_fs(sessions_root, &local_sync_fs())
 }
 
+/// How many leading bytes of an archive the candidate probe inspects.
+/// The discriminators (`kind`, `status`) serialize right after `id` and
+/// `description`, so a head this large holds them for any ordinary record;
+/// a record whose head does not (a huge description) falls back to a full
+/// read.
+const HEAD_WINDOW_BYTES: usize = 8 * 1024;
+
+/// Classify an archive from its leading bytes.
+///
+/// Returns the candidate verdict once the head carries both
+/// discriminators — the same member / tag spellings [`TaskStatus`] and
+/// [`TaskKind`] serialize (`{"status": {"status": "running"}}`,
+/// `{"kind": {"kind": "process"}}`; the
+/// `should_match_the_real_archive_wire_shape` test pins this). `None`
+/// means "cannot tell" and the caller must read the whole archive: a
+/// probe never answers on a guess.
+fn probe_candidate_discriminator(head: &[u8]) -> Option<bool> {
+    // A head exactly as large as the window may be cut off mid-value (an
+    // 8 KB output is ordinary), and a variant name truncated at the
+    // buffer edge would read as a different, shorter name — the failure
+    // direction that silently drops a live candidate. The scanners below
+    // already refuse to report a value whose closing delimiter is missing
+    // (every truncated scan yields `None`), so a full window is judged
+    // exactly like a short one: only a COMPLETE discriminator answers.
+    let text = std::str::from_utf8(head).ok()?;
+    let status = object_member_tag(text, "status", "status")??;
+    let kind = object_member_tag(text, "kind", "kind");
+    let process_kind = match kind {
+        // The scan stops at `status`; reaching it without passing `kind`
+        // means the key is absent — a pre-kind legacy archive, which
+        // `legacy_task_kind` loads as process-kind.
+        None => true,
+        Some(None) => return None,
+        Some(Some(kind)) => kind == "process",
+    };
+    Some(status == "running" && process_kind)
+}
+
+/// The string value of the `tag` key inside the object held by the
+/// top-level `member` key of `text`.
+///
+/// The scan walks the document structurally (objects, arrays, strings
+/// with escapes), so a `"status": ...` substring inside the description
+/// or the output can never be mistaken for the field: only a key at the
+/// top level counts. `None` means the scan never reached `member` (the
+/// buffer ended first, or the document is malformed) — "cannot tell";
+/// `Some(None)` means the member was reached but is not an object or
+/// carries no `tag` key.
+fn object_member_tag<'a>(text: &'a str, member: &str, tag: &str) -> Option<Option<&'a str>> {
+    let bytes = text.as_bytes();
+    let mut index = skip_whitespace(bytes, 0);
+    if *bytes.get(index)? != b'{' {
+        return None;
+    }
+    index += 1;
+    loop {
+        index = skip_whitespace(bytes, index);
+        if *bytes.get(index)? == b'}' {
+            return None;
+        }
+        if *bytes.get(index)? == b',' {
+            index = skip_whitespace(bytes, index + 1);
+        }
+        if *bytes.get(index)? != b'"' {
+            return None;
+        }
+        let (key, next) = scan_string(bytes, index)?;
+        index = skip_whitespace(bytes, next);
+        if *bytes.get(index)? != b':' {
+            return None;
+        }
+        index = skip_whitespace(bytes, index + 1);
+        if key == member {
+            if *bytes.get(index)? != b'{' {
+                return Some(None);
+            }
+            let inner_end = skip_container(bytes, index)?;
+            return Some(first_string_member(&text[index + 1..inner_end], tag));
+        }
+        index = skip_value(bytes, index)?;
+    }
+}
+
+/// The string value of the first `tag` key directly inside the object
+/// body `text` (the bytes between its braces).
+fn first_string_member<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    loop {
+        index = skip_whitespace(bytes, index);
+        if *bytes.get(index)? == b'}' {
+            return None;
+        }
+        if *bytes.get(index)? == b',' {
+            index = skip_whitespace(bytes, index + 1);
+        }
+        if *bytes.get(index)? != b'"' {
+            return None;
+        }
+        let (key, next) = scan_string(bytes, index)?;
+        index = skip_whitespace(bytes, next);
+        if *bytes.get(index)? != b':' {
+            return None;
+        }
+        index = skip_whitespace(bytes, index + 1);
+        if key == tag {
+            // Only a string carries the variant name; any other value
+            // shape (`null`, a number) has no tag to answer with.
+            if *bytes.get(index)? != b'"' {
+                return None;
+            }
+            let (value, _) = scan_string(bytes, index)?;
+            return Some(value);
+        }
+        index = skip_value(bytes, index)?;
+    }
+}
+
+/// Skip the JSON value starting at `start`, returning the index just past
+/// it. `None` when the buffer ends inside the value — a truncated value is
+/// never reported as a complete one.
+fn skip_value(bytes: &[u8], start: usize) -> Option<usize> {
+    let index = skip_whitespace(bytes, start);
+    match *bytes.get(index)? {
+        b'"' => scan_string(bytes, index).map(|(_, end)| end),
+        b'{' | b'[' => skip_container(bytes, index),
+        b't' => skip_literal(bytes, index, b"true"),
+        b'f' => skip_literal(bytes, index, b"false"),
+        b'n' => skip_literal(bytes, index, b"null"),
+        b'-' | b'0'..=b'9' => {
+            let mut end = index;
+            while matches!(
+                bytes.get(end),
+                Some(b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9')
+            ) {
+                end += 1;
+            }
+            Some(end)
+        }
+        _ => None,
+    }
+}
+
+/// Skip the object or array opening at `open`, returning the index just
+/// past its closing bracket. Brackets inside string literals never count:
+/// every string is skipped through [`scan_string`], escapes included.
+fn skip_container(bytes: &[u8], open: usize) -> Option<usize> {
+    let (opener, closer) = match *bytes.get(open)? {
+        b'{' => (b'{', b'}'),
+        b'[' => (b'[', b']'),
+        _ => return None,
+    };
+    let mut depth = 0usize;
+    let mut index = open;
+    loop {
+        match *bytes.get(index)? {
+            b'"' => {
+                let (_, end) = scan_string(bytes, index)?;
+                index = end;
+            }
+            byte if byte == opener => {
+                depth += 1;
+                index += 1;
+            }
+            byte if byte == closer => {
+                depth = depth.checked_sub(1)?;
+                index += 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => index += 1,
+        }
+    }
+}
+
+/// Consume a bare literal (`true` / `false` / `null`).
+fn skip_literal(bytes: &[u8], start: usize, literal: &[u8]) -> Option<usize> {
+    bytes
+        .get(start..start + literal.len())
+        .filter(|window| *window == literal)
+        .map(|_| start + literal.len())
+}
+
+/// Scan a JSON string literal starting at the opening quote, returning the
+/// raw slice (quotes excluded, escapes left as written) and the index just
+/// past the closing quote. Escapes are skipped pairwise, so a `\"` inside
+/// the string never terminates it, and multi-byte UTF-8 scalars are copied
+/// whole.
+fn scan_string(bytes: &[u8], open: usize) -> Option<(&str, usize)> {
+    if *bytes.get(open)? != b'"' {
+        return None;
+    }
+    let content_start = open + 1;
+    let mut index = content_start;
+    loop {
+        match *bytes.get(index)? {
+            b'"' => {
+                let raw = std::str::from_utf8(bytes.get(content_start..index)?).ok()?;
+                return Some((raw, index + 1));
+            }
+            b'\\' => {
+                // The escaped byte is opaque here: it is never a quote
+                // that opens or closes anything.
+                bytes.get(index + 1)?;
+                index += 2;
+            }
+            byte if byte < 0x80 => index += 1,
+            byte => {
+                let width = utf8_width(byte);
+                std::str::from_utf8(bytes.get(index..index + width)?).ok()?;
+                index += width;
+            }
+        }
+    }
+}
+
+/// The byte width of the UTF-8 scalar whose lead byte is `lead`.
+fn utf8_width(lead: u8) -> usize {
+    match lead {
+        0x00..=0x7f => 1,
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        _ => 4,
+    }
+}
+
+/// Advance past JSON insignificant whitespace.
+fn skip_whitespace(bytes: &[u8], mut index: usize) -> usize {
+    while matches!(bytes.get(index), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+        index += 1;
+    }
+    index
+}
+
 /// [`load_running_process_tasks`] with an injected filesystem provider
 /// (zero-IO T13b). Directory traversal and task loading both go through
 /// `fs`, so a virtual host walks the same archive layout the engine
 /// writes. Content writes stay on the shared atomic persistence writer —
 /// the `TaskPersistence::save_task` split; see [`archive_report`].
+///
+/// Loading is prefix-short-circuited (ADR-003 a①): an archive is first
+/// classified from its head ([`HEAD_WINDOW_BYTES`] through
+/// [`SyncFs::read_range`]), and only a candidate — or a head the probe
+/// cannot judge — is read and deserialized in full. History is
+/// overwhelmingly settled archives, so the census's cost tracks the
+/// handful of live candidates rather than the whole archive count. The
+/// probe never skips on doubt: every unjudged head takes the
+/// [`TaskPersistence::load_tasks`] path, which keeps the "one corrupt
+/// record must not hide the rest" behaviour and its warnings. The census's
+/// archive-visit count (ADR-003 d) rides [`SweepReport::scanned_archives`].
 pub fn load_running_process_tasks_with_fs(
     sessions_root: &Path,
     fs: &Arc<dyn SyncFs>,
+) -> Vec<Candidate> {
+    walk_candidate_archives(sessions_root, fs, &mut 0)
+}
+
+/// The counting core every candidate walk funnels through: the shared
+/// body of [`load_running_process_tasks_with_fs`] and
+/// [`sweep_orphans_with_fs`], with `scanned_archives` incremented for
+/// every task archive the walk visits (the observability count ADR-003 d
+/// archives into the [`SweepReport`]; a caller that ignores it passes a
+/// scratch slot).
+fn walk_candidate_archives(
+    sessions_root: &Path,
+    fs: &Arc<dyn SyncFs>,
+    scanned_archives: &mut usize,
 ) -> Vec<Candidate> {
     let mut candidates = Vec::new();
     let workspaces = match fs.iterdir(sessions_root) {
@@ -538,11 +806,12 @@ pub fn load_running_process_tasks_with_fs(
             if !fs.exists(&tasks_dir) {
                 continue;
             }
-            let persistence = TaskPersistence::new(tasks_dir.clone(), Arc::clone(fs));
-            for task in persistence.load_tasks().unwrap_or_default() {
-                if matches!(task.status, TaskStatus::Running)
-                    && matches!(task.kind, TaskKind::Process { .. })
-                {
+            let (tasks, visited) = load_candidate_tasks(&tasks_dir, fs);
+            *scanned_archives += visited;
+            for task in tasks {
+                let is_candidate = matches!(task.status, TaskStatus::Running)
+                    && matches!(task.kind, TaskKind::Process { .. });
+                if is_candidate {
                     candidates.push(Candidate {
                         task,
                         tasks_dir: tasks_dir.clone(),
@@ -552,6 +821,83 @@ pub fn load_running_process_tasks_with_fs(
         }
     }
     candidates
+}
+
+/// Load one `tasks` directory's archives, prefix-short-circuited: heads
+/// the probe judges non-candidate are never read further, everything else
+/// is deserialized (sorted by `created_at`, like
+/// [`TaskPersistence::load_tasks`]).
+///
+/// Returns the deserialized tasks plus how many task-archive files the
+/// directory visit touched — the observability count of the census's
+/// archive walk (ADR-003 d; every `tasks` directory contributes it even
+/// when no archive is a candidate).
+///
+/// The probe rides [`SyncFs::read_range`]. Providers without range
+/// semantics (a double implementing only `read_text`) fail the probe and
+/// fall through to the full read, so such hosts keep the pre-probe
+/// behaviour exactly.
+fn load_candidate_tasks(tasks_dir: &Path, fs: &Arc<dyn SyncFs>) -> (Vec<AgentTask>, usize) {
+    let entries = match fs.iterdir(tasks_dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            // Same degradation `load_tasks` applies: an unreadable tasks
+            // directory contributes nothing to the census.
+            tracing::warn!(
+                %error,
+                path = %tasks_dir.display(),
+                "skipping unreadable tasks directory"
+            );
+            return (Vec::new(), 0);
+        }
+    };
+    let mut tasks = Vec::new();
+    let mut visited = 0usize;
+    for entry in entries {
+        let path = PathBuf::from(&entry.path);
+        if !path.extension().is_some_and(|ext| ext == "json") {
+            continue;
+        }
+        visited += 1;
+        match fs.read_range(&path, 0, HEAD_WINDOW_BYTES) {
+            // A head judged non-candidate settles the record: its status
+            // and kind are both read, and no later field can revive it.
+            // Never read it. A judged candidate, or a head the probe could
+            // not judge, falls through to the full read below.
+            Ok(head) if probe_candidate_discriminator(&head) == Some(false) => continue,
+            Ok(_) => {}
+            Err(error) => {
+                tracing::debug!(
+                    path = %path.display(),
+                    %error,
+                    "task archive head probe failed; reading the archive in full"
+                );
+            }
+        }
+        let contents = match fs.read_text(&path) {
+            Ok(contents) => contents,
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    %error,
+                    "skipping unreadable task file"
+                );
+                continue;
+            }
+        };
+        match serde_json::from_str::<AgentTask>(&contents) {
+            Ok(task) => tasks.push(task),
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %error,
+                    "skipping corrupt task file"
+                );
+            }
+        }
+    }
+    tasks.sort_by_key(|task| task.created_at);
+    (tasks, visited)
 }
 
 /// The engine-default filesystem provider for the sweep's entry points.
@@ -615,6 +961,7 @@ fn archive_report(sessions_root: &Path, report: &SweepReport, fs: &dyn SyncFs) {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::task_persist::TaskPersistence;
     use std::fs;
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
@@ -1193,16 +1540,27 @@ mod tests {
     /// A [`SyncFs`] that records every path it is asked to touch and
     /// delegates the real work to the host filesystem, so a test can prove
     /// the census reads through the injected provider rather than the
-    /// process filesystem.
+    /// process filesystem — and, through the byte counters, how much of
+    /// each archive it actually read.
     #[derive(Default)]
     struct RecordingFs {
         inner: mirri_os::LocalSyncFs,
         seen: std::sync::Mutex<Vec<(&'static str, std::path::PathBuf)>>,
+        read_bytes: std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, u64>>,
     }
 
     impl RecordingFs {
         fn record(&self, op: &'static str, path: &Path) {
             self.seen.lock().unwrap().push((op, path.to_path_buf()));
+        }
+
+        fn record_bytes(&self, path: &Path, bytes: u64) {
+            *self
+                .read_bytes
+                .lock()
+                .unwrap()
+                .entry(path.to_path_buf())
+                .or_default() += bytes;
         }
 
         /// Every path the census touched through `op`.
@@ -1214,6 +1572,17 @@ mod tests {
                 .filter(|(seen_op, _)| *seen_op == op)
                 .map(|(_, path)| path.clone())
                 .collect()
+        }
+
+        /// Total bytes returned from `path` by every read (`read_text` +
+        /// `read_range`).
+        fn bytes_read_from(&self, path: &Path) -> u64 {
+            self.read_bytes
+                .lock()
+                .unwrap()
+                .get(path)
+                .copied()
+                .unwrap_or(0)
         }
     }
 
@@ -1230,7 +1599,21 @@ mod tests {
 
         fn read_text(&self, path: &Path) -> anyhow::Result<String> {
             self.record("read_text", path);
-            self.inner.read_text(path)
+            let text = self.inner.read_text(path)?;
+            self.record_bytes(path, text.len() as u64);
+            Ok(text)
+        }
+
+        fn read_range(
+            &self,
+            path: &Path,
+            offset: u64,
+            max_bytes: usize,
+        ) -> anyhow::Result<Vec<u8>> {
+            self.record("read_range", path);
+            let bytes = self.inner.read_range(path, offset, max_bytes)?;
+            self.record_bytes(path, bytes.len() as u64);
+            Ok(bytes)
         }
     }
 
@@ -1293,5 +1676,224 @@ mod tests {
         // Then the archive behind the symlink is discovered
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].task.id, "task-symlinked");
+    }
+
+    // -----------------------------------------------------------------------
+    // Prefix-short-circuit candidate loading (ADR-003 a①)
+    // -----------------------------------------------------------------------
+
+    /// The candidate definition the census judges against.
+    fn is_census_candidate(task: &AgentTask) -> bool {
+        matches!(task.status, TaskStatus::Running) && matches!(task.kind, TaskKind::Process { .. })
+    }
+
+    /// A census candidate whose description is long enough that the
+    /// `status` object lands past any sane head window (see
+    /// [`HEAD_WINDOW_BYTES`]) — the prefix probe cannot answer for it.
+    fn candidate_with_long_description(id: &str) -> AgentTask {
+        let mut task = archive_task(id, None);
+        task.description = "d".repeat(HEAD_WINDOW_BYTES + 1024);
+        task
+    }
+
+    #[test]
+    fn should_not_be_fooled_by_discriminator_lookalikes_inside_strings() {
+        // Given archives whose description / output text embeds JSON
+        // fragments that look like the discriminators, escaped quotes
+        // included — the classic way a text scan misreads a field
+        let tmp = tempfile::tempdir().unwrap();
+        let tasks_dir = tmp.path().join("wd_test/session-x/tasks");
+        std::fs::create_dir_all(&tasks_dir).unwrap();
+        let persistence =
+            TaskPersistence::new(tasks_dir.clone(), Arc::new(mirri_os::LocalSyncFs::new()));
+        let mut impostor = archive_task("task-impostor", None);
+        impostor.status = TaskStatus::Stopped;
+        impostor.description =
+            r#"echo "status": {"status": "running"}, "kind": {"kind": "process"}"#.to_string();
+        impostor.output = r#"{"status": {"status": "running"}}"#.to_string();
+        let genuine = archive_task("task-genuine", None);
+        persistence.save_task(&impostor).unwrap();
+        persistence.save_task(&genuine).unwrap();
+
+        // When the census loads candidates
+        let candidates = load_running_process_tasks(tmp.path());
+
+        // Then only the genuinely running process task is a candidate: the
+        // impostor's settled status is never overridden by text inside its
+        // strings.
+        let ids: Vec<&str> = candidates.iter().map(|c| c.task.id.as_str()).collect();
+        assert_eq!(ids, vec!["task-genuine"]);
+    }
+
+    #[test]
+    fn should_match_the_real_archive_wire_shape() {
+        // Given task archives written through the real persistence writer
+        let tmp = tempfile::tempdir().unwrap();
+        let tasks_dir = tmp.path().join("wd_test/session-x/tasks");
+        let persistence =
+            TaskPersistence::new(tasks_dir.clone(), Arc::new(mirri_os::LocalSyncFs::new()));
+        let process = archive_task("task-pinned", None);
+        let mut completed = archive_task("task-completed", None);
+        completed.status = TaskStatus::Completed { exit_code: 0 };
+        let mut agent = archive_task("task-agent", None);
+        agent.kind = TaskKind::Agent {
+            agent_id: Some("agent-1".to_string()),
+            subagent_type: None,
+            parent_tool_call_id: None,
+            model: None,
+            swarm_index: None,
+        };
+        persistence.save_task(&process).unwrap();
+        persistence.save_task(&completed).unwrap();
+        persistence.save_task(&agent).unwrap();
+        let archive = |id: &str| fs::read_to_string(tasks_dir.join(format!("{id}.json"))).unwrap();
+
+        // When the written text is inspected as text
+        let running_json = archive("task-pinned");
+        let completed_json = archive("task-completed");
+        let agent_json = archive("task-agent");
+
+        // Then the candidate discriminators appear as nested lowercase
+        // tagged objects — the shape the prefix probe matches on. A change
+        // to either enum's serde attributes must fail here first, not
+        // silently demote every archive to a full read.
+        assert!(
+            running_json.contains("\"status\": {\n    \"status\": \"running\"\n  }"),
+            "running status wire shape drifted: {running_json}"
+        );
+        assert!(
+            running_json.contains("\"kind\": {\n    \"kind\": \"process\""),
+            "process kind wire shape drifted: {running_json}"
+        );
+        assert!(
+            completed_json.contains("\"status\": {\n    \"status\": \"completed\""),
+            "completed status wire shape drifted: {completed_json}"
+        );
+        assert!(
+            agent_json.contains("\"kind\": {\n    \"kind\": \"agent\""),
+            "agent kind wire shape drifted: {agent_json}"
+        );
+        // And the out-of-band `detail` field name is not a status value.
+        assert!(completed_json.contains("\"detail\": {"));
+
+        // And the prefix probe — the only reader the census uses for
+        // non-candidates — agrees with the full deserialization on every
+        // archive and answers within the head window.
+        for path in [&"task-pinned", &"task-completed", &"task-agent"].map(|id| {
+            tasks_dir.join(format!("{id}.json"))
+        }) {
+            let text = fs::read_to_string(&path).unwrap();
+            let full: AgentTask = serde_json::from_str(&text).unwrap();
+            let discriminator = probe_candidate_discriminator(text.as_bytes());
+            let discriminator = match discriminator {
+                Some(verdict) => verdict,
+                None => panic!(
+                    "the discriminators of {} sit well inside the head window",
+                    path.display()
+                ),
+            };
+            assert_eq!(
+                discriminator,
+                is_census_candidate(&full),
+                "probe disagrees with full deserialization for {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn should_read_only_the_head_of_non_candidate_archives() {
+        // Given one running process-task archive and 50 settled archives
+        // of realistic size whose `status` sits past 1 KB of output
+        let tmp = tempfile::tempdir().unwrap();
+        let tasks_dir = tmp.path().join("wd_test/session-x/tasks");
+        std::fs::create_dir_all(&tasks_dir).unwrap();
+        let persistence =
+            TaskPersistence::new(tasks_dir.clone(), Arc::new(mirri_os::LocalSyncFs::new()));
+        let running = archive_task("task-head-running", None);
+        persistence.save_task(&running).unwrap();
+        let mut stopped_paths = Vec::new();
+        for index in 0..50 {
+            let id = format!("task-stopped-{index:02}");
+            let mut task = archive_task(&id, None);
+            task.status = TaskStatus::Stopped;
+            // An ordinary settled record: a short description plus the
+            // tail output the process left behind.
+            task.description = format!("build log for run {index}");
+            task.output = "x".repeat(16 * 1024);
+            task.ended_at = Some(chrono::Utc::now());
+            persistence.save_task(&task).unwrap();
+            let path = tasks_dir.join(format!("{id}.json"));
+            let size = fs::metadata(&path).unwrap().len();
+            stopped_paths.push((path, size));
+        }
+        let running_path = tasks_dir.join("task-head-running.json");
+        let recorder = Arc::new(RecordingFs::default());
+        let fs: Arc<dyn SyncFs> = recorder.clone();
+
+        // When the census loads candidates through the recording provider
+        let candidates = load_running_process_tasks_with_fs(tmp.path(), &fs);
+
+        // Then the running archive is fully deserialized — candidates need
+        // their fingerprint, which sits at the tail of the record.
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].task.id, "task-head-running");
+        assert!(
+            recorder.bytes_read_from(&running_path) >= fs::metadata(&running_path).unwrap().len(),
+            "a candidate must be read in full ({} bytes)",
+            fs::metadata(&running_path).unwrap().len()
+        );
+        // ...while every non-candidate costs no more than the head window.
+        for (path, size) in stopped_paths {
+            assert!(size > HEAD_WINDOW_BYTES as u64, "fixture must exceed the head window");
+            let read = recorder.bytes_read_from(&path);
+            assert!(
+                read <= HEAD_WINDOW_BYTES as u64,
+                "a non-candidate archive must cost at most the head window: \
+                 read {read} of {size} bytes from {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn should_fall_back_to_full_read_when_prefix_probe_fails() {
+        // Given a running process-task archive whose discriminators sit
+        // past the head window (an adapted-to-any-threshold description),
+        // next to one whose discriminators are inside it
+        let tmp = tempfile::tempdir().unwrap();
+        let tasks_dir = tmp.path().join("wd_test/session-x/tasks");
+        std::fs::create_dir_all(&tasks_dir).unwrap();
+        let persistence =
+            TaskPersistence::new(tasks_dir.clone(), Arc::new(mirri_os::LocalSyncFs::new()));
+        let long = candidate_with_long_description("task-long-head");
+        let long_description = long.description.clone();
+        let short = archive_task("task-short-head", None);
+        persistence.save_task(&long).unwrap();
+        persistence.save_task(&short).unwrap();
+        let recorder = Arc::new(RecordingFs::default());
+        let fs: Arc<dyn SyncFs> = recorder.clone();
+
+        // When the census loads candidates through the recording provider
+        let candidates = load_running_process_tasks_with_fs(tmp.path(), &fs);
+
+        // Then the probe-failed archive is never silently skipped — it
+        // still enters the census with its full record...
+        let ids: Vec<&str> = candidates.iter().map(|c| c.task.id.as_str()).collect();
+        assert!(
+            ids.contains(&"task-long-head"),
+            "a probe failure must fall back to a full read, never skip: {ids:?}"
+        );
+        let long_path = tasks_dir.join("task-long-head.json");
+        assert!(
+            recorder.bytes_read_from(&long_path) >= fs::metadata(&long_path).unwrap().len(),
+            "the fallback must have read the whole archive"
+        );
+        // ...and the candidate's tail-carried fingerprint survives intact.
+        let long_task = candidates
+            .iter()
+            .find(|c| c.task.id == "task-long-head")
+            .unwrap();
+        assert_eq!(long_task.task.description, long_description);
     }
 }

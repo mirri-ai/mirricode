@@ -1,22 +1,26 @@
 <!-- apps/mirri-web/src/components/chat/tool-calls/DelegationCard.vue -->
 <!-- The unified delegation card (supervision L0, SDR-007): head line —
      description · N/M chip · status · Open — plus one collapsed member row
-     per started member (identity · status · one-line activity). Expanded
+     per started member (identity · status · one activity area). Expanded
      shows only light facts (prompt, output). Process detail NEVER renders
-     here — it lives in the supervision panel (SDR-002). Cardinality is
-     data, not paradigm (SDR-001): N=1 merely omits the aggregate structures,
-     and a future AgentOverview member card reuses this shape (Phase-3 seam).
-     Honest progress only (SDR-003): counts, phases, one activity line — no
-     percentages, no ETA. -->
+     here — it lives in the supervision panel (SDR-002), with one exception
+     (ADR-012 ①): a row's activity area is the member's recent-activity
+     lightweight timeline — tool names with status colouring and one-line
+     argument digests, plus narrative first-line summaries. Tool output and
+     full arguments stay out. Cardinality is data, not paradigm (SDR-001):
+     N=1 merely omits the aggregate structures, and a future AgentOverview
+     member card reuses this shape (Phase-3 seam). Honest progress only
+     (SDR-003): counts, phases, activity markers — no percentages, no ETA. -->
 <script setup lang="ts">
-import { computed, inject, ref } from 'vue';
+import { computed, inject, ref, type Ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { FilePreviewRequest, ToolCall, ToolMedia } from '../../../types';
 import { toolGlyph, toolLabel } from '../../../lib/toolMeta';
 import { parseSwarmResult } from '../../../lib/parseSwarmResult';
 import { delegationSummary } from '../../../lib/delegationCard';
-import { buildSwarmCardRows } from '../../../lib/swarmCardRows';
+import { buildSwarmCardRows, buildTimelineChips } from '../../../lib/swarmCardRows';
 import { memberColorFor } from '../../../lib/memberColor';
+import { formatDuration } from '../../chatTurnRendering';
 import ToolRow from '../ToolRow.vue';
 
 const { t } = useI18n();
@@ -29,6 +33,15 @@ const props = withDefaults(
     toolDiffPanel?: boolean;
   }>(),
   { mobile: false, stackPosition: 'single', toolDiffPanel: false },
+);
+
+// US3.8 (ADR-7): live elapsed while running with a server anchor — the
+// frozen `timing` (server duration or flush freeze) wins once settled.
+const tick = inject<Readonly<Ref<number>> | null>('runningToolTick', null);
+const liveTime = computed(() =>
+  tick?.value !== undefined && props.tool.status === 'running' && props.tool.startedAtMs !== undefined
+    ? formatDuration(Math.max(0, tick.value - props.tool.startedAtMs))
+    : undefined,
 );
 
 const emit = defineEmits<{
@@ -61,6 +74,25 @@ const summary = computed(() =>
 // members while running, the result's rows after a refresh; unlaunched
 // members take no row (they never started).
 const rows = computed(() => buildSwarmCardRows(members.value, result.value, awaitingLabel.value));
+
+// ADR-012 ①: each member row's activity area is a horizontal lightweight
+// timeline over the member's recent steps/segments, replacing the single
+// ever-replacing activity line. Rows with no timeline data (result-only after
+// a refresh, a member that never started) keep their single-line summary.
+const thinkingLabel = computed(() => t('tools.swarm.thinkingLabel'));
+const rowViews = computed(() =>
+  rows.value.map((row) => {
+    const chips =
+      row.timeline && row.timeline.elements.length > 0
+        ? buildTimelineChips(row.timeline, thinkingLabel.value)
+        : undefined;
+    // Awaiting / suspended (ADR-008 ②): the member is waiting on the user or
+    // on its own pause, so the waiting copy stays the row's activity and the
+    // timeline is parked context beside it — dimmed, never the live signal.
+    const frozen = row.phase === 'awaiting' || row.phase === 'suspended';
+    return { row, chips, frozen };
+  }),
+);
 
 const label = computed(() => toolLabel(props.tool.name));
 const glyph = computed(() => toolGlyph(props.tool.name));
@@ -127,7 +159,7 @@ function toggle(): void {
       :icon="glyph"
       :name="label"
       :arg="!open ? (input.description ?? '') : ''"
-      :time="tool.timing"
+      :time="liveTime ?? tool.timing"
       :open="open"
       :expandable="canExpand"
       :stacked="stackPosition !== 'single'"
@@ -164,18 +196,40 @@ function toggle(): void {
       </div>
     </ToolRow>
     <!-- SDR-007 member rows: always visible while collapsed — identity,
-         status, one activity line. Process detail never renders here. -->
+         status, one activity area. ADR-012 ①: that area is a lightweight
+         timeline of the member's recent activity when the row has timeline
+         data, and the single-line activity summary otherwise. Process detail
+         never renders here. -->
     <button
-      v-for="row in rows"
+      v-for="{ row, chips, frozen } in rowViews"
       :key="row.id"
       type="button"
       class="dc-row"
-      :class="{ err: row.phase === 'failed' }"
+      :class="{ err: row.phase === 'failed', frozen }"
       @click="emit('openAgent', tool.id, row.id)"
     >
       <i class="dc-mdot" :style="{ background: memberColorFor(row.id) }" />
       <span class="dc-mname">{{ row.name }}</span>
-      <span class="dc-row-act">{{ row.activity }}</span>
+      <!-- Frozen rows (ADR-008 ②): the waiting copy stays the activity; the
+           timeline keeps its place beside it, dimmed, so the row reads as
+           parked context rather than a live signal. -->
+      <template v-if="frozen">
+        <span class="dc-row-act">{{ row.activity }}</span>
+        <span v-if="chips" class="dc-tl" aria-hidden="true">
+          <span v-if="chips.headTruncated" class="dc-tl-more">…</span>
+          <span v-for="c in chips.chips" :key="c.id" class="dc-tl-el" :class="`tl-${c.tone}`">
+            {{ c.text }}
+          </span>
+        </span>
+      </template>
+      <!-- Every other row: the timeline takes the activity position. -->
+      <span v-else-if="chips" class="dc-tl">
+        <span v-if="chips.headTruncated" class="dc-tl-more">…</span>
+        <span v-for="c in chips.chips" :key="c.id" class="dc-tl-el" :class="`tl-${c.tone}`">
+          {{ c.text }}
+        </span>
+      </span>
+      <span v-else class="dc-row-act">{{ row.activity }}</span>
       <span class="dc-mphase">
         {{ t(`tools.swarm.phase${row.phase[0]!.toUpperCase()}${row.phase.slice(1)}`) }}
       </span>
@@ -252,6 +306,63 @@ function toggle(): void {
   white-space: nowrap;
   color: var(--color-text-faint);
   font-size: var(--text-xs);
+}
+/* ADR-012 ① lightweight timeline: one horizontal line of chips inside the
+   member row, oldest → newest left to right. The list is pinned to the row's
+   right edge (justify-content: flex-end), so a crowded window overflows on the
+   LEFT: the newest activity — the thing the row exists to show — stays
+   legible next to the phase label, and the eye tracks a fixed "now" edge.
+   Nothing wraps and nothing scrolls, so a full timeline can never grow the row
+   past its single-line height (the head ellipsis clips first in that extreme,
+   where the cut edge itself already reads as truncation). */
+.dc-tl {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+}
+.dc-tl-more {
+  flex: none;
+  color: var(--color-text-faint);
+}
+.dc-tl-el {
+  flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+/* Colour rules (ADR-012 ①②): a running tool is the accent, a failed tool the
+   anomaly colour, every settled tool recedes to the faint default — and a
+   narrative element colours by position, so the newest one (the current
+   activity) takes the emphasis colour. */
+.dc-tl-el.tl-active {
+  color: var(--color-text);
+}
+.dc-tl-el.tl-run {
+  color: var(--color-accent);
+}
+.dc-tl-el.tl-err {
+  color: var(--color-danger);
+}
+.dc-tl-el.tl-done {
+  color: var(--color-text-faint);
+}
+/* Frozen rows (ADR-008 ②): the timeline is parked context, so it reads dimmer
+   and static. The waiting copy beside it keeps full legibility — it is the
+   one thing the user must act on — and keeps its natural width (shrinking with
+   an ellipsis only when the row runs out of room) instead of splitting the
+   row with the timeline. */
+.dc-row.frozen .dc-row-act {
+  flex: 0 1 auto;
+}
+.dc-row.frozen .dc-tl {
+  opacity: 0.55;
 }
 .dc-seg {
   display: inline-flex;

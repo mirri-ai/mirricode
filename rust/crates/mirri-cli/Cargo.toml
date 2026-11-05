@@ -37,7 +37,7 @@ chrono = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { workspace = true }
-notify = "6"
+notify = "8"
 rpassword = "7"
 
 [dev-dependencies]

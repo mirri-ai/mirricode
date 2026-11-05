@@ -1625,6 +1625,7 @@ mod tests {
                     tool_call_id: "test-call".to_string(),
                     cancel: CancelToken::new(),
                     progress: crate::tool::ToolProgressHandle::default(),
+                    turn_origin: Default::default(),
                 })
                 .await
             }

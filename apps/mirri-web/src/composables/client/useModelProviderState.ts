@@ -277,8 +277,11 @@ export function useModelProviderState(
     }
   }
 
-  /** Load models (cached — call again to force refresh) */
-  async function loadModels(): Promise<void> {
+  /** Load models (cached — call again to force refresh). Resolves to
+   *  `false` when the load failed (the failure is already surfaced via
+   *  pushOperationFailure; the false lets callers derive honest
+   *  availability from their own fallback semantics). */
+  async function loadModels(): Promise<boolean> {
     try {
       const api = getMirriWebApi();
       models.value = await api.listModels();
@@ -304,8 +307,10 @@ export function useModelProviderState(
       if (active !== undefined) {
         rawState.thinking = thinkingLevelForSession(rawState.activeSessionId, active);
       }
+      return true;
     } catch (error) {
       pushOperationFailure('loadModels', error);
+      return false;
     }
   }
 

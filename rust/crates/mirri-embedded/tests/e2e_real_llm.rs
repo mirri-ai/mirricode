@@ -1,3 +1,4 @@
+// layer: T3
 //! Real LLM end-to-end tests for the embedded engine.
 //!
 //! These tests exercise the full agent loop against a live LLM provider.
@@ -17,8 +18,8 @@ use mirri_transport::adapter::EngineAdapter;
 use serde_json::json;
 use tokio::time::timeout;
 
-/// Serializes tests that read process-global environment variables.
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+// Env-reading tests serialize on the workspace-wide env lock
+// (mirri-test-support).
 
 /// Skip the test (return `None`) when no API key is set.
 fn require_api_key() -> Option<String> {
@@ -40,7 +41,7 @@ fn make_server() -> EmbeddedServer {
 
 #[tokio::test]
 #[ignore]
-#[allow(clippy::await_holding_lock)] // ENV_LOCK serializes env-var access across the whole test
+#[allow(clippy::await_holding_lock)] // the workspace env lock serializes env-var access across the whole test
 async fn should_get_text_response_when_sending_simple_message_to_real_llm() {
     let api_key = match require_api_key() {
         Some(k) => k,
@@ -49,7 +50,7 @@ async fn should_get_text_response_when_sending_simple_message_to_real_llm() {
             return;
         }
     };
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = mirri_test_support::env::lock();
     let _ = &api_key; // consumed by ProviderLlmFactory via env at LLM-creation time
     let model = std::env::var("MIRRI_E2E_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
 
@@ -114,7 +115,7 @@ async fn should_get_text_response_when_sending_simple_message_to_real_llm() {
 
 #[tokio::test]
 #[ignore]
-#[allow(clippy::await_holding_lock)] // ENV_LOCK serializes env-var access across the whole test
+#[allow(clippy::await_holding_lock)] // the workspace env lock serializes env-var access across the whole test
 async fn should_stream_events_when_using_fire_mode_with_real_llm() {
     let api_key = match require_api_key() {
         Some(k) => k,
@@ -123,7 +124,7 @@ async fn should_stream_events_when_using_fire_mode_with_real_llm() {
             return;
         }
     };
-    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = mirri_test_support::env::lock();
     let _ = &api_key; // consumed by ProviderLlmFactory via env at LLM-creation time
     let model = std::env::var("MIRRI_E2E_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
 

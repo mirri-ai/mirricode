@@ -35,23 +35,36 @@
 //! and a fixed-width encoding round-trips those bytes exactly while still
 //! ordering lexically (= chronologically) in SQL.
 //!
-//! This crate is pure storage: it does **not** depend on `mirri-core`. The
-//! integration (converting between engine metadata and these rows) lives in
-//! the embedded server.
+//! This crate's storage core is engine-local (it never depended on
+//! `mirri-core`); the one exception is [`port_impl`] — the ADR-006
+//! [`MetadataStorePort`](mirri_core::session::metadata_port::MetadataStorePort)
+//! implementation that projects these rows onto the engine's metadata write
+//! face (the dependency direction stays one-way: this crate → `mirri-core`,
+//! never back).
 
-mod registry;
+// The registry family lives in mirri-persistence now (zero-IO 契约 6:
+// mirri-core must reach the lock without pulling the SQLite index into its
+// dependency tree); the `registry` alias keeps every internal call site's
+// `registry::` spelling unchanged.
+use mirri_persistence::workspace_registry as registry;
 
 pub use registry::{
-    LockGuard, RegistryLock, RegistryWriter, WORKSPACE_REGISTRY_FILENAME, add_tombstone,
-    lock_file_path, read_workspace_registry, write_workspace_registry,
+    LockGuard, RegistryLock, RegistryWriter, WORKSPACE_REGISTRY_FILENAME, WorkspaceRow,
+    add_tombstone, lock_file_path, read_workspace_registry, write_workspace_registry,
 };
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params};
+
+pub mod backup;
+pub mod port_impl;
+
+pub use port_impl::{OpenOutcome, SessionIndexPort};
 
 /// How long a statement waits for another process's write lock before
 /// failing (the TS `BUSY_TIMEOUT_MS`).
@@ -78,12 +91,25 @@ const TIMESTAMP_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.9fZ";
 ///   the auto-compress pipeline (rows derive from `state.json` and are
 ///   rebuilt by the converge, so the migration only needs to add the
 ///   columns: existing rows read back with the defaults).
-const SCHEMA_VERSION: i32 = 2;
+/// - `3` — the metadata-source-of-truth step (§ADR-006): adds the pin
+///   columns (`sessions.pinned INTEGER NOT NULL DEFAULT 0`,
+///   `sessions.pinned_at TEXT`, `sessions.pin_color TEXT` — the session
+///   management domain's SDR-016/017, where the row is the pin's single
+///   source of truth) and the `tombstones` table (the deletion ledger the
+///   reaper and the one-time migration judge against). Expand-only: every
+///   existing row reads back unpinned, and nothing is rewritten.
+// - `4` — the metadata-port step (§ADR-006): adds `sessions.last_used_at
+//   TEXT` and `sessions.pre_compressed_size INTEGER` — the two port columns
+//   v3's shape lacked — and the `meta` table (the `schema_format` era stamp
+//   `open_with_check` judges the schema floor against; this build stamps
+//   nothing into it yet).
+const SCHEMA_VERSION: i32 = 4;
 
 /// The sessions + workspaces schema (snake_case — this database is
 /// engine-local, never shared with the TS side). The column order matches
-/// what a v0→v1 `ALTER TABLE` migration produces (`last_prompt` appended
-/// last), so a fresh database and a migrated one are byte-identical.
+/// what the `ALTER TABLE` migration chain produces (each step's columns
+/// appended last, in step order), so a fresh database and a migrated one
+/// carry the same column order.
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS sessions (
     id          TEXT PRIMARY KEY NOT NULL,
@@ -99,7 +125,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_prompt TEXT,
     archived_at  TEXT,
     compressed   INTEGER,
-    compressed_at TEXT
+    compressed_at TEXT,
+    pinned       INTEGER NOT NULL DEFAULT 0,
+    pinned_at    TEXT,
+    pin_color    TEXT,
+    last_used_at TEXT,
+    pre_compressed_size INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_ws_updated
     ON sessions (workspace_id, updated_at DESC);
@@ -111,7 +142,53 @@ CREATE TABLE IF NOT EXISTS workspaces (
     last_opened_at TEXT NOT NULL,
     sort_order     INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS tombstones (
+    id         TEXT PRIMARY KEY NOT NULL,
+    deleted_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY NOT NULL,
+    value TEXT NOT NULL
+);
 ";
+
+/// The `sessions` column list every row read selects, in the exact order
+/// [`map_session_row`] reads it. One constant so the two SELECTs can never
+/// drift from the mapper.
+const SESSION_COLUMNS: &str = "id, workspace_id, cwd, title, created_at, updated_at, \
+     archived, tags, custom, state_mtime, last_prompt, \
+     archived_at, compressed, compressed_at, \
+     pinned, pinned_at, pin_color, last_used_at, pre_compressed_size";
+
+/// The one session-row upsert every write funnels through — the SQL spells
+/// all 19 columns once, so [`SessionIndex::upsert_session`] (one row) and
+/// [`SessionIndex::bulk_upsert_sessions`] (one transaction) can never drift.
+const UPSERT_SESSION_SQL: &str = "INSERT INTO sessions
+     (id, workspace_id, cwd, title, created_at, updated_at,
+      archived, tags, custom, state_mtime, last_prompt,
+      archived_at, compressed, compressed_at,
+      pinned, pinned_at, pin_color, last_used_at, pre_compressed_size)
+ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+         ?15, ?16, ?17, ?18, ?19)
+ ON CONFLICT(id) DO UPDATE SET
+     workspace_id = excluded.workspace_id,
+     cwd = excluded.cwd,
+     title = excluded.title,
+     created_at = excluded.created_at,
+     updated_at = excluded.updated_at,
+     archived = excluded.archived,
+     tags = excluded.tags,
+     custom = excluded.custom,
+     state_mtime = COALESCE(excluded.state_mtime, sessions.state_mtime),
+     last_prompt = excluded.last_prompt,
+     archived_at = excluded.archived_at,
+     compressed = excluded.compressed,
+     compressed_at = excluded.compressed_at,
+     pinned = excluded.pinned,
+     pinned_at = excluded.pinned_at,
+     pin_color = excluded.pin_color,
+     last_used_at = excluded.last_used_at,
+     pre_compressed_size = excluded.pre_compressed_size";
 
 /// One indexed session — the summary a listing resolves without touching the
 /// session directory.
@@ -156,24 +233,29 @@ pub struct SessionRow {
     /// When the wire log was compressed (`compressedAt`), when recorded —
     /// the tier-cleanup "already compressed for N days" anchor.
     pub compressed_at: Option<DateTime<Utc>>,
-}
-
-/// One registered workspace — the `workspaces` table row (seeded from and
-/// written through to the cross-engine `workspaces.json` registry).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceRow {
-    /// The workspace key (`wd_<slug>_<hash12>`).
-    pub id: String,
-    /// The workspace root path, when known.
-    pub root: Option<String>,
-    /// The workspace display name, when known.
-    pub name: Option<String>,
-    /// When the workspace was first registered.
-    pub created_at: DateTime<Utc>,
-    /// When the workspace was last opened.
-    pub last_opened_at: DateTime<Utc>,
-    /// Manual ordering position (the drag-reorder seam; 0 = default).
-    pub sort_order: i64,
+    /// Whether the session is pinned to the top of its workspace's listing
+    /// (SDR-016). This row is the pin's **single source of truth** — there
+    /// is no `state.json` mirror and no reconcile backfill.
+    pub pinned: bool,
+    /// When the session was pinned — the ungrouped pinned section's order
+    /// (`pinned_at` DESC, last pinned on top). Preserved across a repeat
+    /// pin (pinning is idempotent) and cleared on unpin.
+    pub pinned_at: Option<DateTime<Utc>>,
+    /// The pin's semantic color name (`red` / `orange` / `yellow` /
+    /// `green` / `blue` / `purple` / `gray`, SDR-017), when one was chosen.
+    /// Storage hands the stored text through verbatim: the seven-name
+    /// enumeration is enforced by the layers above (RPC validation and the
+    /// `PinColor` enum), so an unknown string read back is passed on
+    /// unchanged rather than rejected here.
+    pub pin_color: Option<String>,
+    /// When the session was last *used* (SDR-004's recency key — bumped
+    /// only by a user send or an explicit touch, never by a turn settle;
+    /// v4's metadata-port column). `None` for a row that predates the
+    /// field, in which case readers fall back to `updated_at`.
+    pub last_used_at: Option<DateTime<Utc>>,
+    /// The wire log's pre-compression byte size, the savings basis (v4's
+    /// metadata-port column). `None` = unknown.
+    pub pre_compressed_size: Option<i64>,
 }
 
 /// Listing options for [`SessionIndex::list_sessions`] — the TS `list`
@@ -266,12 +348,18 @@ impl SessionIndex {
     /// Step the database's `PRAGMA user_version` forward — the migration
     /// chain (see [`SCHEMA_VERSION`]'s history). Runs on every open and is
     /// a no-op on an already-current database (re-opening never re-runs a
-    /// step). A v0 database predates W5 and carries the `sessions` table
-    /// **without** the `last_prompt` column: the fresh-database schema above
-    /// already includes it (`CREATE TABLE IF NOT EXISTS` is a no-op on the
-    /// existing table), so the step checks `pragma_table_info` and adds the
-    /// column only when it is genuinely missing — a fresh database never
-    /// runs the `ALTER TABLE`.
+    /// step). Every step is **expand-only**: it adds tables and columns, and
+    /// never rewrites or drops an existing row.
+    ///
+    /// Each step guards on the version the database had when `open` started,
+    /// not on the version the previous step just stamped, so one open walks
+    /// the whole chain; a crash between two steps leaves a re-open walking
+    /// only the steps still missing. A v0 database predates W5 and carries
+    /// the `sessions` table **without** the `last_prompt` column: the
+    /// fresh-database schema above already includes it (`CREATE TABLE IF NOT
+    /// EXISTS` is a no-op on the existing table), so the step checks
+    /// `pragma_table_info` and adds the column only when it is genuinely
+    /// missing — a fresh database never runs the `ALTER TABLE`.
     fn migrate(conn: &Connection) -> Result<()> {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if version >= i64::from(SCHEMA_VERSION) {
@@ -295,25 +383,78 @@ impl SessionIndex {
             // IF NOT EXISTS is a no-op on an existing table) never runs the
             // ALTER, and a partially-migrated file (a crash between two
             // ALTERs) re-runs only the missing one.
-            for (column, decl) in [
-                ("archived_at", "TEXT"),
-                ("compressed", "INTEGER"),
-                ("compressed_at", "TEXT"),
-            ] {
-                let has_column = conn
-                    .prepare(&format!(
-                        "SELECT 1 FROM pragma_table_info('sessions') \
-                         WHERE name = '{column}'"
-                    ))?
-                    .exists([])?;
-                if !has_column {
-                    conn.execute(
-                        &format!("ALTER TABLE sessions ADD COLUMN {column} {decl}"),
-                        [],
-                    )?;
-                }
+            Self::add_sessions_columns(
+                conn,
+                &[
+                    ("archived_at", "TEXT"),
+                    ("compressed", "INTEGER"),
+                    ("compressed_at", "TEXT"),
+                ],
+            )?;
+            conn.pragma_update(None, "user_version", 2)?;
+        }
+        if version <= 2 {
+            // v3 (ADR-006): the deletion ledger and the pin columns
+            // (SDR-016/017). The table is normally already in place — the
+            // `SCHEMA` batch above carries it — but the step restates it so
+            // the step is self-contained and a crash between the pieces
+            // re-runs cleanly.
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS tombstones (
+                     id         TEXT PRIMARY KEY NOT NULL,
+                     deleted_at TEXT NOT NULL
+                 );",
+            )?;
+            Self::add_sessions_columns(
+                conn,
+                &[
+                    ("pinned", "INTEGER NOT NULL DEFAULT 0"),
+                    ("pinned_at", "TEXT"),
+                    ("pin_color", "TEXT"),
+                ],
+            )?;
+            conn.pragma_update(None, "user_version", 3)?;
+        }
+        if version <= 3 {
+            // v4 (ADR-006): the metadata-port columns — the recency key
+            // (`last_used_at`, whose NULL falls back to `updated_at`) and the
+            // compression savings basis (`pre_compressed_size`). Expand-only:
+            // existing rows read back with both NULL. The `meta` table is
+            // normally already in place (the `SCHEMA` batch carries it); the
+            // step restates it so it is self-contained.
+            Self::add_sessions_columns(
+                conn,
+                &[("last_used_at", "TEXT"), ("pre_compressed_size", "INTEGER")],
+            )?;
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS meta (
+                     key   TEXT PRIMARY KEY NOT NULL,
+                     value TEXT NOT NULL
+                 );",
+            )?;
+            conn.pragma_update(None, "user_version", 4)?;
+        }
+        Ok(())
+    }
+
+    /// Add each of `columns` to `sessions` when it is genuinely missing —
+    /// the per-column guard that keeps a fresh database (whose `SCHEMA`
+    /// already spells the columns) from running an `ALTER TABLE`, and lets a
+    /// partially-migrated file (a crash mid-step) re-run only the missing
+    /// ones.
+    fn add_sessions_columns(conn: &Connection, columns: &[(&str, &str)]) -> Result<()> {
+        for (column, decl) in columns {
+            let has_column = conn
+                .prepare(&format!(
+                    "SELECT 1 FROM pragma_table_info('sessions') WHERE name = '{column}'"
+                ))?
+                .exists([])?;
+            if !has_column {
+                conn.execute(
+                    &format!("ALTER TABLE sessions ADD COLUMN {column} {decl}"),
+                    [],
+                )?;
             }
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
         Ok(())
     }
@@ -321,27 +462,45 @@ impl SessionIndex {
     /// Upsert one session row. A `None` `state_mtime` keeps the stamp the
     /// row already carries (the TS upsert's subselect behaviour).
     pub fn upsert_session(&self, row: &SessionRow) -> Result<()> {
+        Self::upsert_session_on(&self.lock(), row)
+    }
+
+    /// Upsert a whole batch in **one** transaction — every row lands or none
+    /// does. The one-time migration's seed and the recovery rebuild hand a
+    /// whole workspace (or a whole library) over in one call, where a
+    /// half-written batch would leave rows the disk cannot corroborate.
+    /// An empty batch is a successful no-op.
+    pub fn bulk_upsert_sessions(&self, rows: &[SessionRow]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
         let conn = self.lock();
+        let transaction = conn.unchecked_transaction()?;
+        for row in rows {
+            Self::upsert_session_on(&transaction, row)?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Seed one session row through the same single-row upsert SQL every
+    /// write funnels through, inside one transaction — the ADR-006
+    /// migration's dedicated entry (the caller-supplied `created_at` lands
+    /// verbatim; `SessionIndexPort::apply_seed` is the port face).
+    pub fn seed_session(&self, row: &SessionRow) -> Result<()> {
+        let conn = self.lock();
+        let transaction = conn.unchecked_transaction()?;
+        Self::upsert_session_on(&transaction, row)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// The one session upsert both write paths run — on whatever connection
+    /// or transaction the caller holds, so the SQL and its 17 bindings exist
+    /// exactly once.
+    fn upsert_session_on(conn: &Connection, row: &SessionRow) -> Result<()> {
         conn.execute(
-            "INSERT INTO sessions
-                 (id, workspace_id, cwd, title, created_at, updated_at,
-                  archived, tags, custom, state_mtime, last_prompt,
-                  archived_at, compressed, compressed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
-             ON CONFLICT(id) DO UPDATE SET
-                 workspace_id = excluded.workspace_id,
-                 cwd = excluded.cwd,
-                 title = excluded.title,
-                 created_at = excluded.created_at,
-                 updated_at = excluded.updated_at,
-                 archived = excluded.archived,
-                 tags = excluded.tags,
-                 custom = excluded.custom,
-                 state_mtime = COALESCE(excluded.state_mtime, sessions.state_mtime),
-                 last_prompt = excluded.last_prompt,
-                 archived_at = excluded.archived_at,
-                 compressed = excluded.compressed,
-                 compressed_at = excluded.compressed_at",
+            UPSERT_SESSION_SQL,
             params![
                 row.id,
                 row.workspace_id,
@@ -359,8 +518,54 @@ impl SessionIndex {
                 row.archived_at.map(|at| encode_timestamp(&at)),
                 row.compressed as i64,
                 row.compressed_at.map(|at| encode_timestamp(&at)),
+                row.pinned as i64,
+                row.pinned_at.map(|at| encode_timestamp(&at)),
+                row.pin_color,
+                row.last_used_at.map(|at| encode_timestamp(&at)),
+                row.pre_compressed_size,
             ],
         )?;
+        Ok(())
+    }
+
+    /// Record deletions in the tombstone ledger, in one transaction (the
+    /// whole batch or nothing). The ledger — not a directory probe — is what
+    /// tells the reaper and the one-time migration that a session was
+    /// deleted on purpose (ADR-006 裁决 3). Re-recording an id refreshes its
+    /// stamp.
+    pub fn record_tombstones(&self, ids_and_dates: &[(String, DateTime<Utc>)]) -> Result<()> {
+        if ids_and_dates.is_empty() {
+            return Ok(());
+        }
+        let conn = self.lock();
+        let transaction = conn.unchecked_transaction()?;
+        for (id, deleted_at) in ids_and_dates {
+            transaction.execute(
+                "INSERT INTO tombstones (id, deleted_at) VALUES (?1, ?2)
+                 ON CONFLICT(id) DO UPDATE SET deleted_at = excluded.deleted_at",
+                params![id, encode_timestamp(deleted_at)],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Every tombstoned session id — the reaper's worklist and the
+    /// migration's "this id was deleted, never resurrect it" set.
+    pub fn tombstone_ids(&self) -> Result<HashSet<String>> {
+        let conn = self.lock();
+        let mut statement = conn.prepare("SELECT id FROM tombstones")?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Vec<_>>();
+        Ok(rows.into_iter().flatten().collect())
+    }
+
+    /// Drop one id from the ledger (the reaper's completion step, and the
+    /// explicit un-tombstone path). An id that is not there is a no-op.
+    pub fn clear_tombstone(&self, id: &str) -> Result<()> {
+        let conn = self.lock();
+        conn.execute("DELETE FROM tombstones WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -371,16 +576,63 @@ impl SessionIndex {
         Ok(())
     }
 
+    /// Run one pre-compiled `apply` statement (the metadata port's INSERT …
+    /// ON CONFLICT; the port builds the SQL from its column whitelist and
+    /// hands the finished statement over). `created_at`-stamping and every
+    /// column default belong to the SQL text itself, so this stays a plain
+    /// execute on the single connection.
+    pub fn apply_patch_sql(&self, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(sql, params)?;
+        Ok(())
+    }
+
+    /// Apply one field-level [`MetadataPatch`] directly — ADR-006 裁决 4's
+    /// narrowing face for the embedded write-throughs that hold the index
+    /// but not the port. The patch compiles to the same INSERT … ON
+    /// CONFLICT statement [`SessionIndexPort::apply`] builds (an absent row
+    /// inserts with the untouched columns defaulted; an existing row SETs
+    /// exactly the touched columns — a concurrent writer's disjoint field
+    /// survives).
+    pub fn apply_session_patch(
+        &self,
+        session_id: &str,
+        workspace_id: &str,
+        patch: &mirri_core::session::metadata_port::MetadataPatch,
+    ) -> Result<()> {
+        let compiled = port_impl::compile_patch_for(session_id, workspace_id, patch);
+        let refs: Vec<&dyn rusqlite::ToSql> = compiled
+            .params
+            .iter()
+            .map(|param| param as &dyn rusqlite::ToSql)
+            .collect();
+        self.apply_patch_sql(&compiled.sql, refs.as_slice())
+    }
+
+    /// Delete one session row and record its tombstone in **one**
+    /// transaction (the metadata port's delete: a crash can never leave the
+    /// row gone without the ledger knowing). The tombstone's `deleted_at`
+    /// is stamped now, by this call.
+    pub fn delete_session_with_tombstone(&self, id: &str) -> Result<()> {
+        let conn = self.lock();
+        let transaction = conn.unchecked_transaction()?;
+        transaction.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+        transaction.execute(
+            "INSERT INTO tombstones (id, deleted_at) VALUES (?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET deleted_at = excluded.deleted_at",
+            params![id, encode_timestamp(&Utc::now())],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Read one session row, when present. A row whose timestamps no longer
     /// parse is treated as absent (a corrupt row is a cold miss, not a
     /// failure).
     pub fn get_session(&self, id: &str) -> Option<SessionRow> {
         let conn = self.lock();
         conn.query_row(
-            "SELECT id, workspace_id, cwd, title, created_at, updated_at,
-                    archived, tags, custom, state_mtime, last_prompt,
-                    archived_at, compressed, compressed_at
-             FROM sessions WHERE id = ?1",
+            &format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE id = ?1"),
             params![id],
             map_session_row,
         )
@@ -399,12 +651,7 @@ impl SessionIndex {
     /// (`{items: [], has_more: false}`'s source — a client cannot spin on a
     /// cursor the index cannot advance).
     pub fn list_sessions(&self, opts: ListOpts<'_>) -> Result<Vec<SessionRow>> {
-        let mut sql = String::from(
-            "SELECT id, workspace_id, cwd, title, created_at, updated_at,
-                    archived, tags, custom, state_mtime, last_prompt,
-                    archived_at, compressed, compressed_at
-             FROM sessions",
-        );
+        let mut sql = format!("SELECT {SESSION_COLUMNS} FROM sessions");
         let mut clauses: Vec<String> = Vec::new();
         let mut bindings: Vec<String> = Vec::new();
         if let Some(ids) = opts.workspace_ids.filter(|ids| !ids.is_empty()) {
@@ -689,6 +936,32 @@ impl SessionIndex {
         }
     }
 
+    /// Read one `meta` table value — the `schema_format` era stamp's read
+    /// face (the one-shot migration's completion marker). `None` when the
+    /// key is absent or the table carries no row for it.
+    pub fn read_meta_value(&self, key: &str) -> Option<String> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+    }
+
+    /// Write one `meta` table value (an upsert) — the migration's stamp
+    /// write. The `meta` table exists on every database this build opens
+    /// (the v4 schema step creates it).
+    pub fn write_meta_value(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
     /// Lock the connection — poisoned locks recover (the engine never
     /// deliberately poisons one; a panicked statement must not brick the
     /// index for the process lifetime).
@@ -744,6 +1017,18 @@ fn map_session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<SessionRo
         compressed_at: row
             .get::<_, Option<String>>(13)?
             .and_then(|text| decode_timestamp(&text)),
+        pinned: row.get::<_, Option<i64>>(14)?.unwrap_or(0) != 0,
+        pinned_at: row
+            .get::<_, Option<String>>(15)?
+            .and_then(|text| decode_timestamp(&text)),
+        // Handed through verbatim: the seven-name enumeration is the upper
+        // layers' contract (SDR-017), so an unknown value is a read the
+        // storage never rejects.
+        pin_color: row.get::<_, Option<String>>(16)?,
+        last_used_at: row
+            .get::<_, Option<String>>(17)?
+            .and_then(|text| decode_timestamp(&text)),
+        pre_compressed_size: row.get(18)?,
     }))
 }
 
@@ -797,7 +1082,110 @@ mod tests {
             archived_at: None,
             compressed: false,
             compressed_at: None,
+            pinned: false,
+            pinned_at: None,
+            pin_color: None,
+            last_used_at: None,
+            pre_compressed_size: None,
         }
+    }
+
+    /// Given a row carrying the v4 metadata-port columns, When it is upserted
+    /// then fetched, Then both round-trip — `last_used_at` through the
+    /// fixed-width timestamp encoding, `pre_compressed_size` as a plain
+    /// integer.
+    #[test]
+    fn should_roundtrip_the_port_columns_when_upserting_then_getting_a_session_row() {
+        let (index, _dir) = open_index();
+        let now = Utc::now();
+        let mut row = session_row("sess-port", now);
+        row.last_used_at = Some(now - chrono::Duration::hours(3));
+        row.pre_compressed_size = Some(1_048_576);
+        index.upsert_session(&row).unwrap();
+
+        assert_eq!(index.get_session("sess-port").unwrap(), row);
+    }
+
+    /// Given a v3 database file (pin columns, no port columns), When the
+    /// index is opened, Then the migration steps it to v4: the old rows read
+    /// back with both port columns NULL, a re-open is a no-op, and a new
+    /// write carries the columns through the migrated table.
+    #[test]
+    fn should_migrate_a_v3_database_to_v4_when_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("session-index.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                    id          TEXT PRIMARY KEY NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    cwd         TEXT,
+                    title       TEXT,
+                    created_at  TEXT NOT NULL,
+                    updated_at  TEXT NOT NULL,
+                    archived    INTEGER NOT NULL DEFAULT 0,
+                    tags        TEXT,
+                    custom      TEXT,
+                    state_mtime INTEGER,
+                    last_prompt TEXT,
+                    archived_at  TEXT,
+                    compressed   INTEGER,
+                    compressed_at TEXT,
+                    pinned       INTEGER NOT NULL DEFAULT 0,
+                    pinned_at    TEXT,
+                    pin_color    TEXT
+                );
+                CREATE TABLE workspaces (
+                    id             TEXT PRIMARY KEY NOT NULL,
+                    root           TEXT,
+                    name            TEXT,
+                    created_at      TEXT NOT NULL,
+                    last_opened_at TEXT NOT NULL,
+                    sort_order      INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE tombstones (
+                    id         TEXT PRIMARY KEY NOT NULL,
+                    deleted_at TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+            let updated_at = Utc::now().format(TIMESTAMP_FORMAT).to_string();
+            conn.execute(
+                "INSERT INTO sessions (id, workspace_id, created_at, updated_at)
+                 VALUES ('sess-v3', 'wd_project_abc123def456', ?1, ?1)",
+                [&updated_at],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 3).unwrap();
+        }
+
+        let index = SessionIndex::open(&db_path).unwrap();
+
+        let row = index.get_session("sess-v3").expect("the old row survived");
+        assert_eq!(row.last_used_at, None);
+        assert_eq!(row.pre_compressed_size, None);
+        let version: i64 = {
+            let conn = index.lock();
+            conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(version, i64::from(SCHEMA_VERSION));
+
+        // A re-open never re-runs the step (the second ALTER would fail
+        // outright — this doubling as the idempotence assertion).
+        let reopened = SessionIndex::open(&db_path).unwrap();
+        assert!(reopened.get_session("sess-v3").is_some());
+        let now = Utc::now();
+        let mut port_row = session_row("sess-port", now);
+        port_row.last_used_at = Some(now);
+        port_row.pre_compressed_size = Some(2048);
+        reopened.upsert_session(&port_row).unwrap();
+        assert_eq!(
+            reopened.get_session("sess-port").unwrap().last_used_at,
+            Some(now),
+            "the migrated table stores the port columns"
+        );
     }
 
     /// Given an upserted row, When it is fetched by id, Then every field
@@ -1280,8 +1668,9 @@ mod tests {
         };
         assert_eq!(version, i64::from(SCHEMA_VERSION));
         // And the column order the SCHEMA spells matches what a migrated
-        // v0 database would have (the v1 `last_prompt` tail followed by
-        // the v2 retention columns).
+        // database would have — the v1 `last_prompt`, the v2 retention
+        // columns, and the v3 pin columns, each step's columns appended in
+        // step order.
         let columns: Vec<String> = {
             let conn = index.lock();
             let mut statement = conn
@@ -1293,10 +1682,20 @@ mod tests {
                 .flatten()
                 .collect()
         };
-        let tail: Vec<&str> = columns.iter().rev().take(4).map(String::as_str).collect();
+        let tail: Vec<&str> = columns.iter().rev().take(9).map(String::as_str).collect();
         assert_eq!(
             tail,
-            vec!["compressed_at", "compressed", "archived_at", "last_prompt"]
+            vec![
+                "pre_compressed_size",
+                "last_used_at",
+                "pin_color",
+                "pinned_at",
+                "pinned",
+                "compressed_at",
+                "compressed",
+                "archived_at",
+                "last_prompt"
+            ]
         );
     }
 
@@ -1433,7 +1832,9 @@ mod tests {
         row.compressed_at = Some(now - chrono::Duration::days(39));
         index.upsert_session(&row).unwrap();
 
-        let fetched = index.get_session("sess-retention").expect("the row is present");
+        let fetched = index
+            .get_session("sess-retention")
+            .expect("the row is present");
         assert_eq!(fetched, row);
 
         // And the listing path carries the columns through the same SELECT.
@@ -1490,7 +1891,9 @@ mod tests {
             conn.query_row("PRAGMA user_version", [], |row| row.get(0))
                 .unwrap()
         };
-        assert_eq!(version, 2);
+        // One open walks the whole chain: the v1 file takes v2 through v4
+        // in the same pass.
+        assert_eq!(version, i64::from(SCHEMA_VERSION));
 
         // A re-open never re-runs the step (the second ALTER would fail
         // outright — this doubling as the idempotence assertion).
@@ -1513,20 +1916,14 @@ mod tests {
         assert!(index.get_session("sess-new").unwrap().compressed);
     }
 
-    /// Given a fresh database, When it is opened, Then the schema is already
-    /// v2-shaped and the version stamp is 2 (the fresh path never runs the
-    /// ALTERs — the column order matches what the migration chain produces).
+    /// Given a fresh database, When it is opened, Then the retention columns
+    /// hold the order the v2 step appends them in — the shape every reader's
+    /// column indices depend on. (The v3 pin columns land after them; see
+    /// `should_stamp_a_fresh_database_at_the_current_schema_version` for the
+    /// full tail.)
     #[test]
-    fn should_stamp_a_fresh_database_at_the_v2_schema_version() {
+    fn should_keep_the_retention_columns_in_chain_order_when_a_fresh_database_is_opened() {
         let (index, _dir) = open_index();
-        let version: i64 = {
-            let conn = index.lock();
-            conn.query_row("PRAGMA user_version", [], |row| row.get(0))
-                .unwrap()
-        };
-        assert_eq!(version, i64::from(SCHEMA_VERSION));
-        // And the column order the SCHEMA spells matches what a migrated
-        // v1 database would have (the retention columns last, in order).
         let columns: Vec<String> = {
             let conn = index.lock();
             let mut statement = conn
@@ -1538,16 +1935,236 @@ mod tests {
                 .flatten()
                 .collect()
         };
-        let tail: Vec<&str> = columns
+        let retention: Vec<&str> = columns
             .iter()
-            .rev()
-            .take(3)
             .map(String::as_str)
+            .filter(|name| matches!(*name, "archived_at" | "compressed" | "compressed_at"))
             .collect();
         assert_eq!(
-            tail,
-            vec!["compressed_at", "compressed", "archived_at"],
-            "the retention columns land last, in the migration chain's order"
+            retention,
+            vec!["archived_at", "compressed", "compressed_at"],
+            "the retention columns keep the order the v2 step appends them in"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR-006 — tombstones, the v3 expand-only migration (pin columns), and
+    // the bulk upsert
+    // -----------------------------------------------------------------------
+
+    /// Given an empty index, When two tombstones are recorded in one batch,
+    /// Then `tombstone_ids` answers exactly those two ids — and after one is
+    /// cleared, only the other remains.
+    #[test]
+    fn should_record_list_and_clear_tombstones_when_batch_inserted() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = SessionIndex::open(&dir.path().join("t.db")).unwrap();
+        let at = chrono::Utc::now();
+        index
+            .record_tombstones(&[("s1".into(), at), ("s2".into(), at)])
+            .unwrap();
+        let ids = index.tombstone_ids().unwrap();
+        assert!(ids.contains("s1") && ids.contains("s2") && ids.len() == 2);
+        index.clear_tombstone("s1").unwrap();
+        let ids = index.tombstone_ids().unwrap();
+        assert!(!ids.contains("s1") && ids.contains("s2"));
+    }
+
+    /// Given a v2 database file (retention columns, no tombstone table, no
+    /// pin columns) with rows, When the index is opened, Then the migration
+    /// steps it to v3: the old rows read back with the unpinned defaults,
+    /// the tombstone table answers, a re-open is a no-op, and a new write
+    /// carries the pin columns through the migrated table.
+    #[test]
+    fn should_migrate_a_v2_database_to_v3_when_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("session-index.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                    id          TEXT PRIMARY KEY NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    cwd         TEXT,
+                    title       TEXT,
+                    created_at  TEXT NOT NULL,
+                    updated_at  TEXT NOT NULL,
+                    archived    INTEGER NOT NULL DEFAULT 0,
+                    tags        TEXT,
+                    custom      TEXT,
+                    state_mtime INTEGER,
+                    last_prompt TEXT,
+                    archived_at  TEXT,
+                    compressed   INTEGER,
+                    compressed_at TEXT
+                );",
+            )
+            .unwrap();
+            let updated_at = Utc::now().format(TIMESTAMP_FORMAT).to_string();
+            conn.execute(
+                "INSERT INTO sessions (id, workspace_id, created_at, updated_at)
+                 VALUES ('sess-v2', 'wd_project_abc123def456', ?1, ?1)",
+                [&updated_at],
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 2).unwrap();
+        }
+
+        let index = SessionIndex::open(&db_path).unwrap();
+
+        let row = index.get_session("sess-v2").expect("the old row survived");
+        assert!(!row.pinned);
+        assert_eq!(row.pinned_at, None);
+        assert_eq!(row.pin_color, None);
+        // The same step brings the tombstone table in (empty on a fresh
+        // migration — no deletion was recorded yet).
+        assert!(index.tombstone_ids().unwrap().is_empty());
+        let version: i64 = {
+            let conn = index.lock();
+            conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap()
+        };
+        // One open walks the whole chain: the v2 file takes v3 and v4 in
+        // the same pass.
+        assert_eq!(version, i64::from(SCHEMA_VERSION));
+
+        // A re-open never re-runs the step (the second ALTER would fail
+        // outright — this doubling as the idempotence assertion).
+        let reopened = SessionIndex::open(&db_path).unwrap();
+        assert!(reopened.get_session("sess-v2").is_some());
+        let now = Utc::now();
+        let mut pinned = session_row("sess-pinned", now);
+        pinned.pinned = true;
+        pinned.pinned_at = Some(now);
+        pinned.pin_color = Some("red".to_string());
+        reopened.upsert_session(&pinned).unwrap();
+        assert_eq!(
+            reopened
+                .get_session("sess-pinned")
+                .unwrap()
+                .pin_color
+                .as_deref(),
+            Some("red"),
+            "the migrated table stores the pin columns"
+        );
+    }
+
+    /// Given a row carrying the pin columns, When it is upserted then
+    /// fetched (and listed), Then all three round-trip — and writing the
+    /// unpinned defaults back clears them again (the unpin shape).
+    #[test]
+    fn should_roundtrip_the_pin_columns_when_upserting_then_getting_a_session_row() {
+        let (index, _dir) = open_index();
+        let now = DateTime::parse_from_rfc3339("2026-03-01T08:09:10.123456789Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut row = session_row("sess-pinned", now);
+        row.pinned = true;
+        row.pinned_at = Some(now - chrono::Duration::minutes(5));
+        row.pin_color = Some("blue".to_string());
+        index.upsert_session(&row).unwrap();
+
+        assert_eq!(
+            index
+                .get_session("sess-pinned")
+                .expect("the row is present"),
+            row
+        );
+        assert_eq!(
+            index.list_sessions(ListOpts::default()).unwrap(),
+            vec![row.clone()]
+        );
+
+        let mut cleared = row;
+        cleared.pinned = false;
+        cleared.pinned_at = None;
+        cleared.pin_color = None;
+        index.upsert_session(&cleared).unwrap();
+        assert_eq!(index.get_session("sess-pinned").unwrap(), cleared);
+    }
+
+    /// Given a row whose `pin_color` is not one of the seven semantic names,
+    /// When it is read back, Then the index hands the stored text through
+    /// untouched — storage never judges the color (the enumeration is
+    /// enforced by the upper layers), and an odd row never panics or
+    /// vanishes from a read.
+    #[test]
+    fn should_keep_an_unrecognized_pin_color_verbatim_when_reading_it_back() {
+        let (index, _dir) = open_index();
+        let now = Utc::now();
+        let mut row = session_row("sess-odd-color", now);
+        row.pinned = true;
+        row.pinned_at = Some(now);
+        row.pin_color = Some("chartreuse".to_string());
+        index.upsert_session(&row).unwrap();
+
+        assert_eq!(
+            index
+                .get_session("sess-odd-color")
+                .expect("the row is present")
+                .pin_color
+                .as_deref(),
+            Some("chartreuse")
+        );
+    }
+
+    /// Given one existing row and one new one, When they are written in one
+    /// bulk call, Then both land (the existing row updated, the new one
+    /// inserted) — and an empty batch is a no-op.
+    #[test]
+    fn should_upsert_every_row_when_bulk_upserting_a_batch() {
+        let (index, _dir) = open_index();
+        let now = Utc::now();
+        index.upsert_session(&session_row("sess-old", now)).unwrap();
+        let mut updated = session_row("sess-old", now + chrono::Duration::hours(1));
+        updated.title = Some("renamed".to_string());
+        let mut fresh = session_row("sess-new", now);
+        fresh.pinned = true;
+        fresh.pin_color = Some("green".to_string());
+
+        index
+            .bulk_upsert_sessions(&[updated.clone(), fresh.clone()])
+            .unwrap();
+
+        let listed = index.list_sessions(ListOpts::default()).unwrap();
+        assert_eq!(listed, vec![updated, fresh]);
+
+        // Nothing to write is a successful no-op, never an empty transaction
+        // error.
+        index.bulk_upsert_sessions(&[]).unwrap();
+        assert_eq!(index.list_sessions(ListOpts::default()).unwrap().len(), 2);
+    }
+
+    /// Given a batch whose second row the database rejects, When the bulk
+    /// upsert runs, Then the first row is rolled back with it — the batch is
+    /// one transaction, never a partial write (the seed/recovery path must
+    /// see all rows or none).
+    #[test]
+    fn should_roll_back_the_whole_batch_when_one_bulk_upsert_row_fails() {
+        let (index, _dir) = open_index();
+        // A trigger is the honest way to make one row fail mid-batch: it is
+        // a real SQLite constraint on the write, not a hand-rolled seam.
+        {
+            let conn = index.lock();
+            conn.execute_batch(
+                "CREATE TRIGGER refuse_boom BEFORE INSERT ON sessions
+                 WHEN NEW.id = 'sess-boom'
+                 BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+            )
+            .unwrap();
+        }
+        let now = Utc::now();
+        let rows = [
+            session_row("sess-a", now),
+            session_row("sess-boom", now),
+            session_row("sess-c", now),
+        ];
+
+        assert!(index.bulk_upsert_sessions(&rows).is_err());
+
+        assert!(
+            index.list_sessions(ListOpts::default()).unwrap().is_empty(),
+            "the rows written before the failing one are rolled back too"
         );
     }
 }

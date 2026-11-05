@@ -9,10 +9,8 @@
 //! decision logic (arg assembly, output parsing, guidance wording) is the
 //! injectable [`obtain_with`], fully unit-tested without an `az` binary.
 
-use std::collections::HashMap;
-use std::process::Command;
-
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// The only supported external method in this batch (C.1): the Azure CLI.
 pub const AZURE_CLI: &str = "azure-cli";
@@ -124,7 +122,7 @@ pub fn obtain_external(
         });
     }
     let runner = |args: &[String]| -> Result<String, String> {
-        let output = Command::new("az")
+        let output = mirri_os::new_command("az")
             .args(args)
             .output()
             .map_err(|e| e.to_string())?;

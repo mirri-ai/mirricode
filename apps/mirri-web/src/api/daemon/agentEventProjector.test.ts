@@ -4,7 +4,9 @@ import { classifyFrame, createAgentProjector, turnUsageForPromptId } from './age
 import type { MirriClientState, EventMeta } from './eventReducer';
 import { createInitialState, reduceAppEvent } from './eventReducer';
 import { isRenderEvent } from '../../composables/client/eventBatcher';
+import { memberBlocksFromLive } from '../../lib/memberBlocks';
 import { mergeSnapshotSubagents } from '../../lib/taskMerge';
+import type { AppMessage } from '../types';
 
 const SID = 'sess_1';
 
@@ -296,8 +298,7 @@ describe('terminal row stickiness against late intermediate subagent events (ADR
     // the late fragments
     const row = taskFor(state, 'subagent-1');
     expect(row).toMatchObject({ status: 'completed', subagentPhase: 'completed' });
-    expect(row?.text ?? '').not.toContain('late text fragment');
-    expect(row?.thinking ?? '').not.toContain('late thinking fragment');
+    expect(row?.segments ?? []).toEqual([]);
   });
 });
 
@@ -434,6 +435,47 @@ describe('turn.ended server-measured duration (live completion after a resync)',
     // the header renders as "Worked for X" instead of a naked "Worked"
     const updated = events.find((e) => e.type === 'messageUpdated');
     expect(updated).toMatchObject({ sessionId: 'session-1', durationMs: 90_324 });
+  });
+
+  it('should stamp endedAt from the wire endedAtMs when turn.ended carries it', () => {
+    // Given a live turn whose assistant message is streaming
+    const projector = createAgentProjector();
+    projector.project('turn.started', { turnId: 'turn-1' }, 'session-1', { offset: 0 });
+    projector.project('turn.step.started', { turnId: 'turn-1' }, 'session-1', { offset: 0 });
+
+    // When the turn ends and the engine reports the instant it completed
+    const events = projector.project(
+      'turn.ended',
+      { turnId: 'turn-1', reason: 'completed', durationMs: 1200, endedAtMs: 1_730_000_000_000 },
+      'session-1',
+      { offset: 0 },
+    );
+
+    // Then the footer's endedAt is exactly the engine's instant — never the
+    // client's own clock at projection time
+    const updated = events.find((e) => e.type === 'messageUpdated');
+    expect(updated?.endedAt).toBe(new Date(1_730_000_000_000).toISOString());
+  });
+
+  it('should omit endedAt when turn.ended carries no endedAtMs (older engine)', () => {
+    // Given a live turn whose assistant message is streaming
+    const projector = createAgentProjector();
+    projector.project('turn.started', { turnId: 'turn-1' }, 'session-1', { offset: 0 });
+    projector.project('turn.step.started', { turnId: 'turn-1' }, 'session-1', { offset: 0 });
+
+    // When the turn ends on an engine that predates the completion instant
+    const events = projector.project(
+      'turn.ended',
+      { turnId: 'turn-1', reason: 'completed', durationMs: 1200 },
+      'session-1',
+      { offset: 0 },
+    );
+
+    // Then no endedAt is stamped — the footer renders no timestamp rather
+    // than a fabricated client clock
+    const updated = events.find((e) => e.type === 'messageUpdated');
+    expect(updated).toBeDefined();
+    expect(updated!.endedAt).toBeUndefined();
   });
 
   it('should leave the message duration unset when the ended event carries none', () => {
@@ -648,22 +690,26 @@ describe('subagent step boundary projection (ADR-015 boundary-driven replay dedu
     expect(isRenderEvent({ type: 'subagentStepBoundary', sessionId: 's', taskId: 't', retry: false })).toBe(false);
   });
 
-  it('should keep accumulated text when a retry is followed by the replayed stream', () => {
+  it('should keep the replayed stream free of double-appends when a retry is followed by the replayed stream', () => {
     // Given a member whose first attempt streamed 'abc'
     const projector = createAgentProjector();
     let state = fold(projector, createInitialState(), 'subagent.spawned', { subagentId: 'sa-1' });
     state = fold(projector, state, 'turn.step.started', { agentId: 'sa-1' });
     state = fold(projector, state, 'assistant.delta', { agentId: 'sa-1', delta: 'abc' });
-    expect(taskFor(state, 'sa-1')?.text).toBe('abc');
+    expect(taskFor(state, 'sa-1')?.segments?.[0]?.text).toBe('abc');
 
     // When the step retries and the engine re-streams from zero ('abc' then 'def')
     state = fold(projector, state, 'turn.step.retrying', { agentId: 'sa-1' });
     state = fold(projector, state, 'assistant.delta', { agentId: 'sa-1', delta: 'abc' });
     state = fold(projector, state, 'assistant.delta', { agentId: 'sa-1', delta: 'def' });
 
-    // Then the failed attempt's contribution is truncated and the replay
-    // replaces it — no double-append
-    expect(taskFor(state, 'sa-1')?.text).toBe('abcdef');
+    // Then the replayed stretch lands with no double-append ('abcdef', not
+    // 'abcabcdef' — ADR-011 ②重复计账不变量)；the failed attempt's segment is
+    // GONE — the retry boundary's segment truncation (this task's scope) cut
+    // it back to the step-start mark {count:0, openLen:0}, so only the
+    // replay's own segment remains.
+    const segments = taskFor(state, 'sa-1')?.segments ?? [];
+    expect(segments.map((s) => s.text)).toEqual(['abcdef']);
   });
 
   it('should accumulate thinking across taskCreated replacements (RC-4 preserve)', () => {
@@ -674,9 +720,13 @@ describe('subagent step boundary projection (ADR-015 boundary-driven replay dedu
     state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: 'part-a ' });
     state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: 'part-b' });
 
-    // Then the thinking field accumulates both parts (the taskCreated
-    // replacement must not wipe it)
-    expect(taskFor(state, 'sa-1')?.thinking).toBe('part-a part-b');
+    // Then the thinking accumulates in the segment across the taskCreated
+    // replacements (the reducer owns the segment list between replacements;
+    // the paired incremental chunks are swallowed by the minted guard, so
+    // the full text arrives exactly once)
+    const segments = taskFor(state, 'sa-1')?.segments ?? [];
+    expect(segments).toHaveLength(1);
+    expect(segments[0]).toMatchObject({ kind: 'thinking', text: 'part-a part-b' });
   });
 
   it('should cap a settled step result at the output line limit, keeping the tail', () => {
@@ -703,5 +753,376 @@ describe('subagent step boundary projection (ADR-015 boundary-driven replay dedu
     expect(step?.outputLines).toHaveLength(40);
     expect(step?.outputLines?.[0]).toBe('out-line-20');
     expect(step?.outputLines?.at(-1)).toBe('out-line-59');
+  });
+});
+
+describe('subagent narrative segments (ADR-011)', () => {
+  const META: EventMeta = { sessionId: SID, seq: 0 };
+
+  // local fold — the file's other fold helpers are scoped to their own
+  // describe closures
+  function fold(
+    projector: ReturnType<typeof createAgentProjector>,
+    state: MirriClientState,
+    rawType: string,
+    payload: Record<string, unknown>,
+  ): MirriClientState {
+    let next = state;
+    for (const event of projector.project(rawType, payload, SID, { offset: 0 })) {
+      next = reduceAppEvent(next, event, META);
+    }
+    return next;
+  }
+
+  function segmentsFor(state: MirriClientState, id: string) {
+    return taskFor(state, id)?.segments ?? [];
+  }
+
+  it('should interleave text and thinking segments with tool steps by arrival order when both stream', () => {
+    // Given a running subagent row
+    const projector = createAgentProjector();
+    let state = fold(projector, createInitialState(), 'subagent.spawned', { subagentId: 'sa-1' });
+
+    // When reasoning, a tool call and text stream in arrival order — every
+    // tool frame is preceded by its step boundary (which closes the open segment)
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: '考虑一下' });
+    state = fold(projector, state, 'turn.step.started', { agentId: 'sa-1' });
+    state = fold(projector, state, 'tool.use', {
+      agentId: 'sa-1',
+      toolCallId: 'tc1',
+      name: 'Read',
+      args: { path: 'a.ts' },
+    });
+    state = fold(projector, state, 'assistant.delta', { agentId: 'sa-1', delta: '先读文件' });
+    state = fold(projector, state, 'turn.step.started', { agentId: 'sa-1' });
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: '继续' });
+    state = fold(projector, state, 'tool.result', { agentId: 'sa-1', toolCallId: 'tc1', output: 'ok' });
+
+    // Then the segments keep arrival order (thinking → text → thinking)…
+    expect(segmentsFor(state, 'sa-1').map((s) => [s.kind, s.text])).toEqual([
+      ['thinking', '考虑一下'],
+      ['text', '先读文件'],
+      ['thinking', '继续'],
+    ]);
+
+    // …and the tool step's seq sorts between the segments that bracketed it,
+    // so the panel can interleave steps and segments on one arrival key.
+    const segments = segmentsFor(state, 'sa-1');
+    const step = taskFor(state, 'sa-1')?.steps?.find((s) => s.id === 'tc1');
+    expect(step?.seq).toBeGreaterThan(segments[0]!.seq);
+    expect(step?.seq).toBeLessThan(segments[1]!.seq);
+    expect(segments[0]!.seq).toBeLessThan(segments[1]!.seq);
+    expect(segments[1]!.seq).toBeLessThan(segments[2]!.seq);
+  });
+
+  it('should continue appending to the open segment when no boundary frame intervenes', () => {
+    // Given a member whose thinking stream is open
+    const projector = createAgentProjector();
+    let state = fold(projector, createInitialState(), 'subagent.spawned', { subagentId: 'sa-1' });
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: '考虑' });
+
+    // When two more thinking deltas stream without a boundary
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: '一下' });
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: '...' });
+
+    // Then one segment carries the concatenated text
+    const segments = segmentsFor(state, 'sa-1');
+    expect(segments).toHaveLength(1);
+    expect(segments[0]).toMatchObject({ kind: 'thinking', text: '考虑一下...' });
+  });
+
+  it('should close the open segment when a boundary frame arrives without truncating', () => {
+    // Given an open thinking segment with content X
+    const projector = createAgentProjector();
+    let state = fold(projector, createInitialState(), 'subagent.spawned', { subagentId: 'sa-1' });
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: 'X' });
+
+    // When a step boundary arrives
+    const boundaryEvents = projector.project('turn.step.started', { agentId: 'sa-1' }, SID);
+
+    // Then it emits no progress chunk (the boundary itself carries no panel text)
+    expect(boundaryEvents.some((e) => e.type === 'taskProgress')).toBe(false);
+
+    // …and the next delta opens a NEW segment instead of extending X
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: '新段' });
+    const segments = segmentsFor(state, 'sa-1');
+    expect(segments.map((s) => s.text)).toEqual(['X', '新段']);
+    expect(segments[0]!.id).not.toBe(segments[1]!.id);
+  });
+
+  it('should arm a fresh tail guard on each newly opened segment when a boundary closed the previous one', () => {
+    // Given segment A opened by the first thinking delta — the minted guard
+    // swallows its paired incremental chunk, so A's text arrives exactly once
+    const projector = createAgentProjector();
+    let state = fold(projector, createInitialState(), 'subagent.spawned', { subagentId: 'sa-1' });
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: 'A' });
+    expect(segmentsFor(state, 'sa-1')[0]?.text).toBe('A');
+
+    // When a boundary closes A and a new segment B opens with content
+    state = fold(projector, state, 'turn.step.started', { agentId: 'sa-1' });
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: 'B' });
+
+    // Then A no longer advertises an armed guard (it is closed, and its guard was
+    // consumed by its own paired chunk) and B's fresh guard likewise landed
+    // its text exactly once ('B', not 'BB')
+    const segments = segmentsFor(state, 'sa-1');
+    expect(segments.map((s) => s.text)).toEqual(['A', 'B']);
+    // B's guard was consumed by its own paired chunk; A may carry a re-armed
+    // (dead) guard from the merge path — no future chunk targets a closed
+    // segment, so it is inert state, not contract.
+    expect(segments[1]?.tailGuard).not.toBe(true);
+  });
+
+  it('should carry the target segment id and the chunk kind on every projected stream chunk', () => {
+    // Given a member streaming both kinds
+    const projector = createAgentProjector();
+    fold(projector, createInitialState(), 'subagent.spawned', { subagentId: 'sa-1' });
+
+    // When a thinking delta then a text delta arrive
+    const thinkingEvents = projector.project('thinking.delta', { agentId: 'sa-1', delta: '想' }, SID, {
+      offset: 0,
+    });
+    const textEvents = projector.project('assistant.delta', { agentId: 'sa-1', delta: '说' }, SID, {
+      offset: 0,
+    });
+
+    // Then each chunk keeps its kind and names the segment it belongs to (the
+    // reducer's append target); the two kinds open two distinct segments.
+    const thinkingChunk = thinkingEvents.find((e) => e.type === 'taskProgress');
+    const textChunk = textEvents.find((e) => e.type === 'taskProgress');
+    expect(thinkingChunk).toMatchObject({
+      kind: 'thinking',
+      outputChunk: '想',
+      segmentId: 'sa-1-g0-seg-0',
+    });
+    expect(textChunk).toMatchObject({ kind: 'text', outputChunk: '说', segmentId: 'sa-1-g0-seg-1' });
+  });
+
+  it('should survive a first-step retry with an empty segment table (mark {0,0})', () => {
+    // Given a member whose very first step retries before any delta streams —
+    // the step-start mark counts zero segments
+    const projector = createAgentProjector();
+    let state = fold(projector, createInitialState(), 'subagent.spawned', { subagentId: 'sa-1' });
+    state = fold(projector, state, 'turn.step.started', { agentId: 'sa-1' });
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: 'draft' });
+
+    // When the first step retries (mark {count:0, openLen:0} → truncate to [])
+    let after: MirriClientState = state;
+    expect(() => {
+      after = fold(projector, after, 'turn.step.retrying', { agentId: 'sa-1' });
+    }).not.toThrow();
+
+    // Then the segment table is emptied and every dropped id lands in the
+    // tombstone (N-1: count 0 must not crash on the empty kept list)
+    const row = after.tasksBySession[SID]?.find((t) => t.id === 'sa-1');
+    expect(row?.segments).toEqual([]);
+    expect(row?.truncatedSegmentIds).toHaveLength(1);
+
+    // And the retried delta streams into a fresh segment normally
+    after = fold(projector, after, 'assistant.delta', { agentId: 'sa-1', delta: 'retry' });
+    const retriedRow = after.tasksBySession[SID]?.find((t) => t.id === 'sa-1');
+    expect(retriedRow?.segments?.map((s) => s.text)).toEqual(['retry']);
+  });
+
+  it('should not resurrect a truncated segment across a retried step boundary and taskCreated replays', () => {
+    // Given a member whose first attempt streamed a thinking segment
+    const projector = createAgentProjector();
+    let state = fold(projector, createInitialState(), 'subagent.spawned', { subagentId: 'sa-1' });
+    state = fold(projector, state, 'turn.step.started', { agentId: 'sa-1' });
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: 'failed attempt' });
+    const droppedId = segmentsFor(state, 'sa-1')[0]!.id;
+
+    // When the step retries (truncation drops the failed attempt's segment)
+    state = fold(projector, state, 'turn.step.retrying', { agentId: 'sa-1' });
+    expect(segmentsFor(state, 'sa-1')).toHaveLength(0);
+
+    // And the retried attempt's step start arrives (non-retry boundary — must
+    // NOT clear the tombstone), then the retry re-streams
+    state = fold(projector, state, 'turn.step.started', { agentId: 'sa-1' });
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: 'fresh' });
+
+    // Then the failed attempt's segment never comes back — the projector's
+    // taskCreated replays carry its full list (the projector never truncates),
+    // and the run-scoped tombstone filters it out on every one
+    const segments = segmentsFor(state, 'sa-1');
+    expect(segments.map((s) => s.id)).not.toContain(droppedId);
+    expect(segments.map((s) => s.text)).toEqual(['fresh']);
+    const row = state.tasksBySession[SID]?.find((t) => t.id === 'sa-1');
+    expect(row?.truncatedSegmentIds).toContain(droppedId);
+  });
+
+  it('should re-mint post-reset segments under a fresh generation so old tombstones never swallow them', () => {
+    // Given a member with a tombstoned segment from a retry truncation
+    const projector = createAgentProjector();
+    let state = fold(projector, createInitialState(), 'subagent.spawned', { subagentId: 'sa-1' });
+    state = fold(projector, state, 'turn.step.started', { agentId: 'sa-1' });
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: 'old' });
+    state = fold(projector, state, 'turn.step.retrying', { agentId: 'sa-1' });
+    const tombstones = state.tasksBySession[SID]?.find((t) => t.id === 'sa-1')?.truncatedSegmentIds ?? [];
+    expect(tombstones).toHaveLength(1);
+    const tombstonedId = tombstones[0]!;
+
+    // When the session resyncs (projector.reset) and the same agent streams
+    // again — the projector re-mints the segment from an empty list, but the
+    // generation counter makes the new id distinct from any pre-reset id
+    projector.reset(SID);
+    state = fold(projector, state, 'subagent.spawned', { subagentId: 'sa-1' });
+    state = fold(projector, state, 'turn.step.started', { agentId: 'sa-1' });
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: 'after reset' });
+
+    // Then the re-minted segment survives (its id carries the new generation —
+    // the old tombstone cannot match it) and the reducer keeps both the
+    // narrative and the still-live tombstone
+    const segments = segmentsFor(state, 'sa-1');
+    expect(segments).toHaveLength(1);
+    expect(segments[0]).toMatchObject({ kind: 'thinking', text: 'after reset' });
+    expect(segments[0]!.id).not.toBe(tombstonedId);
+    expect(segments[0]!.id).toMatch(/-g1-seg-/);
+    const row = state.tasksBySession[SID]?.find((t) => t.id === 'sa-1');
+    expect(row?.truncatedSegmentIds).toContain(tombstonedId);
+  });
+
+  it('should keep post-reset segment seq above every pre-reset seq so the merged timeline never reorders', () => {
+    // Given a running member with several pre-reset segments minted at
+    // generation 0 (plus a tool step interleaved between them)
+    const projector = createAgentProjector();
+    let state = fold(projector, createInitialState(), 'subagent.spawned', { subagentId: 'sa-1' });
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: '早期推理' });
+    state = fold(projector, state, 'turn.step.started', { agentId: 'sa-1' });
+    state = fold(projector, state, 'tool.use', {
+      agentId: 'sa-1',
+      toolCallId: 'tc1',
+      name: 'Read',
+      args: { path: 'a.ts' },
+    });
+    state = fold(projector, state, 'thinking.delta', { agentId: 'sa-1', delta: '更多推理' });
+    state = fold(projector, state, 'assistant.delta', { agentId: 'sa-1', delta: '早期输出' });
+    const preReset = segmentsFor(state, 'sa-1');
+    expect(preReset.length).toBeGreaterThanOrEqual(3);
+    const preResetSeqs = [...preReset.map((s) => s.seq), ...(taskFor(state, 'sa-1')?.steps ?? []).map((st) => st.seq)];
+
+    // When the session resyncs (projector.reset clears the per-member counters)
+    // and the member keeps streaming — first straight into a text delta, then
+    // into a retried step whose duplicate started frame reuses the open seq
+    projector.reset(SID);
+    state = fold(projector, state, 'assistant.delta', { agentId: 'sa-1', delta: '重连后输出' });
+    state = fold(projector, state, 'tool.call.started', {
+      agentId: 'sa-1',
+      toolCallId: 'tc2',
+      name: 'Bash',
+      args: { command: 'ls' },
+    });
+    // A duplicate started frame (reconnect replay) must reuse the step's
+    // original seq — no new counter burn, no intra-generation reordering.
+    state = fold(projector, state, 'tool.call.started', {
+      agentId: 'sa-1',
+      toolCallId: 'tc2',
+      name: 'Bash',
+      args: { command: 'ls -la' },
+    });
+
+    // Then every post-reset mint — segments AND steps — sorts strictly above
+    // every pre-reset one (generation bit, I-1: the reducer's surviving old
+    // segments otherwise swallow the reconnected narrative in front).
+    const row = taskFor(state, 'sa-1');
+    const postResetSeqs = [
+      ...(row?.segments ?? []).filter((s) => s.id.includes('-g1-')).map((s) => s.seq),
+      ...(row?.steps ?? []).filter((st) => st.id === 'tc2').map((st) => st.seq),
+    ];
+    expect(postResetSeqs.length).toBeGreaterThan(0);
+    for (const seq of postResetSeqs) {
+      for (const old of preResetSeqs) {
+        expect(seq).toBeGreaterThan(old);
+      }
+    }
+
+    // And the panel timeline reflects it: after the reducer folds the replay,
+    // post-reset content renders strictly AFTER the pre-reset narrative.
+    const blocks = memberBlocksFromLive(row?.segments, row?.steps);
+    const flatText = blocks
+      .map((b) => (b.kind === 'text' ? b.text : b.kind === 'thinking' ? b.thinking : ''))
+      .filter(Boolean)
+      .join('\n');
+    expect(flatText.indexOf('早期输出')).toBeLessThan(flatText.indexOf('重连后输出'));
+
+    // And the duplicate started frame kept one step card (same seq reuse)
+    expect((row?.steps ?? []).filter((st) => st.id === 'tc2')).toHaveLength(1);
+  });
+});
+
+describe('tool timing projection (ADR-7)', () => {
+  it('should stamp server startedAtMs on the tool-use slot when the started frame carries it', () => {
+    // Given a live turn and a started frame with a server start timestamp
+    const projector = createAgentProjector();
+    projector.project('turn.started', { turnId: 'turn-1' }, 'session-1', { offset: 0 });
+    projector.project('turn.step.started', { turnId: 'turn-1' }, 'session-1', { offset: 0 });
+    const startedAtMs = Date.now() - 45_000;
+    const events = projector.project(
+      'tool.call.started',
+      { toolCallId: 'call-1', name: 'bash', args: { command: 'ls' }, startedAtMs },
+      'session-1',
+      { offset: 2 },
+    );
+    // When the tool-use slot is emitted, it carries the server timestamp
+    const updated = events.find((e) => e.type === 'messageUpdated');
+    const toolUse = updated && 'content' in updated
+      ? (updated as { content: AppMessage['content'] }).content.find((c) => c.type === 'toolUse')
+      : undefined;
+    expect(toolUse && 'startedAtMs' in toolUse ? toolUse.startedAtMs : undefined).toBe(startedAtMs);
+  });
+
+  it('should stamp durationMs on the tool result when the result frame carries it', () => {
+    // Given a running tool call seeded via started
+    const projector = createAgentProjector();
+    projector.project('turn.started', { turnId: 'turn-1' }, 'session-1', { offset: 0 });
+    projector.project('turn.step.started', { turnId: 'turn-1' }, 'session-1', { offset: 0 });
+    projector.project('tool.call.started',
+      { toolCallId: 'call-1', name: 'bash', args: {}, startedAtMs: 1000 }, 'session-1', { offset: 2 });
+    // When the result frame carries a server-measured duration
+    const events = projector.project(
+      'tool.result',
+      { toolCallId: 'call-1', output: 'done', isError: false, durationMs: 1_234 },
+      'session-1',
+      { offset: 3 },
+    );
+    // Then the created tool-result message carries durationMs
+    const created = events.find((e) => e.type === 'messageCreated');
+    const result = created && 'message' in created
+      ? (created as { message: AppMessage }).message.content.find((c) => c.type === 'toolResult')
+      : undefined;
+    expect(result && 'durationMs' in result ? result.durationMs : undefined).toBe(1_234);
+  });
+
+  it('should leave both timing fields absent when an older engine omits them', () => {
+    // Given a started frame with no server timestamp (ADR-7-predating engine)
+    const projector = createAgentProjector();
+    projector.project('turn.started', { turnId: 'turn-1' }, 'session-1', { offset: 0 });
+    projector.project('turn.step.started', { turnId: 'turn-1' }, 'session-1', { offset: 0 });
+    const startedEvents = projector.project(
+      'tool.call.started',
+      { toolCallId: 'call-1', name: 'bash', args: {} },
+      'session-1',
+      { offset: 2 },
+    );
+    // When the result frame likewise carries no server duration
+    const resultEvents = projector.project(
+      'tool.result',
+      { toolCallId: 'call-1', output: 'done', isError: false },
+      'session-1',
+      { offset: 3 },
+    );
+    // Then neither slot fabricates a number from the local clock
+    const updated = startedEvents.find((e) => e.type === 'messageUpdated');
+    const toolUse = updated && 'content' in updated
+      ? (updated as { content: AppMessage['content'] }).content.find((c) => c.type === 'toolUse')
+      : undefined;
+    const created = resultEvents.find((e) => e.type === 'messageCreated');
+    const result = created && 'message' in created
+      ? (created as { message: AppMessage }).message.content.find((c) => c.type === 'toolResult')
+      : undefined;
+    expect(toolUse).toBeDefined();
+    expect(result).toBeDefined();
+    expect(toolUse).not.toHaveProperty('startedAtMs');
+    expect(result).not.toHaveProperty('durationMs');
   });
 });

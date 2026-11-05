@@ -115,6 +115,16 @@ export const sessionSchema = z.object({
    *  (e.g. ~/.mirri-code/sessions/<workspace_hash>/session_<id>/).
    *  Optional for wire compatibility with older servers. */
   session_dir: z.string().optional(),
+  /** Whether the session is pinned (SDR-016/017): the sidebar's pinned
+   *  group input. Optional for wire compatibility with older servers. */
+  pinned: z.boolean().optional(),
+  /** When the session was pinned — the pinned group's sort key
+   *  (descending). Absent when not pinned. */
+  pinned_at: isoDateTimeSchema.optional(),
+  /** The pin's color label (the seven-color preset), when set. */
+  pin_color: z
+    .enum(['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'])
+    .optional(),
 });
 
 export type Session = z.infer<typeof sessionSchema>;

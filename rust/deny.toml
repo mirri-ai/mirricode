@@ -1,0 +1,63 @@
+# cargo-deny configuration
+# Docs: https://embarkstudios.github.io/cargo-deny/
+# Run: cargo deny --manifest-path Cargo.toml check
+# CI:  .github/workflows/ci.yml (rust-deny job)
+
+[graph]
+# The workspace members and their dependency graph, including dev and build
+# dependencies — vulnerabilities in test-only deps still matter for a
+# development tool that executes untrusted input in tests.
+all-features = true
+
+# Advisory DB: https://github.com/rustsec/advisory-db
+[advisories]
+version = 2
+# CI must fail on any known vulnerability in Cargo.lock.
+yanked = "deny"
+ignore = [
+    # Add entries ONLY with a justification and an expiry/removal date, e.g.:
+    # "RUSTSEC-0000-0000" = { reason = "no fixed version; monitor", until = "2026-12-31" }
+]
+
+[licenses]
+version = 2
+# Keep the allow-list permissive across platforms and feature combinations:
+# an entry that a particular run never encountered is not a failure.
+unused-allowed-license = "allow"
+# SPDX allow-list. The workspace is MIT; common transitive licenses included.
+# Anything outside this list fails the check, which is the point.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "0BSD",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "MPL-2.0",
+    # bzip2 crate (via zip's default features): the bzip2/libbzip2 license is
+    # a BSD-style free license with an advertising-free clause.
+    "bzip2-1.0.6",
+]
+
+[bans]
+# Skip duplicate-crate reporting — large trees (aws-lc, hyper) legitimately
+# have several major versions in flight; advisories are the gate that matters.
+multiple-versions = "warn"
+wildcards = "warn"
+highlight = "all"
+workspace-default-features = "allow"
+
+[sources]
+# Everything must come from crates.io or the local workspace — no git or
+# registry-pinned tarball deps that bypass the advisory DB's coverage.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -197,8 +197,8 @@ impl EmbeddedServer {
                         "cannot cache the models.dev directory"
                     );
                 }
-                let merged = self.scope_models_dev_catalog(fetched, options.provider_id.as_deref());
-                let result = self.merge_models_dev_catalog(&merged);
+                let result =
+                    self.merge_models_dev_catalog(&fetched, options.provider_id.as_deref());
                 *self
                     .models_dev_warning
                     .lock()
@@ -228,9 +228,7 @@ impl EmbeddedServer {
                             )
                         })
                 {
-                    let scoped =
-                        self.scope_models_dev_catalog(cached, options.provider_id.as_deref());
-                    self.merge_models_dev_catalog(&scoped);
+                    self.merge_models_dev_catalog(&cached, options.provider_id.as_deref());
                 }
                 *self
                     .models_dev_warning
@@ -273,7 +271,7 @@ impl EmbeddedServer {
         &self,
         _params: Value,
     ) -> Result<Value, EngineError> {
-        self.ensure_models_dev_catalog_loaded();
+        self.ensure_models_dev_catalog_loaded().await;
         let catalog = self
             .models_dev_catalog
             .lock()
@@ -350,7 +348,7 @@ impl EmbeddedServer {
 
         // The directory must already be loaded (refresh or the lazy disk
         // cache) — the import never fetches on its own.
-        self.ensure_models_dev_catalog_loaded();
+        self.ensure_models_dev_catalog_loaded().await;
         let catalog = self
             .models_dev_catalog
             .lock()
@@ -542,7 +540,8 @@ impl EmbeddedServer {
             let base_url = args
                 .base_url
                 .clone()
-                .or_else(|| existing.as_ref().and_then(|entry| entry.base_url.clone()));
+                .or_else(|| existing.as_ref().and_then(|entry| entry.base_url.clone()))
+                .or_else(|| catalog_api_base_url(entry));
             if let Some(base_url) = base_url {
                 provider_record.insert("base_url".to_string(), json!(base_url));
             }
@@ -649,27 +648,20 @@ impl EmbeddedServer {
         self.home_root().join("models-dev.json")
     }
 
-    /// Keep only the addressed provider of the directory (or the whole
-    /// directory when no `providerId` scoped the refresh).
-    fn scope_models_dev_catalog(&self, catalog: Value, provider_id: Option<&str>) -> Value {
-        match provider_id {
-            None => catalog,
-            Some(provider_id) => {
-                let mut scoped = serde_json::Map::new();
-                if let Some(entry) = catalog.get(provider_id) {
-                    scoped.insert(provider_id.to_string(), entry.clone());
-                }
-                Value::Object(scoped)
-            }
-        }
-    }
-
     /// Swap the in-memory catalog for `catalog` and compute the klient
     /// result rows: every provider whose model count moved is a `changed`
     /// row, the rest are `unchanged`.
+    ///
+    /// The swap is a full-directory replacement, never a truncation: a
+    /// scoped refresh (`providerId`) still fetches the whole directory, and
+    /// the scope only bounds the REPORTED rows (below) — the browse/import
+    /// and display-name surfaces must keep serving every fetched provider
+    /// (#185: a scoped merge used to replace the catalog with just the one
+    /// addressed entry, evicting the rest until the next full refresh).
     fn merge_models_dev_catalog(
         &self,
         catalog: &Value,
+        provider_id: Option<&str>,
     ) -> super::responses::RefreshProviderModelsResult {
         let previous = self
             .models_dev_catalog
@@ -678,7 +670,15 @@ impl EmbeddedServer {
             .clone();
         let mut result = RefreshProviderModelsResult::empty();
         if let Some(providers) = catalog.as_object() {
-            for (provider_id, entry) in providers {
+            for (entry_id, entry) in providers {
+                // A scoped refresh reports only the addressed provider
+                // (the klient `providerId` contract); the unaddressed half
+                // of the directory still lands in memory below.
+                if let Some(provider_id) = provider_id
+                    && entry_id != provider_id
+                {
+                    continue;
+                }
                 let new_count = entry
                     .get("models")
                     .and_then(Value::as_object)
@@ -686,7 +686,7 @@ impl EmbeddedServer {
                     .unwrap_or(0);
                 let old_count = previous
                     .as_ref()
-                    .and_then(|catalog| catalog.get(provider_id))
+                    .and_then(|catalog| catalog.get(entry_id))
                     .and_then(|entry| entry.get("models"))
                     .and_then(Value::as_object)
                     .map(|models| models.len())
@@ -694,7 +694,7 @@ impl EmbeddedServer {
                 let provider_name = entry
                     .get("name")
                     .and_then(Value::as_str)
-                    .unwrap_or(provider_id)
+                    .unwrap_or(entry_id)
                     .to_string();
                 let (added, removed) = match new_count.cmp(&old_count) {
                     std::cmp::Ordering::Greater => (new_count - old_count, 0),
@@ -705,13 +705,13 @@ impl EmbeddedServer {
                     result
                         .changed
                         .push(super::responses::RefreshProviderChangedEntry {
-                            provider_id: provider_id.clone(),
+                            provider_id: entry_id.clone(),
                             provider_name,
                             added,
                             removed,
                         });
                 } else {
-                    result.unchanged.push(provider_id.clone());
+                    result.unchanged.push(entry_id.clone());
                 }
             }
         }
@@ -869,6 +869,23 @@ fn catalog_model_entries(models: Option<&Value>) -> Vec<CatalogModelEntry> {
             })
         })
         .collect()
+}
+
+/// The directory entry's concrete `api` endpoint, when it is one: a
+/// non-empty value with no `${` placeholder is the directory's known
+/// endpoint, which the import persists as the provider's `base_url` (#184:
+/// the provider is not a first party, so its endpoint must be explicit —
+/// persisting the directory fact keeps the import working without a
+/// user-supplied URL; a `${}` placeholder or missing api yields `None`,
+/// and the earlier needs-base-url gate has already demanded an explicit
+/// `base_url` in that case).
+fn catalog_api_base_url(entry: &serde_json::Map<String, Value>) -> Option<String> {
+    let api = entry.get("api").and_then(Value::as_str).unwrap_or("");
+    if !api.is_empty() && !api.contains("${") {
+        Some(api.to_string())
+    } else {
+        None
+    }
 }
 
 /// The models.dev wire-type resolution — the TS `resolveModelsDevWire`

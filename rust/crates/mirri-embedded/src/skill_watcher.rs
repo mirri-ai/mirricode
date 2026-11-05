@@ -291,9 +291,9 @@ fn remount(
 /// and the initial mount (recursive FS watches over potentially large
 /// skill trees) are **moved onto the spawned task** — this function only
 /// creates the notify watcher and returns a handle immediately, so the
-/// lazy `call_method` mount pass never blocks an RPC on filesystem
-/// work (the t8 slow-MCP pin: `session.create` must not pay for the
-/// watcher's directory scans).
+/// host's mount call never blocks an RPC on filesystem work (the t8
+/// slow-MCP pin: `session.create` must not pay for the watcher's
+/// directory scans).
 pub async fn spawn_skill_watcher(
     runtime: &Arc<WorkspaceRuntime>,
     orchestrator: &Arc<SkillReloadOrchestrator>,
@@ -337,7 +337,7 @@ pub async fn spawn_skill_watcher(
     // returns: a caller proceeding on the handle's existence alone
     // would race the watch registration — a file written in that window
     // is invisible (FSEvents streams from registration) with no later
-    // signal to recover it. The first RPC pays this once per workspace.
+    // signal to recover it. The host's mount pays this once per workspace.
     let mount_runtime = Arc::clone(runtime);
     let (watch_set, currently_watched, inputs) =
         match tokio::task::spawn_blocking(move || {
@@ -426,8 +426,9 @@ pub async fn spawn_skill_watcher(
                     // SinceNow). Until the notify behavior is understood
                     // or worked around, this arm stays synchronous; a
                     // local-SSD rescan is milliseconds. A network-home
-                    // deployment should keep `skillHotReload` off (the
-                    // flag's default) and use the manual reload.
+                    // deployment should disable `skillHotReload` through
+                    // the experimental layer (the flag is on by default
+                    // since ADR-013) and use the manual reload.
                     let config_snapshot = inputs
                         .config
                         .read()
@@ -499,7 +500,7 @@ async fn wait_for_quiet_period(receiver: &mut UnboundedReceiver<()>, quiet_for: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bootstrap::test_env;
+    use mirri_test_support::env;
 
     /// A session resolver that knows nothing — the isolated test
     /// registry's attribution fallback.
@@ -578,7 +579,7 @@ mod tests {
     /// The hermetic `$HOME` pin — same pattern as the skill_reload tests
     /// (the default roots read `$HOME/.agents/skills` at replay time).
     fn with_pinned_home<T>(isolated: &Path, f: impl FnOnce() -> T) -> T {
-        let _home_lock = test_env::home_lock();
+        let _home_lock = env::lock();
         let previous_home = std::env::var_os("HOME");
         // SAFETY: restored immediately after `f`, under the crate home
         // lock.
@@ -599,13 +600,13 @@ mod tests {
     /// scoped pin that restores the real `$HOME` would leak the actual
     /// user's `~/.agents/skills` into every replay (the async-task race
     /// the sync tests never face). The guard releases when the test
-    /// ends; the crate home lock serializes the held window against
+    /// ends; the workspace env lock serializes the held window against
     /// every other HOME-reading test in the binary.
     fn pinned_home_guard(isolated: &Path) -> (PinnedHomeGuard, PathBuf) {
-        let _home_lock = test_env::home_lock();
+        let _home_lock = env::lock();
         let previous_home = std::env::var_os("HOME");
         // SAFETY: held for the rest of the test; restored by the guard's
-        // Drop (still under the crate home lock, which the guard also
+        // Drop (still under the workspace env lock, which the guard also
         // holds — the lock outlives the env restore by construction).
         unsafe { std::env::set_var("HOME", isolated) };
         (
@@ -617,7 +618,7 @@ mod tests {
         )
     }
 
-    /// The RAII pin: restores `$HOME` and releases the crate home lock on
+    /// The RAII pin: restores `$HOME` and releases the workspace env lock on
     /// drop. The env restore happens while the lock is still held (the
     /// field order keeps `_home_lock` alive until after
     /// `previous_home` is written back).
@@ -630,7 +631,7 @@ mod tests {
         fn drop(&mut self) {
             // SAFETY: restores the pre-test value before the lock guard
             // (declared first) drops — the same serialization window the
-            // scoped pin uses.
+            // scoped pin uses (env_lock held).
             match self.previous_home.take() {
                 Some(value) => unsafe { std::env::set_var("HOME", value) },
                 None => unsafe { std::env::remove_var("HOME") },
@@ -667,6 +668,8 @@ mod tests {
             trust_store: None,
             default_registration_id: None,
             default_scope_id: None,
+            workspace_registry: std::sync::OnceLock::new(),
+            metadata_store: std::sync::OnceLock::new(),
         });
         let registry = crate::workspace_registry::WorkspaceRegistry::new(
             Arc::new(NoopResolver),
@@ -1003,6 +1006,46 @@ mod tests {
         assert!(
             runtime.scope.skills().get("gamma").is_none(),
             "the catalog stays stale after the watcher is dropped"
+        );
+    }
+
+    /// Given the macOS FSEvents backend, when a watcher mounts its listen
+    /// set and is then dropped, then the mount completes well inside a
+    /// fixed budget — the notify 6 regression this test pins had every
+    /// `watch()` spend 8-11 s busy-waiting inside its internal `stop()`
+    /// (the runloop-teardown spin), which made every watcher-mounting
+    /// test report "running for over 60 seconds" and starved the whole
+    /// suite. The budget is generous against CI noise but a fraction of
+    /// the regression's per-watch cost (one regression watch alone
+    /// exceeds it).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn should_mount_the_watcher_within_a_fixed_time_budget() {
+        let workspace_root = tempfile::tempdir().expect("workspace tempdir");
+        let home = tempfile::tempdir().expect("home tempdir");
+        let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
+        write_skill(
+            &workspace_root.path().join(".agents/skills"),
+            "alpha",
+            "first",
+        );
+
+        let (_pin, _isolated) = pinned_home_guard(isolated_home.path());
+        let runtime = built_runtime(&workspace_root, &home, "ws-budget");
+        let orchestrator = Arc::new(SkillReloadOrchestrator::new());
+
+        // When the watcher mounts (the awaited spawn — the watch
+        // registrations are included in the measured window)
+        let mount_started = std::time::Instant::now();
+        let _watcher = spawn_skill_watcher(&runtime, &orchestrator, inputs(&home))
+            .await
+            .expect("watcher spawn");
+        let mount_elapsed = mount_started.elapsed();
+
+        // Then the mount stayed inside the budget (a single notify-6
+        // watch() already costs 8 s+ on macOS 26 — the mount alone trips)
+        assert!(
+            mount_elapsed < Duration::from_secs(5),
+            "the watcher mount took {mount_elapsed:?} — the FSEvents backend is busy-waiting again (the notify 6 regression)"
         );
     }
 

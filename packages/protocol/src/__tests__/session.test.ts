@@ -115,6 +115,30 @@ describe('sessionSchema', () => {
     expect(parsed.last_prompt).toBeUndefined();
   });
 
+  it('accepts the optional pin fields (SDR-016/017)', () => {
+    const pinned = {
+      ...fullSession,
+      pinned: true,
+      pinned_at: '2026-11-05T00:00:00Z',
+      pin_color: 'blue',
+    };
+    const parsed = sessionSchema.parse(pinned);
+    expect(parsed.pinned).toBe(true);
+    expect(parsed.pinned_at).toBe('2026-11-05T00:00:00.000Z'); // the iso schema normalizes to milliseconds
+    expect(parsed.pin_color).toBe('blue');
+
+    const bare = sessionSchema.parse(fullSession);
+    expect(bare.pinned).toBeUndefined();
+    expect(bare.pinned_at).toBeUndefined();
+    expect(bare.pin_color).toBeUndefined();
+  });
+
+  it('rejects an unknown pin color', () => {
+    expect(() =>
+      sessionSchema.parse({ ...fullSession, pinned: true, pin_color: 'pink' }),
+    ).toThrow();
+  });
+
   it.each(['none', 'approval', 'question'])('accepts pending_interaction: "%s"', (value) => {
     const parsed = sessionSchema.parse({ ...fullSession, pending_interaction: value });
     expect(parsed.pending_interaction).toBe(value);

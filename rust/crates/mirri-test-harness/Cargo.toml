@@ -21,6 +21,7 @@ futures = { workspace = true }
 tokio-tungstenite = "0.26"
 
 [dev-dependencies]
+mirri-test-support = { path = "../mirri-test-support" }
 mirri-os = { path = "../mirri-os" }
 mirri-proto = { path = "../mirri-proto" }
 mirri-session-index = { path = "../mirri-session-index" }

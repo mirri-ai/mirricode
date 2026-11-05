@@ -13,6 +13,7 @@ pub mod pty;
 pub mod search;
 pub mod shell;
 pub mod sync_fs;
+pub mod win;
 
 pub use fs::{DirEntry, DynFileSystem, DynFsFuture, FileScanResult, FileStat, FileSystem, LocalFs};
 pub use glob::{DynGlobFuture, DynGlobMatch, GlobMatch, GlobParams, GlobResult, LocalGlob};
@@ -22,7 +23,8 @@ pub use home::{
 pub use path_access::PathAccess;
 pub use process::{
     ChildProcess, DynChildProcess, DynChildStdin, DynChildStream, DynOsProcess, DynProcessFuture,
-    ExecOptions, LocalProcess, OsProcess, ProcessFingerprint, ProcessProbe, probe_process,
+    ExecOptions, LocalProcess, OsProcess, ProcessFingerprint, ProcessProbe, new_command,
+    new_tokio_command, probe_process,
 };
 pub use pty::{DynPtyFuture, LocalPty, PtyConfig, PtyEvent, PtyProvider, PtySession, PtyTerminal};
 pub use search::{

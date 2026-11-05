@@ -12,7 +12,7 @@
      the answer JSON; those fall back to a raw output view so the task id /
      failure reason is not hidden behind an empty option list. -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, inject, ref, watch, type Ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { FilePreviewRequest, ToolCall, ToolMedia } from '../../../types';
 import { toolGlyph, toolLabel } from '../../../lib/toolMeta';
@@ -22,6 +22,7 @@ import {
   parseAskOutput,
   resolveAnswer,
 } from './askUserToolParse';
+import { formatDuration } from '../../chatTurnRendering';
 import ToolRow from '../ToolRow.vue';
 
 const props = withDefaults(
@@ -32,6 +33,15 @@ const props = withDefaults(
     toolDiffPanel?: boolean;
   }>(),
   { mobile: false, stackPosition: 'single', toolDiffPanel: false },
+);
+
+// US3.8 (ADR-7): live elapsed while running with a server anchor — the
+// frozen `timing` (server duration or flush freeze) wins once settled.
+const tick = inject<Readonly<Ref<number>> | null>('runningToolTick', null);
+const liveTime = computed(() =>
+  tick?.value !== undefined && props.tool.status === 'running' && props.tool.startedAtMs !== undefined
+    ? formatDuration(Math.max(0, tick.value - props.tool.startedAtMs))
+    : undefined,
 );
 
 defineEmits<{
@@ -119,7 +129,7 @@ watch(
     :icon="glyph"
     :name="label"
     :arg="!open ? summary : ''"
-    :time="tool.timing"
+    :time="liveTime ?? tool.timing"
     :open="open"
     :expandable="canExpand"
     :stacked="stackPosition !== 'single'"

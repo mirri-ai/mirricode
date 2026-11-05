@@ -2101,9 +2101,15 @@ describe('useWorkspaceState — initialOnly first page does not continue into th
     // never fire a second page.
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(apiMock.listSessions).toHaveBeenCalledTimes(1);
+    // SDR-016: the load now pairs the windowed page with ONE pinnedOnly
+    // backfill per workspace (the out-of-window pinned load) — exactly two
+    // calls, and the continuation cascade still never fires.
+    expect(apiMock.listSessions).toHaveBeenCalledTimes(2);
     expect(apiMock.listSessions).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'wd_recent', pageSize: 3 }),
+    );
+    expect(apiMock.listSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'wd_recent', pinnedOnly: true }),
     );
   });
 });

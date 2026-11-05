@@ -218,6 +218,52 @@ pub trait OsProcess: Send + Sync {
 #[derive(Debug, Default)]
 pub struct LocalProcess;
 
+// ---------------------------------------------------------------------------
+// Spawn hygiene helpers (batch A2 / #182): every production `Command::new`
+// must go through these, so Windows children never flash a console window
+// and Unix children always lead their own process group.
+// ---------------------------------------------------------------------------
+
+/// The Windows `CREATE_NO_WINDOW` process-creation flag: the child runs
+/// without a console window. Declared unconditionally so the value itself is
+/// testable on every platform (guards against a typo'd literal).
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Apply the platform spawn hygiene to a std `Command`:
+/// - Windows: `CREATE_NO_WINDOW`, so GUI hosts never flash a console.
+/// - Unix: `process_group(0)`, so the child leads its own group and the
+///   parent's signals (Ctrl+C) do not leak into it — mirroring the bash
+///   tool's group semantics.
+fn configure_spawn_hygiene(command: &mut std::process::Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // process_group(0) makes the child the leader of a new process
+        // group whose PGID equals the child's PID.
+        command.process_group(0);
+    }
+}
+
+/// Create a pre-configured `std::process::Command`: Windows sets
+/// `CREATE_NO_WINDOW`; Unix sets `process_group(0)`. The caller keeps the
+/// native `Command` — chain `.args()`/`.env()`/`.current_dir()` freely.
+pub fn new_command(program: &str) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    configure_spawn_hygiene(&mut command);
+    command
+}
+
+/// The `tokio::process::Command` counterpart of [`new_command`] — identical
+/// platform configuration, converted from the std command.
+pub fn new_tokio_command(program: &str) -> tokio::process::Command {
+    new_command(program).into()
+}
+
 impl LocalProcess {
     /// Create a new `LocalProcess`.
     pub fn new() -> Self {
@@ -227,7 +273,7 @@ impl LocalProcess {
     /// Build a `tokio::process::Command` from the given command, arguments,
     /// and options.
     fn build_command(cmd: &str, args: &[&str], opts: &ExecOptions) -> tokio::process::Command {
-        let mut command = tokio::process::Command::new(cmd);
+        let mut command = new_tokio_command(cmd);
         command.args(args);
 
         if let Some(cwd) = &opts.cwd {
@@ -242,16 +288,6 @@ impl LocalProcess {
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
-
-        // Create a new process group on Unix so that kill() can signal the
-        // entire group (including any grandchildren the child may spawn).
-        #[cfg(unix)]
-        {
-            // process_group(0) makes the child the leader of a new process
-            // group whose PGID equals the child's PID. tokio's Command exposes
-            // this as an inherent method on Unix.
-            command.process_group(0);
-        }
 
         command
     }
@@ -398,13 +434,164 @@ pub fn probe_process(pid: i32) -> std::io::Result<ProcessProbe> {
     {
         read_unix_probe(pid)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        read_windows_probe(pid)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         Ok(ProcessProbe {
             alive: false,
             start_ticks: None,
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Windows probe internals (#191). The Win32 calls live behind `#[cfg(windows)]`;
+// everything derivable from plain data — the STILL_ACTIVE pin, the permission
+// classification, and the start-ticks conversion — is a pure function compiled
+// and unit-tested on every platform.
+// ---------------------------------------------------------------------------
+
+/// `STILL_ACTIVE`, the `GetExitCodeProcess` sentinel for "has not exited
+/// yet" — pinned by its documented Win32 value so the `==` below (and its
+/// off-Windows unit tests) cannot drift through a typo.
+pub const STILL_ACTIVE: u32 = 259;
+
+/// `ERROR_ACCESS_DENIED` (`winerror.h`), pinned by value: OpenProcess failing
+/// with it means the process exists but this handle lacks the rights to open
+/// it — semantically "alive but unattributable".
+pub const ERROR_ACCESS_DENIED: u32 = 5;
+
+/// Classify the exit code a `GetExitCodeProcess` call reported for an open
+/// process handle: `STILL_ACTIVE` means the process has not exited yet; any
+/// other value is the real exit code (the process is gone).
+pub fn process_is_still_active(exit_code: u32) -> bool {
+    exit_code == STILL_ACTIVE
+}
+
+/// Classify an `OpenProcess` failure: `ERROR_ACCESS_DENIED` means the process
+/// exists but the caller lacks the rights to open it — semantically alive but
+/// unattributable; every other error (e.g. `ERROR_INVALID_PARAMETER`, the
+/// no-such-process answer) means the pid has no live process.
+pub fn open_failure_is_access_denied(last_error: u32) -> bool {
+    last_error == ERROR_ACCESS_DENIED
+}
+
+/// FILETIME half-words → start ticks, the Windows counterpart of the Unix
+/// readers' contract: a monotonically increasing per-process identity value
+/// that a fingerprint captured at spawn time and a later probe agree on.
+///
+/// The raw `GetProcessTimes` CreationTime (100 ns units since 1601-01-01) is
+/// converted to nanoseconds since the 1970 epoch, matching the macOS
+/// reader's `start_ticks` magnitude (wall-clock ns at process start): both
+/// are then distinct across processes and stable for a given process, which
+/// is all the orphan sweep's reuse detection compares. The conversion
+/// (epoch shift then ×100 into ns) is exact, and u64 ns overflows only in
+/// year 2554.
+pub fn filetime_to_start_ticks(filetime: (u32, u32)) -> Option<u64> {
+    let raw = (u64::from(filetime.1) << 32) | u64::from(filetime.0);
+    // Windows-epoch (1601) → Unix-epoch (1970) delta, in 100 ns units.
+    const EPOCH_DELTA: u64 = 116_444_736_000_000_000;
+    let unix_100ns = raw.checked_sub(EPOCH_DELTA)?;
+    Some(unix_100ns * 100)
+}
+
+/// Probe a pid on Windows (#191): `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`
+/// → `GetExitCodeProcess == STILL_ACTIVE`, with `GetProcessTimes` supplying
+/// the CreationTime start ticks.
+///
+/// Error semantics, aligned with the Unix readers (both consumers — the ACP
+/// desktop probe and the orphan sweep — read `Err` / not-alive as fail-closed
+/// and never act on a pid they cannot attribute):
+///
+/// - `OpenProcess` with `ERROR_ACCESS_DENIED`: the process exists but this
+///   handle cannot open it. Reported as alive with `start_ticks: None` —
+///   the desktop probe proceeds to its healthz check (which fails closed on
+///   its own for a stranger), and the sweep's `start_ticks_match` yields
+///   `Unverifiable` → `Undeterminable`, so an unopenable process is never
+///   terminated and its archive is never settled. Reporting it dead would
+///   be the bug this task fixes (mistakenly settling Running archives).
+/// - any other `OpenProcess` failure: not alive, like the Unix readers'
+///   read failure.
+/// - `GetExitCodeProcess` failure on an open handle: not alive (the handle
+///   is valid, so the failure can only reflect a race the liveness answer
+///   must resolve conservatively — the handle is about to be closed).
+/// - `GetProcessTimes` failure: alive, no start ticks — the Unix readers
+///   return liveness-only in the same shape on the other non-macOS/Linux
+///   Unixes.
+#[cfg(windows)]
+fn read_windows_probe(pid: i32) -> std::io::Result<ProcessProbe> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // SAFETY: plain Win32 call with a numeric pid; the returned handle is
+    // null-checked before any use.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32) };
+    if handle.is_null() {
+        let error = std::io::Error::last_os_error();
+        if open_failure_is_access_denied(error.raw_os_error().unwrap_or(0) as u32) {
+            return Ok(ProcessProbe {
+                alive: true,
+                start_ticks: None,
+            });
+        }
+        return Ok(ProcessProbe {
+            alive: false,
+            start_ticks: None,
+        });
+    }
+
+    // SAFETY: `handle` is a valid process handle owned by this function.
+    let mut exit_code: u32 = 0;
+    let exit_ok = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+    // SAFETY: same valid handle.
+    let mut creation = windows_sys::Win32::Foundation::FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut _exit_time = windows_sys::Win32::Foundation::FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut _kernel = windows_sys::Win32::Foundation::FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut _user = windows_sys::Win32::Foundation::FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let times_ok = unsafe {
+        GetProcessTimes(
+            handle,
+            &mut creation,
+            &mut _exit_time,
+            &mut _kernel,
+            &mut _user,
+        )
+    };
+    // SAFETY: we own `handle` and will not use it again.
+    unsafe { CloseHandle(handle) };
+
+    if exit_ok == 0 || !process_is_still_active(exit_code) {
+        return Ok(ProcessProbe {
+            alive: false,
+            start_ticks: None,
+        });
+    }
+    let start_ticks = if times_ok != 0 {
+        filetime_to_start_ticks((creation.dwLowDateTime, creation.dwHighDateTime))
+    } else {
+        None
+    };
+    Ok(ProcessProbe {
+        alive: true,
+        start_ticks,
+    })
 }
 
 #[cfg(unix)]
@@ -481,6 +668,12 @@ fn read_unix_probe(pid: i32) -> std::io::Result<ProcessProbe> {
 /// they still carry the group id on Linux but are not live members. Used
 /// by the orphan sweep's group-residue branch and the pre-termination
 /// re-verification.
+///
+/// The non-Unix empty vec is deliberate (issue #195): "no process-group
+/// concept" means "no members", which is the truth, and callers
+/// (`orphan_sweep.rs`) map both `Ok(vec![])` and errors to the same
+/// "nothing to terminate" outcome — so unlike `terminate_group`, this
+/// stays `Ok` rather than failing with Unsupported.
 pub fn list_group_members(pgid: i32) -> std::io::Result<Vec<i32>> {
     if pgid <= 0 {
         return Ok(Vec::new());
@@ -492,7 +685,7 @@ pub fn list_group_members(pgid: i32) -> std::io::Result<Vec<i32>> {
         // each candidate's pgid with a single getpgid call per pid.
         #[cfg(target_os = "macos")]
         {
-            use libproc::processes::{pids_by_type, ProcFilter};
+            use libproc::processes::{ProcFilter, pids_by_type};
             let pids = match pids_by_type(ProcFilter::All) {
                 Ok(pids) => pids,
                 Err(err) => {
@@ -558,7 +751,8 @@ pub fn list_group_members(pgid: i32) -> std::io::Result<Vec<i32>> {
 /// Terminate a process group by its bare pgid, with the ADR-012 e
 /// re-verification and the two-tier escalation (SIGTERM → grace → SIGKILL).
 /// `pgid <= 0` is the trust-boundary sentinel: signal nothing, return Ok.
-/// Only macOS/Linux actually signal; other platforms fail open as a no-op.
+/// Only macOS/Linux actually signal; other platforms fail with
+/// `ErrorKind::Unsupported` rather than pretending success.
 pub fn terminate_group(pgid: i32) -> std::io::Result<()> {
     if pgid <= 0 {
         tracing::warn!(pgid, "refusing to signal non-positive process group");
@@ -583,10 +777,23 @@ pub fn terminate_group(pgid: i32) -> std::io::Result<()> {
     }
     #[cfg(not(unix))]
     {
-        // No process-group signal on non-Unix — fail open without signaling.
-        tracing::warn!(pgid, "terminate_group is a no-op on this platform");
-        Ok(())
+        // No process-group signal on non-Unix — fail loudly (issue #195):
+        // callers see the Unsupported error instead of a silent no-op that
+        // would leave an orphaned group running while reporting success.
+        Err(unsupported_platform_error("terminate_group"))
     }
+}
+
+/// Build the shared "this operation has no implementation on this platform"
+/// error. Used by the non-Unix branches that must fail honestly instead of
+/// silently succeeding (issue #195). Also compiled under `cfg(test)` so the
+/// pure-function test below can pin its contract on every platform.
+#[cfg(any(not(unix), test))]
+pub(crate) fn unsupported_platform_error(op: &str) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!("{op}: no process-group signaling on this platform"),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -771,6 +978,48 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::process::CommandExt;
 
+    /// The flag value is a Windows ABI constant — pinned by the documented
+    /// value of CREATE_NO_WINDOW, on every platform.
+    #[test]
+    fn should_pin_the_create_no_window_flag_value_when_declared() {
+        assert_eq!(super::CREATE_NO_WINDOW, 0x0800_0000);
+    }
+
+    /// Given a command built by `new_command`, when the child is spawned on
+    /// Unix, then it leads its own process group (PGID == PID).
+    #[test]
+    #[cfg(unix)]
+    fn should_spawn_as_its_own_group_leader_when_created_via_new_command() {
+        let mut child = super::new_command("sleep")
+            .arg("0.1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id() as i32;
+        let pgid = nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(pid)))
+            .expect("getpgid of the child")
+            .as_raw();
+        assert_eq!(pgid, pid, "the child must lead its own process group");
+        let _ = child.wait();
+    }
+
+    /// Given a command built by `new_command`, when the child has already
+    /// exited, then the group has no live members (the leader exited as its
+    /// group's only member at that point).
+    #[test]
+    #[cfg(unix)]
+    fn should_place_the_child_in_a_group_disjoint_from_the_parent_when_spawned() {
+        let mut child = super::new_command("true").spawn().expect("spawn true");
+        let pid = child.id() as i32;
+        let _ = child.wait();
+        let parent_pgid = nix::unistd::getpgid(None).expect("parent pgid").as_raw();
+        assert_ne!(
+            pid, parent_pgid,
+            "the child group must be disjoint from the parent's group"
+        );
+    }
+
     #[tokio::test]
     async fn should_report_the_own_group_as_pgid_when_a_child_is_spawned() {
         use super::{ChildProcess, DynChildProcess, LocalProcess, OsProcess};
@@ -792,7 +1041,11 @@ mod tests {
         #[cfg(unix)]
         {
             let pid = child.pid() as i32;
-            assert_eq!(child.pgid(), Some(pid), "the group leader's pgid is its pid");
+            assert_eq!(
+                child.pgid(),
+                Some(pid),
+                "the group leader's pgid is its pid"
+            );
             assert_eq!(dyn_child.pgid(), Some(pid));
         }
         #[cfg(not(unix))]
@@ -803,14 +1056,27 @@ mod tests {
         let _ = child.wait().await;
     }
 
-    /// Non-Unix probes always answer not-alive, so the live-probe
-    /// expectation is a Unix-only fact.
+    /// Non-Unix probes historically stubbed to not-alive; now that Windows
+    /// has a real implementation, this liveness expectation holds wherever
+    /// a real probe exists — but on other non-Unix platforms it is still a
+    /// stub, so the test stays Unix-gated.
     #[test]
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     fn should_report_a_live_process_as_alive_when_probed_by_pid() {
+        // Given the current process
+        // When probed by its own pid
+        // Then the probe reports alive
         let pid = std::process::id() as i32;
         let probe = super::probe_process(pid).expect("probing own pid must succeed");
         assert!(probe.alive, "the current process must probe alive");
+        // On Windows the probe also reads the CreationTime start ticks, so
+        // the fingerprint identity comparison has data to work with.
+        if cfg!(windows) {
+            assert!(
+                probe.start_ticks.is_some(),
+                "the own process's creation time must be readable on Windows"
+            );
+        }
     }
 
     #[test]
@@ -893,6 +1159,39 @@ mod tests {
                 "pid {pid} must carry no start ticks"
             );
         }
+
+        // The Windows probe's pure helpers, pinned on every platform (the
+        // Win32 calls are Windows-only, but their logic constants are data).
+        // STILL_ACTIVE is the documented GetExitCodeProcess sentinel for a
+        // not-yet-exited process; only it means alive.
+        assert!(super::process_is_still_active(super::STILL_ACTIVE));
+        assert!(!super::process_is_still_active(0));
+        assert!(!super::process_is_still_active(258));
+        assert!(!super::process_is_still_active(260));
+        // ERROR_ACCESS_DENIED is the documented OpenProcess "exists but not
+        // ours to open" error; every other error code reads as no-such-pid.
+        assert!(super::open_failure_is_access_denied(super::ERROR_ACCESS_DENIED));
+        assert!(!super::open_failure_is_access_denied(87)); // ERROR_INVALID_PARAMETER
+        // The FILETIME → start-ticks conversion must be exact and must map
+        // the epoch origins the way the doc comment pins: 100 ns units
+        // since 1601 in, nanoseconds since 1970 out. 0x19db1de_d53e8000 is
+        // the FILETIME of the 1970 epoch itself.
+        assert_eq!(super::filetime_to_start_ticks((0xd53e_8000, 0x19d_b1de)), Some(0));
+        assert_eq!(
+            super::filetime_to_start_ticks((0, 0)),
+            None,
+            "100 ns before the 1970 epoch must not underflow into a huge tick"
+        );
+        // One second past the epoch: the epoch FILETIME + 10_000_000 × 100 ns.
+        assert_eq!(
+            super::filetime_to_start_ticks((0xd5d7_1680, 0x19d_b1de)),
+            Some(1_000_000_000)
+        );
+        // 2020-01-01T00:00:00Z = 15_778_368_00 s since the Unix epoch.
+        assert_eq!(
+            super::filetime_to_start_ticks((0x6905_0000, 0x1d5_c036)),
+            Some(1_577_836_800_000_000_000)
+        );
     }
 
     #[test]
@@ -918,6 +1217,34 @@ mod tests {
         assert!(super::terminate_group(0).is_ok());
         assert!(super::terminate_group(-1).is_ok());
         // and neither may have signaled anything (no crash, no panic)
+    }
+
+    #[test]
+    fn should_build_an_unsupported_error_naming_the_operation() {
+        let err = super::unsupported_platform_error("terminate_group");
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::Unsupported,
+            "the error must carry ErrorKind::Unsupported"
+        );
+        assert!(
+            err.to_string().contains("terminate_group"),
+            "the message must name the operation, got: {err}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(unix))]
+    fn should_return_an_unsupported_error_when_terminating_a_group_on_non_unix() {
+        // HONEST LIMITATION: this branch only compiles/runs on non-Unix
+        // targets (Windows). The repo's CI is ubuntu-only, so this test is
+        // never executed there — real coverage requires a Windows machine
+        // (or a windows cross `cargo test`, which needs a full MSVC
+        // runtime). The pure-function test above pins the shared logic on
+        // every platform; only the `#[cfg]` dispatch below is unexercised
+        // by CI.
+        let err = super::terminate_group(12345).expect_err("non-Unix must fail, not no-op");
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
     }
 
     #[test]

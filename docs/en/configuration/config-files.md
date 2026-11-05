@@ -103,12 +103,11 @@ The following sections cover each of the nested tables in turn: `providers`, `mo
 
 Each entry in the `providers` table defines an API provider, keyed by a unique name. When the engine builds a connection, the API key is resolved in this order:
 
-1. The `api_key` field in the provider's config entry (a non-empty value wins immediately);
+1. The provider's active credential-store entry (managed by the UI — Settings → Providers, or `/provider` in the TUI);
 2. Otherwise, the provider type's conventional key read from the `[providers.<name>.env]` sub-table — `ANTHROPIC_API_KEY` for `type = "anthropic"`, `OPENAI_API_KEY` for `openai` / `openai_responses`, `GOOGLE_API_KEY` for `google` / `google-genai`, and `MIRRI_API_KEY` for `kimi`;
-3. Otherwise, the same conventional key read from the shell environment;
-4. If none is set, startup fails with an error naming the expected variable. Some provider types (such as `vertexai`) have no conventional key, so the chain ends earlier for them.
+3. If neither is set, startup fails with a clear configuration error. Shell environment variables are never consulted implicitly — if you previously relied on `export ANTHROPIC_API_KEY=xxx`, move the key into the `env` sub-table (or the credential store).
 
-The `base_url` follows the same chain: the config field first, then the same conventional key in the `env` sub-table, then the same conventional shell environment variable (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GOOGLE_GEMINI_BASE_URL`, `MIRRI_BASE_URL`), then the type's built-in default endpoint.
+The `base_url` follows the same chain: the `base_url` config field first, then the same conventional key in the `env` sub-table (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GOOGLE_GEMINI_BASE_URL`, `MIRRI_BASE_URL`), then the type's built-in default endpoint — first-party providers only; every other provider must configure a base URL explicitly.
 
 See [Config overrides](./overrides.md#provider-credentials) for the full priority rules.
 
@@ -118,12 +117,12 @@ See [Config overrides](./overrides.md#provider-credentials) for the full priorit
 | `api_key` | `string` | No | API key, written in plain text in the config file |
 | `base_url` | `string` | No | API base URL |
 | `oauth` | `table` | No | OAuth credential reference (`storage` and `key` fields); normally managed by the CLI — no need to write this by hand |
-| `env` | `table<string, string>` | No | Extra key-value pairs passed to the provider adapter; values support `${VAR}` expansion. Provider-conventional key names (such as `MIRRI_API_KEY`) also serve as the credential fallback for `api_key` / `base_url` — see below |
+| `env` | `table<string, string>` | No | Extra key-value pairs passed to the provider adapter; values support `${VAR}` expansion. Provider-conventional key names (such as `MIRRI_API_KEY`) also serve as the credential source for `api_key` / `base_url` — see below |
 | `custom_headers` | `table<string, string>` | No | Custom HTTP headers attached to each request |
 | `removed_model_ids` | `array<string>` | No | Denylist of upstream model ids; catalog refreshes never re-add a model listed here |
 | `media_file_refs` | `boolean` | No | `anthropic` provider only. Allow image uploads through the provider's Files API and reference by file id instead of inlining base64; defaults to `true` |
 
-**`env` sub-table**: You can write provider-conventional key names (such as `MIRRI_API_KEY`) inside `[providers.<name>.env]` as the second step of the resolution chain for `api_key` / `base_url`. The sub-table itself is read from the config file only and does not modify the shell environment:
+**`env` sub-table**: You can write provider-conventional key names (such as `MIRRI_API_KEY`) inside `[providers.<name>.env]` — the explicit configuration tier the engine reads for `api_key` / `base_url` when the credential store has no active entry. The sub-table itself is read from the config file only and does not modify the shell environment:
 
 ```toml
 [providers.kimi.env]
@@ -131,7 +130,7 @@ MIRRI_API_KEY = "sk-xxx"
 MIRRI_BASE_URL = "https://api.moonshot.ai/v1"
 ```
 
-Priority: `api_key` field > `env` sub-table key > the provider type's conventional shell environment variable > if none is set, startup fails with an error. The same chain applies to `base_url`, ending in the built-in default URL instead of an error.
+Priority: credential store > `env` sub-table key > if neither is set, startup fails with a clear configuration error. The same chain applies to `base_url`, ending in the built-in default URL (first-party providers only) instead of an error.
 
 ## `models`
 

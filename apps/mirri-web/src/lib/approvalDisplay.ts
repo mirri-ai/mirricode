@@ -177,6 +177,28 @@ export function buildApprovalBlock(a: AppApprovalRequest): ApprovalBlock {
     };
   }
 
+  // scheduled_task_create — every parameter of the task being created
+  // (ADR-022); the card renders it as a plain-language sentence.
+  if (kind === 'scheduled_task_create') {
+    const maxFires = d['max_fires'];
+    return {
+      kind: 'scheduled_task',
+      cron: str('cron') ?? '',
+      timezone: str('timezone'),
+      workspaceId: str('workspace_id') ?? '',
+      permissionMode: str('permission_mode'),
+      model: str('model'),
+      effort: str('effort'),
+      title: str('title'),
+      prompt: str('prompt') ?? '',
+      recurring: d['recurring'] !== false,
+      maxFires: typeof maxFires === 'number' ? maxFires : undefined,
+      reason: str('reason'),
+      ...expiry,
+      ...facet,
+    };
+  }
+
   // Unknown daemon display.kind → 'generic' with summary = action
   return { kind: 'generic', summary: a.action, ...expiry, ...facet };
 }

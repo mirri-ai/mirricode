@@ -883,6 +883,9 @@ async fn run_notification_turn(
 
     let turn_end = run_engine_turn(
         flow_handle,
+        // Notification-driver turns are engine-driven — the flow's
+        // default Interactive origin applies.
+        None,
         agent.hook_engine(),
         external_hook_env,
         Arc::clone(flag_registry),
@@ -933,6 +936,7 @@ async fn run_notification_turn(
                     reason: turn_stop_reason_wire(&turn_end.stop_reason).to_string(),
                     error: None,
                     duration_ms: Some(turn_end.duration_ms),
+                    ended_at: Some(turn_end.ended_at),
                 })
                 .await;
             event_bus.publish(SessionEvent::TurnCompleted {
@@ -942,6 +946,7 @@ async fn run_notification_turn(
                 stop_reason: turn_stop_reason_wire(&turn_end.stop_reason).to_string(),
                 wire_turn_id: turn_end.turn_id,
                 duration_ms: Some(turn_end.duration_ms),
+                ended_at_ms: Some(turn_end.ended_at),
             });
             // ADR-009 turn settle: the notification turn ended — refresh
             // the session's recency and persist it.
@@ -989,6 +994,9 @@ async fn run_notification_turn(
                 error: error.message(),
                 error_code: error.domain_code().to_string(),
                 wire_turn_id: 0,
+                // No TurnEndResult on this path — the failure moment
+                // is the terminal instant.
+                ended_at_ms: Some(super::message_handlers::now_epoch_ms()),
             });
             // A failed turn is still conversation activity (ADR-009) —
             // settle before the delivery returns.

@@ -714,6 +714,11 @@ pub struct SpawnRequest {
     /// `subagent.suspended` instead (TS `suppressRateLimitFailureEvent`,
     /// agentRunBatch.ts:290). Default false (the Agent tool never sets it).
     pub suppress_rate_limit_failure_event: bool,
+    /// The spawning turn's origin (S5 / ADR-001 propagation): a subagent
+    /// spawned from a cron-fired turn inherits the `Cron` lineage — the
+    /// defense line must not be bypassable by delegation. Default
+    /// `Interactive`.
+    pub turn_origin: crate::permission::TurnOriginContext,
 }
 
 /// Request to resume an existing idle subagent with a new prompt.

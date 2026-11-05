@@ -144,6 +144,11 @@ pub enum ServerEvent {
     WorkspaceUpdated { workspace: WorkspaceSnapshot },
     /// A workspace was unregistered.
     WorkspaceDeleted { workspace_id: String, root: String },
+    /// A workspace's cron task set changed durably (stage-2 T2 — a task
+    /// was added, removed, or fired): the management plane's refresh
+    /// signal, broadcast server-scoped exactly like the workspace
+    /// lifecycle events.
+    CronWorkspaceChanged { workspace_id: String },
 }
 
 impl ServerEvent {
@@ -153,6 +158,7 @@ impl ServerEvent {
             ServerEvent::WorkspaceCreated { .. } => "event.workspace.created",
             ServerEvent::WorkspaceUpdated { .. } => "event.workspace.updated",
             ServerEvent::WorkspaceDeleted { .. } => "event.workspace.deleted",
+            ServerEvent::CronWorkspaceChanged { .. } => "event.cron.workspaceChanged",
         }
     }
 }
@@ -176,6 +182,10 @@ pub fn project_server_event(event: &ServerEvent) -> ProjectedNotification {
         ServerEvent::WorkspaceDeleted { workspace_id, root } => (
             event.method(),
             json!({ "workspaceId": workspace_id, "root": root }),
+        ),
+        ServerEvent::CronWorkspaceChanged { workspace_id } => (
+            event.method(),
+            json!({ "workspaceId": workspace_id }),
         ),
     };
     let mut params = serde_json::Map::new();
@@ -295,6 +305,7 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
             stop_reason,
             wire_turn_id,
             duration_ms,
+            ended_at_ms,
         } => {
             // The server-measured duration rides the payload so a live
             // completion renders the same "Worked for X" the wire record
@@ -309,6 +320,12 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
             if let Some(duration_ms) = duration_ms {
                 payload["durationMs"] = json!(duration_ms);
             }
+            // The wall-clock completion instant — the footer's authoritative
+            // "completed at" stamp. Independent of the duration; absent
+            // (never null) when the turn carried none, the same discipline.
+            if let Some(ended_at_ms) = ended_at_ms {
+                payload["endedAtMs"] = json!(ended_at_ms);
+            }
             ("event.turn.ended", false, payload)
         }
         SessionEvent::TurnFailed {
@@ -317,6 +334,7 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
             error,
             error_code,
             wire_turn_id,
+            ended_at_ms,
         } => {
             // ADR-007: a user-initiated hard abort (the exact code the
             // message.abort / goal.pause / goal.cancel dispatches publish)
@@ -337,32 +355,34 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
             // domain code and its retryability verdict (the shared
             // `domain_code_retryable` table — the TS KimiErrorPayload
             // contract carries the same `retryable` field).
-            (
-                "event.turn.ended",
-                false,
-                json!({
-                    "agentId": agent_id,
-                    "turnId": turn_id,
-                    "reason": reason,
-                    "wireTurnId": wire_turn_id,
-                    "error": {
-                        "code": error_code,
-                        "message": error,
-                        "retryable": mirri_proto::rpc::domain_code_retryable(error_code),
-                    },
-                }),
-            )
+            let mut payload = json!({
+                "agentId": agent_id,
+                "turnId": turn_id,
+                "reason": reason,
+                "wireTurnId": wire_turn_id,
+                "error": {
+                    "code": error_code,
+                    "message": error,
+                    "retryable": mirri_proto::rpc::domain_code_retryable(error_code),
+                },
+            });
+            // The engine-authoritative completion instant rides the failure
+            // frame too, so a failed turn still stamps when it ended. Absent
+            // (never null) when no instant was measured.
+            if let Some(ended_at_ms) = ended_at_ms {
+                payload["endedAtMs"] = json!(ended_at_ms);
+            }
+            ("event.turn.ended", false, payload)
         }
         SessionEvent::ToolCallStarted {
             agent_id,
             tool_name,
             tool_call_id,
             args,
+            started_at_ms,
             ..
-        } => (
-            "event.tool.call.started",
-            false,
-            json!({
+        } => {
+            let mut payload = json!({
                 "agentId": agent_id,
                 "toolCallId": tool_call_id,
                 "name": tool_name,
@@ -370,8 +390,18 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
                 // protocol's `tool.call.started` carries (`args: unknown`);
                 // TS emits the untruncated object, so the wire does too.
                 "args": args,
-            }),
-        ),
+            });
+            // ADR-7: the server-authoritative start instant (epoch ms) so
+            // clients tick elapsed time from the engine's clock, not their own
+            // receipt time. Additive — older consumers ignore. A 0 is an ABSENT
+            // stamp, not an instant: a legacy wire record replays through
+            // `serde(default)` with 0, which clients would read as a real
+            // epoch → a 56-year timer.
+            if *started_at_ms > 0 {
+                payload["startedAtMs"] = json!(started_at_ms);
+            }
+            ("event.tool.call.started", false, payload)
+        }
         SessionEvent::ToolCallCompleted {
             agent_id,
             session_id: _,
@@ -379,10 +409,9 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
             tool_name,
             is_error,
             output,
-        } => (
-            "event.tool.result",
-            false,
-            json!({
+            duration_ms,
+        } => {
+            let mut payload = json!({
                 "agentId": agent_id,
                 "toolCallId": tool_call_id,
                 // The tool's name rides on the result so a consumer that
@@ -397,8 +426,17 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
                 // so a live consumer renders the result content without
                 // waiting for a snapshot reload.
                 "output": output,
-            }),
-        ),
+            });
+            // ADR-7: the engine-measured wall duration, so the frozen elapsed
+            // label matches across clients. Additive — older consumers ignore.
+            // 0 means absent (a legacy record's `serde(default)`, or a
+            // sub-millisecond call): a 0ms label carries no information, while
+            // showing one on replayed old logs would be fabricated.
+            if *duration_ms > 0 {
+                payload["durationMs"] = json!(duration_ms);
+            }
+            ("event.tool.result", false, payload)
+        }
         SessionEvent::ToolProgress {
             agent_id,
             tool_call_id,
@@ -771,10 +809,18 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
                 "error": error,
             }),
         ),
-        SessionEvent::TurnStepStarted { turn_id, step } => (
+        SessionEvent::TurnStepStarted {
+            agent_id,
+            turn_id,
+            step,
+        } => (
             "event.turn.step.started",
             false,
             json!({
+                // The agent's string identity (`"main"`, `"agent-<uuid>"`) —
+                // the same routing key `event.turn.started` carries, so
+                // clients attribute step boundaries to the owning agent.
+                "agentId": agent_id,
                 // The wire turn id (`turn-<uuid>`) — the same spelling
                 // `event.turn.started` carries, plumbed down from the
                 // message-send dispatch through `set_wire_turn_id`.
@@ -783,6 +829,7 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
             }),
         ),
         SessionEvent::TurnStepCompleted {
+            agent_id,
             turn_id,
             step,
             input_tokens,
@@ -797,6 +844,7 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
             // never null (the same optional-payload pattern `ToolCallDelta`
             // uses for `name`).
             let mut payload = json!({
+                "agentId": agent_id,
                 "turnId": turn_id,
                 "step": step,
                 "usage": wire_token_usage(*input_tokens, *output_tokens, *cache_read_tokens, *cache_creation_tokens),
@@ -807,6 +855,7 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
             ("event.turn.step.completed", false, payload)
         }
         SessionEvent::TurnStepInterrupted {
+            agent_id,
             turn_id,
             step,
             reason,
@@ -817,6 +866,7 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
             // every embedded path (it stays absent only when the callback
             // was built without one).
             let mut payload = json!({
+                "agentId": agent_id,
                 "step": step,
                 "reason": reason,
             });
@@ -829,6 +879,7 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
             ("event.turn.step.interrupted", false, payload)
         }
         SessionEvent::TurnStepRetrying {
+            agent_id,
             turn_id,
             step,
             failed_attempt,
@@ -837,6 +888,7 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
             delay_ms,
         } => {
             let mut payload = json!({
+                "agentId": agent_id,
                 "step": step,
                 "failedAttempt": failed_attempt,
                 "nextAttempt": next_attempt,
@@ -949,11 +1001,15 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
             recurring,
             coalesced_count,
             stale,
+            maxed_out,
+            readonly,
         } => (
             // Mirrors the TS `CronFiredEvent`: the cron-job origin object
             // plus the prompt. The rust manager coalesces overdue periods
             // and flags stale final deliveries (B5), so those origin
-            // fields carry the real values from the fire pass.
+            // fields carry the real values from the fire pass. The
+            // maxed-out mark (stage-1 batch-1, S3 / F.2) and the
+            // write-class refusal bit ride the same origin object.
             "event.cron.fired",
             false,
             json!({
@@ -964,6 +1020,8 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
                     "recurring": recurring,
                     "coalescedCount": coalesced_count,
                     "stale": stale,
+                    "maxedOut": maxed_out,
+                    "readonly": readonly,
                 },
                 "prompt": prompt,
             }),

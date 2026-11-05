@@ -79,6 +79,7 @@ export function launchDetached(cmd: LaunchCommand): Promise<void> {
       detached: true,
       stdio: 'ignore',
       shell: cmd.shell === true,
+      windowsHide: true,
     });
     child.once('error', (err) => {
       if (settled) return;

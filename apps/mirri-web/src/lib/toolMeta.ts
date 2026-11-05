@@ -77,6 +77,25 @@ export function toolLabel(name: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// toolPayload: the hover bubble text for a tool call's argument.
+// The pretty-printed JSON (2-space indent, insertion order kept) so every field
+// is visible — a single-line dump is unreadable once the row ellipsizes it.
+// Plain-string arguments are already readable text and are returned verbatim.
+// Defensive: never throws.
+// ---------------------------------------------------------------------------
+
+export function toolPayload(arg: string): string {
+  const s = (arg ?? '').trim();
+  if (!s || s === '{}' || s === '[]') return '';
+  if (!/^[[{]/.test(s)) return s;
+  try {
+    return JSON.stringify(JSON.parse(s), null, 2);
+  } catch {
+    return s;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // toolGlyph: a small inline SVG string for a tool name, rendered from the
 // shared icon registry (lib/icons.ts) at sm (14px). Returns '' for unknown
 // tools (no glyph). Suitable for v-html in a 14×14 container.

@@ -1,9 +1,10 @@
 <!-- apps/mirri-web/src/components/chat/tool-calls/GenericTool.vue -->
 <script setup lang="ts">
-import { computed, inject, ref, watch } from 'vue';
+import { computed, inject, ref, watch, type Ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { FilePreviewRequest, ToolCall, ToolMedia } from '../../../types';
-import { toolChip, toolGlyph, toolLabel, toolSummary } from '../../../lib/toolMeta';
+import { toolChip, toolGlyph, toolLabel, toolPayload, toolSummary } from '../../../lib/toolMeta';
+import { formatDuration } from '../../chatTurnRendering';
 import ToolRow from '../ToolRow.vue';
 
 const props = withDefaults(
@@ -14,6 +15,15 @@ const props = withDefaults(
     toolDiffPanel?: boolean;
   }>(),
   { mobile: false, stackPosition: 'single', toolDiffPanel: false },
+);
+
+// US3.8 (ADR-7): live elapsed while running with a server anchor — the
+// frozen `timing` (server duration or flush freeze) wins once settled.
+const tick = inject<Readonly<Ref<number>> | null>('runningToolTick', null);
+const liveTime = computed(() =>
+  tick?.value !== undefined && props.tool.status === 'running' && props.tool.startedAtMs !== undefined
+    ? formatDuration(Math.max(0, tick.value - props.tool.startedAtMs))
+    : undefined,
 );
 
 const emit = defineEmits<{
@@ -55,12 +65,15 @@ const label = computed(() => toolLabel(props.tool.name));
 const glyph = computed(() => toolGlyph(props.tool.name));
 const summary = computed(() => toolSummary(props.tool.name, props.tool.arg));
 const summaryFull = computed(() => toolSummary(props.tool.name, props.tool.arg, true));
+const payload = computed(() => toolPayload(props.tool.arg));
 const chip = computed(() =>
   toolChip({
     name: props.tool.name,
     arg: props.tool.arg,
     output: props.tool.output,
-    timing: props.tool.timing,
+    // ADR-7 / US3.8: a running bash call ticks in the chip slot; once
+    // settled, tool.timing (the server duration) freezes it.
+    timing: liveTime.value ?? props.tool.timing,
     status: props.tool.status,
   }),
 );
@@ -83,7 +96,9 @@ watch(
     :icon="glyph"
     :name="label"
     :arg="!open ? summary : ''"
-    :time="tool.name !== 'bash' ? tool.timing : ''"
+    :tooltip="payload"
+    :tooltip-max-width="480"
+    :time="tool.name !== 'bash' ? (liveTime ?? tool.timing) : ''"
     :open="open"
     :expandable="canExpand"
     :stacked="stackPosition !== 'single'"

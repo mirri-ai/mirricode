@@ -40,10 +40,14 @@ export default {
   cacheNote: '提示：切换模型或思考程度会使已有的提示词缓存失效。建议新建会话，避免额外的 token 消耗。',
   starredModels: '收藏',
   moreModels: '更多模型…',
-  // 会话级用量统计条（usage-visibility Task 7）
+  // 会话级用量统计条（usage-visibility Task 7；ADR-004 计价分桶）
+  usageTurnCount: '{n} 回合',
   usageCacheHit: '缓存命中 {pct}%',
   usageAfterColdStart: '冷启动后 {pct}%',
-  usageTokens: '输入 {input} · 输出 {output}',
+  usageCacheRead: '缓存读取 {n}',
+  usageInput: '未缓存输入 {n}',
+  usageCacheWrite: '缓存写入 {n}',
+  usageOutput: '输出 {n}',
   // 状态面板
   statusPanelTitle: '会话状态',
   statusPanelClose: '关闭',

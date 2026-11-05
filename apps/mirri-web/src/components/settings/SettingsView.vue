@@ -23,7 +23,7 @@ import Button from '../ui/Button.vue';
 import SegmentedControl from '../ui/SegmentedControl.vue';
 import Select from '../ui/Select.vue';
 import AgentProfilesPanel from './AgentProfilesPanel.vue';
-import CronPanel from './CronPanel.vue';
+import ScheduledTaskPanel from './scheduledTasks/ScheduledTaskPanel.vue';
 import RetentionPanel from './RetentionPanel.vue';
 import { archivedTabVisibleForBackend } from '../../lib/retentionManagement';
 import TasksOverviewPanel from './TasksOverviewPanel.vue';
@@ -36,10 +36,11 @@ import ModelsPanel from './models/ModelsPanel.vue';
 
 const { t } = useI18n();
 
-type SettingsTab = 'general' | 'models' | 'agent' | 'rules' | 'skills' | 'cron' | 'tasks' | 'profiles' | 'systemPrompt' | 'mcp' | 'account' | 'advanced' | 'archived' | 'retention';
+type SettingsTab = 'general' | 'models' | 'agent' | 'rules' | 'skills' | 'scheduledTasks' | 'tasks' | 'profiles' | 'systemPrompt' | 'mcp' | 'account' | 'advanced' | 'archived' | 'retention';
 
 const props = defineProps<{
-  /** Which tab to open on mount. Default 'general'; 'models' when opened via openProviders, 'cron' via the /cron command. */
+  /** Which tab to open on mount. Default 'general'; 'models' when opened via
+   *  openProviders, 'scheduledTasks' via the /cron command. */
   initialTab?: SettingsTab;
   colorScheme: ColorScheme;
   accent: Accent;
@@ -117,7 +118,7 @@ const tabs: { id: SettingsTab; labelKey: string }[] = [
   { id: 'agent', labelKey: 'settings.tabs.agent' },
   { id: 'rules', labelKey: 'settings.tabs.rules' },
   { id: 'skills', labelKey: 'settings.tabs.skills' },
-  { id: 'cron', labelKey: 'settings.tabs.cron' },
+  { id: 'scheduledTasks', labelKey: 'settings.tabs.scheduledTasks' },
   { id: 'tasks', labelKey: 'settings.tabs.tasks' },
   { id: 'profiles', labelKey: 'settings.tabs.profiles' },
   { id: 'systemPrompt', labelKey: 'settings.tabs.systemPrompt' },
@@ -645,9 +646,9 @@ function archiveTime(iso: string): string {
         <PermissionRulesPanel />
       </section>
 
-      <!-- Cron jobs (management, B6) -->
-      <section v-if="activeTab === 'cron'" class="panel profiles-panel">
-        <CronPanel />
+      <!-- Scheduled tasks (cron-improvement A 组: the workspace's routines) -->
+      <section v-if="activeTab === 'scheduledTasks'" class="panel profiles-panel">
+        <ScheduledTaskPanel :models="models" />
       </section>
 
       <!-- Workspace task overview (B7 / P-023) -->

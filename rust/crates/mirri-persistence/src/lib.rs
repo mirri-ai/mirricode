@@ -17,6 +17,7 @@ pub mod migration;
 pub mod provider_file_cache;
 pub mod query_store;
 pub mod snapshot;
+pub mod workspace_registry;
 
 pub use append_log::{AppendLogError, AppendLogStore, JsonlAppendLog};
 pub use atomic_doc::AtomicDocument;
@@ -34,3 +35,7 @@ pub use migration::{
 pub use provider_file_cache::{CachedProviderFile, ProviderFileCache};
 pub use query_store::{IQueryStore, InMemoryQueryStore, QueryCheckpoint, QueryEntry, WriteOp};
 pub use snapshot::{Snapshot, SnapshotStore};
+pub use workspace_registry::{
+    LockGuard, RegistryLock, RegistryWriter, WORKSPACE_REGISTRY_FILENAME, WorkspaceRow,
+    add_tombstone, lock_file_path, read_workspace_registry, write_workspace_registry,
+};

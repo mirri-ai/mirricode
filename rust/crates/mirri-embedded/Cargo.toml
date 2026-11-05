@@ -14,6 +14,7 @@ mirri-transport = { path = "../mirri-transport" }
 mirri-proto = { path = "../mirri-proto" }
 mirri-persistence = { path = "../mirri-persistence" }
 mirri-session-index = { path = "../mirri-session-index" }
+mirri-cron-index = { path = "../mirri-cron-index" }
 mirri-os = { path = "../mirri-os" }
 mirri-credentials = { path = "../mirri-credentials" }
 serde = { workspace = true }
@@ -34,8 +35,12 @@ unicode-normalization = "0.1"
 toml = "0.8"
 notify = { workspace = true }
 ignore = "0.4"
+# ADR-006 Task 9: the one-shot migration's library-level exclusive hold
+# opens its own SQLite connection (`BEGIN IMMEDIATE` fence).
+rusqlite = { workspace = true }
 
 [dev-dependencies]
+mirri-test-support = { path = "../mirri-test-support" }
 # `start_paused` in the stall-watchdog tests needs tokio's test-util clock.
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"

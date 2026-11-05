@@ -92,7 +92,7 @@ export function keepLiveSubagents(
     foldedRestIds.add(rest.id);
     // True when the fold — not the event stream — is what makes the row terminal.
     const restCompletesLiveRow = live.status === 'running' && rest.status !== 'running';
-    return {
+    const folded: AppTask = {
       ...live,
       // Terminal-stickiness: never let a lagging poll flip a finished row back
       // to running, but let REST complete a row whose finish event was missed.
@@ -115,6 +115,19 @@ export function keepLiveSubagents(
       outputPreview: rest.outputPreview ?? live.outputPreview,
       outputBytes: rest.outputBytes ?? live.outputBytes,
     };
+    // ADR-011 ④：折合未改变被消费语义时保持原行引用——无事件无重算
+    // （1Hz 轮询的每秒新引用是面板叙事区重绘抖动源之一）。判定集合 = 本
+    // 折合分支可写的字段全集（五个）；收敛分支属于语义变化，不适用。
+    if (
+      folded.status === live.status &&
+      folded.subagentPhase === live.subagentPhase &&
+      folded.completedAt === live.completedAt &&
+      folded.outputPreview === live.outputPreview &&
+      folded.outputBytes === live.outputBytes
+    ) {
+      return live;
+    }
+    return folded;
   });
   const rest = restBased.filter((t) => !foldedRestIds.has(t.id));
   return [...rest, ...merged];
@@ -123,8 +136,8 @@ export function keepLiveSubagents(
 /**
  * Seed the task store from the snapshot's subagent roster. The roster is
  * authoritative for identity/status/phase; keep reducer-owned accumulated
- * output (outputLines/text) from any already-live task, and keep tasks the
- * roster does not know about (background bash tasks from REST).
+ * output (steps/segments/outputLines) from any already-live task, and keep
+ * tasks the roster does not know about (background bash tasks from REST).
  */
 export function mergeSnapshotSubagents(roster: AppTask[], existing: AppTask[]): AppTask[] {
   if (roster.length === 0) return existing;
@@ -133,8 +146,8 @@ export function mergeSnapshotSubagents(roster: AppTask[], existing: AppTask[]): 
   const merged = roster.map((task) => {
     const live = existingById.get(task.id);
     if (!live) return task;
-    // N-6：live 累积的叙事字段（steps/outputLines/text/suspendedReason）在名册
-    // 合并中存活——名册行不带这些，丢掉即丢掉成员的工具卡片与输出。
+    // N-6：live 累积的叙事字段（steps/segments/outputLines/suspendedReason）在名册
+    // 合并中存活——名册行不带这些，丢掉即丢掉成员的工具卡片与叙事段。
     const base: AppTask = {
       ...task,
       // The engine's REST task rows carry no subagent_phase /
@@ -145,19 +158,20 @@ export function mergeSnapshotSubagents(roster: AppTask[], existing: AppTask[]): 
       subagentPhase: task.subagentPhase ?? live.subagentPhase,
       suspendedReason: task.suspendedReason ?? live.suspendedReason,
       outputLines: live.outputLines,
-      text: live.text,
-      // ADR-009 live steps: same survival rule as outputLines/text — the
+      // ADR-009 live steps: same survival rule as outputLines — the
       // roster row carries none, so the live event-built steps must survive
       // the reload's roster merge or the member's tool cards vanish.
       steps: live.steps,
-      // ADR-015 b: the reducer-owned narrative and bookkeeping fields must
-      // also survive — a delta-gap resync's roster merge would otherwise wipe
-      // the live member's thinking narrative and its step-start marks (and
-      // a lost mark later disables the retry truncation below).
-      thinking: live.thinking,
-      stepTextLen: live.stepTextLen,
-      stepThinkLen: live.stepThinkLen,
-      tailGuard: live.tailGuard,
+      // ADR-011 ②：live 叙事段在名册合并中存活——名册行不带段，丢掉即丢掉成员的
+      // 完整 live 叙事（与 steps 同型的白名单遗漏教训）。
+      segments: live.segments,
+      stepSegMark: live.stepSegMark,
+      // 段 tombstone 的 run-scoped 契约要求它在每一条重建任务行的路径上
+      // 存活（与 taskCreated 替换臂对称）。当前名册合并总是与
+      // projector.reset（generation 递增）同拍发生，旧 tombstone 不会命中
+      // reset 后的新铸段 id——此处是契约对齐而非现存缺陷修复；若未来出现
+      // 不带 reset 的第二个名册合并调用点，缺失此行即成为真缺陷。
+      truncatedSegmentIds: live.truncatedSegmentIds,
     };
     // (a) 名册终态原子合并：名册行（服务端权威）已终态时，status/subagentPhase
     // 经 applyTerminalToTask 原子落终态——名册行的 wire mapper 从不带

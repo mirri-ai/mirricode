@@ -10,11 +10,13 @@ pub mod external;
 pub use external::{ExternalSourceError, external_available, obtain_external};
 
 pub mod migration;
-pub use migration::{MigrationReport, SKIPPED_GUIDANCE, dry_run_config_api_keys, migrate_config_api_keys};
+pub use migration::{
+    MigrationReport, SKIPPED_GUIDANCE, dry_run_config_api_keys, migrate_config_api_keys,
+};
 
 #[cfg(test)]
-mod store_tests;
+mod external_tests;
 #[cfg(test)]
 mod migration_tests;
 #[cfg(test)]
-mod external_tests;
+mod store_tests;

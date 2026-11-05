@@ -23,6 +23,8 @@ import Icon from '../ui/Icon.vue';
 import Pill from '../ui/Pill.vue';
 
 const props = defineProps<{
+  /** Workspace display names by id (the scheduled-task approval card). */
+  workspaceNames?: Record<string, string>;
   sessionId?: string;
   /** Session-level usage for the stats bar above the composer
    *  (usage-visibility Task 7). Null when no session is active; the bar
@@ -303,6 +305,7 @@ defineExpose({ loadForEdit, loadAttachmentsForEdit, focus, handleStaleFileRefere
       class="dock-approval"
       :block="pendingApproval.block"
       :agent-name="pendingApproval.agentName"
+      :workspace-names="workspaceNames"
       :busy="approvalBusy"
       @decide="emit('approval', pendingApproval!.approvalId, $event)"
     />

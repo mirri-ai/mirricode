@@ -447,18 +447,11 @@ fn parse_truth(value: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Serializes tests that mutate process environment variables.
-    ///
-    /// `std::env::set_var`/`remove_var` are `unsafe` in edition 2024, and
-    /// environment reads/writes race across threads when tests run in
-    /// parallel, so every env-mutating test holds this lock and restores the
-    /// previous values on drop.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Saves the current value of each touched variable and restores it on
-    /// drop, so tests never leak env state into each other.
+    /// drop, so tests never leak env state into each other. Mutation itself
+    /// is serialized by the workspace-wide `mirri_test_support::env::lock()`
+    /// (the single provider every env-mutating test in the workspace takes).
     struct EnvGuard {
         saved: HashMap<String, Option<String>>,
     }
@@ -516,7 +509,7 @@ mod tests {
 
     #[test]
     fn should_use_registered_default_when_enabled_without_env_overrides() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_GRAPH_ON", None);
         env.set("MIRRICODE_EXPERIMENTAL_GRAPH_OFF", None);
@@ -529,7 +522,7 @@ mod tests {
 
     #[test]
     fn should_return_false_when_enabled_with_unregistered_flag() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set(FLAG_GLOBAL_ENV, None);
         let registry = FlagRegistry::new();
@@ -539,7 +532,7 @@ mod tests {
 
     #[test]
     fn should_override_false_default_when_enabled_with_true_per_flag_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_GRAPH_REALTIME", Some("1"));
         env.set(FLAG_GLOBAL_ENV, None);
@@ -552,7 +545,7 @@ mod tests {
 
     #[test]
     fn should_override_true_default_when_enabled_with_false_per_flag_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_BOLD_LOG", Some("false"));
         env.set(FLAG_GLOBAL_ENV, None);
@@ -563,7 +556,7 @@ mod tests {
 
     #[test]
     fn should_enable_truthy_forms_and_disable_falsy_forms_when_enabled_with_per_flag_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_A", Some("true"));
         env.set("MIRRICODE_EXPERIMENTAL_B", Some("yes"));
@@ -588,7 +581,7 @@ mod tests {
 
     #[test]
     fn should_fall_back_to_default_when_enabled_with_unrecognized_per_flag_env_value() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_QUIRKY", Some("banana"));
         env.set(FLAG_GLOBAL_ENV, None);
@@ -599,7 +592,7 @@ mod tests {
 
     #[test]
     fn should_return_false_when_env_flag_enabled_reads_unset_environment() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_HOOK_COMMAND_REWRITE", None);
         env.set(FLAG_GLOBAL_ENV, None);
@@ -610,7 +603,7 @@ mod tests {
 
     #[test]
     fn should_return_true_when_env_flag_enabled_reads_truthy_per_flag_variable() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_HOOK_COMMAND_REWRITE", Some("1"));
         env.set(FLAG_GLOBAL_ENV, None);
@@ -623,7 +616,7 @@ mod tests {
 
     #[test]
     fn should_return_false_when_env_flag_enabled_reads_explicitly_false_variable() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_HOOK_COMMAND_REWRITE", Some("0"));
         env.set(FLAG_GLOBAL_ENV, Some("all"));
@@ -635,7 +628,7 @@ mod tests {
 
     #[test]
     fn should_enable_flag_when_config_override_set_and_env_undecided() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_HOOK_COMMAND_REWRITE", None);
         env.set(FLAG_GLOBAL_ENV, None);
@@ -651,7 +644,7 @@ mod tests {
 
     #[test]
     fn should_fall_back_to_default_when_config_override_absent_for_flag() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set(FLAG_GLOBAL_ENV, None);
         let registry = registry_with(&[("hook-command-rewrite", false), ("other", true)]);
@@ -667,7 +660,7 @@ mod tests {
 
     #[test]
     fn should_beat_config_override_when_per_flag_env_decides() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_HOOK_COMMAND_REWRITE", Some("0"));
         env.set(FLAG_GLOBAL_ENV, None);
@@ -682,7 +675,7 @@ mod tests {
 
     #[test]
     fn should_report_config_source_and_value_when_explaining_config_layer() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_HOOK_COMMAND_REWRITE", None);
         env.set(FLAG_GLOBAL_ENV, None);
@@ -701,7 +694,7 @@ mod tests {
 
     #[test]
     fn should_clear_config_layer_when_overrides_replaced_with_empty_map() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set(FLAG_GLOBAL_ENV, None);
         let registry = registry_with(&[("hook-command-rewrite", false)]);
@@ -716,7 +709,7 @@ mod tests {
 
     #[test]
     fn should_enable_listed_flags_when_global_env_lists_flag_ids() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_FOO", None);
         env.set("MIRRICODE_EXPERIMENTAL_BAR", None);
@@ -733,7 +726,7 @@ mod tests {
 
     #[test]
     fn should_enable_every_registered_flag_when_global_env_is_all() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_ALPHA", None);
         env.set("MIRRICODE_EXPERIMENTAL_BETA", None);
@@ -746,7 +739,7 @@ mod tests {
 
     #[test]
     fn should_enable_every_registered_flag_when_global_env_is_truthy() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_GAMMA", None);
         env.set(FLAG_GLOBAL_ENV, Some("true"));
@@ -757,7 +750,7 @@ mod tests {
 
     #[test]
     fn should_report_effective_state_sorted_by_id_when_snapshotting_registered_flags() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_A", None);
         env.set("MIRRICODE_EXPERIMENTAL_B", Some("1")); // overrides default
@@ -806,7 +799,7 @@ mod tests {
 
     #[test]
     fn should_report_the_default_source_when_explaining_a_flag_without_env_overrides() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_KNOWN", None);
         env.set(FLAG_GLOBAL_ENV, None);
@@ -823,7 +816,7 @@ mod tests {
 
     #[test]
     fn should_report_the_env_source_when_explaining_a_flag_with_a_per_flag_override() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_KNOWN", Some("1"));
         env.set(FLAG_GLOBAL_ENV, None);
@@ -837,7 +830,7 @@ mod tests {
 
     #[test]
     fn should_report_the_master_env_source_when_explaining_a_flag_enabled_globally() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set("MIRRICODE_EXPERIMENTAL_KNOWN", None);
         env.set(FLAG_GLOBAL_ENV, Some("all"));
@@ -851,7 +844,7 @@ mod tests {
 
     #[test]
     fn should_explain_every_registered_flag_sorted_by_id() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = mirri_test_support::env::lock();
         let mut env = EnvGuard::new();
         env.set(FLAG_GLOBAL_ENV, None);
         let registry = registry_with(&[("b", false), ("a", true)]);

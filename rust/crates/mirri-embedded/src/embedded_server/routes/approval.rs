@@ -14,6 +14,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "approval.decide",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_approval_decide(params)),
+        settlement: Route::SETTLES,
     },
     // The session's pending approvals (klient `approvalRequest[]`, bare
     // array).
@@ -21,12 +22,14 @@ pub(super) const ROUTES: &[Route] = &[
         method: "approval.listPending",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_approval_list_pending(params)),
+        settlement: Route::SETTLES,
     },
     // B9: the user-level permission rules of the shared config snapshot.
     Route {
         method: "approval.listRules",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_approval_list_rules(params)),
+        settlement: Route::SETTLES,
     },
     // B9: append one user-scope rule through the config.toml write pipeline
     // and push the new rule set into every live agent.
@@ -34,11 +37,13 @@ pub(super) const ROUTES: &[Route] = &[
         method: "approval.addRule",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_approval_add_rule(params)),
+        settlement: Route::SETTLES,
     },
     // B9: remove one user-scope rule by {pattern, decision}.
     Route {
         method: "approval.removeRule",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_approval_remove_rule(params)),
+        settlement: Route::SETTLES,
     },
 ];

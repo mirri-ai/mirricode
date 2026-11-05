@@ -103,6 +103,12 @@ pub struct AuthorizeToolContext<'a> {
     pub step: u32,
     pub tool_call_id: String,
     pub tool_name: String,
+    /// The tool's ADR-015 capability category: `true` = the tool declares
+    /// read-only (observation only). The ReadOnly cron posture (stage-2
+    /// D-M2) refuses every tool whose category is not read-only — the
+    /// authorize site carries it so the hook decides with the real
+    /// declaration, not a name list.
+    pub tool_readonly: bool,
     pub args: &'a serde_json::Value,
     pub approval_rule: &'a str,
     pub display: &'a ToolInputDisplay,
@@ -140,6 +146,26 @@ pub struct ContinueAfterStopContext {
 /// All methods have default no-op implementations so the loop can run without
 /// a host (for testing).
 pub trait LoopHooks: Send + Sync {
+    /// The turn's origin (S5 / ADR-001): consumed by the tool-executor
+    /// boundary so the Agent tool can propagate the Cron lineage into its
+    /// spawns. Default `Interactive` — hooks implementations without a
+    /// notion of turn origin report interactive.
+    fn turn_origin(&self) -> crate::permission::TurnOriginContext {
+        crate::permission::TurnOriginContext::default()
+    }
+
+    /// The flow's asked-ops ledger handle (V15 / D.2 m3): consumed by the
+    /// tool-executor boundary so the Agent / AgentSwarm tools can share the
+    /// spawning turn's ledger into their spawns — a cron-fired turn's
+    /// delegated member records its permission outcomes into the ledger
+    /// the run spawner drains. Default `None` — hooks implementations
+    /// without a ledger keep their spawns' traces local.
+    fn asked_ops_handle(
+        &self,
+    ) -> Option<std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>> {
+        None
+    }
+
     fn before_step(&self, _ctx: BeforeStepContext) -> HookFuture<EngineResult<BeforeStepResult>> {
         Box::pin(async { Ok(BeforeStepResult::default()) })
     }

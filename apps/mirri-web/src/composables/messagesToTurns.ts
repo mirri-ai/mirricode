@@ -14,6 +14,7 @@ import { COMPACTION_MARKER_METADATA_KEY, ECHOED_FILE_REFERENCES_METADATA_KEY, SW
 import type { AgentMember, ApprovalBlock, ChatTurn, CronTurnData, NotificationTurnData, ToolCall, ToolMedia, TurnAttachment, TurnBlock } from '../types';
 import { buildApprovalBlock } from '../lib/approvalDisplay';
 import { deriveMemberPhase } from '../lib/taskStatus';
+import { formatDuration } from '../components/chatTurnRendering';
 
 const READ_MEDIA_TOOL_RE = /^read[_-]?media(?:file)?$/i;
 const DATA_URL_RE = /^data:([^;]+);base64,(.*)$/s;
@@ -248,8 +249,7 @@ export function toAgentMember(task: AppTask): AgentMember {
     status: task.status,
     summary: task.outputPreview,
     outputLines: task.outputLines,
-    text: task.text,
-    thinking: task.thinking,
+    segments: task.segments,
     steps: task.steps,
     suspendedReason: task.suspendedReason,
     swarmIndex: task.swarmIndex,
@@ -275,6 +275,13 @@ interface Group {
   approvalId: string | undefined;
   /** Client-side measured duration from turn.started to turn.ended (ms). */
   durationMs?: number;
+  /** Engine-authoritative endedAt of the most recent assistant message folded
+   *  into this group (the live path's turn.ended stamp / the reload face's
+   *  endedAtMs backfill on the run-end row). The only source of the turn's
+   *  completion instant — never derived from lastCreatedAt + durationMs. */
+  lastRowEndedAt: string | undefined;
+  /** createdAt of the most recent assistant message folded into this group. */
+  lastCreatedAt: string | undefined;
   /**
    * Normalized signatures already folded into this group, used to drop a
    * duplicate assistant message. The same logical reply can reach us under two
@@ -730,6 +737,33 @@ export function messagesToTurns(
     if (!pendingGroup) return;
     const g = pendingGroup;
     pendingGroup = null;
+    // The footer's endedAt is engine-authoritative or absent: only the
+    // completion instant the engine stamped on the run-end row (live: the
+    // turn.ended event; reload: the read face's endedAtMs backfill) may become
+    // a timestamp. Never a client-side clock, never derived from the row's
+    // createdAt + durationMs (a multi-step turn's final row was created at
+    // that STEP's start, and the reload path's createdAt is synthetic).
+    const endedAt: string | undefined =
+      g.lastRowEndedAt !== undefined && g.lastRowEndedAt !== '' ? g.lastRowEndedAt : undefined;
+    // The freeze anchor is stricter than the footer stamp: only a
+    // deterministic source may become a duration. A bare createdAt is the read
+    // face's SYNTHETIC timeline (session base time + row position, see rpc.rs's
+    // message_list_row), so subtracting a real startedAtMs from it yields an
+    // invented number — US3.8 says a missing timing is not shown. No
+    // deterministic anchor → no freeze.
+    let freezeAnchorMs: number | undefined;
+    if (g.lastRowEndedAt !== undefined && g.lastRowEndedAt !== '') {
+      const ms = Date.parse(g.lastRowEndedAt);
+      if (!Number.isNaN(ms)) freezeAnchorMs = ms;
+    } else if (
+      g.lastCreatedAt !== undefined &&
+      g.lastCreatedAt !== '' &&
+      g.durationMs !== undefined &&
+      g.durationMs > 0
+    ) {
+      const ms = Date.parse(g.lastCreatedAt);
+      if (!Number.isNaN(ms)) freezeAnchorMs = ms + g.durationMs;
+    }
     // A later message ended this turn, so a tool still 'running' simply never
     // had its result persisted (e.g. an aborted turn in an old transcript) —
     // render it settled instead of spinning forever. The FINAL group keeps
@@ -740,7 +774,15 @@ export function messagesToTurns(
       for (let i = 0; i < g.tools.length; i++) {
         const t = g.tools[i]!;
         if (t.status !== 'running') continue;
-        const updated: ToolCall = { ...t, status: 'ok' };
+        // ADR-7 / US3.8: an interrupted tool's timer freezes at the real waited
+        // span at the moment the turn ended. Rebuilding turns later must NOT
+        // grow this number, so the freeze anchor is the turn's end, never
+        // Date.now() at render time. No deterministic turn end → no freeze;
+        // keep the card's existing presentation rather than inventing one.
+        const frozenTiming = t.startedAtMs !== undefined && freezeAnchorMs !== undefined
+          ? formatDuration(Math.max(0, freezeAnchorMs - t.startedAtMs))
+          : undefined;
+        const updated: ToolCall = { ...t, status: 'ok', timing: frozenTiming ?? t.timing };
         g.tools[i] = updated;
         const blk = g.blocks.find((b) => b.kind === 'tool' && b.tool.id === updated.id);
         if (blk && blk.kind === 'tool') blk.tool = updated;
@@ -757,6 +799,7 @@ export function messagesToTurns(
       approval: g.approval,
       approvalId: g.approvalId,
       durationMs: g.durationMs,
+      endedAt,
       promptId: g.promptId,
     });
   }
@@ -795,6 +838,9 @@ export function messagesToTurns(
           // flushGroup settles dangling tools of finished turns back to 'ok'.
           status: 'running',
           output: c.outputLines,
+          // ADR-7: the server's start stamp anchors the card's live timer
+          // while running (Task 6 consumes it); absent on older engines.
+          startedAtMs: c.startedAtMs,
           planPath: c.toolName === 'ExitPlanMode' ? planReviewByToolCallId[c.toolCallId]?.path : undefined,
           // B7 W6: the detach stamp rides the card and survives the result
           // (the spread in the toolResult arm keeps it).
@@ -817,6 +863,10 @@ export function messagesToTurns(
             status: c.isError ? 'error' : 'ok',
             output: normalizeToolOutput(c.output),
             media: c.isError ? undefined : normalizeToolMedia(tool.name, c.output),
+            // ADR-7: the settled card shows the server's measured duration.
+            // No duration on the wire (older engine) → keep whatever the card
+            // already has; never fabricate one.
+            timing: c.durationMs !== undefined ? formatDuration(c.durationMs) : tool.timing,
           };
           // ExitPlanMode: if the plan path wasn't captured from the (ephemeral)
           // approval display, recover it from the result output so the file link
@@ -835,19 +885,27 @@ export function messagesToTurns(
   /**
    * Fold the volatile extras of a dropped duplicate into the group: a resync
    * seed's tool cards carry live progress (`outputLines` from
-   * `in_flight_turn.running_tools[].last_progress`) that the persisted copy
+   * `in_flight_turn.running_tools[].last_progress`) and the live start anchor
+   * (`startedAtMs`, absent from the persisted row) that the persisted copy
    * lacks — without this, a mid-tool refresh blanks the card's latest output
-   * until the next progress frame. Never overwrite output a tool result
-   * already settled.
+   * and stops its live timer. Only fills gaps; never overwrites what the
+   * persisted copy already carries.
    */
   function mergeVolatileExtras(g: Group, content: AppMessage['content']): void {
     for (const c of content) {
-      if (c.type !== 'toolUse' || !c.outputLines?.length) continue;
+      if (c.type !== 'toolUse') continue;
+      if (!c.outputLines?.length && c.startedAtMs === undefined) continue;
       const idx = g.tools.findIndex((t) => t.id === c.toolCallId);
       if (idx === -1) continue;
       const tool = g.tools[idx]!;
-      if (tool.output !== undefined) continue;
-      const updated: ToolCall = { ...tool, output: c.outputLines };
+      const fillOutput = tool.output === undefined && c.outputLines?.length;
+      const fillStartedAt = tool.startedAtMs === undefined && c.startedAtMs !== undefined;
+      if (!fillOutput && !fillStartedAt) continue;
+      const updated: ToolCall = {
+        ...tool,
+        output: fillOutput ? c.outputLines : tool.output,
+        startedAtMs: fillStartedAt ? c.startedAtMs : tool.startedAtMs,
+      };
       g.tools[idx] = updated;
       const blk = g.blocks.find((b) => b.kind === 'tool' && b.tool.id === c.toolCallId);
       if (blk && blk.kind === 'tool') blk.tool = updated;
@@ -1045,6 +1103,8 @@ export function messagesToTurns(
         approvalId: undefined,
         foldedSigs: [],
         durationMs: msg.durationMs,
+        lastRowEndedAt: msg.endedAt,
+        lastCreatedAt: msg.createdAt,
       };
     } else if (pendingGroup !== null && pendingGroup.promptId === undefined && pid !== undefined) {
       pendingGroup.promptId = pid;
@@ -1061,6 +1121,11 @@ export function messagesToTurns(
       pendingGroup.durationMs !== msg.durationMs
     ) {
       pendingGroup.durationMs = msg.durationMs;
+    }
+    // Track the newest row's createdAt so flushGroup can derive endedAt.
+    if (pendingGroup !== null) {
+      pendingGroup.lastCreatedAt = msg.createdAt;
+      pendingGroup.lastRowEndedAt = msg.endedAt;
     }
 
     const group = pendingGroup;

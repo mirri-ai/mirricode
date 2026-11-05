@@ -360,7 +360,7 @@ const fn srv_kept(name: &'static str, domain: MethodDomain) -> MethodEntry {
     }
 }
 
-/// The full method registry: 225 rows (P2 MCP pool surface + the P5d
+/// The full method registry: 227 rows (P2 MCP pool surface + the P5d
 /// session.getHistory read face + the P6 agent profile CRUD vertical +
 /// the R4 Task 25 agent profile enable/disable/reset lifecycle rows +
 /// the P10 session.search read face + the T2 user-tool management
@@ -376,8 +376,11 @@ const fn srv_kept(name: &'static str, domain: MethodDomain) -> MethodEntry {
 /// the 5 interrupted-task recovery rows joined with the recovery domain;
 /// the 8 B5-d `auth.*` rows were removed with the managed-login domain,
 /// and the 4 provider-credential `credential.*` rows joined the config
-/// domain) = 208
-/// embedded-current ∪ 196 server-current (179 both) + 0 unimplemented
+/// domain, and the form batch-6 `cron.preview` row joined the cron
+/// domain) = 209
+/// embedded-current ∪ 200 server-current (183 both — the 4 provider-credential
+/// `credential.*` rows flipped to both by ADR-010, opening the serve wire's
+/// engine fall-through to the web settings page) + 0 unimplemented
 /// v2 gap rows; 23 of the
 /// current rows are retired-but-still-dispatched. All six D4 §2 rename
 /// folds have been executed (five server-side in batch ⑥, the embedded
@@ -406,6 +409,11 @@ pub const METHODS: &[MethodEntry] = &[
     // SDR-014 recency touch — user-interaction-only, bumps lastUsedAt
     // (the sidebar sort key) without touching updatedAt.
     both("session.touch", D::Session),
+    // SDR-016/017 pin — the pin trio rides the metadata row (ADR-006);
+    // the write never touches the recency keys. Rust-first (SDR-003):
+    // the pin contract is new, no TS facade exists.
+    both_kept("session.pin", D::Session),
+    both_kept("session.unpin", D::Session),
     both("session.updateMeta", D::Session),
     // B1 serve flip: the embedded route also rides the serve wire through
     // the engine fall-through (SRV has update, no read-back).
@@ -459,6 +467,16 @@ pub const METHODS: &[MethodEntry] = &[
     // v2 contract (the both_kept spelling, cron.delete parity).
     both_kept("task.listWorkspace", D::Task),
     both("cron.list", D::Cron),
+    // Stage-1 batch-3 user-creation face (E.1 / A.1): the management
+    // panel's direct create — origin `User`, any fire budget (the
+    // model-side gate hangs on the tool face only), structural
+    // validations intact. A rust-first keep: no TS v2 counterpart.
+    both_kept("cron.add", D::Cron),
+    // Stage-1 batch-3 cross-session aggregated listing (E.5 / V8a): every
+    // existing session's tasks in one view (live in-memory + persisted
+    // wire-log replay), grouped by session with honest open flags. A
+    // rust-first keep: no TS v2 counterpart.
+    both_kept("cron.listAll", D::Cron),
     // B6 cron management write face: new wire, both faces via the engine
     // fall-through (a thin wrapper over the shared core's durable
     // `CronManager::remove` — the same cron.delete wire op the stale
@@ -470,6 +488,32 @@ pub const METHODS: &[MethodEntry] = &[
     // schedule untouched (D-2 — no cursor advance, no reschedule, no
     // one-shot consumption; the natural fire still happens).
     both_kept("cron.trigger", D::Cron),
+    // Stage-2 batch 4b (cron-scheduling): one workspace task's run
+    // records (C.2) — the panel's consumption face.
+    both_kept("cron.runs.list", D::Cron),
+    // Stage-2 batch 4b (cron-scheduling): the explicit-open path
+    // (B.2/C.4, ADR-008) — opening a run record materializes the
+    // execution session into the session index.
+    both_kept("cron.run.open", D::Cron),
+    // Form batch 6 (cron-scheduling, ADR-017): the read-only preview
+    // face — the next N occurrences of a schedule (expression or
+    // interval) from the same kernel `check_due` plans with; no task
+    // side effects, not gated on the disable switch (a display
+    // projection).
+    both_kept("cron.preview", D::Cron),
+    // Batch 2 (cron-improvement, A9): edit one workspace task in place —
+    // the task keeps its id and its run history; the workspace is not
+    // editable. A rust-first keep (no TS v2 counterpart).
+    both_kept("cron.update", D::Cron),
+    // Batch 2 (A9): pause one workspace task — it stops firing and the
+    // paused window leaves no trace in the history.
+    both_kept("cron.pause", D::Cron),
+    // Batch 2 (A9): resume a paused task from the next FUTURE occurrence
+    // (no catch-up replay).
+    both_kept("cron.resume", D::Cron),
+    // Batch 2 (A13 / C3): the workspace-level待确认 aggregation — every
+    // undecided CreateScheduledTask across the workspace's sessions with
+    // the full parameters (the task page's pending section).
     // --- embedded dispatch: compaction domain ------------------------------
     // (renamed from the server's `session.compact` stub in batch ⑥, D4 §2).
     both("session.beginCompaction", D::Session),
@@ -753,13 +797,18 @@ pub const METHODS: &[MethodEntry] = &[
     both("provider.get", D::Provider),
     both("provider.list", D::Provider),
     both("provider.set", D::Provider),
-    // credential.* — provider credential store CRUD + status (embedded-only:
-    // the CLI reveals plaintext locally; no reveal over RPC — SDR-002/ADR-003).
-    // The serve wire reaches them through the embedded fall-through.
-    emb("credential.list", D::Config),
-    emb("credential.set", D::Config),
-    emb("credential.remove", D::Config),
-    emb("credential.status", D::Config),
+    // credential.* — provider credential store CRUD + status (the CLI
+    // reveals plaintext locally; no reveal over RPC — SDR-002/ADR-003).
+    // ADR-010: both faces — the serve wire reaches them through the
+    // embedded fall-through, so the web settings page can manage provider
+    // keys. The `credential.updated` notification is NOT forwarded on the
+    // serve wire (no engine event subscription there — the model.generate
+    // chunk precedent); serve clients re-read `credential.list` after a
+    // successful write.
+    both("credential.list", D::Config),
+    both("credential.set", D::Config),
+    both("credential.remove", D::Config),
+    both("credential.status", D::Config),
     // workspace.* — B4-b gap implementations (embedded routes; the serve
     // wire rides the engine fall-through).
     both("workspace.get", D::Workspace),
@@ -968,11 +1017,12 @@ mod tests {
     /// dismiss/dismissAll — rust-first keeps, both faces via the engine
     /// fall-through), so the
     /// current surface is
-    /// embedded 208, server 196, both
-    /// 179 (the SDR-014 `session.touch` row joined the both-current
+    /// embedded 210, server 202, both
+    /// 185 (the SDR-014 `session.touch` row joined the both-current
     /// settled surface; the ADR-010 skill.reload row joined it too; the
     /// 4 provider-credential `credential.*` rows joined the
-    /// embedded-only surface; the 5 interrupted-task recovery rows are
+    /// both-current surface with ADR-010's serve-wire flip; the 5
+    /// interrupted-task recovery rows are
     /// rust-first keeps on both faces via the engine fall-through). If
     /// any of these moves, the
     /// registry is out of sync with the engines or the adjudication, and
@@ -986,15 +1036,17 @@ mod tests {
             .count();
         let total = all_methods().count();
 
-        assert_eq!(embedded, 208, "embedded-available method count");
-        assert_eq!(server, 196, "server-available method count");
-        assert_eq!(both, 179, "embedded ∩ server method count");
-        assert_eq!(total, 225, "total registered rows");
+        assert_eq!(embedded, 218, "embedded-available method count");
+        assert_eq!(
+            server, 210,
+            "server-available method count (ADR-010 flipped the 4 credential.* rows to both; the stage-2 batch-4b cron rows joined them; the batch-2 cron management rows — update/pause/resume — joined them; cron.pendingApprovals retired with the pending zone, ADR-022; session.pin/unpin joined, SDR-016/017)"
+        );
+        assert_eq!(both, 193, "embedded ∩ server method count");
+        assert_eq!(total, 235, "total registered rows");
         // The current surface is self-consistent: the union of
-        // the two backend views equals the 225 registered rows
+        // the two backend views equals the 235 registered rows
         // (the last unimplemented set was cleared in B5; the 8 auth rows
-        // left again with the managed-login domain removal; the 4
-        // credential rows are embedded-only).
+        // left again with the managed-login domain removal).
         assert_eq!(total, embedded + server - both);
     }
 
@@ -1027,8 +1079,8 @@ mod tests {
             "retired rows (23 embedded; the 2 server rows were removed in batch ⑥)"
         );
         assert_eq!(
-            rust_first, 41,
-            "rust-first keeps (the M7 mcp.subscribe row joined them; the R4 Task 25 profile lifecycle rows — enable/disable/reset — joined them next; the W8 workspace.setTrust row joined them after that; the 3 B9 approval rule CRUD rows joined them after that; the 2 B6 cron management rows joined them, the B7 task.listWorkspace overview row joined them, the 6 session-retention rows joined them, the ADR-010 skill.reload / skill.subscribe rows joined them, the E9 file.stat pre-send reference validation row joined them, and the 5 interrupted-task recovery rows joined them last)"
+            rust_first, 51,
+            "rust-first keeps (the M7 mcp.subscribe row joined them; the R4 Task 25 profile lifecycle rows — enable/disable/reset — joined them next; the W8 workspace.setTrust row joined them after that; the 3 B9 approval rule CRUD rows joined them after that; the 2 B6 cron management rows joined them, the B7 task.listWorkspace overview row joined them, the 6 session-retention rows joined them, the ADR-010 skill.reload / skill.subscribe rows joined them, the E9 file.stat pre-send reference validation row joined them, the 5 interrupted-task recovery rows joined them, and the 2 stage-1 batch-3 cron rows — cron.add the user-creation face and cron.listAll the aggregated listing — joined them, and the stage-2 batch-4b cron rows — cron.runs.list, cron.run.open — joined them (cron.proposals.list retired with the proposal channel in batch 3), and the form batch-6 cron.preview row joined them, and the 3 batch-2 cron management rows — cron.update / cron.pause / cron.resume — joined them last; cron.pendingApprovals retired with the pending zone, ADR-022; the SDR-016/017 session.pin/unpin rows joined)"
         );
         assert_eq!(
             unimplemented, 0,
@@ -1038,28 +1090,28 @@ mod tests {
             settled, 161,
             "drift + remaining MISSING-ONE rows (98 both + the embedded-only and server-only settled rows + the 4 batch-3 P1 MCP config rows + the 2 batch-4 P2 MCP pool rows + the M1 mcp.tools row + the P6 providerDiscovery.listCatalog row + the M5 mcp.config.preview row + the P7 providerDiscovery.importCatalog row + the M6 mcp.sync row + the 2 collaboration mode-gate rows; the 8 B5-d auth rows left with the managed-login removal; the SDR-014 session.touch row joined; the 4 provider-credential credential.* rows joined last)"
         );
-        assert_eq!(retired + rust_first + unimplemented + settled, 225);
+        assert_eq!(retired + rust_first + unimplemented + settled, 235);
         // The live surface check: every registered
         // row is currently dispatched (the last unimplemented set was
         // cleared in B5; the 8 auth rows left again with the managed-login
         // domain removal).
         assert_eq!(
             retired + rust_first + settled,
-            225,
+            235,
             "currently-dispatched rows"
         );
         assert_eq!(
             all_methods().count() - retired,
-            202,
-            "non-retired rows (41 rust-first + the settled rows + 0 unimplemented gap rows)"
+            212,
+            "non-retired rows (48 rust-first + the settled rows + 0 unimplemented gap rows; the SDR-016/017 pin rows joined the rust-first set)"
         );
     }
 
     /// The backend current views are duplicate-free:
-    /// `current_names_for(Embedded)` names the 192-name canonical set
+    /// `current_names_for(Embedded)` names the 191-name canonical set
     /// (spot-checked around the executed rename folds — `plan.status` yes,
     /// `plan.get` no — the B1 session additions, and pinned by the node-sdk
-    /// fixture e2e), and `current_names_for(Server)` the 196-name set after
+    /// fixture e2e), and `current_names_for(Server)` the 200-name set after
     /// the batch-⑥ renames, the M5-3b core.echo drill row, the B1
     /// session vertical, the B2 serve flips (the 19 batch-2
     /// embedded-only rows now ride the serve wire through the engine
@@ -1086,8 +1138,8 @@ mod tests {
             names
         }
 
-        let embedded = assert_unique_and_count(RpcBackend::Embedded, 208);
-        let server = assert_unique_and_count(RpcBackend::Server, 196);
+        let embedded = assert_unique_and_count(RpcBackend::Embedded, 218);
+        let server = assert_unique_and_count(RpcBackend::Server, 210);
 
         // Rename-affected names, spot-checked per backend:
         // - embedded dispatches `plan.status` (the M3-c rename); `plan.get`,
@@ -1180,6 +1232,12 @@ mod tests {
         // rides the engine fall-through.
         assert!(embedded.contains(&"agent.activity"));
         assert!(server.contains(&"agent.activity"));
+        // ADR-010: the 4 provider-credential rows ride the serve wire the
+        // same way (the web settings page's key management).
+        assert!(server.contains(&"credential.list"));
+        assert!(server.contains(&"credential.set"));
+        assert!(server.contains(&"credential.remove"));
+        assert!(server.contains(&"credential.status"));
         // The B3 serve vertical rides the serve wire too: the 12 batch-3
         // embedded-only rows fall through to the engine (9 plugin methods +
         // 3 mcp methods).
@@ -1443,7 +1501,7 @@ mod tests {
         }
 
         // The v2 contract surface: every adjudicated row except the retired
-        // and rust-first ones (225 − 23 − 41 = 161; the B1 gap
+        // and rust-first ones (228 − 23 − 44 = 161; the B1 gap
         // implementations were already v2=Y rows — the 4 batch-3 P1
         // MCP config rows registered v2=Y with their TS facade landing in
         // the same batch, and the 2 batch-4 P2 MCP pool rows register
@@ -1933,6 +1991,26 @@ mod tests {
         );
         assert_eq!(
             get("provider.delete").unwrap().availability,
+            BackendAvailability::Both
+        );
+        // ADR-010: the 4 provider-credential rows are both-current (embedded
+        // route + serve engine fall-through — the web settings page's key
+        // management reaches them; the `credential.updated` notification is
+        // serve-wire-dropped, clients re-read instead).
+        assert_eq!(
+            get("credential.list").unwrap().availability,
+            BackendAvailability::Both
+        );
+        assert_eq!(
+            get("credential.set").unwrap().availability,
+            BackendAvailability::Both
+        );
+        assert_eq!(
+            get("credential.remove").unwrap().availability,
+            BackendAvailability::Both
+        );
+        assert_eq!(
+            get("credential.status").unwrap().availability,
             BackendAvailability::Both
         );
         // Unknown methods are absent, not defaulted.

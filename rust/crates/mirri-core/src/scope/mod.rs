@@ -39,6 +39,7 @@ pub use lifecycle::LifecycleScope;
 pub use session_scope::{PendingSkillReminder, SessionMetaHandle, SessionScope, SessionWireLog};
 pub use workspace_scope::{
     SkillRootChannel, WorkspaceScope, dedupe_skill_roots, default_skill_root_channels,
+    default_skill_root_channels_from,
 };
 
 use std::sync::Arc;

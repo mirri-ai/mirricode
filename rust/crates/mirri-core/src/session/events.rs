@@ -261,6 +261,13 @@ pub enum SessionEvent {
         /// when the failure happened before an id was allocated.
         #[serde(default)]
         wire_turn_id: u64,
+        /// The turn's wall-clock completion instant (Unix epoch ms) — rides
+        /// the projected `event.turn.ended` payload so the footer's
+        /// "completed at" stamp is engine-authoritative on live paths,
+        /// success and failure alike. `None` when no instant was measured.
+        /// Independent of `duration_ms`; never derived from it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ended_at_ms: Option<u64>,
     },
 
     /// An engine turn started running: `message.send` accepted the user
@@ -322,6 +329,13 @@ pub enum SessionEvent {
         /// `TurnEndResult`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
+        /// The turn's wall-clock completion instant (Unix epoch ms) — rides
+        /// the projected `event.turn.ended` payload so the footer's
+        /// "completed at" stamp is engine-authoritative on live paths,
+        /// success and failure alike. `None` when no instant was measured.
+        /// Independent of `duration_ms`; never derived from it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ended_at_ms: Option<u64>,
     },
 
     /// A tool call started executing within an engine turn. Published live
@@ -339,6 +353,15 @@ pub enum SessionEvent {
         tool_name: String,
         tool_call_id: String,
         args: serde_json::Value,
+        /// Dispatch wall-clock time in epoch milliseconds — the wire
+        /// `startedAtMs`. ADR-7: the server is the timing authority, and the
+        /// window starts at dispatch (approval waiting is excluded).
+        ///
+        /// `serde(default)` keeps old wire logs replayable: the field
+        /// postdates them, and a missing value must deserialize (as `0`)
+        /// rather than fail the whole session replay.
+        #[serde(default)]
+        started_at_ms: u64,
     },
 
     /// A tool call completed (success or error). Published live so the UI
@@ -360,6 +383,14 @@ pub enum SessionEvent {
         tool_name: String,
         is_error: bool,
         output: crate::tool::ToolOutput,
+        /// Dispatch-to-completion elapsed time in milliseconds — the wire
+        /// `durationMs`, measured from the matching `started_at_ms` (ADR-7:
+        /// server-authoritative and approval-wait-free).
+        ///
+        /// `serde(default)` keeps old wire logs replayable: a missing value
+        /// deserializes as `0` instead of failing the replay.
+        #[serde(default)]
+        duration_ms: u64,
     },
 
     /// An incremental update from a running tool call (streamed stdout,
@@ -612,7 +643,15 @@ pub enum SessionEvent {
     /// standalone flow (tests, no dispatch) falls back to the engine's
     /// numeric per-flow counter stringified.
     #[serde(rename = "turn_step_started")]
-    TurnStepStarted { turn_id: String, step: u32 },
+    TurnStepStarted {
+        /// The flow's agent identity (`"main"`, `"agent-<uuid>"`) — the
+        /// same wire vocabulary [`SessionEvent::TurnStarted`] carries, so
+        /// clients can route step-boundary frames to the owning agent's
+        /// timeline.
+        agent_id: String,
+        turn_id: String,
+        step: u32,
+    },
 
     /// One LLM step of an engine turn finished — the
     /// `turn.step.completed` wire event (the turn-flow `after_step`
@@ -620,6 +659,8 @@ pub enum SessionEvent {
     /// [`SessionEvent::TurnStepStarted`] convention.
     #[serde(rename = "turn_step_completed")]
     TurnStepCompleted {
+        /// The flow's agent identity — see [`SessionEvent::TurnStepStarted`].
+        agent_id: String,
         turn_id: String,
         step: u32,
         input_tokens: u64,
@@ -642,6 +683,8 @@ pub enum SessionEvent {
     /// callback was built without one — the projection then omits it).
     #[serde(rename = "turn_step_interrupted")]
     TurnStepInterrupted {
+        /// The flow's agent identity — see [`SessionEvent::TurnStepStarted`].
+        agent_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         step: u32,
@@ -656,6 +699,8 @@ pub enum SessionEvent {
     /// [`SessionEvent::TurnStepInterrupted`] convention.
     #[serde(rename = "turn_step_retrying")]
     TurnStepRetrying {
+        /// The flow's agent identity — see [`SessionEvent::TurnStepStarted`].
+        agent_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<String>,
         step: u32,
@@ -764,6 +809,14 @@ pub enum SessionEvent {
         coalesced_count: usize,
         /// The task crossed the 7-day stale threshold — its final delivery.
         stale: bool,
+        /// This delivery exhausts the task's max_fires budget — its final
+        /// delivery (stage-1 batch-1, S3; F.2's maxed-out envelope mark).
+        maxed_out: bool,
+        /// The task's ReadOnly posture (stage-2 D-M2 / ADR-015) — the
+        /// fired turn's write-class refusal bit. `false` for every
+        /// pre-stage-2 record (the serde default on the wire round-trip).
+        #[serde(default)]
+        readonly: bool,
     },
 
     /// The session's work-facts tuple transitioned (US4.4 / SDR-013): the

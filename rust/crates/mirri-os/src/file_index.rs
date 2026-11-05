@@ -130,9 +130,10 @@ pub fn build_index(root: &Path, max_entries: usize) -> FileIndex {
     if entries.len() > max_entries {
         // 并行收集可能超限（各线程在加锁前各自判定）；按深度升序保留浅层截断。
         entries.sort_unstable_by(|a, b| {
-            let depth =
-                |e: &FileIndexEntry| e.rel_path.matches('/').count();
-            depth(a).cmp(&depth(b)).then_with(|| a.rel_path.cmp(&b.rel_path))
+            let depth = |e: &FileIndexEntry| e.rel_path.matches('/').count();
+            depth(a)
+                .cmp(&depth(b))
+                .then_with(|| a.rel_path.cmp(&b.rel_path))
         });
         entries.truncate(max_entries);
     }
@@ -166,8 +167,7 @@ where
         };
         entries.push(item.clone());
         batch.push(item);
-        if batch.len() >= STREAM_BATCH_ENTRIES || last_flush.elapsed() >= STREAM_FLUSH_INTERVAL
-        {
+        if batch.len() >= STREAM_BATCH_ENTRIES || last_flush.elapsed() >= STREAM_FLUSH_INTERVAL {
             on_batch(std::mem::take(&mut batch));
             last_flush = std::time::Instant::now();
         }
@@ -312,8 +312,8 @@ fn parent_dir_of(rel_path: &str) -> &str {
 /// `Rename`（一条原子改写）；`Name(Both)` 直接产出 Rename；未配对时各自生效，
 /// 旧名仍然消失（US9.7 第 2 条）。
 pub fn events_to_deltas(root: &Path, events: Vec<notify::Event>) -> Vec<IndexDelta> {
-    use notify::event::{ModifyKind, RenameMode};
     use notify::EventKind;
+    use notify::event::{ModifyKind, RenameMode};
 
     let kind_of = |path: &Path| {
         if path.is_dir() {
@@ -372,7 +372,9 @@ pub fn events_to_deltas(root: &Path, events: Vec<notify::Event>) -> Vec<IndexDel
     let mut slots: Vec<Option<IndexDelta>> = raw.into_iter().map(Some).collect();
     let mut out = Vec::new();
     for i in 0..slots.len() {
-        let Some(delta) = slots[i].take() else { continue };
+        let Some(delta) = slots[i].take() else {
+            continue;
+        };
         let IndexDelta::Remove { rel_path: removed } = delta else {
             out.push(delta);
             continue;
@@ -515,7 +517,11 @@ mod tests {
         let dir = tmp_with_files();
         std::fs::write(dir.path().join(".gitignore"), "node_modules/\n").unwrap();
         let index = build_index(dir.path(), 300_000);
-        assert!(index.iter().all(|e| !e.rel_path.starts_with("node_modules")));
+        assert!(
+            index
+                .iter()
+                .all(|e| !e.rel_path.starts_with("node_modules"))
+        );
         assert!(
             index
                 .iter()
@@ -543,7 +549,10 @@ mod tests {
     #[test]
     fn should_rank_exact_over_prefix_over_contains_over_subsequence() {
         let q = "composer";
-        assert_eq!(score_entry("composer.vue", "src/composer.vue", q), Some(1.0));
+        assert_eq!(
+            score_entry("composer.vue", "src/composer.vue", q),
+            Some(1.0)
+        );
         assert!(score_entry("composer-extra.ts", "a/composer-extra.ts", q).unwrap() < 1.0);
         assert!(
             score_entry("xcomposery.ts", "a/xcomposery.ts", q).unwrap()
@@ -557,7 +566,10 @@ mod tests {
     #[test]
     fn should_return_char_match_positions_for_highlighting() {
         // 最左贪心：s→0, c→2（"src" 的 c），x→15
-        assert_eq!(match_positions("src/components/x.ts", "scx"), vec![0, 2, 15]);
+        assert_eq!(
+            match_positions("src/components/x.ts", "scx"),
+            vec![0, 2, 15]
+        );
         assert!(match_positions("abc", "z").is_empty());
     }
 
@@ -606,7 +618,9 @@ mod tests {
         });
         assert!(idx.iter().any(|e| e.rel_path == "b.ts"));
         assert!(!idx.iter().any(|e| e.rel_path == "a.ts"));
-        idx.apply_delta(IndexDelta::Remove { rel_path: "d".into() });
+        idx.apply_delta(IndexDelta::Remove {
+            rel_path: "d".into(),
+        });
         assert!(!idx.iter().any(|e| e.rel_path == "d"));
     }
 
@@ -623,9 +637,7 @@ mod tests {
             attrs: Default::default(),
         };
         let deltas = events_to_deltas(Path::new("/ws"), vec![ev("/ws/src/new.ts", false)]);
-        assert!(
-            matches!(&deltas[0], IndexDelta::Add { rel_path, .. } if rel_path == "src/new.ts")
-        );
+        assert!(matches!(&deltas[0], IndexDelta::Add { rel_path, .. } if rel_path == "src/new.ts"));
     }
 
     #[test]
@@ -639,10 +651,8 @@ mod tests {
         assert!(!batch_sizes.is_empty());
         assert_eq!(batch_sizes.iter().sum::<usize>(), streamed.len());
         let parallel = build_index(dir.path(), 300_000);
-        let mut streamed_paths: Vec<String> =
-            streamed.iter().map(|e| e.rel_path.clone()).collect();
-        let mut parallel_paths: Vec<String> =
-            parallel.iter().map(|e| e.rel_path.clone()).collect();
+        let mut streamed_paths: Vec<String> = streamed.iter().map(|e| e.rel_path.clone()).collect();
+        let mut parallel_paths: Vec<String> = parallel.iter().map(|e| e.rel_path.clone()).collect();
         streamed_paths.sort();
         parallel_paths.sort();
         assert_eq!(streamed_paths, parallel_paths);

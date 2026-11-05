@@ -43,6 +43,8 @@ use std::sync::Arc;
 use mirri_core::orphan_sweep as core_sweep;
 
 use super::EmbeddedServer;
+use super::log_housekeeping_summary;
+use super::migration_v3;
 
 /// The lifetime sweeper's production tick (ADR-012 f): one pass per
 /// minute over the unsettled process-task archives.
@@ -89,19 +91,27 @@ impl EmbeddedServer {
                     .unwrap_or_else(|e| e.into_inner())
                     .resolve_orphan_dispose_policy();
                 let epoch = self.epoch.clone();
-                match tokio::task::spawn_blocking(move || {
+                let started = std::time::Instant::now();
+                let sweep = tokio::task::spawn_blocking(move || {
                     core_sweep::sweep_orphans(&sessions_root, policy, &epoch)
                 })
-                .await
-                {
+                .await;
+                match sweep {
                     Ok(report) => {
-                        if !report.entries.is_empty() {
-                            tracing::info!(
-                                count = report.entries.len(),
-                                "startup orphan census: reported unsettled \
-                                 process-task archives"
-                            );
-                        }
+                        // ADR-003 d observability: one summary line with
+                        // the elapsed time and the walk's volume. The warn
+                        // threshold only adds visibility — the desktop
+                        // assembly raises the engine at error level, so
+                        // info alone would not surface a slow census.
+                        let elapsed_ms = started.elapsed().as_millis() as u64;
+                        log_housekeeping_summary(
+                            "startup orphan census settled",
+                            elapsed_ms,
+                            &[
+                                ("candidates", report.entries.len()),
+                                ("scanned_archives", report.scanned_archives),
+                            ],
+                        );
                     }
                     Err(join_error) => {
                         tracing::warn!(
@@ -111,6 +121,79 @@ impl EmbeddedServer {
                     }
                 }
                 self.spawn_orphan_lifetime_sweeper();
+                // ADR-006 Task 9: the one-shot metadata migration (裁决 5)
+                // rides the census-settled body — INLINE in the settlement
+                // (not a fire-and-forget spawn like the cron import below):
+                // the read face waits for the census on its first dispatch,
+                // and a row-only read face without the seeded rows would
+                // answer every legacy session as not-found. Running the seed
+                // inside the census settlement is the e956f5e8a-compatible
+                // point — the census itself already settles off the first
+                // request's INLINE path (the OnceCell initializer runs when
+                // the first gate waiter arrives, and `spawn_blocking` keeps
+                // the state.json reads off the async workers) — while still
+                // guaranteeing no census waiter is released before the
+                // library is seeded and stamped.
+                let migration = migration_v3::run_one_shot_migration(&self.registry).await;
+                match &migration {
+                    Some(migration_v3::MigrationOutcome::Migrated { rows }) => {
+                        tracing::info!(
+                            rows,
+                            "one-shot metadata migration completed inside the census settlement"
+                        );
+                    }
+                    Some(migration_v3::MigrationOutcome::FreshOk) => {}
+                    // The loud degrade (裁决 5): the engine serves with
+                    // whatever rows the winning entry's migration produced,
+                    // but the user must know the other entry holds the
+                    // library — the seed resumes once it exits.
+                    Some(migration_v3::MigrationOutcome::BlockedByLiveInstance) => {
+                        tracing::warn!(
+                            "the one-shot metadata migration was blocked by another live \
+                             engine entry; sessions from the pre-migration layout stay \
+                             invisible until the other entry exits and the engine restarts"
+                        );
+                    }
+                    None => {} // no shared index (no home) — nothing to migrate
+                }
+                // ADR-006 Task 8: the one-time legacy cron JSON import
+                // rides the census-settled body — the `spawn_orphan_
+                // lifetime_sweeper` spawn pattern, one background task
+                // exactly once per server. The import is bounded local-disk
+                // I/O (reading every registered workspace's bucket files)
+                // and it must NOT ride the first request path
+                // (e956f5e8a's principle): the census settlement is the
+                // first point where the engine is off the request path,
+                // and the cron driver's first tick — which the census
+                // also gates — can never observe a half-imported
+                // manifest (the import completes before any settlement
+                // waiter is released).
+                let registry = Arc::clone(&self.registry);
+                tokio::spawn(async move {
+                    registry.import_legacy_cron_once();
+                });
+                // ADR-006 Task 10: the existence reaper rides the same
+                // settlement body — one best-effort sweep of the tombstone
+                // set right after the migration, then the retired
+                // index-refresh driver's cadence is gone entirely (the
+                // reaper only fires on tombstones; an empty set is a no-op).
+                if let Some(index) = self.session_index() {
+                    let sessions_root =
+                        self.manager.persistence().sessions_dir().to_path_buf();
+                    let index = Arc::clone(&index);
+                    tokio::task::spawn_blocking(move || {
+                        let reaped =
+                            crate::embedded_server::existence_reaper::reap_tombstoned_directories(
+                                &sessions_root, &index,
+                            );
+                        if reaped > 0 {
+                            tracing::info!(
+                                reaped,
+                                "existence reaper harvested tombstoned session directories"
+                            );
+                        }
+                    });
+                }
             })
             .await;
     }
@@ -395,11 +478,9 @@ mod tests {
         let task_json = plant_archive(&sessions_root, "task-live", Some(fp), chrono::Utc::now());
 
         let server = assembled_orphan_test_server(home.path());
-        // The first dispatched RPC triggers the inline census.
-        server
-            .call_method("config.getAll", serde_json::json!({}))
-            .await
-            .expect("first dispatch must succeed");
+        // The census settles through the startup-housekeeping seam (the
+        // first dispatch's gates settle the same cells; ADR-003 c).
+        server.await_housekeeping_settled().await;
 
         let report = last_sweep_report(&sessions_root).expect("a census report must be archived");
         assert_eq!(

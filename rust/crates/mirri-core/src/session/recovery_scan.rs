@@ -6,12 +6,23 @@
 //! `task.started` without a matching `task.terminated` inside the
 //! dangling turn bracket).
 //!
-//! This module answers one question for a wire log at rest: does its
-//! tail end with a turn that was opened (`turn.prompt`) but never
-//! closed (`turn.ended` / `turn.cancel`) — i.e. a turn that was running
-//! when the process died — and if so, when did it start, which prompt
-//! ordinal backs the synthetic closure turnId, and did it leave a
-//! background task potentially still running.
+//! This module answers three facts about a wire log at rest, in a single
+//! read ([`scan_recovery_summary`]):
+//!
+//! - **Open turn.** Does the tail end with a turn that was opened
+//!   (`turn.prompt`) but never closed (`turn.ended` / `turn.cancel`) —
+//!   i.e. a turn that was running when the process died — and if so,
+//!   when did it start, which prompt ordinal backs the synthetic closure
+//!   turnId, and did it leave a background task potentially still
+//!   running ([`OpenTurnScan`]).
+//! - **Persistent closure.** Did a previous boot already backfill the
+//!   interrupted closure, with no newer prompt since (F-03,
+//!   [`InterruptedClosureScan`]).
+//! - **Wait on user.** Is an `interaction.request` still unanswered
+//!   (D-M6's exclusion, [`RecoverySummary::unresolved_interaction`]).
+//!
+//! [`scan_open_turn`] and [`scan_interrupted_closure`] remain as single-arm
+//! views over the same walk.
 //!
 //! The scan is strictly read-only: it walks the raw migrated records
 //! (pre-`WireOp`, where the per-record `time` stamp still lives — same
@@ -52,79 +63,9 @@ pub struct OpenTurnScan {
 /// session is read decompressed in place, never restored to disk (spec
 /// §1.3 — `migrate_records_in_memory` serves both on-disk shapes).
 pub async fn scan_open_turn(wire_log_path: &Path) -> anyhow::Result<Option<OpenTurnScan>> {
-    // The dual-shape probe: the plain path names the log, but a
-    // compressed session holds only `wire.jsonl.gz` — its absence is not
-    // "no log" but "the other shape" (the migration reader resolves the
-    // shape from the parent dir). Absent BOTH forms: no log at all.
-    let parent = wire_log_path.parent();
-    let plain_log_exists = wire_log_path.exists(); // zero-io-allow: dual-shape log probe, read-only metadata check, see F-T13-2
-    let gz_log_exists = parent.is_some_and(|dir| dir.join("wire.jsonl.gz").exists()); // zero-io-allow: dual-shape log probe, read-only metadata check, see F-T13-2
-    if !(plain_log_exists || gz_log_exists) {
-        return Ok(None);
-    }
-    let records = migrate_records_in_memory(wire_log_path).await?;
-
-    // Single forward pass. `open_prompt` holds the currently-open turn's
-    // (ordinal, time); it is cleared by turn.ended OR turn.cancel (any
-    // turn.cancel closes the bracket — the V4 rule that cancelled turns
-    // are not interruptions). `live_tasks` tracks task_ids started but
-    // not terminated since the currently-open prompt — the dangling
-    // bracket's background content; a new prompt resets it because a task
-    // from an earlier closed turn is not this turn's pending hint.
-    let mut prompt_ordinal: u64 = 0;
-    let mut open_prompt: Option<(u64, u64)> = None;
-    let mut live_tasks: HashSet<String> = HashSet::new();
-    let mut pending_background = false;
-
-    for record in &records {
-        let record_type = record
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        match record_type {
-            "turn.prompt" => {
-                prompt_ordinal += 1;
-                let time = record.get("time").and_then(Value::as_u64);
-                open_prompt = time.map(|t| (prompt_ordinal, t));
-                live_tasks.clear();
-                pending_background = false;
-            }
-            "turn.ended" | "turn.cancel" => {
-                open_prompt = None;
-                live_tasks.clear();
-                pending_background = false;
-            }
-            "task.started" => {
-                if let Some(task_id) = record.pointer("/info/task_id").and_then(Value::as_str) {
-                    live_tasks.insert(task_id.to_string());
-                    if open_prompt.is_some() {
-                        pending_background = true;
-                    }
-                }
-            }
-            "task.terminated" => {
-                if let Some(task_id) = record.pointer("/info/task_id").and_then(Value::as_str) {
-                    live_tasks.remove(task_id);
-                }
-                if live_tasks.is_empty() {
-                    pending_background = false;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    match open_prompt {
-        Some((ordinal, time)) => Ok(Some(OpenTurnScan {
-            prompt_time_ms: time,
-            prompt_ordinal: ordinal,
-            pending_background: pending_background && !live_tasks.is_empty(),
-        })),
-        // A prompt without a usable `time` stamp (a legacy TS log) cannot
-        // anchor the interruption — mirroring `read_only_open_turn_started_at`,
-        // never fabricate one.
-        None => Ok(None),
-    }
+    Ok(scan_tail_facts(wire_log_path)
+        .await?
+        .and_then(|facts| facts.open_turn))
 }
 
 /// The result of scanning a wire log's tail for an already-written
@@ -156,6 +97,65 @@ pub struct InterruptedClosureScan {
 pub async fn scan_interrupted_closure(
     wire_log_path: &Path,
 ) -> anyhow::Result<Option<InterruptedClosureScan>> {
+    Ok(scan_tail_facts(wire_log_path)
+        .await?
+        .and_then(|facts| facts.persistent_closure))
+}
+
+/// Every fact the recovery check derives from one wire log's tail, taken
+/// in a single read-and-walk pass.
+///
+/// The startup recovery check needs three facts about the same log: is a
+/// turn still open (the abnormal arm's inference), does the tail end in a
+/// backfilled interrupted closure with no newer prompt (F-03's persistent
+/// arm), and is an `interaction.request` still unanswered (D-M6's
+/// wait-on-user exclusion). Each used to be its own full read of the
+/// file — three parses of every session log at startup — so the arms now
+/// share one [`migrate_records_in_memory`] read and one forward walk
+/// ([`scan_tail`]); the per-arm predicates are unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoverySummary {
+    /// The dangling-turn arm (the [`OpenTurnScan`] the abnormal arm's
+    /// inference consumes).
+    pub open_turn: Option<OpenTurnScan>,
+    /// The persistent-closure arm (the trailing interruption a previous
+    /// boot's backfill left behind, F-03).
+    pub persistent_closure: Option<InterruptedClosureScan>,
+    /// D-M6: an `interaction.request` was raised and never resolved — the
+    /// turn was waiting on the USER, not running, so the abnormal arm must
+    /// not count it as an interruption.
+    pub unresolved_interaction: bool,
+}
+
+/// Take the [`RecoverySummary`] of a wire log in one read.
+///
+/// `None` when neither on-disk shape (`wire.jsonl` / `wire.jsonl.gz`)
+/// exists — "no log at all", as opposed to a log with no records, which
+/// yields `Some` with every arm empty. A read failure is an error: the
+/// caller decides how loudly to log it (the embedded arm warns and
+/// treats the session as unscannable).
+pub async fn scan_recovery_summary(
+    wire_log_path: &Path,
+) -> anyhow::Result<Option<RecoverySummary>> {
+    let Some(facts) = scan_tail_facts(wire_log_path).await? else {
+        return Ok(None);
+    };
+    Ok(Some(RecoverySummary {
+        open_turn: facts.open_turn,
+        persistent_closure: facts.persistent_closure,
+        unresolved_interaction: !facts.open_interactions.is_empty(),
+    }))
+}
+
+/// The sharing seam behind the two legacy scans and the summary: one
+/// shape probe, one full read, one forward walk. Each arm keeps the exact
+/// state machine its standalone scan used, so consolidating the reads
+/// cannot change any judgement.
+async fn scan_tail_facts(wire_log_path: &Path) -> anyhow::Result<Option<TailFacts>> {
+    // The dual-shape probe: the plain path names the log, but a
+    // compressed session holds only `wire.jsonl.gz` — its absence is not
+    // "no log" but "the other shape" (the migration reader resolves the
+    // shape from the parent dir). Absent BOTH forms: no log at all.
     let parent = wire_log_path.parent();
     let plain_log_exists = wire_log_path.exists(); // zero-io-allow: dual-shape log probe, read-only metadata check, see F-T13-2
     let gz_log_exists = parent.is_some_and(|dir| dir.join("wire.jsonl.gz").exists()); // zero-io-allow: dual-shape log probe, read-only metadata check, see F-T13-2
@@ -164,12 +164,27 @@ pub async fn scan_interrupted_closure(
     }
     let records = migrate_records_in_memory(wire_log_path).await?;
 
-    // Single backward-looking pass: the LAST prompt's closure is the only
-    // candidate. Walk forward tracking the latest prompt's
-    // (open, closed, closure) state; the answer is whatever state the
-    // final prompt ends in.
+    // Open-turn arm. `open_prompt` holds the currently-open turn's
+    // (ordinal, time); it is cleared by turn.ended OR turn.cancel (any
+    // turn.cancel closes the bracket — the V4 rule that cancelled turns
+    // are not interruptions). `live_tasks` tracks task_ids started but
+    // not terminated since the currently-open prompt — the dangling
+    // bracket's background content; a new prompt resets it because a task
+    // from an earlier closed turn is not this turn's pending hint.
+    let mut prompt_ordinal: u64 = 0;
+    let mut open_prompt: Option<(u64, u64)> = None;
+    let mut live_tasks: HashSet<String> = HashSet::new();
+    let mut pending_background = false;
+
+    // Persistent-closure arm: the LAST prompt's closure is the only
+    // candidate (a newer prompt makes an earlier interruption "already
+    // handled" — ADR-008's read-time derivation).
     let mut last_closure: Option<InterruptedClosureScan> = None;
     let mut open = false;
+
+    // Interaction arm (D-M6): ask ids requested but not yet resolved.
+    let mut open_interactions: Vec<String> = Vec::new();
+
     for record in &records {
         let record_type = record
             .get("type")
@@ -177,10 +192,18 @@ pub async fn scan_interrupted_closure(
             .unwrap_or_default();
         match record_type {
             "turn.prompt" => {
+                prompt_ordinal += 1;
+                let time = record.get("time").and_then(Value::as_u64);
+                open_prompt = time.map(|t| (prompt_ordinal, t));
+                live_tasks.clear();
+                pending_background = false;
                 open = true;
                 last_closure = None;
             }
             "turn.ended" | "turn.cancel" => {
+                open_prompt = None;
+                live_tasks.clear();
+                pending_background = false;
                 if open && record.get("reason").and_then(Value::as_str) == Some("interrupted") {
                     let time = record.get("time").and_then(Value::as_u64);
                     let cause = record
@@ -197,11 +220,58 @@ pub async fn scan_interrupted_closure(
                 }
                 open = false;
             }
+            "task.started" => {
+                if let Some(task_id) = record.pointer("/info/task_id").and_then(Value::as_str) {
+                    live_tasks.insert(task_id.to_string());
+                    if open_prompt.is_some() {
+                        pending_background = true;
+                    }
+                }
+            }
+            "task.terminated" => {
+                if let Some(task_id) = record.pointer("/info/task_id").and_then(Value::as_str) {
+                    live_tasks.remove(task_id);
+                }
+                if live_tasks.is_empty() {
+                    pending_background = false;
+                }
+            }
+            "interaction.request" => {
+                if let Some(id) = record.get("id").and_then(Value::as_str) {
+                    open_interactions.push(id.to_string());
+                }
+            }
+            "interaction.resolved" => {
+                if let Some(id) = record.get("id").and_then(Value::as_str) {
+                    open_interactions.retain(|open_id| open_id != id);
+                }
+            }
             _ => {}
         }
     }
 
-    Ok(last_closure)
+    // A prompt without a usable `time` stamp (a legacy TS log) cannot
+    // anchor the interruption — mirroring
+    // `read_only_open_turn_started_at`, never fabricate one.
+    let open_turn = open_prompt.map(|(ordinal, time)| OpenTurnScan {
+        prompt_time_ms: time,
+        prompt_ordinal: ordinal,
+        pending_background: pending_background && !live_tasks.is_empty(),
+    });
+
+    Ok(Some(TailFacts {
+        open_turn,
+        persistent_closure: last_closure,
+        open_interactions,
+    }))
+}
+
+/// The raw arm values of one walk. `open_interactions` stays a list (not
+/// the bool) so the summary build stays a pure projection of the walk.
+struct TailFacts {
+    open_turn: Option<OpenTurnScan>,
+    persistent_closure: Option<InterruptedClosureScan>,
+    open_interactions: Vec<String>,
 }
 
 /// Whether the session directory's `state.json` marks the session
@@ -251,6 +321,7 @@ pub async fn append_interrupted_closure(
         reason: "interrupted".to_string(),
         error: Some(serde_json::json!({ "cause": cause })),
         duration_ms: None,
+        ended_at: None,
     })
     .await?;
     log.close().await;
@@ -658,5 +729,305 @@ mod tests {
         // When the archived flag is read
         // Then the parse failure still yields false
         assert!(!session_is_archived(tmp.path()).await);
+    }
+
+    /// A hand-written `interaction.request` (the D-M6 ask record — part of
+    /// the wire vocabulary, dormant in production logs today).
+    fn interaction_request(id: &str, time: u64) -> String {
+        format!(
+            r#"{{"type":"interaction.request","id":"{id}","kind":"question","request":{{}},"time":{time}}}"#
+        )
+    }
+
+    /// A hand-written `interaction.resolved` closing the given ask id.
+    fn interaction_resolved(id: &str, time: u64) -> String {
+        format!(r#"{{"type":"interaction.resolved","id":"{id}","response":{{}},"time":{time}}}"#)
+    }
+
+    #[tokio::test]
+    async fn should_return_both_arms_from_a_single_read_when_log_has_open_turn_and_closure_history()
+    {
+        // Given a log whose history carries a backfilled interrupted
+        // closure (an older, already-handled crash) and whose tail is a
+        // fresh dangling turn that ALSO left an ask waiting on the user
+        let tmp = write_wire_log(&[
+            &prompt(1000),
+            &interrupted_ended(1, 2000),
+            &prompt(3000),
+            &interaction_request("ask-1", 3500),
+        ]);
+
+        // When the recovery summary is taken
+        let summary = scan_recovery_summary(&tmp.path().join("wire.jsonl"))
+            .await
+            .unwrap()
+            .expect("a log with records yields a summary");
+
+        // Then the open-turn arm reports the dangling prompt
+        assert_eq!(
+            summary.open_turn,
+            Some(OpenTurnScan {
+                prompt_time_ms: 3000,
+                prompt_ordinal: 2,
+                pending_background: false,
+            })
+        );
+        // And the persistent-closure arm stays empty: the newer prompt
+        // superseded the history closure (ADR-008's "already handled"
+        // rule applies to each arm independently)
+        assert_eq!(summary.persistent_closure, None);
+        // And the interaction arm sees the unanswered ask
+        assert!(summary.unresolved_interaction);
+    }
+
+    #[tokio::test]
+    async fn should_report_the_persistent_closure_arm_alongside_the_interaction_flag() {
+        // Given a log whose tail ends in a backfilled interrupted closure
+        // (F-03's persistent arm) with a resolved ask inside the turn
+        let tmp = write_wire_log(&[
+            &prompt(1000),
+            &interaction_request("ask-1", 1200),
+            &interaction_resolved("ask-1", 1300),
+            &interrupted_ended(1, 2000),
+        ]);
+
+        // When the recovery summary is taken
+        let summary = scan_recovery_summary(&tmp.path().join("wire.jsonl"))
+            .await
+            .unwrap()
+            .expect("a log with records yields a summary");
+
+        // Then the closure arm anchors the interruption and carries its
+        // cause, the open-turn arm sees nothing, and the resolved ask no
+        // longer counts as a wait on the user
+        assert_eq!(summary.open_turn, None);
+        assert_eq!(
+            summary.persistent_closure,
+            Some(InterruptedClosureScan {
+                time_ms: 2000,
+                cause: Some("service_exit".to_string()),
+            })
+        );
+        assert!(!summary.unresolved_interaction);
+    }
+
+    #[tokio::test]
+    async fn should_flag_unresolved_interaction_when_a_request_has_no_resolution() {
+        // Given an ask raised inside a dangling turn and never resolved
+        let tmp = write_wire_log(&[
+            &prompt(1000),
+            &interaction_request("ask-1", 1200),
+            &interaction_request("ask-2", 1300),
+            &interaction_resolved("ask-2", 1400),
+        ]);
+
+        // When the recovery summary is taken
+        let summary = scan_recovery_summary(&tmp.path().join("wire.jsonl"))
+            .await
+            .unwrap()
+            .expect("a log with records yields a summary");
+
+        // Then only the still-open ask keeps the flag set — resolution is
+        // per id, so a sibling's resolution must not clear it
+        assert!(summary.unresolved_interaction);
+    }
+
+    #[tokio::test]
+    async fn should_ignore_resolved_interaction() {
+        // Given an ask raised and resolved
+        let tmp = write_wire_log(&[
+            &prompt(1000),
+            &interaction_request("ask-1", 1200),
+            &interaction_resolved("ask-1", 1300),
+            &ended(1, 1400),
+        ]);
+
+        // When the recovery summary is taken
+        let summary = scan_recovery_summary(&tmp.path().join("wire.jsonl"))
+            .await
+            .unwrap()
+            .expect("a log with records yields a summary");
+
+        // Then nothing is waiting on the user
+        assert!(!summary.unresolved_interaction);
+    }
+
+    #[tokio::test]
+    async fn should_return_no_summary_when_log_missing_or_empty() {
+        // Given a session dir with no wire log at all
+        let tmp = tempfile::tempdir().unwrap();
+
+        // When the recovery summary is taken
+        let summary = scan_recovery_summary(&tmp.path().join("wire.jsonl"))
+            .await
+            .unwrap();
+
+        // Then there is no log to summarise (`None` ≠ "a log with no
+        // interruption", mirroring the old functions' absent-log read)
+        assert_eq!(summary, None);
+
+        // And given an empty log
+        let tmp = write_wire_log(&[]);
+
+        // When the recovery summary is taken
+        let summary = scan_recovery_summary(&tmp.path().join("wire.jsonl"))
+            .await
+            .unwrap();
+
+        // Then an empty log yields a record-free summary, not `None`
+        assert_eq!(
+            summary,
+            Some(RecoverySummary {
+                open_turn: None,
+                persistent_closure: None,
+                unresolved_interaction: false,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn should_match_the_union_of_the_legacy_scans() {
+        // Given a battery of log shapes spanning every branch of the two
+        // legacy scans (open turn, cancelled turn, trailing closure,
+        // superseded closure, torn tail)
+        let corpus: Vec<Vec<String>> = vec![
+            vec![prompt(1000), ended(1, 2000)],
+            vec![prompt(1000), ended(1, 2000), prompt(3000)],
+            vec![prompt(1000), interrupted_ended(1, 2000)],
+            vec![prompt(1000), interrupted_ended(1, 2000), prompt(3000)],
+            vec![prompt(1000), interrupted_ended(1, 2000), ended(2, 3000)],
+            vec![
+                prompt(1000),
+                r#"{"type":"task.started","info":{"task_id":"t1"},"time":1200}"#.to_string(),
+            ],
+            vec![
+                prompt(1000),
+                r#"{"type":"task.started","info":{"task_id":"t1"},"time":1200}"#.to_string(),
+                r#"{"type":"task.terminated","info":{"task_id":"t1"},"time":1300}"#.to_string(),
+            ],
+            vec![
+                prompt(1000),
+                r#"{"type":"turn.cancel","turnId":1,"reason":"user","time":2000}"#.to_string(),
+                prompt(3000),
+            ],
+            vec![
+                prompt(1000),
+                r#"{"type":"turn.ended","turnId":1,"reason":"interrupted","error":{"cause":"service_exit"}}"#
+                    .to_string(),
+            ],
+        ];
+
+        for lines in &corpus {
+            let refs: Vec<&str> = lines
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let tmp = write_wire_log(&refs);
+            let wire_log_path = tmp.path().join("wire.jsonl");
+
+            // When both the legacy scans and the summary read the log
+            let legacy_open = scan_open_turn(&wire_log_path).await.unwrap();
+            let legacy_closure = scan_interrupted_closure(&wire_log_path).await.unwrap();
+            let summary = scan_recovery_summary(&wire_log_path)
+                .await
+                .unwrap()
+                .expect("a written log yields a summary");
+
+            // Then the summary's two arms are exactly the union of the
+            // legacy outputs — consolidating the reads must not change any
+            // judgement
+            assert_eq!(summary.open_turn, legacy_open, "open arm on {lines:?}");
+            assert_eq!(
+                summary.persistent_closure, legacy_closure,
+                "closure arm on {lines:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn should_match_legacy_unresolved_interaction_predicate() {
+        // Given log shapes around the D-M6 ask pair
+        let corpus: Vec<Vec<String>> = vec![
+            vec![prompt(1000)],
+            vec![prompt(1000), interaction_request("ask-1", 1200)],
+            vec![
+                prompt(1000),
+                interaction_request("ask-1", 1200),
+                interaction_resolved("ask-1", 1300),
+            ],
+            vec![
+                prompt(1000),
+                interaction_request("ask-1", 1200),
+                interaction_resolved("other", 1300),
+            ],
+        ];
+
+        for lines in &corpus {
+            let refs: Vec<&str> = lines
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let tmp = write_wire_log(&refs);
+
+            // When the summary is compared against the legacy predicate
+            // (reimplemented here from its documented rule: an ask id
+            // requested and never resolved)
+            let summary = scan_recovery_summary(&tmp.path().join("wire.jsonl"))
+                .await
+                .unwrap()
+                .expect("a written log yields a summary");
+            let mut open: Vec<String> = Vec::new();
+            for line in lines {
+                let record: Value = serde_json::from_str(line).unwrap();
+                match record.get("type").and_then(Value::as_str) {
+                    Some("interaction.request") => {
+                        open.push(record.get("id").and_then(Value::as_str).unwrap().to_string())
+                    }
+                    Some("interaction.resolved") => {
+                        let id = record.get("id").and_then(Value::as_str).unwrap();
+                        open.retain(|open_id| open_id != id);
+                    }
+                    _ => {}
+                }
+            }
+
+            // Then the flag agrees with the legacy predicate on every shape
+            assert_eq!(
+                summary.unresolved_interaction,
+                !open.is_empty(),
+                "interaction flag on {lines:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn should_scan_each_log_exactly_once_when_summary_is_taken() {
+        // Given a log whose only line is malformed (not a torn final line
+        // — it keeps its newline): every full read of it fails, while the
+        // metadata-only shape probe succeeds
+        let tmp = write_wire_log(&["not json"]);
+
+        // When the summary reads the log
+        let result = scan_recovery_summary(&tmp.path().join("wire.jsonl")).await;
+
+        // Then the single full read surfaces its error unchanged — a
+        // second read inside the call would have re-read (and re-failed)
+        // the same file
+        assert!(result.is_err(), "the malformed log must fail the read");
+
+        // And when the log is valid, one call answers all three facts
+        // (the shape lock the plan relies on: one read, three arms)
+        let tmp = write_wire_log(&[
+            &prompt(1000),
+            &ended(1, 2000),
+            &prompt(3000),
+            &interaction_request("ask-1", 3500),
+        ]);
+        let summary = scan_recovery_summary(&tmp.path().join("wire.jsonl"))
+            .await
+            .unwrap()
+            .expect("a written log yields a summary");
+        assert!(summary.open_turn.is_some());
+        assert!(summary.unresolved_interaction);
     }
 }

@@ -173,6 +173,10 @@ export function toAppSession(wire: WireSession): AppSession {
     pendingInteraction: wire.pending_interaction,
     lastTurnReason: wire.last_turn_reason,
     archived: wire.archived ?? false,
+    // SDR-016/017 pin trio — defensive against older servers.
+    pinned: wire.pinned === true,
+    pinnedAt: wire.pinned_at,
+    pinColor: wire.pin_color,
     compressed: wire.compressed === true,
     currentPromptId: wire.current_prompt_id,
     lastPrompt: wire.last_prompt,

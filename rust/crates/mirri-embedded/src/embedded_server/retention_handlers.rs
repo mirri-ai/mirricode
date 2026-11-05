@@ -226,12 +226,11 @@ impl EmbeddedServer {
                 )));
             }
         }
-        // Task 10: the listing's compression state rides the index row
-        // (the W5 listing source), so the just-written state.json stamps
-        // (compressed/compressedAt) refresh the row immediately — the
-        // same `index_refresh_from_disk` write-through the archive and
-        // restore dispatches perform.
-        self.index_refresh_from_disk(&session_id).await;
+        // ADR-006: the compression column group landed in the metadata ROW
+        // through the store-wired persistence (the owning manager's handle
+        // `retention_session` resolved), and the listing reads the row —
+        // the post-compress `index_refresh_from_disk` whole-row rebuild is
+        // retired (Task 7).
         to_value(RetentionCompressNowResult { ok: true })
     }
 
@@ -359,22 +358,44 @@ impl EmbeddedServer {
         &self,
         session_id: &str,
     ) -> Result<(SessionPersistence, SessionId), EngineError> {
-        let (owner_manager, _workspace) = self
+        let (owner_manager, workspace) = self
             .resolve_session_owner(session_id)
             .map_err(|_| super::not_found(format!("session not found: {session_id}")))?;
-        Ok((
-            owner_manager.persistence().clone(),
-            SessionId::new(session_id),
-        ))
+        let sid = SessionId::new(session_id);
+        // m3 review finding: the live session must leave the workspace map
+        // BEFORE the on-disk delete runs — the cron scheduler iterates the
+        // live table and would otherwise keep injecting held fires into a
+        // session whose directory is already gone. The eviction reuses the
+        // manager's own close (the full drain: cron shutdown, task
+        // convergence, artifacts teardown); the delete itself then observes
+        // an inactive session exactly like the archived rows it was built
+        // for. A no-op when the session is not live (the archived-session
+        // delete — the original shape).
+        if owner_manager
+            .workspace()
+            .remove_session(&sid)
+            .await
+            .is_some()
+        {
+            let _ = owner_manager
+                .close_session(&sid, mirri_core::CloseReason::UserInitiated)
+                .await;
+            tracing::info!(
+                session_id = %sid,
+                workspace = %workspace,
+                "retention delete evicted the live session before removing its directory"
+            );
+        }
+        Ok((owner_manager.persistence().clone(), sid))
     }
 
     /// The retention scan (the `retention.list` / `stats` /
-    /// `deleteTiered` source): the index's archived rows, each with its
-    /// disk facts re-verified — the shape verdict (ADR-007), the
-    /// occupancy (the directory's whole tree), and the stamps.
-    ///
-    /// The no-index degrade: the disk walk over the default root (the
-    /// same listing the persistence layer performs).
+    /// `deleteTiered` source): the archived rows — the index's when it
+    /// exists, else the metadata ROWS of every built runtime's manager
+    /// (ADR-006's no-index degrade: the row is the archive flag's source
+    /// of truth, with the state.json disk walk filling pre-row sessions
+    /// the migration has not adopted) — each with its disk facts
+    /// re-verified (the shape verdict, the occupancy, the stamps).
     async fn scan_retention_rows(&self) -> Result<Vec<ScanRow>, EngineError> {
         let sessions_root = self.manager.persistence().sessions_dir().to_path_buf();
         let mut raw: Vec<RawScanEntry> = Vec::new();
@@ -398,16 +419,56 @@ impl EmbeddedServer {
                     workspace: row.workspace_id,
                     archived_at: row.archived_at.map(|at| stamp(&at)),
                     compressed_at: row.compressed_at.map(|at| stamp(&at)),
-                    // pre-size is not an index column — disk-read below
-                    pre_compressed_size: None,
+                    // The savings basis rode the compression write into the
+                    // row (Task 7: the retention column group applies through
+                    // the metadata store, whose SQLite and this index are
+                    // the one database) — the state.json read below is only
+                    // the pre-ADR-006 fallback.
+                    pre_compressed_size: row
+                        .pre_compressed_size
+                        .and_then(|size| u64::try_from(size).ok()),
                     created_at: stamp(&row.created_at),
                 });
             }
         } else {
+            // The no-index degrade, row-first: every built runtime's
+            // manager rows (the archive flag's source of truth), then the
+            // disk walk for pre-row sessions the migration has not
+            // adopted — a row already covering an id wins (its view is
+            // the truth, ADR-006).
+            let mut row_ids = std::collections::HashSet::new();
+            for runtime in self.registry.built_runtimes() {
+                let manager = &runtime.manager;
+                let workspace = runtime.workspace_id.clone();
+                for row_id in manager
+                    .metadata_store()
+                    .list_ids(&manager.metadata_workspace_id())
+                    .await
+                {
+                    let Some(record) =
+                        manager.metadata_store().get(&SessionId::new(&row_id)).await
+                    else {
+                        continue;
+                    };
+                    if !record.archived {
+                        continue;
+                    }
+                    row_ids.insert(row_id.clone());
+                    let workspace = workspace.clone();
+                    raw.push(RawScanEntry {
+                        session_id: row_id,
+                        workspace,
+                        archived_at: record.archived_at.map(|at| stamp(&at)),
+                        compressed_at: record.compressed_at.map(|at| stamp(&at)),
+                        pre_compressed_size: record.pre_compressed_size,
+                        created_at: stamp(&record.created_at),
+                    });
+                }
+            }
             let persistence =
                 SessionPersistence::new(sessions_root.clone(), Arc::new(mirri_os::LocalFs::new()));
             for info in persistence.list_persisted_sessions(true).await {
-                if !info.archived {
+                if !info.archived || row_ids.contains(&info.session_id) {
                     continue;
                 }
                 raw.push(RawScanEntry {

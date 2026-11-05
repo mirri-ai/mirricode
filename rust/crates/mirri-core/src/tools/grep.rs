@@ -239,6 +239,12 @@ impl Tool for GrepTool {
         CAPABILITIES.get_or_init(|| vec!["code.explore".to_string()])
     }
 
+    /// ADR-015 (stage-2 D-M2): the read-only capability category —
+    /// observation only, no side effects the ReadOnly posture must gate.
+    fn readonly(&self) -> bool {
+        true
+    }
+
     fn resolve_execution(&self, input: serde_json::Value) -> EngineResult<ToolExecution> {
         let Some(pattern) = input.get("pattern").and_then(serde_json::Value::as_str) else {
             return Ok(tool_execution_error(
@@ -1101,6 +1107,7 @@ mod tests {
             tool_call_id: "test".to_string(),
             cancel: CancelToken::new(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         };
         let result = execute(ctx).await;
         assert!(!result.is_error);
@@ -1444,6 +1451,7 @@ mod tests {
             tool_call_id: "test".to_string(),
             cancel: CancelToken::new(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         };
         let result = execute(ctx).await;
         assert!(!result.is_error);
@@ -1479,6 +1487,7 @@ mod tests {
             tool_call_id: "test".to_string(),
             cancel: CancelToken::new(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         };
         let result = execute(ctx).await;
         assert!(!result.is_error);
@@ -1514,6 +1523,7 @@ mod tests {
             tool_call_id: "test".to_string(),
             cancel: CancelToken::new(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         };
         let result = execute(ctx).await;
         assert!(!result.is_error);
@@ -1598,6 +1608,7 @@ mod tests {
             tool_call_id: "test".to_string(),
             cancel: CancelToken::new(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         };
         let result = execute(ctx).await;
         assert!(!result.is_error);
@@ -1667,6 +1678,7 @@ mod tests {
             tool_call_id: "call-1".to_string(),
             cancel: CancelToken::new(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         })
         .await;
 
@@ -1724,6 +1736,7 @@ mod tests {
             tool_call_id: "call-1".to_string(),
             cancel: Default::default(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         })
         .await;
         assert!(!result.is_error, "grep failed: {}", output_text(&result));
@@ -1796,6 +1809,7 @@ mod tests {
             tool_call_id: "test".to_string(),
             cancel: CancelToken::new(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         };
         let result = execute(ctx).await;
 

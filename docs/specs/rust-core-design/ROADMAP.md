@@ -32,6 +32,7 @@
 | 1.10 | **内置技能注册通道（builtin skills）** | ✅ 已落地（2026-10-10，worktree 分支 `feat/rust-builtin-skills` 六提交 `f6c33917`/`8a88af7f`/`ed49ec35`/`59ba5b64`/`b62e3aba`/`9ae66114`，TDD 三批 M1 数据面 → M2 模型面 → M3 契约与 e2e） | 设计 [13-builtin-skills.md](13-builtin-skills.md)（ADR-B1..B6）。已落地：`include_str!` 八条目资产 + `SkillCatalog` 内容表（`register_builtin` + `read_content` Builtin 分派）、发现序列首插（后到者胜使 builtin(0) 最低优先级、explicit 分支不受影响、resync 幂等）、SkillDef 两布尔 + frontmatter 两键解析、SkillTool 禁模型调用硬门（文案对齐 TS 逐字）、`skills_section` 清单渲染（首行取代声明/四分组/过滤/247 截断）、`skill.list` 置位时外发 `disable_model_invocation`（TS REST 字面键）。验证：V1-V8 全部有自动化测试；真端口 WS JSON-RPC e2e 闭环（skill.list 8 条 → write-goal 激活注入 → mcp-config 被门拦 → setEnabled 禁/复）；llvm-cov 区域覆盖 skill.rs 98.3% / builtin.rs 100% / tools/skill.rs 97.8% / system_prompt.rs 98.7% / bootstrap.rs 96.8%；workspace 全量 test + clippy -D warnings 零告警。**遗留（登记不阻塞）**：① 发现层默认分支读宿主 `HOME`（`~/.agents/skills`）——测试密封性靠非空 explicit skillDirs 解决，架构语义待裁决（`discover_default_skill_roots` 的 home 注入边界）；② 消费端验证（TUI/web 对 v3 后端 builtin 裸名命令呈现）依赖默认引擎切换（1.4/1.5）后才有真实用户面 |
 | 1.11 | **TS 面整体退役执行线（ADR-001）** | 📋 未启动 | 执行序（前两项可并行）：① 分发接管（2.5 升级为硬前置：rust-native CI 首跑 → release.yml 接线 → Rust 二进制接管 install.sh 渠道）→ ② desktop 后端切 Rust 二进制（替换捆绑的 TS SEA）→ ③ 删除 TS CLI/TUI + 引擎包 + NAPI 桥 + node-sdk（合并原 Phase 4 执行，保留双 commit revert 结构；klient 契约真源先行迁移前置不变）→ ④ npm 渠道 deprecate 与迁移指引。04 计划将按新范围重写 |
 | 1.12 | **终端 UI ratatui 原生重构（ADR-002）** | 📋 未启动 | 裁决：终端 UI 以 ratatui 原生重构、进程内直连引擎（EmbeddedEngine，无 NAPI/翻译层），为 TUI 废掉 Node 运行时，核心收益为减少资源使用量（详见 [00-overview.md §7 ADR-002](00-overview.md)）。排在 1.11 TS 面退役之后启动；TUI 二进制与统一 JSON-RPC 契约同源（复用三路径模型，帧语义与 Web/ACP 一致）。前置：分发接管（2.5）完成；PTY 能力由 mirri-os 提供。计划文档待启动时撰写 |
+| 1.13 | **实体标识符迁移 ULID（ADR-003）** | 📋 计划已立，未开工 | 设计 [15-identifier-strategy.md](15-identifier-strategy.md)（终态 ID-1..ID-6）· 计划 [plans/14-ulid-identifier-migration.md](plans/14-ulid-identifier-migration.md)（M0-M3 批次）。范围：`rust/crates` 全部 uuid 生成点与解析点，含双宿主（embedded/serve）解析对称与旧格式兼容读。开放决策：changeset 级别（建议 minor）、工具 schema 的 `format` 声明（建议去掉） |
 
 ## 2. 分发线（rust-engine-packaging，未执行但全部有效）
 
@@ -216,6 +217,19 @@
 - 受影响包的 TS typecheck + vitest（含 contract-e2e fixture 更新）
 - 测试命名 Given-When-Then；不改实现去迁就旧测试（除非实现真有 bug）
 - changeset：gen-changesets skill；major 需用户确认
+- **测试卫生门禁（16 号设计落地后）**：`pnpm gate:rust-test-hygiene`（`node rust/scripts/check-test-hygiene.mjs`）零新增违规——详见 [16-test-execution-strategy.md](16-test-execution-strategy.md) 与 `rust/AGENTS.md` 测试铁律
+
+## 7. 测试执行策略落地（2026-11-03，worktree `feature/test-strategy-rollout`，待合并）
+
+设计 [16-test-execution-strategy.md](16-test-execution-strategy.md) / 计划 [plans/16-test-execution-rollout.md](plans/16-test-execution-rollout.md)。批次状态：
+
+- **R1 设施与标准** ✅：`mirri-test-support` crate（env lock / EnvGuard / async_lock / temp_home / wait_for / ephemeral_listener）；`rust/AGENTS.md` 测试铁律（T0-T3 分层 + 八条隔离契约）；卫生门禁脚本 + baseline 棘轮。
+- **R2 竞态清除** ✅：全 workspace 静态 env 锁收敛到唯一 `mirri_test_support::env::lock()`（原 14 把全删）；mirri-core/embedded 生产 HOME 读取注入化（`resolve_*_from`）；裸 set_var 收编 EnvGuard；受影响测试 5×/3× 压力复跑零红。
+- **R3 二进制收敛** ✅：84 → 20 个测试二进制（mirri-core 27→3 域组，os/mcp/server/persistence/kosong/plugin-host/proto 各→1）；纯移动 + `mod {}` 包裹；组二进制全绿（817+65+60+96+219+119+47+100…）。
+- **R4 sleep 裁决** ✅：baseline 分类为 poll-step（294，合规形态）/ negative-wait（8，语义性等待）/ legacy（127 sleep + 15 set_var，增量迁移）；**裁决：不批量 paused-clock 化**（会改测试语义、增 flake 风险）。
+- **已知预存问题（非本批引入）**：zero-io 门禁 9 处 source 违规 + rusqlite 依赖失败（cron 批次遗留，`latest` 基线同样红）；7 分钟预算验证见 Phase 4。
+- **遗留债务（后续批次）**：① 约 12 处预存跨 `.await` 持 std env 锁（`agent_swarm_tool.rs` 9 处等，`#[allow(clippy::await_holding_lock)]`）——待逐处换 `async_lock()` 或重构；② baseline 中 127 条 legacy sleep 增量迁移；③ 同名双 `EnvGuard`（crate 本地 vs test-support）语义不同，待统一到 test-support 版。
+- **验收数据（2026-11-03，本机）**：热缓存 `cargo test --workspace --locked` 连续两次全绿 5:40 / 5:37（含首次冷增量 8:26）；测试二进制 84→20；env 锁 14→1；`rust-test-hygiene-gate` CI job 已挂载。
 
 ## 归档说明
 

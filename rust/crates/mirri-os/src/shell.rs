@@ -97,9 +97,13 @@ fn findable_on_path(prog: &str) -> bool {
 pub enum GitBashResolution {
     Found(String),
     /// env-var set but points to a non-bash family executable
-    EnvVarNotBash { value: String },
+    EnvVarNotBash {
+        value: String,
+    },
     /// env-var set but the path does not exist
-    EnvVarMissing { value: String },
+    EnvVarMissing {
+        value: String,
+    },
     /// nothing resolvable
     Unresolved,
 }
@@ -358,9 +362,11 @@ pub fn powershell_exe_for_tool() -> Result<String, String> {
             return Ok(candidate.to_string());
         }
     }
-    Err("PowerShell was not found on PATH. Install PowerShell 7 or verify \
+    Err(
+        "PowerShell was not found on PATH. Install PowerShell 7 or verify \
          C:\\Windows\\System32\\WindowsPowerShell is on PATH."
-        .to_string())
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -439,7 +445,7 @@ mod tests {
 
     // ===== Git Bash resolution (WO-3) tests =====
 
-    use super::{resolve_git_bash_from, GitBashResolution};
+    use super::{GitBashResolution, resolve_git_bash_from};
     use std::path::{Path, PathBuf};
 
     fn no_wsl(_p: &Path) -> bool {
@@ -461,20 +467,12 @@ mod tests {
             &no_wsl,
             &always_exists,
         );
-        assert!(
-            matches!(r, GitBashResolution::Found(p) if p == r"C:\tools\git\bin\bash.exe")
-        );
+        assert!(matches!(r, GitBashResolution::Found(p) if p == r"C:\tools\git\bin\bash.exe"));
     }
 
     #[test]
     fn should_report_env_var_missing_when_the_configured_path_does_not_exist() {
-        let r = resolve_git_bash_from(
-            Some(r"C:\nope\bash.exe"),
-            &[],
-            &[],
-            &no_wsl,
-            &never_exists,
-        );
+        let r = resolve_git_bash_from(Some(r"C:\nope\bash.exe"), &[], &[], &no_wsl, &never_exists);
         assert!(matches!(r, GitBashResolution::EnvVarMissing { .. }));
     }
 
@@ -495,10 +493,8 @@ mod tests {
         let known = [PathBuf::from(r"C:\Program Files\Git\bin\bash.exe")];
         let path_dirs = [PathBuf::from(r"C:\Windows\System32")];
         let r = resolve_git_bash_from(None, &known, &path_dirs, &no_wsl, &always_exists);
-        assert!(
-            matches!(r, GitBashResolution::Found(p)
-                if p == r"C:\Program Files\Git\bin\bash.exe")
-        );
+        assert!(matches!(r, GitBashResolution::Found(p)
+                if p == r"C:\Program Files\Git\bin\bash.exe"));
     }
 
     #[test]
@@ -511,10 +507,8 @@ mod tests {
         // exists() only true for the scoop one
         let exists = |p: &Path| p.starts_with("C:/Users/u/scoop");
         let r = resolve_git_bash_from(None, &[], &[system32, scoop], &is_wsl, &exists);
-        assert!(
-            matches!(r, GitBashResolution::Found(p)
-                if p == "C:/Users/u/scoop/shims/bash.exe")
-        );
+        assert!(matches!(r, GitBashResolution::Found(p)
+                if p == "C:/Users/u/scoop/shims/bash.exe"));
     }
 
     #[test]
@@ -539,9 +533,11 @@ mod tests {
             PathBuf::from("C:/Users/u/AppData/Local/Programs/Git/bin/bash.exe")
         );
         assert!(known.contains(&PathBuf::from("C:/Program Files/Git/bin/bash.exe")));
-        assert!(!known
-            .iter()
-            .any(|p| p.to_string_lossy().starts_with("C:/other")));
+        assert!(
+            !known
+                .iter()
+                .any(|p| p.to_string_lossy().starts_with("C:/other"))
+        );
     }
 
     // ===== PowerShell tool `MIRRICODE_SHELL_PATH` family dispatch (WO-3,

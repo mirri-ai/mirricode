@@ -7,11 +7,11 @@
 // (main window holder, quitting flag, desktop daemon pid) and wires the
 // Electron app events to the extracted modules.
 
-import { app } from 'electron';
+import { BrowserWindow, app } from 'electron';
 
-import type { BrowserWindow } from 'electron';
+import type { BrowserWindow as BrowserWindowType } from 'electron';
 
-import { killStaleDaemon } from './server/daemon';
+import { DESKTOP_PORT, killStaleDaemon, shutdownDaemon } from './server/daemon';
 import { extractDeepLinks } from './deep-link';
 import { createDeepLinkDispatch, maybeRegisterProtocol } from './deep-links/dispatch';
 import { IPC_CHANNELS } from './ipc';
@@ -21,10 +21,18 @@ import { createTray } from './tray';
 import { isAutoUpdateEnabled, startAutoUpdate } from './updater';
 import { createWindowManager } from './window/create';
 
-let mainWindow: BrowserWindow | null = null;
+let mainWindow: BrowserWindowType | null = null;
 
 /** PID of the Desktop daemon started by the connect flow. Killed on quit. */
 let desktopDaemonPid: number | null = null;
+
+/**
+ * Grace window the daemon gets between SIGTERM and the SIGKILL escalation
+ * (ms). The rust shutdown is sub-second once its in-flight turns are
+ * interrupted at SIGTERM; 15s only ever elapses for a wedged drain, which
+ * is exactly what the SIGKILL backstop exists for.
+ */
+const DAEMON_SHUTDOWN_GRACE_MS = 15_000;
 
 /** True once the user (or the OS) asked the app to really quit — while false,
  *  closing the main window hides it to the tray instead of destroying it
@@ -95,21 +103,39 @@ function main(): void {
   // The Desktop daemon is separate from the CLI's shared daemon — we kill
   // it on quit because no other client uses it. The CLI daemon (if running)
   // is untouched (different lock file).
-  app.on('before-quit', () => {
+  //
+  // The kill is a HANDSHAKE, not fire-and-forget: `before-quit` prevents
+  // the default quit, stops the daemon (SIGTERM → bounded wait → SIGKILL
+  // escalation, see `shutdownDaemon`), and only then re-quits. Waiting is
+  // the fix for the stale-port bug: a daemon that outlives the app holds
+  // 58827 and the next launch fails with "Address already in use".
+  app.on('before-quit', (event) => {
     quitting = true;
-    if (desktopDaemonPid !== null) {
-      try {
-        process.kill(desktopDaemonPid, 'SIGTERM');
-        process.stdout.write(
-          `[mirri-desktop] killed desktop daemon (pid=${desktopDaemonPid}) on quit\n`,
-        );
-      } catch (error) {
-        process.stderr.write(
-          `[mirri-desktop] failed to kill desktop daemon (pid=${desktopDaemonPid}) on quit: ${error instanceof Error ? error.message : String(error)}\n`,
-        );
-      }
-      desktopDaemonPid = null;
+    if (desktopDaemonPid === null) {
+      return;
     }
+    const pid = desktopDaemonPid;
+    desktopDaemonPid = null;
+    event.preventDefault();
+    // Destroy the windows FIRST: the renderer's WebSocket to the daemon
+    // keeps the daemon's HTTP graceful shutdown waiting (an upgraded
+    // connection never looks idle to it), so a live window would hold the
+    // exit open for the whole grace window. Destroying (not just closing)
+    // tears the renderer — and its WS — down now; `quitting` is already
+    // true so window-close handlers route to destruction, not hiding.
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.destroy();
+    }
+    void shutdownDaemon(pid, DESKTOP_PORT, DAEMON_SHUTDOWN_GRACE_MS)
+      .catch((error: unknown) => {
+        process.stderr.write(
+          `[mirri-desktop] desktop daemon shutdown handshake failed: ` +
+            `${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      })
+      .finally(() => {
+        app.quit();
+      });
   });
 
   // Background residency (D1): the app stays alive with zero windows on

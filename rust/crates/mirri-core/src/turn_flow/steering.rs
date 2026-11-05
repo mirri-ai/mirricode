@@ -42,6 +42,25 @@ impl SteerBuffer {
         self.items.push(BufferedSteer { content, origin });
     }
 
+    /// The buffered steers' text contents, in arrival order — a test /
+    /// inspection face (the delivery assertions read what the buffer
+    /// holds without flushing it into a context memory).
+    pub fn items_text(&self) -> Vec<String> {
+        self.items
+            .iter()
+            .map(|steer| {
+                steer
+                    .content
+                    .iter()
+                    .filter_map(|part| match part {
+                        ContentPart::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
     /// Flush all buffered steers into context memory as user messages.
     ///
     /// Returns `true` if at least one steer was flushed, `false` if the buffer

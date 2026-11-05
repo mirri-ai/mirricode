@@ -33,6 +33,8 @@ export default {
   working: '工作中…',
   /** 流式进行中的实时时长标签（“进行中 12 秒”），与 workedFor 的措辞对齐。 */
   workingFor: '进行中 {duration}',
+  /** 转球旁最晚运行中工具调用的实时时长（"bash · 12 秒"）。 */
+  workingTool: '{name} · {duration}',
   noTextOutput: '无文本输出 — 点击查看工作日志',
   loadOlder: '加载更早的消息',
   loadingOlder: '正在加载更早的消息…',
@@ -41,7 +43,7 @@ export default {
     title: '本回合 token 用量',
     model: '模型',
     cacheHit: '缓存命中',
-    input: '输入',
+    input: '未缓存输入',
     cacheRead: '缓存读取',
     cacheWrite: '缓存写入',
     output: '输出',

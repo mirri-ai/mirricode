@@ -366,7 +366,9 @@ async fn should_reconcile_the_index_across_both_workspaces_buckets() {
     let (second_session_id, _session) =
         create_session_on_second_workspace(&server, second_root.path()).await;
 
-    // When the first RPC runs (the one-time reconcile seam)
+    // When the startup housekeeping settles (list reads no longer wait for
+    // the reconcile — ADR-003 c)
+    server.await_housekeeping_settled().await;
     server
         .call_method("workspace.list", json!({}))
         .await
@@ -471,17 +473,15 @@ async fn should_route_session_create_to_the_requested_workspace() {
 
     // When a wait-mode message is sent to the routed session, then the turn
     // runs on the second workspace's own agent — and the send MATERIALIZED
-    // the session (SDR-004): the directory, the index row, and the
-    // last_prompt all appear now, never at create.
+    // the session (SDR-004): the directory and the last_prompt all appear
+    // with the first user message. ADR-006: the CREATE itself already
+    // wrote the metadata ROW (创建即写行 — but the INDEX row still waits
+    // for the materialization, the send-path upsert's contract).
     assert!(
         !bucket_session_dir.exists(),
         "the lazy create left no session directory behind"
     );
     let index = server.session_index().expect("the index is open");
-    assert!(
-        index.get_session(&session_id).is_none(),
-        "the lazy create wrote no index row"
-    );
     let result = server
         .call_method(
             "message.send",
@@ -492,7 +492,7 @@ async fn should_route_session_create_to_the_requested_workspace() {
     assert_eq!(result["turn"]["stopReason"], "end_turn");
     assert_eq!(llm.chat_call_count(), 1, "the scripted LLM was consulted");
     assert!(
-        bucket_session_dir.join("state.json").is_file(),
+        bucket_session_dir.join("wire.jsonl").is_file(),
         "the session dir landed in the routed workspace's bucket: {}",
         bucket_session_dir.display()
     );
@@ -1107,7 +1107,8 @@ async fn should_leave_nothing_behind_when_never_conversed_sessions_are_dropped()
         .expect("the id")
         .to_string();
 
-    // Then neither session materialized: no directory under any bucket…
+    // Then neither session materialized its BODY: no directory under any
+    // bucket…
     let sessions_root = home.path().join("v3_sessions");
     for (key, id) in [
         (&default_key, &default_session),
@@ -1118,11 +1119,20 @@ async fn should_leave_nothing_behind_when_never_conversed_sessions_are_dropped()
             "the never-conversed session left no directory behind"
         );
     }
-    // …and no index row anywhere (the live-union view does surface them —
-    // the memory-only rows — but the durable index never saw them).
+    // …and the INDEX rows carry them with EMPTY last_prompts (ADR-006:
+    // creation IS the first row write — "创建即写行"; a never-conversed
+    // session's visibility belongs to the listing's `exclude_empty`
+    // filter, not to the row's absence).
     let index = server.session_index().expect("the index is open");
-    assert!(index.get_session(&default_session).is_none());
-    assert!(index.get_session(&second_session).is_none());
+    for id in [&default_session, &second_session] {
+        let row = index
+            .get_session(id)
+            .expect("creation wrote the metadata row");
+        assert!(
+            row.last_prompt.as_deref().unwrap_or("").is_empty(),
+            "the never-conversed session's row carries an empty last_prompt"
+        );
+    }
 
     // When the server is dropped (the process-exit analogue), then still
     // nothing landed: no session files under the sessions tree at all.
@@ -1417,8 +1427,9 @@ async fn should_migrate_a_v0_session_index_database_when_the_engine_boots_on_an_
         .expect("the legacy row is inserted");
     }
 
-    // When the engine boots on that home and serves its first RPC (the
-    // SessionIndex::open migrate seam + the one-time reconcile)
+    // When the engine boots on that home and its startup housekeeping
+    // settles (the SessionIndex::open migrate seam + the one-time reconcile;
+    // list reads no longer wait for it — ADR-003 c)
     let mut server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("w9-migration"),
         default_root.path().to_path_buf(),
@@ -1426,6 +1437,7 @@ async fn should_migrate_a_v0_session_index_database_when_the_engine_boots_on_an_
         Vec::new(),
     );
     server.listing_visibility = super::ListingVisibility::AllRegistered;
+    server.await_housekeeping_settled().await;
     let listed = server
         .call_method("session.list", json!({}))
         .await
@@ -1457,8 +1469,8 @@ async fn should_migrate_a_v0_session_index_database_when_the_engine_boots_on_an_
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("user_version reads");
     assert_eq!(
-        version, 2,
-        "the v0 database was migrated fully in place (v0→v1→v2)"
+        version, 4,
+        "the v0 database was migrated fully in place (v0→v1→v2→v3→v4)"
     );
 }
 
@@ -1512,6 +1524,7 @@ async fn should_list_a_migrated_ts_session_after_reconciling_from_disk() {
         Vec::new(),
     );
     server.listing_visibility = super::ListingVisibility::AllRegistered;
+    server.await_housekeeping_settled().await;
     let listed = server
         .call_method("session.list", json!({}))
         .await
@@ -1834,8 +1847,10 @@ async fn should_converge_forked_alias_buckets_when_history_was_split_across_spel
     let default_id = default_session.id().as_str().to_string();
     let alias_id = alias_session.id().as_str().to_string();
 
-    // When the engine serves (the one-time reconcile converges both buckets
-    // into the index, each under its own spelling's key)
+    // When the engine serves (the startup housekeeping's one-time reconcile
+    // converges both buckets into the index, each under its own spelling's
+    // key; list reads no longer wait for it — ADR-003 c)
+    server.await_housekeeping_settled().await;
     let workspaces = server
         .call_method("workspace.list", json!({}))
         .await
@@ -1955,7 +1970,9 @@ async fn should_keep_posix_case_and_tilde_spellings_in_separate_scopes_when_they
         .expect("the project bucket's session is created");
     let proj_session_id = proj_session.id().as_str().to_string();
 
-    // When the engine serves
+    // When the engine serves (the startup housekeeping settles first — the
+    // list reads no longer wait for the reconcile, ADR-003 c)
+    server.await_housekeeping_settled().await;
     let workspaces = server
         .call_method("workspace.list", json!({}))
         .await

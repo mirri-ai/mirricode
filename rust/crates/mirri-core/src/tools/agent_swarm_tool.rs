@@ -451,6 +451,11 @@ impl Tool for AgentSwarmTool {
                         max_concurrency: resolve_swarm_max_concurrency(),
                         attempt_timeout: subagent_timeout,
                         retry_base_ms: None,
+                        // S5 / ADR-001 (M1): the parent turn's origin —
+                        // propagated into every member's spawn so a
+                        // cron-fired turn's swarm stays in the Cron
+                        // lineage (the Agent tool's propagation).
+                        turn_origin: ctx.turn_origin.clone(),
                         // The foreground batch's stall-watchdog feed: the
                         // tool's live-update channel resets the parent
                         // turn's stall deadline while members work
@@ -665,10 +670,16 @@ mod tests {
     struct MockHost {
         results: Vec<String>,
         call_count: std::sync::Mutex<usize>,
+        /// The `turn_origin` of every spawn request (M1 verification).
+        spawn_origins: std::sync::Mutex<Vec<crate::permission::TurnOriginContext>>,
     }
 
     impl SubagentHost for MockHost {
         fn spawn(&self, request: SpawnRequest) -> EngineResult<SubagentHandle> {
+            self.spawn_origins
+                .lock()
+                .unwrap()
+                .push(request.turn_origin.clone());
             let mut count = self.call_count.lock().unwrap();
             let idx = *count % self.results.len();
             *count += 1;
@@ -697,6 +708,7 @@ mod tests {
             Arc::new(MockHost {
                 results: results.iter().map(|s| s.to_string()).collect(),
                 call_count: std::sync::Mutex::new(0),
+                spawn_origins: std::sync::Mutex::new(Vec::new()),
             }),
             None,
             None,
@@ -712,6 +724,15 @@ mod tests {
         input: serde_json::Value,
         cancel: CancelToken,
     ) -> ToolResult {
+        run_tool_with_origin(tool, input, cancel, Default::default()).await
+    }
+
+    async fn run_tool_with_origin(
+        tool: &AgentSwarmTool,
+        input: serde_json::Value,
+        cancel: CancelToken,
+        turn_origin: crate::permission::TurnOriginContext,
+    ) -> ToolResult {
         let execution = tool.resolve_execution(input).expect("resolve");
         match execution {
             ToolExecution::Runnable { execute, .. } => {
@@ -722,10 +743,60 @@ mod tests {
                     tool_call_id: "test-call".into(),
                     cancel,
                     progress: crate::tool::ToolProgressHandle::default(),
+                    turn_origin,
                 };
                 execute(ctx).await
             }
             ToolExecution::Error(err) => ToolResult::error(err.message),
+        }
+    }
+
+    #[tokio::test]
+    async fn should_propagate_the_cron_lineage_into_swarm_member_spawns() {
+        // Given a swarm tool running inside a cron-fired turn (M1 / S5)
+        let host = Arc::new(MockHost {
+            results: vec!["result-a".to_string(), "result-b".to_string()],
+            call_count: std::sync::Mutex::new(0),
+                spawn_origins: std::sync::Mutex::new(Vec::new()),
+        });
+        let tool = AgentSwarmTool::new(Arc::clone(&host) as Arc<dyn SubagentHost>, None, None);
+
+        // When the batch runs with a Cron turn origin
+        let result = run_tool_with_origin(
+            &tool,
+            json!({
+                "description": "cron lineage swarm",
+                "prompt_template": "Process: {{item}}",
+                "items": ["a", "b"],
+                "subagent_type": "coder"
+            }),
+            CancelToken::new(),
+            crate::permission::TurnOriginContext::Cron {
+                reject_asks: true,
+                workspace: false,
+                readonly: false,
+                task_id: "cron-swarm-1".to_string(),
+            },
+        )
+        .await;
+
+        // Then the batch completes and every spawned member's spawn
+        // request carried the SAME Cron lineage (the defense line is not
+        // bypassable by swarm delegation).
+        assert!(!result.is_error, "{result:?}");
+        let origins = host.spawn_origins.lock().unwrap().clone();
+        assert_eq!(origins.len(), 2, "both members spawned");
+        for origin in origins {
+            assert_eq!(
+                origin,
+                crate::permission::TurnOriginContext::Cron {
+                    reject_asks: true,
+                    workspace: false,
+                    readonly: false,
+                    task_id: "cron-swarm-1".to_string()
+                },
+                "each member inherits the parent turn's Cron origin"
+            );
         }
     }
 
@@ -1264,7 +1335,7 @@ mod tests {
         // ENV_LOCK; this test resolves the cap at call time, so it must take
         // the same lock and clear the variables or a parallel env test can
         // shrink its raised cap (e.g. to 6) and reject its 7 items.
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = mirri_test_support::env::lock();
         let mut guard = EnvGuard::new();
         clear_max_items_env(&mut guard);
 
@@ -1617,16 +1688,10 @@ mod tests {
 
     // ===== Configurable swarm item cap (default 3, SDR-012) =====
 
-    /// Serializes tests that mutate process environment variables.
-    ///
-    /// `std::env::set_var`/`remove_var` are `unsafe` in edition 2024, and
-    /// environment reads/writes race across threads when tests run in
-    /// parallel, so every env-mutating test holds this lock and restores the
-    /// previous values on drop (the `flags.rs` discipline).
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// Saves the current value of each touched variable and restores it on
-    /// drop, so tests never leak env state into each other.
+    /// drop, so tests never leak env state into each other. Mutation itself
+    /// is serialized by the workspace-wide `mirri_test_support::env::lock()`
+    /// (the `flags.rs` discipline, converged onto the single provider).
     struct EnvGuard {
         saved: std::collections::HashMap<String, Option<String>>,
     }
@@ -1688,7 +1753,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // ENV_LOCK serializes env-var access across the whole test
     async fn should_reject_a_swarm_above_the_default_item_cap_of_three() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = mirri_test_support::env::lock();
         let mut guard = EnvGuard::new();
         clear_max_items_env(&mut guard);
 
@@ -1709,7 +1774,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // ENV_LOCK serializes env-var access across the whole test
     async fn should_raise_the_item_cap_when_the_env_override_is_set() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = mirri_test_support::env::lock();
         let mut guard = EnvGuard::new();
         clear_max_items_env(&mut guard);
         guard.set("MIRRI_AGENT_SWARM_MAX_ITEMS", Some("10"));
@@ -1730,7 +1795,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // ENV_LOCK serializes env-var access across the whole test
     async fn should_honor_the_ts_env_alias_when_overriding_the_item_cap() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = mirri_test_support::env::lock();
         let mut guard = EnvGuard::new();
         clear_max_items_env(&mut guard);
         guard.set("MIRRICODE_AGENT_SWARM_MAX_ITEMS", Some("6"));
@@ -1751,7 +1816,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // ENV_LOCK serializes env-var access across the whole test
     async fn should_use_the_configured_max_swarm_items_when_no_env_override_is_set() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = mirri_test_support::env::lock();
         let mut guard = EnvGuard::new();
         clear_max_items_env(&mut guard);
 
@@ -1759,6 +1824,7 @@ mod tests {
             Arc::new(MockHost {
                 results: vec!["ok".to_string()],
                 call_count: std::sync::Mutex::new(0),
+                spawn_origins: std::sync::Mutex::new(Vec::new()),
             }),
             None,
             Some(5),
@@ -1778,7 +1844,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // ENV_LOCK serializes env-var access across the whole test
     async fn should_prefer_the_env_override_over_the_configured_item_cap() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = mirri_test_support::env::lock();
         let mut guard = EnvGuard::new();
         clear_max_items_env(&mut guard);
         guard.set("MIRRI_AGENT_SWARM_MAX_ITEMS", Some("10"));
@@ -1787,6 +1853,7 @@ mod tests {
             Arc::new(MockHost {
                 results: vec!["ok".to_string()],
                 call_count: std::sync::Mutex::new(0),
+                spawn_origins: std::sync::Mutex::new(Vec::new()),
             }),
             None,
             Some(2),
@@ -1805,7 +1872,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // ENV_LOCK serializes env-var access across the whole test
     async fn should_fall_back_to_config_or_default_when_the_env_value_is_invalid() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = mirri_test_support::env::lock();
         let mut guard = EnvGuard::new();
         clear_max_items_env(&mut guard);
         guard.set("MIRRI_AGENT_SWARM_MAX_ITEMS", Some("not-a-number"));
@@ -1814,6 +1881,7 @@ mod tests {
             Arc::new(MockHost {
                 results: vec!["ok".to_string()],
                 call_count: std::sync::Mutex::new(0),
+                spawn_origins: std::sync::Mutex::new(Vec::new()),
             }),
             None,
             Some(5),
@@ -1841,7 +1909,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // ENV_LOCK serializes env-var access across the whole test
     async fn should_treat_a_zero_item_cap_as_unlimited() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = mirri_test_support::env::lock();
         let mut guard = EnvGuard::new();
         clear_max_items_env(&mut guard);
 
@@ -1849,6 +1917,7 @@ mod tests {
             Arc::new(MockHost {
                 results: vec!["ok".to_string()],
                 call_count: std::sync::Mutex::new(0),
+                spawn_origins: std::sync::Mutex::new(Vec::new()),
             }),
             None,
             Some(0),
@@ -1862,7 +1931,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // ENV_LOCK serializes env-var access across the whole test
     async fn should_still_require_at_least_two_items_when_the_cap_is_raised() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = mirri_test_support::env::lock();
         let mut guard = EnvGuard::new();
         clear_max_items_env(&mut guard);
         guard.set("MIRRI_AGENT_SWARM_MAX_ITEMS", Some("10"));
@@ -1881,7 +1950,7 @@ mod tests {
     /// real ceiling, and it must follow env/config changes at call time.
     #[test]
     fn should_carry_the_resolved_item_cap_in_the_parameters_schema() {
-        let _env = ENV_LOCK.lock().unwrap();
+        let _env = mirri_test_support::env::lock();
         let mut guard = EnvGuard::new();
         clear_max_items_env(&mut guard);
 
@@ -1889,6 +1958,7 @@ mod tests {
             Arc::new(MockHost {
                 results: vec!["ok".to_string()],
                 call_count: std::sync::Mutex::new(0),
+                spawn_origins: std::sync::Mutex::new(Vec::new()),
             })
         };
 

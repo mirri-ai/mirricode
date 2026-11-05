@@ -23,6 +23,7 @@ use mirri_proto::WireOp;
 use mirri_transport::adapter::EngineError;
 
 use crate::providers::ConfigResolvingLlm;
+use mirri_core::SessionError;
 use mirri_core::event_projection::turn_stop_reason_wire;
 use mirri_core::session::journal_route::RoutedWireRecorder;
 use mirri_core::{GoalStatus, goal_status_wire};
@@ -64,6 +65,14 @@ use super::{
 /// error — the watchdog is the engine-side backstop, never the first
 /// responder.
 pub(super) const ENGINE_TURN_STALL_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// The current wall-clock instant in milliseconds since the Unix epoch.
+///
+/// The turn-flow ask seam's clock, reused here so a turn that ends without
+/// a [`TurnEndResult`] (a failure settle, a watchdog kill) is stamped with
+/// the same authoritative reading as every other engine timestamp — one
+/// definition, not a second copy.
+pub(super) use mirri_core::session::gates::now_ms as now_epoch_ms;
 
 /// The ADR-006 long backstop window — the third-tier deadline the stall
 /// watchdog applies to Degraded waits (Unknown, probe-degraded,
@@ -253,6 +262,7 @@ fn turn_abort_guard_for(
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_engine_turn(
     flow_handle: Arc<std::sync::Mutex<TurnFlow>>,
+    turn_origin: Option<mirri_core::permission::TurnOriginContext>,
     agent_hook_engine: Arc<HookEngine>,
     external_hook_env: HashMap<String, String>,
     flag_registry: Arc<mirri_core::FlagRegistry>,
@@ -286,12 +296,23 @@ pub(super) async fn run_engine_turn(
     // The settle-side cleanup (after the turn) runs outside the blocking
     // closure — this Arc survives the move below.
     let task_manager_for_cleanup = Arc::clone(&task_manager);
-    // The stall-watchdog log key (ADR-004 batch c): session + agent join
-    // the wire turn id in every warn line.
+    // The turn's stall-watchdog log key (ADR-004 batch c): session + agent
+    // join the wire turn id in every warn line.
     let stall_key_ids = (stall_log_ids.0, stall_log_ids.1);
     let stall_wire_turn_id = wire_turn_id.clone();
     let outcome = tokio::task::spawn_blocking(move || {
         let mut turn_flow = flow_handle.lock().unwrap_or_else(|e| e.into_inner());
+        // The dispatch-set origin (S4 / ADR-001): `Some` (the cron
+        // injection path) is stamped onto the flow HERE — after the flow
+        // lock is acquired but BEFORE the turn starts — so a fired turn
+        // can never race an in-flight turn's top-of-turn take and start
+        // Interactive (the run-now face has no idle gate; the blocking
+        // lock() queues the fire behind the running turn instead of
+        // silently skipping the stamp). `None` leaves the slot alone
+        // (the interactive dispatches run Interactive by default).
+        if let Some(origin) = turn_origin {
+            turn_flow.set_turn_origin(origin);
+        }
         // ADR-006 (review C1): reset the per-turn wait registry HERE —
         // under the flow lock, before the deadline loop below captures
         // its probe handle — so the turn body's registrations and the
@@ -455,6 +476,10 @@ pub(super) async fn run_engine_turn(
                                     reason: "failed".to_string(),
                                     error: Some(serde_json::json!(error_message)),
                                     duration_ms: None,
+                                    // The watchdog kill moment IS the turn's
+                                    // terminal instant: stamp it directly
+                                    // rather than deriving it.
+                                    ended_at: Some(now_epoch_ms()),
                                 })
                                 .await;
                         }
@@ -1169,18 +1194,29 @@ impl EmbeddedServer {
             .map_err(session_error)?;
         if !materialized {
             // Already materialized (an earlier send, an eager create, a
-            // resume): persist the recency bump — the fresh path's
-            // materialize wrote the state above, this path would
-            // otherwise leave the disk stale.
+            // resume): persist the recency bump through the metadata row
+            // (ADR-006 裁决 4 — the patch names ONLY the two recency keys
+            // the send path just stamped; a concurrent writer's disjoint
+            // field survives) — the fresh path's materialize wrote the row
+            // above, this path would otherwise leave it stale.
             let metadata = session.metadata().await;
             owner_manager
-                .persistence()
-                .save_state(&session_id, &metadata)
+                .metadata_store()
+                .apply(
+                    &session_id,
+                    &owner_manager.metadata_workspace_id(),
+                    mirri_core::session::metadata_port::MetadataPatch {
+                        updated_at: Some(metadata.updated_at),
+                        last_used_at: Some(metadata.last_used_at),
+                        ..Default::default()
+                    },
+                )
                 .await
-                .map_err(session_error)?;
+                .map_err(|error| {
+                    session_error(SessionError::StateFile(error.to_string()))
+                })?;
         }
-        let metadata = session.metadata().await;
-        self.index_note_last_prompt(&session_id, &metadata, &user_text);
+        self.index_note_last_prompt(&session_id, &user_text).await;
 
         // Phase 2 — resolve the session's event plumbing early (the turn
         // wiring below and the interaction kernel consume the gates). The
@@ -1217,7 +1253,7 @@ impl EmbeddedServer {
                 self.publish_session_event(
                     &params.session_id,
                     SessionEvent::SessionMetaUpdated {
-                        title: Some(title),
+                        title: Some(title.clone()),
                         patch: None,
                     },
                 );
@@ -1226,13 +1262,23 @@ impl EmbeddedServer {
                 // materialize above wrote the PRE-title state and the
                 // index row was upserted from it — re-write both so a
                 // restart and the listing show the derived value, not the
-                // placeholder.
-                let metadata = session.metadata().await;
+                // placeholder. ADR-006 裁决 4: the patch names ONLY
+                // `title`; every other column survives untouched.
                 owner_manager
-                    .persistence()
-                    .save_state(&session_id, &metadata)
+                    .metadata_store()
+                    .apply(
+                        &session_id,
+                        &owner_manager.metadata_workspace_id(),
+                        mirri_core::session::metadata_port::MetadataPatch {
+                            title: Some(title.clone()),
+                            ..Default::default()
+                        },
+                    )
                     .await
-                    .map_err(session_error)?;
+                    .map_err(|error| {
+                        session_error(SessionError::StateFile(error.to_string()))
+                    })?;
+                let metadata = session.metadata().await;
                 self.index_upsert_live(&session_id, &metadata);
             }
             return Err(EngineError::Internal(
@@ -1659,6 +1705,9 @@ impl EmbeddedServer {
                 });
                 let turn_end = run_engine_turn(
                     flow_handle,
+                    // The dispatch stamped any origin onto the flow itself
+                    // before the call (message.send's own critical section).
+                    None,
                     agent_hook_engine,
                     external_hook_env,
                     Arc::clone(self.flag_registry()),
@@ -1782,6 +1831,7 @@ impl EmbeddedServer {
                         reason: turn_stop_reason_wire(&turn_end.stop_reason).to_string(),
                         error: None,
                         duration_ms: Some(turn_end.duration_ms),
+                        ended_at: Some(turn_end.ended_at),
                     })
                     .await;
 
@@ -1813,6 +1863,7 @@ impl EmbeddedServer {
                     stop_reason: turn_stop_reason_wire(&turn_end.stop_reason).to_string(),
                     wire_turn_id: turn_end.turn_id,
                     duration_ms: Some(turn_end.duration_ms),
+                    ended_at_ms: Some(turn_end.ended_at),
                 });
 
                 // Goal settlement (TS settleAbnormalTurn parity). The
@@ -1941,6 +1992,9 @@ impl EmbeddedServer {
                 let handle = tokio::spawn(async move {
                     let outcome = run_engine_turn(
                         flow_handle,
+                        // The dispatch already stamped the flow (the fire
+                        // arm's own critical section).
+                        None,
                         agent_hook_engine,
                         external_hook_env,
                         turn_flag_registry,
@@ -1998,6 +2052,7 @@ impl EmbeddedServer {
                                         .to_string(),
                                     error: None,
                                     duration_ms: Some(turn_end.duration_ms),
+                                    ended_at: Some(turn_end.ended_at),
                                 })
                                 .await;
                             // Success counterpart of TurnFailed below:
@@ -2011,6 +2066,7 @@ impl EmbeddedServer {
                                     .to_string(),
                                 wire_turn_id: turn_end.turn_id,
                                 duration_ms: Some(turn_end.duration_ms),
+                                ended_at_ms: Some(turn_end.ended_at),
                             });
                             // spec 09 / ADR-020 + SDR-016: the settle-site
                             // retry is not dispatched here — the in-turn
@@ -2081,6 +2137,9 @@ impl EmbeddedServer {
                                 // The fire task died before a TurnEndResult —
                                 // no numeric id was allocated for the client.
                                 wire_turn_id: 0,
+                                // No TurnEndResult on this path — the
+                                // failure moment is the terminal instant.
+                                ended_at_ms: Some(now_epoch_ms()),
                             });
                             // A failed turn is still a settled user turn for
                             // the naming question (ADR-017 §6): the fallback
@@ -2366,6 +2425,9 @@ impl EmbeddedServer {
                     error: format!("turn aborted by {cause}"),
                     error_code: "abort.user_cancelled".to_string(),
                     wire_turn_id: 0,
+                    // The abort path has no `TurnEndResult` — the abort
+                    // moment is the turn's terminal instant.
+                    ended_at_ms: Some(now_epoch_ms()),
                 });
             }
         }
@@ -2780,6 +2842,9 @@ impl EmbeddedServer {
         let handle = tokio::spawn(async move {
             let outcome = run_engine_turn(
                 flow_handle,
+                // Steers are user turns — the flow's default Interactive
+                // origin already applies.
+                None,
                 agent_hook_engine,
                 external_hook_env,
                 turn_flag_registry,
@@ -2833,6 +2898,7 @@ impl EmbeddedServer {
                             reason: turn_stop_reason_wire(&turn_end.stop_reason).to_string(),
                             error: None,
                             duration_ms: Some(turn_end.duration_ms),
+                            ended_at: Some(turn_end.ended_at),
                         })
                         .await;
                     event_bus.publish(SessionEvent::TurnCompleted {
@@ -2842,6 +2908,7 @@ impl EmbeddedServer {
                         stop_reason: turn_stop_reason_wire(&turn_end.stop_reason).to_string(),
                         wire_turn_id: turn_end.turn_id,
                         duration_ms: Some(turn_end.duration_ms),
+                        ended_at_ms: Some(turn_end.ended_at),
                     });
                     // spec 09 / ADR-020 + SDR-016 (A11: a steer launched on
                     // an idle agent is a user turn): the settle-site retry
@@ -2900,6 +2967,9 @@ impl EmbeddedServer {
                         error: error_message,
                         error_code: error.domain_code().to_string(),
                         wire_turn_id: 0,
+                        // No TurnEndResult on this path — the failure
+                        // moment is the terminal instant.
+                        ended_at_ms: Some(now_epoch_ms()),
                     });
                     // A failed turn is still a settled user turn for the
                     // naming question (ADR-017 §6): the fallback runs —
@@ -3879,6 +3949,7 @@ mod tests {
             steps: 2,
             usage: Default::default(),
             duration_ms: 1000,
+            ended_at: 0,
             blocked_by_prompt_hook: false,
         };
 
@@ -3906,6 +3977,7 @@ mod tests {
             steps: 2,
             usage: Default::default(),
             duration_ms: 1000,
+            ended_at: 0,
             blocked_by_prompt_hook: false,
         };
 

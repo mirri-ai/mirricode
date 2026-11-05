@@ -32,7 +32,10 @@ use serde_json::{Value, json};
 use super::config_handlers::{first_string_arg, redact_api_keys};
 use super::responses::{ModelGenerateResult, ModelGenerateUsage, to_result};
 use super::{EmbeddedServer, engine_error, invalid_params, not_found_domain};
-use crate::providers::config_factory::{resolve_provider_credential, resolve_provider_env_chain};
+use crate::providers::config_factory::{
+    base_url_env_name, credential_type_for_wire, env_value_of, first_party_default_base_url,
+    missing_credential_error, resolve_provider_credential, resolve_provider_env_chain,
+};
 use crate::providers::{
     AnthropicLlm, ConfigAwareLlmFactory, CredentialStore, GoogleLlm, KimiLlm, OpenAILlm,
     OpenAIResponsesLlm,
@@ -418,17 +421,17 @@ impl EmbeddedServer {
                 )));
             };
             let is_kimi_vendor = provider_type.eq_ignore_ascii_case("kimi");
-            // API key: the credential store's active entry, else the same
-            // env sub-table > shell chain the agent-turn
-            // `ConfigAwareLlmFactory` resolves (a provider whose
-            // credentials live only in the store, `[providers.<id>.env]`,
-            // or the shell must resolve identically here — the title path
-            // must not drift from the chat path). The whole resolution
-            // runs under `spawn_blocking`: an `external` store entry
-            // shells out to `az`, whose cold start (1-3s) must never block
-            // a tokio async worker; the sync `ConfigAwareLlmFactory` path
-            // (the agent callback chain) calls it directly instead — the
-            // tradeoff note lives in config_factory.rs.
+            // API key (#186): the credential store's active entry, else the
+            // provider's `env` sub-table — the same explicit-only chain the
+            // agent-turn `ConfigAwareLlmFactory` resolves (a provider whose
+            // credentials live only in the shell answers the clear
+            // configuration error, never an empty-key request). The whole
+            // resolution runs under `spawn_blocking`: an `external` store
+            // entry shells out to `az`, whose cold start (1-3s) must never
+            // block a tokio async worker; the sync
+            // `ConfigAwareLlmFactory` path (the agent callback chain) calls
+            // it directly instead — the tradeoff note lives in
+            // config_factory.rs.
             let (api_key, base_url, model_name, system_prompt) = {
                 let model_name = alias
                     .get("model")
@@ -440,29 +443,60 @@ impl EmbeddedServer {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
-                let base_url = provider
+                // Base URL (#184): the provider's `baseUrl` field, else the
+                // type's key in the provider's `env` sub-table, else the
+                // FIRST-PARTY default — only when the provider IS that
+                // first party. Any other provider without a base URL is the
+                // clear configuration error (never a silent official-
+                // endpoint request). An empty/whitespace-only `baseUrl`
+                // counts as absent (the web clear path writes ""). The
+                // resolution mirrors the factory's chain so the title path
+                // never drifts from the chat path.
+                let base_url = match provider
                     .get("baseUrl")
                     .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| match (wire_protocol, is_kimi_vendor) {
-                        ("anthropic", _) => "https://api.anthropic.com/v1".to_string(),
-                        ("google-genai", _) => {
-                            "https://generativelanguage.googleapis.com/v1beta".to_string()
+                    .map(str::trim)
+                    .filter(|url| !url.is_empty())
+                {
+                    Some(url) => url.to_string(),
+                    None => {
+                        let wire_type = if is_kimi_vendor { "kimi" } else { wire_protocol };
+                        match env_value_of(&provider, Some(base_url_env_name(wire_type))) {
+                            Some(url) => url,
+                            None => first_party_default_base_url(&provider_id, wire_type)
+                                .ok_or_else(|| {
+                                    // A misconfiguration the caller can fix,
+                                    // not an entity lookup miss —
+                                    // `request.invalid` answers the
+                                    // client-correctable code (the provider
+                                    // exists; its base URL does not).
+                                    invalid_params(format!(
+                                        "provider '{provider_id}' has no base URL configured; \
+                                         please configure a base URL for provider '{provider_id}' \
+                                         (Settings → Providers → {provider_id}, or the baseUrl \
+                                         field in config.toml)"
+                                    ))
+                                })?,
                         }
-                        (_, true) => "https://api.mirricode.com/coding/v1".to_string(),
-                        _ => "https://api.openai.com/v1".to_string(),
-                    });
+                    }
+                };
                 let credentials = self.factory_credentials().cloned();
                 let provider = provider.clone();
-                let provider_id = provider_id.clone();
-                let provider_type = provider_type.clone();
+                let provider_id_for_task = provider_id.clone();
+                // The credential chain keys off the resolved WIRE protocol,
+                // not the raw provider type — the shared
+                // `credential_type_for_wire` normalization keeps the
+                // generate path, the agent-turn factory chain, and the
+                // catalog's `has_api_key` faces on one spelling.
+                let credential_type =
+                    credential_type_for_wire(&provider_type, wire_protocol).to_string();
                 let resolved =
                     tokio::task::spawn_blocking(move || {
                         resolve_provider_credential(
                             credentials.as_ref(),
-                            &provider_id,
+                            &provider_id_for_task,
                             &provider,
-                            &provider_type,
+                            &credential_type,
                         )
                     })
                     .await
@@ -472,11 +506,16 @@ impl EmbeddedServer {
                 let api_key = match resolved {
                     // The external source failed with guidance — surface
                     // it verbatim as the provider credential error (never
-                    // the OPENAI_API_KEY-not-set face).
+                    // a configuration face).
                     Err(guidance) => {
                         return Err(engine_error(CoreEngineError::ProviderError(guidance)))
                     }
-                    Ok(api_key) => api_key.unwrap_or_default(),
+                    Ok(Some(key)) => key,
+                    Ok(None) => {
+                        return Err(engine_error(CoreEngineError::ProviderError(
+                            missing_credential_error(&provider_id),
+                        )))
+                    }
                 };
                 (api_key, base_url, model_name, system_prompt)
             };
@@ -987,21 +1026,23 @@ pub(super) fn provider_catalog_item(
     // credential-store entry (any value type counts — an external entry
     // is configured until its source resolves, an oauth slot is reserved
     // but declared) OR the env chain answering (the config `apiKey` field
-    // no longer counts — the field tier is retired, D-M3).
+    // no longer counts — the field tier is retired, D-M3). The chain keys
+    // off the resolved WIRE protocol (a custom-type provider answers
+    // through its wire's conventional key) — the shared
+    // `credential_type_for_wire` normalization keeps this verdict aligned
+    // with the request paths.
+    let provider_type = provider
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("openai")
+        .trim()
+        .to_ascii_lowercase();
+    let wire_protocol = resolve_wire_protocol(None, &provider_type);
+    let credential_type = credential_type_for_wire(&provider_type, wire_protocol.unwrap_or(""));
     let has_api_key = credentials
         .map(|store| store.get(provider_id).is_some())
         .unwrap_or(false)
-        || resolve_provider_env_chain(
-            provider,
-            provider
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("openai")
-                .trim()
-                .to_ascii_lowercase()
-                .as_str(),
-        )
-        .is_some();
+        || resolve_provider_env_chain(provider, credential_type).is_some();
     let provider_models: Vec<String> = models
         .as_object()
         .map(|models| {

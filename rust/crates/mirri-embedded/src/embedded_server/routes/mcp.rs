@@ -10,16 +10,19 @@ pub(super) const ROUTES: &[Route] = &[
         method: "mcp.list",
         aliases: &["listMcpServers"],
         handler: |server, _params| Box::pin(server.dispatch_mcp_list(false)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.startupMetrics",
         aliases: &["getMcpStartupMetrics"],
         handler: |server, _params| Box::pin(server.dispatch_mcp_startup_metrics()),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.reconnect",
         aliases: &["reconnectMcpServer"],
         handler: |server, params| Box::pin(server.dispatch_mcp_reconnect(params)),
+        settlement: Route::SETTLES,
     },
     // The P1 configuration read-write surface (mcp-architecture §4.1): the
     // layered config view and the atomic per-entry writes.
@@ -27,21 +30,25 @@ pub(super) const ROUTES: &[Route] = &[
         method: "mcp.config.list",
         aliases: &["listMcpConfig"],
         handler: |server, params| Box::pin(server.dispatch_mcp_config_list(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.config.set",
         aliases: &["setMcpConfig"],
         handler: |server, params| Box::pin(server.dispatch_mcp_config_set(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.config.remove",
         aliases: &["removeMcpConfig"],
         handler: |server, params| Box::pin(server.dispatch_mcp_config_remove(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.config.setToolFilter",
         aliases: &["setMcpToolFilter"],
         handler: |server, params| Box::pin(server.dispatch_mcp_config_set_tool_filter(params)),
+        settlement: Route::SETTLES,
     },
     // The P2 pool surface (mcp-architecture §4.4): the fresh-connect config
     // test and the no-workspace global status view.
@@ -49,6 +56,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "mcp.config.test",
         aliases: &["testMcpConfig"],
         handler: |server, params| Box::pin(server.dispatch_mcp_config_test(params)),
+        settlement: Route::SETTLES,
     },
     // The F-4 resolved-value preview: the adjudication A5 sole sanctioned
     // outlet for environment-expanded values (an explicit request only).
@@ -56,11 +64,13 @@ pub(super) const ROUTES: &[Route] = &[
         method: "mcp.config.preview",
         aliases: &["previewMcpConfig"],
         handler: |server, params| Box::pin(server.dispatch_preview_mcp_config(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.status",
         aliases: &["getMcpStatus"],
         handler: |server, _params| Box::pin(server.dispatch_mcp_status()),
+        settlement: Route::SETTLES,
     },
     // The M1 tool view: the single-server tool listing with per-tool
     // filter state (ADR-004).
@@ -68,6 +78,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "mcp.tools",
         aliases: &["listMcpTools"],
         handler: |server, params| Box::pin(server.dispatch_list_mcp_tools(params)),
+        settlement: Route::SETTLES,
     },
     // The F-6 idempotent reconcile entry: the single kernel both the
     // config writes and the file watcher already use, exposed as the
@@ -76,16 +87,19 @@ pub(super) const ROUTES: &[Route] = &[
         method: "mcp.sync",
         aliases: &["syncMcpServers"],
         handler: |server, params| Box::pin(server.dispatch_mcp_sync(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.enable",
         aliases: &["enableMcpServer"],
         handler: |server, params| Box::pin(server.dispatch_mcp_enable(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.disable",
         aliases: &["disableMcpServer"],
         handler: |server, params| Box::pin(server.dispatch_mcp_disable(params)),
+        settlement: Route::SETTLES,
     },
     // Retired in the v2 contract (v1-era session-level toggles; v2
     // deleted them): explicit not_implemented instead of the former
@@ -101,6 +115,7 @@ pub(super) const ROUTES: &[Route] = &[
                 ))
             })
         },
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.disableTool",
@@ -112,32 +127,38 @@ pub(super) const ROUTES: &[Route] = &[
                 ))
             })
         },
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.toggleState",
         aliases: &["getMcpToggleState"],
         handler: |server, _params| Box::pin(server.dispatch_mcp_toggle_state()),
+        settlement: Route::SETTLES,
     },
     // Global MCP (host-level).
     Route {
         method: "mcp.global.list",
         aliases: &["listGlobalMcpServers"],
         handler: |server, _params| Box::pin(server.dispatch_mcp_list(false)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.global.tools",
         aliases: &["listGlobalMcpTools"],
         handler: |server, _params| Box::pin(server.dispatch_mcp_tools()),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.global.reload",
         aliases: &["reloadGlobalMcp"],
         handler: |server, params| Box::pin(server.dispatch_mcp_reload(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.global.create",
         aliases: &["createGlobalMcpServer"],
         handler: |server, params| Box::pin(server.dispatch_mcp_connect(params)),
+        settlement: Route::SETTLES,
     },
     // Retired in the v2 contract (v1-era global MCP surface; v2 has
     // no global MCP RPC): explicit not_implemented instead of the
@@ -152,11 +173,13 @@ pub(super) const ROUTES: &[Route] = &[
                 ))
             })
         },
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.global.delete",
         aliases: &["deleteGlobalMcpServer"],
         handler: |server, params| Box::pin(server.dispatch_mcp_disconnect(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.global.toggle",
@@ -168,30 +191,36 @@ pub(super) const ROUTES: &[Route] = &[
                 ))
             })
         },
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.global.toggleState",
         aliases: &["getGlobalMcpToggleState"],
         handler: |server, _params| Box::pin(server.dispatch_mcp_toggle_state()),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.global.enableTool",
         aliases: &["enableGlobalMcpTool"],
         handler: |server, params| Box::pin(server.dispatch_mcp_enable_tool(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.global.disableTool",
         aliases: &["disableGlobalMcpTool"],
         handler: |server, params| Box::pin(server.dispatch_mcp_disable_tool(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.global.testConnect",
         aliases: &["testConnectMcpServer"],
         handler: |server, params| Box::pin(server.dispatch_mcp_test_connect(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "mcp.global.connect",
         aliases: &["connectGlobalMcpServer"],
         handler: |server, params| Box::pin(server.dispatch_mcp_connect(params)),
+        settlement: Route::SETTLES,
     },
 ];

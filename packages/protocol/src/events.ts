@@ -118,6 +118,8 @@ export interface CronJobOrigin {
   readonly recurring: boolean;
   readonly coalescedCount: number;
   readonly stale: boolean;
+  /** This delivery exhausts the task's max_fires budget — its final delivery. */
+  readonly maxedOut?: boolean;
 }
 
 export interface CronMissedOrigin {
@@ -524,10 +526,13 @@ export interface TurnEndedEvent {
   readonly reason: TurnEndReason;
   readonly error?: MirriErrorPayload;
   readonly durationMs?: number;
+  /** Wall-clock completion instant (Unix epoch ms, server-measured) — independent of durationMs. */
+  readonly endedAtMs?: number;
 }
 
 export interface TurnStepStartedEvent {
   readonly type: 'turn.step.started';
+  readonly agentId?: string;
   readonly turnId: number;
   readonly step: number;
   readonly stepId?: string;
@@ -535,6 +540,7 @@ export interface TurnStepStartedEvent {
 
 export interface TurnStepCompletedEvent {
   readonly type: 'turn.step.completed';
+  readonly agentId?: string;
   readonly turnId: number;
   readonly step: number;
   readonly stepId?: string;
@@ -569,6 +575,7 @@ export interface TurnStepCompletedEvent {
 
 export interface TurnStepRetryingEvent {
   readonly type: 'turn.step.retrying';
+  readonly agentId?: string;
   readonly turnId: number;
   readonly step: number;
   readonly stepId?: string;
@@ -583,6 +590,7 @@ export interface TurnStepRetryingEvent {
 
 export interface TurnStepInterruptedEvent {
   readonly type: 'turn.step.interrupted';
+  readonly agentId?: string;
   readonly turnId: number;
   readonly step: number;
   readonly stepId?: string;
@@ -626,6 +634,9 @@ export interface ToolCallStartedEvent {
   readonly args: unknown;
   readonly description?: string;
   readonly display?: ToolInputDisplay;
+  /** Epoch-ms start of the call, stamped by the engine at dispatch
+   *  (ADR-7: excludes approval wait; additive — absent on older engines). */
+  readonly startedAtMs?: number;
 }
 
 export interface ToolProgressEvent {
@@ -672,6 +683,8 @@ export interface ToolResultEvent {
    * the started event); the field is optional and additive.
    */
   readonly name?: string;
+  /** Server-measured total duration in ms (ADR-7; additive). */
+  readonly durationMs?: number;
 }
 
 export interface SubagentSpawnedEvent {
@@ -960,6 +973,7 @@ export const cronJobOriginSchema = z.object({
   recurring: z.boolean(),
   coalescedCount: z.number(),
   stale: z.boolean(),
+  maxedOut: z.boolean().optional(),
 }) satisfies z.ZodType<CronJobOrigin>;
 
 export const cronMissedOriginSchema = z.object({
@@ -1324,10 +1338,12 @@ export const turnEndedEventSchema = z.object({
   reason: turnEndReasonSchema,
   error: mirriErrorPayloadSchema.optional(),
   durationMs: z.number().optional(),
+  endedAtMs: z.number().optional(),
 }) satisfies z.ZodType<TurnEndedEvent>;
 
 export const turnStepStartedEventSchema = z.object({
   type: z.literal('turn.step.started'),
+  agentId: z.string().optional(),
   turnId: z.number(),
   step: z.number(),
   stepId: z.string().optional(),
@@ -1335,6 +1351,7 @@ export const turnStepStartedEventSchema = z.object({
 
 export const turnStepCompletedEventSchema = z.object({
   type: z.literal('turn.step.completed'),
+  agentId: z.string().optional(),
   turnId: z.number(),
   step: z.number(),
   stepId: z.string().optional(),
@@ -1353,6 +1370,7 @@ export const turnStepCompletedEventSchema = z.object({
 
 export const turnStepRetryingEventSchema = z.object({
   type: z.literal('turn.step.retrying'),
+  agentId: z.string().optional(),
   turnId: z.number(),
   step: z.number(),
   stepId: z.string().optional(),
@@ -1367,6 +1385,7 @@ export const turnStepRetryingEventSchema = z.object({
 
 export const turnStepInterruptedEventSchema = z.object({
   type: z.literal('turn.step.interrupted'),
+  agentId: z.string().optional(),
   turnId: z.number(),
   step: z.number(),
   stepId: z.string().optional(),
@@ -1410,6 +1429,7 @@ export const toolCallStartedEventSchema = z.object({
   args: z.unknown(),
   description: z.string().optional(),
   display: ToolInputDisplaySchema.optional(),
+  startedAtMs: z.number().optional(),
 }) satisfies z.ZodType<ToolCallStartedEvent>;
 
 export const toolProgressEventSchema = z.object({
@@ -1439,6 +1459,7 @@ export const toolResultEventSchema = z.object({
   isError: z.boolean().optional(),
   synthetic: z.boolean().optional(),
   name: z.string().optional(),
+  durationMs: z.number().optional(),
 }) satisfies z.ZodType<ToolResultEvent>;
 
 export const subagentSpawnedEventSchema = z.object({

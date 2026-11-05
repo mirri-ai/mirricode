@@ -161,13 +161,10 @@ impl crate::LlmFactory for ProviderLlmFactory {
     }
 }
 
-/// Serializes tests that mutate process environment variables, which are
-/// process-global and would otherwise race between parallel tests.
-/// `pub(crate)` so the config_factory tests and the embedded_server tests
-/// (which also mutate env vars) share the same lock.
-#[cfg(test)]
-pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
+/// Env mutation in tests serializes on the workspace-wide
+/// [`mirri_test_support::env::lock`](mirri_test_support::env) — the single
+/// provider every crate converged on (16-test-execution-strategy §4.3);
+/// this crate no longer owns a private env mutex.
 #[cfg(test)]
 mod tests {
     use futures::StreamExt;
@@ -178,9 +175,7 @@ mod tests {
 
     use super::*;
     use crate::LlmFactory;
-
-    use super::ENV_LOCK;
-
+    
     fn anthropic_config() -> AgentScopeConfig {
         AgentScopeConfig {
             provider_type: ProviderType::Anthropic,
@@ -194,7 +189,7 @@ mod tests {
     #[test]
     fn should_create_anthropic_llm_when_provider_type_is_anthropic_and_api_key_is_set() {
         // Given the Anthropic environment variables and an Anthropic config
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         unsafe { std::env::set_var("ANTHROPIC_API_KEY", "test-key") };
         unsafe { std::env::remove_var("ANTHROPIC_BASE_URL") };
 
@@ -218,7 +213,7 @@ mod tests {
     #[test]
     fn should_create_openai_llm_when_provider_type_is_openai_and_api_key_is_set() {
         // Given the OpenAI environment variables and an OpenAI config
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         unsafe { std::env::set_var("OPENAI_API_KEY", "test-key") };
         unsafe { std::env::set_var("OPENAI_BASE_URL", "https://proxy.example.com") };
         let config = AgentScopeConfig {
@@ -241,7 +236,7 @@ mod tests {
     #[test]
     fn should_fail_when_anthropic_api_key_is_missing() {
         // Given no ANTHROPIC_API_KEY and an Anthropic config
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
 
         // When an LLM is created
@@ -257,7 +252,7 @@ mod tests {
     #[test]
     fn should_create_google_llm_when_provider_type_is_google_and_api_key_is_set() {
         // Given the Google environment variables and a Google config
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         unsafe { std::env::set_var("GOOGLE_API_KEY", "test-key") };
         unsafe { std::env::remove_var("GOOGLE_GEMINI_BASE_URL") };
         let config = AgentScopeConfig {
@@ -280,7 +275,7 @@ mod tests {
     #[test]
     fn should_fail_when_google_api_key_is_missing() {
         // Given no GOOGLE_API_KEY and a Google config
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         unsafe { std::env::remove_var("GOOGLE_API_KEY") };
         let config = AgentScopeConfig {
             provider_type: ProviderType::Google,
@@ -323,7 +318,7 @@ mod tests {
     #[test]
     fn should_create_kimi_llm_when_provider_type_is_kimi_and_mirri_api_key_is_set() {
         // Given the Kimi environment variables and a Kimi config
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         unsafe { std::env::set_var("MIRRI_API_KEY", "test-key") };
         unsafe { std::env::remove_var("MIRRI_BASE_URL") };
 
@@ -354,7 +349,7 @@ mod tests {
     #[test]
     fn should_fail_when_mirri_api_key_is_missing() {
         // Given no MIRRI_API_KEY and a Kimi config
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         unsafe { std::env::remove_var("MIRRI_API_KEY") };
         let factory = ProviderLlmFactory::default();
 
@@ -398,7 +393,7 @@ mod tests {
             ..Default::default()
         };
         let llm = {
-            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _guard = mirri_test_support::env::lock();
             unsafe { std::env::set_var("MIRRI_API_KEY", "test-key") };
             unsafe { std::env::set_var("MIRRI_BASE_URL", format!("{}/v1", server.uri())) };
             ProviderLlmFactory::default()
@@ -451,7 +446,7 @@ mod tests {
             ..Default::default()
         };
         let llm = {
-            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _guard = mirri_test_support::env::lock();
             unsafe { std::env::set_var("OPENAI_API_KEY", "test-key") };
             unsafe { std::env::set_var("OPENAI_BASE_URL", format!("{}/v1", server.uri())) };
             ProviderLlmFactory::default()
@@ -513,7 +508,7 @@ mod tests {
             ..Default::default()
         };
         let llm = {
-            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _guard = mirri_test_support::env::lock();
             unsafe { std::env::set_var("ANTHROPIC_API_KEY", "test-key") };
             unsafe { std::env::set_var("ANTHROPIC_BASE_URL", format!("{}/v1", server.uri())) };
             ProviderLlmFactory::default()

@@ -21,7 +21,9 @@
 //! ## Resume
 //!
 //! The resume flow reconstructs a closed session's state by replaying its
-//! wire log: it loads session metadata from `state.json`, folds every
+//! wire log: it loads session metadata from the metadata ROW (ADR-006;
+//! falling back to `state.json` for a pre-ADR-006 on-disk session until
+//! the one-time migration retires the fallback), folds every
 //! `wire.jsonl` record after the `snapshot.json` checkpoint (if one exists)
 //! through the [`mirri_proto::reduce_with_limits`] reducer, rebuilds the main
 //! agent's
@@ -59,6 +61,12 @@ use super::agent_lifecycle::AgentLifecycle;
 use super::artifacts::SessionArtifacts;
 use super::error::{SessionError, SessionResult};
 use super::events::{SessionEvent, uuid_from_id};
+use super::metadata_port::{
+    InMemoryMetadataStore, MetadataPatch, MetadataStorePort as MetadataStorePortTrait,
+};
+
+#[cfg(test)]
+pub(crate) use super::metadata_port::MetadataStorePort;
 use super::persistence::SessionPersistence;
 use super::replay::{reconstruct_context_memory, reconstruct_context_memory_with_blobs};
 use super::shutdown::SessionShutdown;
@@ -204,6 +212,23 @@ type PendingSteerPairs = Vec<(
     crate::origin::PromptOrigin,
 )>;
 
+/// The wire-log fingerprint the cron replay cache keys on: `(mtime, size)`
+/// of the `wire.jsonl` file — a cheap stat (no read, no parse) that every
+/// observable mutation of the log moves (an append, a snapshot-rewrite
+/// migration, a compression swap).
+type WireLogFingerprint = (std::time::SystemTime, u64);
+
+/// How many wire-log replays the cron replay cache has actually performed
+/// (`read_only_cron_tasks_cached`'s test seam: unchanged log → no second
+/// replay, moved fingerprint → replay). A plain counter, NOT the cache's
+/// length — an invalidation replaces the same session's entry, so the
+/// length cannot observe a re-replay.
+type CronReplayCount = std::sync::atomic::AtomicUsize;
+
+/// One cached replay entry: the wire log's fingerprint at replay time plus
+/// the replayed cron-task records (the aggregation's own row source).
+type CachedCronTasks = (Option<WireLogFingerprint>, Vec<serde_json::Value>);
+
 pub struct SessionManager {
     workspace: Arc<WorkspaceScope>,
     persistence: SessionPersistence,
@@ -250,6 +275,20 @@ pub struct SessionManager {
     /// persisted sessions on demand (restart survival). Cleared when the
     /// session is explicitly created or resumed again.
     closed_ids: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// The per-session replay cache behind the embedded `cron.listAll`
+    /// aggregation (read_only_cron_tasks_cached): the replayed cron-task
+    /// records of every PERSISTED-ONLY session, keyed on the wire log's
+    /// `(mtime, size)` fingerprint so an unchanged log answers from memory
+    /// instead of re-replaying (a polling UI would otherwise full-replay
+    /// every session on every listAll). Live sessions bypass it (their
+    /// in-memory `CronManager` is fresher than any fingerprint). Unbounded
+    /// by design: one entry per persisted session, the records the aggregate
+    /// view itself already holds — the same order as the aggregation's own
+    /// output, not a second copy per row.
+    cron_replay_cache: std::sync::Mutex<std::collections::HashMap<String, CachedCronTasks>>,
+    /// The replay counter of [`Self::read_only_cron_tasks_cached`] (its test
+    /// seam — see [`WireLogFingerprint`]'s neighbor [`CronReplayCount`]).
+    cron_replay_count: CronReplayCount,
     /// The engine's live server-config snapshot, when a composition root
     /// wired one in. The close-time snapshot derives its fold's capacity
     /// limits (and the mirri-server restore handler its resume limits) from
@@ -258,6 +297,40 @@ pub struct SessionManager {
     /// bare manager, e.g. in tests) keeps the default constants
     /// (10 000 / 1 000).
     server_config: Option<Arc<RwLock<ServerConfig>>>,
+    /// The metadata store port (ADR-006: the row is the metadata source of
+    /// truth). Defaults to [`InMemoryMetadataStore`] — production
+    /// composition roots inject the SQLite-backed port through
+    /// [`Self::with_metadata_store`]; a default manager's rows live and die
+    /// with it (restart persistence is the production wiring's promise).
+    metadata_store: Arc<dyn MetadataStorePortTrait>,
+    /// The injected row-filing workspace id (see
+    /// [`Self::with_metadata_workspace_id`]); `None` derives it from the
+    /// workspace cwd's work-dir key.
+    metadata_workspace_id_override: Option<String>,
+}
+
+/// The full-field [`MetadataPatch`] from a scope-layer metadata snapshot.
+///
+/// The metadata store port's insert branch fills an absent row's untouched
+/// fields with defaults, so a patch that can land against a **missing** row
+/// (create, materialize, restart-replay backfills) must carry every column
+/// the caller knows — anything left `None` silently becomes the store's
+/// default. This builder is the one shared "carry everything the scope
+/// layer models" shape: title, timestamps, tags, last prompt, recency, and
+/// cwd. Retention stamps are deliberately absent: the scope layer does not
+/// model them (only the retention lifecycle writes them), and a
+/// full-snapshot patch would erase a retention stamp it did not know.
+pub fn full_metadata_patch(metadata: &SessionMetadata) -> MetadataPatch {
+    MetadataPatch {
+        title: Some(metadata.title.clone()),
+        tags: Some(metadata.tags.iter().cloned().collect()),
+        archived: Some(metadata.archived),
+        updated_at: Some(metadata.updated_at),
+        last_used_at: Some(metadata.last_used_at),
+        last_prompt: Some(metadata.last_prompt.clone()),
+        cwd: Some(metadata.work_dir.clone()),
+        ..Default::default()
+    }
 }
 
 /// Build the [`SessionScopeConfig`] a server assembly derives from a
@@ -370,8 +443,111 @@ impl SessionManager {
             pending_steers: RwLock::new(HashMap::new()),
             pending_agent_steers: RwLock::new(HashMap::new()),
             closed_ids: std::sync::Mutex::new(std::collections::HashSet::new()),
+            cron_replay_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            cron_replay_count: std::sync::atomic::AtomicUsize::new(0),
             server_config: None,
+            metadata_store: Arc::new(InMemoryMetadataStore::new()),
+            metadata_workspace_id_override: None,
         }
+    }
+
+    /// Builder: inject the metadata store port (ADR-006 — the row is the
+    /// metadata source of truth). The production composition roots inject
+    /// the SQLite-backed port; the default is the in-memory fixture, whose
+    /// rows vanish with the manager (restart persistence is the production
+    /// wiring's promise, not the default's).
+    ///
+    /// The SAME port is threaded into the persistence layer (ADR-006 裁决 4
+    /// — Task 7): the retention lifecycle's column-group writes
+    /// (`set_archived` / `set_compressed` / `clear_compressed`) apply
+    /// through it, so a bare `SessionPersistence::new` keeps only the
+    /// test-seeding legacy path.
+    pub fn with_metadata_store(mut self, store: Arc<dyn MetadataStorePortTrait>) -> Self {
+        self.persistence = self
+            .persistence
+            .clone()
+            .with_metadata_store(Arc::clone(&store), self.metadata_workspace_id());
+        self.metadata_store = store;
+        self
+    }
+
+    /// Access the injected metadata store port (ADR-006). Write faces
+    /// consume this instead of `state.json` persistence; read faces
+    /// migrate to it task by task.
+    pub fn metadata_store(&self) -> &Arc<dyn MetadataStorePortTrait> {
+        &self.metadata_store
+    }
+
+    /// Builder: override the workspace id the metadata rows are filed under.
+    ///
+    /// The default derives the id from the workspace cwd's work-dir key —
+    /// correct whenever the registration id IS that key (the common
+    /// shape). A runtime whose REGISTRATION id differs from its cwd's
+    /// work-dir key (a test or host registration under an arbitrary id)
+    /// files its rows under the registration id instead, so the routing
+    /// seam's index fallback (row → workspace_id → registration) resolves.
+    pub fn with_metadata_workspace_id(mut self, workspace_id: String) -> Self {
+        self.metadata_workspace_id_override = Some(workspace_id);
+        self
+    }
+
+    /// The workspace id the metadata rows of this manager are filed under —
+    /// the port's `workspace_id` argument every row write passes. The
+    /// registration id when one was injected; otherwise derived from the
+    /// workspace cwd through the same key the persistence layer's bucket
+    /// layout uses, so a row and its session directory always attribute
+    /// to the same workspace.
+    pub fn metadata_workspace_id(&self) -> String {
+        self.metadata_workspace_id_override
+            .clone()
+            .unwrap_or_else(|| encode_work_dir_key(self.workspace.cwd()))
+    }
+
+    /// Pin a session (SDR-016/017, ADR-006 Task 15): write ONLY the pin
+    /// trio (`pinned=true`, `pinned_at=now`, `pin_color`) through the
+    /// metadata store port — never [`SessionScope::update_metadata`]
+    /// (it unconditionally refreshes `updated_at`, which would shove the
+    /// session to the list head and violate the SDR-004/014 recency
+    /// semantics: a pin is not usage). Idempotent; a repeated pin does
+    /// NOT move `pinned_at` (the original pin moment is the sort key).
+    pub async fn set_pin(
+        &self,
+        session_id: &SessionId,
+        color: Option<mirri_proto::PinColor>,
+    ) -> SessionResult<()> {
+        // A repeated pin keeps the original pinned_at (idempotent sort
+        // key); only the color follows the latest request.
+        let existing = self.metadata_store().get(session_id).await;
+        let pinned_at = existing
+            .as_ref()
+            .and_then(|row| row.pinned_at)
+            .unwrap_or_else(chrono::Utc::now);
+        let patch = crate::session::metadata_port::MetadataPatch {
+            pinned: Some(true),
+            pinned_at: Some(Some(pinned_at)),
+            pin_color: Some(color.map(pin_color_name)),
+            ..Default::default()
+        };
+        self.metadata_store()
+            .apply(session_id, &self.metadata_workspace_id(), patch)
+            .await
+            .map_err(|e| SessionError::StateFile(format!("failed to pin the session: {e}")))
+    }
+
+    /// Unpin a session: clear the whole pin trio (`pinned=false`, the
+    /// stamps and the color to `None`) — same recency-untouched posture
+    /// as [`Self::set_pin`].
+    pub async fn clear_pin(&self, session_id: &SessionId) -> SessionResult<()> {
+        let patch = crate::session::metadata_port::MetadataPatch {
+            pinned: Some(false),
+            pinned_at: Some(None),
+            pin_color: Some(None),
+            ..Default::default()
+        };
+        self.metadata_store()
+            .apply(session_id, &self.metadata_workspace_id(), patch)
+            .await
+            .map_err(|e| SessionError::StateFile(format!("failed to unpin the session: {e}")))
     }
 
     /// Attach the engine's live server-config snapshot — the composition
@@ -535,26 +711,30 @@ impl SessionManager {
         let artifacts = session.adopt_reverse_rpc_slot();
         // Metadata write-through driver (the mid-turn persistence gap): every
         // `SessionMetaUpdated` announcement (model title, user rename, tags)
-        // rewrites `state.json` immediately instead of waiting for the turn
+        // writes the metadata ROW immediately instead of waiting for the turn
         // to settle — a process death mid-turn must not lose a title the UI
         // already displayed. The turn-settle write-through stays as the
-        // recency backstop; both writes are full-snapshot overwrites, so they
-        // never conflict.
+        // recency backstop.
         //
-        // The task holds only a weak session reference: a strong one would
-        // pin the scope (and its event bus) past close, so the receiver
-        // would never observe `Closed` and the session would leak. When the
-        // scope is gone the weak upgrade fails and the task exits. Best-
-        // effort by design (ADR-009 semantics): a save failure logs and
-        // never blocks the announcement. A lagged receiver heals by writing
-        // the full current snapshot — the save is a snapshot overwrite, not a
-        // delta, so a missed announcement is covered by the next one or by
-        // the settle backstop. A lazily created, not-yet-materialized
-        // session is skipped (SDR-004 — a never-conversed session leaves
-        // nothing on disk).
+        // The task holds only a WEAK session reference plus the owned
+        // write inputs (a strong session one would pin the scope — and its
+        // event bus — past close, so the receiver would never observe
+        // `Closed` and the session would leak; the store Arc and the
+        // workspace-id string are cloned by value and keep no manager
+        // reference at all). When the scope is gone the weak upgrade
+        // fails and the task exits. Best-effort by design (ADR-009
+        // semantics): a store failure logs and never blocks the
+        // announcement. A lagged receiver heals by writing the full
+        // current patch — the row write is a field-level upsert, so a
+        // missed announcement is covered by the next one or by the
+        // settle backstop. A lazily created, not-yet-materialized session
+        // is skipped (SDR-004 — a never-conversed session leaves no
+        // durable trace past its row, whose empty `last_prompt` the
+        // listing filter owns).
         if tokio::runtime::Handle::try_current().is_ok() {
             let mut receiver = artifacts.event_bus.subscribe();
-            let persistence = self.persistence.clone();
+            let store = Arc::clone(&self.metadata_store);
+            let workspace_id = self.metadata_workspace_id();
             let session_id = session_id.clone();
             let weak_session = Arc::downgrade(session);
             tokio::spawn(async move {
@@ -572,7 +752,10 @@ impl SessionManager {
                         continue;
                     }
                     let metadata = session.metadata().await;
-                    if let Err(error) = persistence.save_state(&session_id, &metadata).await {
+                    if let Err(error) = store
+                        .apply(&session_id, &workspace_id, full_metadata_patch(&metadata))
+                        .await
+                    {
                         tracing::warn!(
                             session_id = %session_id,
                             %error,
@@ -591,8 +774,9 @@ impl SessionManager {
 
     /// Create a new session with auto-generated UUID ID.
     ///
-    /// The session is registered in the workspace and its metadata is
-    /// persisted to `state.json`. Returns the newly created [`SessionScope`].
+    /// The session is registered in the workspace and its metadata ROW is
+    /// written through the metadata store port (ADR-006). Returns the
+    /// newly created [`SessionScope`].
     /// Fresh per-session event plumbing is installed: the new session starts
     /// with its own empty event bus and gates, isolated from every other
     /// session (see [`SessionManager::session_artifacts`]).
@@ -602,16 +786,18 @@ impl SessionManager {
         config: SessionScopeConfig,
     ) -> SessionResult<Arc<SessionScope>> {
         let session_id = SessionId::new(format!("session-{}", Uuid::new_v4()));
-        self.create_session_inner(session_id, metadata, config, Some("startup"), false)
+        self.create_session_inner(session_id, metadata, config, Some("startup"), false, None)
             .await
     }
 
-    /// Create a new session with **no physical persistence** (SDR-004 lazy
-    /// physical creation): no session directory, no `state.json`, no
-    /// `wire.jsonl` — the session exists in memory only, and every wire op
+    /// Create a new session with **deferred physical body** (SDR-004 lazy
+    /// physical creation): no session directory, no `wire.jsonl` — the
+    /// session exists in memory plus its metadata ROW (ADR-006: creation
+    /// is the first `apply`; the row's empty `last_prompt` is what the
+    /// listing's `exclude_empty` filter keys on), and every wire op
     /// recorded between creation and the first user message is buffered.
     /// [`Self::materialize_session`] (driven by the first `message.send`)
-    /// writes the state, opens the wire log, and flushes the buffer — from
+    /// refreshes the row, opens the wire log, and flushes the buffer — from
     /// that point on the session is byte-identical to an eagerly created one.
     ///
     /// A session that is never conversed leaves **nothing** on disk (the
@@ -622,8 +808,48 @@ impl SessionManager {
         config: SessionScopeConfig,
     ) -> SessionResult<Arc<SessionScope>> {
         let session_id = SessionId::new(format!("session-{}", Uuid::new_v4()));
-        self.create_session_inner(session_id, metadata, config, Some("startup"), true)
+        self.create_session_inner(session_id, metadata, config, Some("startup"), true, None)
             .await
+    }
+
+    /// The [`Self::create_session_lazy`] variant that roots the session's
+    /// file-tool sandbox at an explicit directory instead of the workspace
+    /// cwd (the workspace cron run spawner's task-workdir face, ADR-019 /
+    /// VU14 review Major 3). The caller owns validating the directory
+    /// stays inside the workspace root.
+    pub async fn create_session_lazy_with_root(
+        &self,
+        metadata: SessionMetadata,
+        config: SessionScopeConfig,
+        workspace_root: Option<PathBuf>,
+    ) -> SessionResult<Arc<SessionScope>> {
+        self.create_session_lazy_with_root_ex(metadata, config, workspace_root, false)
+            .await
+    }
+
+    /// The [`Self::create_session_lazy_with_root`] variant that skips the
+    /// creation-time metadata row (ADR-008, ADR-006 Task 13): a
+    /// scheduled-task EXECUTION session writes no row until the user
+    /// explicitly opens it — the row lands at materialization, not at
+    /// creation. The cron run spawner is the sole caller.
+    pub async fn create_session_lazy_with_root_ex(
+        &self,
+        metadata: SessionMetadata,
+        config: SessionScopeConfig,
+        workspace_root: Option<PathBuf>,
+        row_exempt: bool,
+    ) -> SessionResult<Arc<SessionScope>> {
+        let session_id = SessionId::new(format!("session-{}", Uuid::new_v4()));
+        self.create_session_inner_ex(
+            session_id,
+            metadata,
+            config,
+            Some("startup"),
+            true,
+            workspace_root,
+            row_exempt,
+        )
+        .await
     }
 
     /// Create a new session with a specific ID.
@@ -637,7 +863,7 @@ impl SessionManager {
         metadata: SessionMetadata,
         config: SessionScopeConfig,
     ) -> SessionResult<Arc<SessionScope>> {
-        self.create_session_inner(session_id, metadata, config, Some("startup"), false)
+        self.create_session_inner(session_id, metadata, config, Some("startup"), false, None)
             .await
     }
 
@@ -652,13 +878,38 @@ impl SessionManager {
     /// `lazy` selects the SDR-04 deferred-persistence path (see
     /// [`Self::create_session_lazy`]); the default `false` keeps the eager
     /// create-persist-at-once behaviour every existing caller relies on.
+    #[allow(clippy::too_many_arguments)]
     async fn create_session_inner(
+        &self,
+        session_id: SessionId,
+        metadata: SessionMetadata,
+        config: SessionScopeConfig,
+        session_start_source: Option<&str>,
+        lazy: bool,
+        workspace_root_override: Option<PathBuf>,
+    ) -> SessionResult<Arc<SessionScope>> {
+        self.create_session_inner_ex(
+            session_id,
+            metadata,
+            config,
+            session_start_source,
+            lazy,
+            workspace_root_override,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_session_inner_ex(
         &self,
         session_id: SessionId,
         mut metadata: SessionMetadata,
         config: SessionScopeConfig,
         session_start_source: Option<&str>,
         lazy: bool,
+        workspace_root_override: Option<PathBuf>,
+        row_exempt: bool,
     ) -> SessionResult<Arc<SessionScope>> {
         // Creating (or re-creating under a fixed id) clears any close
         // record for this session — it is live again.
@@ -668,9 +919,10 @@ impl SessionManager {
             .remove(session_id.as_str());
 
         // Record the session's workDir (TS parity): the workspace cwd the
-        // session is rooted at, persisted into state.json so listings and
-        // the legacy-layout migration can attribute the session to its
-        // workspace bucket. Seeded only when the caller did not set one.
+        // session is rooted at, written into the metadata ROW (ADR-006)
+        // so listings and the legacy-layout migration can attribute the
+        // session to its workspace bucket. Seeded only when the caller
+        // did not set one.
         if metadata.work_dir.is_none() {
             metadata.work_dir = Some(self.workspace.cwd().to_string_lossy().into_owned());
         }
@@ -679,27 +931,71 @@ impl SessionManager {
         // (per-task JSON + append-only output logs), mirroring the TS
         // kernel's session-level task layout.
         let tasks_dir = self.persistence.session_dir(&session_id).join("tasks");
+        // The workspace-cwd root, unless the caller overrode it (the cron
+        // run spawner's task-workdir face, ADR-019 / VU14 review Major 3).
+        let workspace_root =
+            workspace_root_override.unwrap_or_else(|| self.workspace.cwd().to_path_buf());
         let session = self
             .workspace
-            .create_session_with_config(
+            .create_session_with_root(
                 session_id.clone(),
                 metadata.clone(),
                 config,
                 Some(tasks_dir),
+                workspace_root,
             )
             .await
             .map_err(|e| SessionError::AlreadyExists(e.to_string()))?;
 
         if lazy {
-            // SDR-004 lazy physical creation: no state write, no wire log —
-            // the slot defers, buffering every op recorded from here until
-            // [`Self::materialize_session`] runs (the first user message).
-            // A never-conversed session therefore leaves no directory and
-            // no files behind when the process exits.
+            // SDR-004 lazy physical creation, ADR-006 decision b): the ROW
+            // is written (creation is the first `apply` — "创建即写行");
+            // only the wire log defers, buffering every op recorded from
+            // here until [`Self::materialize_session`] runs (the first user
+            // message). A never-conversed session therefore leaves a
+            // last_prompt-empty row (the listing's `exclude_empty` filter's
+            // business) and no directory or files behind when the process
+            // exits.
+            // ADR-008 / Task 13 exception gate: a row-EXEMPT lazy creation
+            // (the cron execution session) writes no row either — the row
+            // lands at materialization (the explicit open), keeping the
+            // "no row until opened" contract the flat-list rule reads.
             session.defer_wire_log().await;
+            if !row_exempt {
+                let metadata = session.metadata().await;
+                if let Err(error) = self
+                    .metadata_store
+                    .apply(
+                        &session_id,
+                        &self.metadata_workspace_id(),
+                        full_metadata_patch(&metadata),
+                    )
+                    .await
+                {
+                    return Err(SessionError::StateFile(format!(
+                        "failed to write the session metadata row: {error}"
+                    )));
+                }
+            }
         } else {
-            // Persist session state.
-            self.persistence.save_state(&session_id, &metadata).await?;
+            // ADR-006 write-order reversal: the metadata ROW lands first
+            // (creation is the first `apply`), the wire log second — "row
+            // present, body absent" is the legal just-created state, never
+            // a crash residue.
+            let metadata = session.metadata().await;
+            if let Err(error) = self
+                .metadata_store
+                .apply(
+                    &session_id,
+                    &self.metadata_workspace_id(),
+                    full_metadata_patch(&metadata),
+                )
+                .await
+            {
+                return Err(SessionError::StateFile(format!(
+                    "failed to write the session metadata row: {error}"
+                )));
+            }
 
             // Open the session's wire log for live recording, so every op
             // produced during the session's life (turn prompts, messages,
@@ -897,37 +1193,29 @@ impl SessionManager {
         }
         // Cache-key lineage: the fork routes its provider prompt-cache key at
         // the fork chain's ROOT — a nested fork must keep hitting the same
-        // cache shard the original session warmed. The source's persisted
-        // cache root wins; a source without one (fresh or legacy) is itself
-        // the root. Caller-supplied values are never overwritten here: the
-        // embedded layer may have derived lineage already. A source whose
-        // state.json cannot be loaded leaves the fork WITHOUT a cache root —
-        // no fallback mint on an unreadable source (the honest state is
-        // "unknown"; a wrong root would silently miss the cache anyway).
+        // cache shard the original session warmed. The source's LIVE scope
+        // metadata is the carrier (the fork pipeline requires a live source,
+        // so the scope is always available; ADR-006: the lineage carriers
+        // `cache_root_id` / `custom` are not row columns — the row write
+        // path does not persist them). Caller-supplied values are never
+        // overwritten here: the embedded layer may have derived lineage
+        // already. A source without a cache root of its own is itself the
+        // root.
+        let source_metadata = source_session.metadata().await;
         if new_metadata.cache_root_id.is_none() {
-            new_metadata.cache_root_id = self
-                .persistence
-                .load_state(source_session_id)
-                .await
-                .ok()
-                .map(|source| {
-                    crate::session::fork_pipeline::resolve_fork_cache_root(
-                        source.cache_root_id.as_deref(),
-                        source_session_id.as_str(),
-                    )
-                });
+            new_metadata.cache_root_id = Some(
+                crate::session::fork_pipeline::resolve_fork_cache_root(
+                    source_metadata.cache_root_id.as_deref(),
+                    source_session_id.as_str(),
+                ),
+            );
         }
         // F3: merge the fork's custom dict — the v2 `forkCustomMetadata`
-        // semantics: the SOURCE's persisted `custom` is the base, the
+        // semantics: the SOURCE's `custom` is the base, the
         // caller-supplied dict overrides, and the `goal` key is dropped
         // from both sides (a fork's goal lifecycle restarts fresh — the
         // same rule the wire-side filter applies to `goal.update`).
-        let source_custom = self
-            .persistence
-            .load_state(source_session_id)
-            .await
-            .ok()
-            .and_then(|source| source.custom);
+        let source_custom = source_metadata.custom.clone();
         new_metadata.custom = crate::session::fork_pipeline::merge_fork_custom(
             source_custom.as_ref(),
             new_metadata.custom.as_ref(),
@@ -1024,6 +1312,7 @@ impl SessionManager {
                 fork_scope_config,
                 None,
                 false,
+                None,
             )
             .await?;
 
@@ -1591,23 +1880,31 @@ impl SessionManager {
             );
         }
 
-        // Flush the metadata snapshot as well: the mid-turn write-through for
+        // Flush the metadata row as well: the mid-turn write-through for
         // `SessionMetaUpdated` is asynchronous, so a title (or rename/tag
         // change) announced just before the close may not have landed yet.
-        // `state.json` is what resume reads back — losing the auto title here
-        // would make the resumed session look untitled and re-trigger the
-        // side title call on its next user turn. The write-through's own
-        // guard applies (SDR-004): a lazily created session that never
-        // conversed has no wire log and must leave nothing on disk.
-        // Best-effort, like the snapshot above: a save failure must not
-        // prevent the close.
+        // The row is what resume reads back (ADR-006) — losing the auto
+        // title here would make the resumed session look untitled and
+        // re-trigger the side title call on its next user turn. The
+        // write-through's own guard applies: a lazily created session that
+        // never conversed has no wire log and must leave no row behind
+        // (SDR-004). Best-effort, like the snapshot above: a store failure
+        // must not prevent the close.
         if session.wire_log_installed().await {
             let metadata = session.metadata().await;
-            if let Err(error) = self.persistence.save_state(session_id, &metadata).await {
+            if let Err(error) = self
+                .metadata_store
+                .apply(
+                    session_id,
+                    &self.metadata_workspace_id(),
+                    full_metadata_patch(&metadata),
+                )
+                .await
+            {
                 tracing::warn!(
                     session_id = %session_id,
                     %error,
-                    "failed to persist session state during close; the change stays in memory"
+                    "failed to persist the session metadata row during close; the change stays in memory"
                 );
             }
         }
@@ -1685,28 +1982,32 @@ impl SessionManager {
         infos
     }
 
-    /// List all sessions — both active (in-memory) and persisted (on-disk) —
-    /// merged into a single list sorted by `created_at` descending.
+    /// List all sessions — active (in-memory), row-tracked (the metadata
+    /// store), and legacy persisted (on-disk `state.json`) — merged into a
+    /// single list sorted by `created_at` descending.
     ///
-    /// This method calls [`SessionPersistence::list_persisted_sessions`] to
-    /// discover sessions on disk, then checks each against the workspace's
-    /// active sessions. Sessions that are live in the workspace are marked
-    /// [`SessionStatus::Running`]; sessions that exist only on disk are marked
+    /// ADR-006's transition read: the metadata ROW set (the source of
+    /// truth — a row's session shows with the row's view, retention
+    /// stamps included) merges with the legacy
+    /// [`SessionPersistence::list_persisted_sessions`] disk scan, which
+    /// only fills pre-row sessions the one-time migration has not adopted.
+    /// Sessions that are live in the workspace are marked
+    /// [`SessionStatus::Running`]; everything else is
     /// [`SessionStatus::Closed`].
     ///
-    /// Archived persisted sessions (the `state.json` flag set by
-    /// `session.archive`) are excluded unless `include_archived` is set —
-    /// the TS engine's default listing filter. Live sessions are always
-    /// included (a live session is never hidden by the flag).
+    /// Archived rows (the flag set by `session.archive`) are excluded
+    /// unless `include_archived` is set — the TS engine's default listing
+    /// filter. Live sessions are always included (a live session is never
+    /// hidden by the flag).
     ///
-    /// For persisted sessions that are not active, the metadata (title,
-    /// timestamps, tags) is loaded from `state.json`. For active sessions,
-    /// the live metadata is used (which may have been updated since the
-    /// session was created).
+    /// For row/persisted sessions that are not active, the metadata (title,
+    /// timestamps, tags) is loaded from the row (or, for pre-row sessions,
+    /// from `state.json`). For active sessions, the live metadata is used
+    /// (which may have been updated since the session was created).
     ///
-    /// Sessions whose `state.json` is missing or unreadable are silently
-    /// skipped (matching [`SessionPersistence::list_persisted_sessions`]
-    /// filtering).
+    /// Pre-row sessions whose `state.json` is missing or unreadable are
+    /// silently skipped (matching
+    /// [`SessionPersistence::list_persisted_sessions`] filtering).
     pub async fn list_all_sessions(&self, include_archived: bool) -> Vec<SessionInfo> {
         // Collect active sessions once (avoid TOCTOU race from double call).
         let active_ids_vec = self.workspace.list_sessions().await;
@@ -1743,9 +2044,43 @@ impl SessionManager {
             }
         }
 
-        // Add persisted-only sessions (not in the active set). Archived rows
-        // drop out unless the caller opted in (the persistence layer filters
-        // on the state.json flag).
+        // Add persisted-only sessions (not in the active set). ADR-006's
+        // transition read: the metadata ROW first (the source of truth),
+        // then the legacy state.json scan for pre-row sessions the
+        // migration has not adopted — a row-only session (the normal
+        // post-ADR-006 shape, whose state.json never existed) enters here,
+        // a pre-row session stays visible through the disk scan. Archived
+        // rows drop out unless the caller opted in.
+        for row_id in self
+            .metadata_store
+            .list_ids(&self.metadata_workspace_id())
+            .await
+        {
+            if active_ids.contains(&row_id) {
+                continue;
+            }
+            let Some(record) = self.metadata_store.get(&SessionId::new(&row_id)).await else {
+                continue;
+            };
+            if !include_archived && record.archived {
+                continue;
+            }
+            infos.push(SessionInfo {
+                id: row_id,
+                title: record.title,
+                created_at: record.created_at,
+                updated_at: record.updated_at,
+                agent_count: 0,
+                tags: record.tags,
+                archived: record.archived,
+                archived_at: record.archived_at,
+                compressed: record.compressed,
+                compressed_at: record.compressed_at,
+                pre_compressed_size: record.pre_compressed_size,
+                status: SessionStatus::Closed,
+                last_used_at: record.last_used_at,
+            });
+        }
         for persisted in self
             .persistence
             .list_persisted_sessions(include_archived)
@@ -1754,8 +2089,18 @@ impl SessionManager {
             if active_ids.contains(&persisted.session_id) {
                 continue;
             }
+            // A row already covered this session above — the row's view is
+            // the truth (ADR-006); the disk scan only fills pre-row
+            // sessions the migration has not adopted.
+            if self
+                .metadata_store
+                .exists(&SessionId::new(&persisted.session_id))
+                .await
+            {
+                continue;
+            }
 
-            // Load metadata from state.json for the persisted session.
+            // Load metadata from state.json for the pre-row persisted session.
             let session_id = SessionId::new(&persisted.session_id);
             let metadata = match self.persistence.load_state(&session_id).await {
                 Ok(m) => m,
@@ -1790,9 +2135,11 @@ impl SessionManager {
     }
 
     /// Materialize a lazily created session (SDR-004 — the first user
-    /// message's trigger): write `state.json`, open `wire.jsonl`, and flush
-    /// the wire ops buffered since creation. From this point on the session
-    /// is byte-identical to an eagerly created one (the create-time
+    /// message's trigger): write the metadata ROW (already written at
+    /// creation — the materialize-time `apply` refreshes it to the
+    /// current scope snapshot), open `wire.jsonl`, and flush the wire ops
+    /// buffered since creation. From this point on the session is
+    /// byte-identical to an eagerly created one (the create-time
     /// `Metadata` / config records replay in their original order).
     ///
     /// Idempotent and concurrency-safe: an already-materialized (or eagerly
@@ -1809,11 +2156,30 @@ impl SessionManager {
         if session.wire_log_installed().await {
             return Ok(false);
         }
-        // Persist the (possibly mutated since creation) metadata first — the
-        // state write is atomic and idempotent, so even a racing double run
-        // is harmless.
+        // Write-order reversal (ADR-006 decision b): the metadata ROW lands
+        // first, the wire log second. The row is the session's 户口 — "row
+        // present, body absent" is the legal just-created state, never a
+        // crash residue. The patch is the full field set: this is the lazy
+        // path's first durable write, so the port's insert branch has every
+        // column the scope layer models (anything left defaulted would
+        // silently become the store's default).
         let metadata = session.metadata().await;
-        self.persistence.save_state(session_id, &metadata).await?;
+        if let Err(error) = self
+            .metadata_store
+            .apply(
+                session_id,
+                &self.metadata_workspace_id(),
+                full_metadata_patch(&metadata),
+            )
+            .await
+        {
+            // The eager path's "must not start silent" invariant, moved to
+            // the first send: a session that cannot persist its row must
+            // not run unlogged either.
+            return Err(SessionError::StateFile(format!(
+                "failed to write the session metadata row: {error}"
+            )));
+        }
         let wire_log_path = self.persistence.wire_log_path(session_id);
         let materialized = session
             .materialize_wire_log(async {
@@ -2080,6 +2446,22 @@ mod restore;
 use restore::{fire_session_end_hook, fire_session_start_hook};
 #[cfg(test)]
 pub(crate) use restore::{parse_goal_budget, parse_goal_status, parse_permission_mode};
+
+
+/// The wire name of a pin color (the bare snake_case name the row column
+/// and both SessionViews carry — not the JSON-quoted form).
+fn pin_color_name(color: mirri_proto::PinColor) -> String {
+    match color {
+        mirri_proto::PinColor::Red => "red",
+        mirri_proto::PinColor::Orange => "orange",
+        mirri_proto::PinColor::Yellow => "yellow",
+        mirri_proto::PinColor::Green => "green",
+        mirri_proto::PinColor::Blue => "blue",
+        mirri_proto::PinColor::Purple => "purple",
+        mirri_proto::PinColor::Gray => "gray",
+    }
+    .to_string()
+}
 
 #[cfg(test)]
 mod tests;

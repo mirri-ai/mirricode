@@ -96,6 +96,15 @@ pub struct PtyTerminal {
     /// The writer handle — `take_writer` can only be called once, so we cache
     /// it behind a `Mutex`.
     writer: Mutex<Option<Box<dyn Write + Send>>>,
+    /// The child's process id, captured at spawn before the child handle
+    /// moved into the reader thread. Used by the Windows tree-kill fallback.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    child_pid: Option<u32>,
+    /// Windows: the kill-on-close Job Object holding the child's whole
+    /// process tree (#189). `None` when assignment failed (kill then falls
+    /// back to the toolhelp32 tree walk).
+    #[cfg(windows)]
+    job: Mutex<Option<crate::win::JobHandle>>,
 }
 
 // SAFETY: `portable_pty` traits are `Send` (and some are `Sync`).  `PtyTerminal`
@@ -103,6 +112,40 @@ pub struct PtyTerminal {
 // `Send` and `Sync`.
 unsafe impl Send for PtyTerminal {}
 unsafe impl Sync for PtyTerminal {}
+
+/// Whether a `ChildKiller::kill` error means "the process is already gone"
+/// rather than "termination could not be delivered".
+///
+/// - Unix (`libc::kill` via portable-pty): ESRCH — the target pid no longer
+///   exists.
+/// - Windows (`TerminateProcess` via portable-pty): ERROR_ACCESS_DENIED is
+///   what a terminated-but-unreaped handle reports (exit code already set,
+///   termination permission lost); ERROR_INVALID_PARAMETER covers an
+///   invalid/closed handle.
+fn is_already_gone(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(nix::libc::ESRCH)
+    }
+    #[cfg(windows)]
+    {
+        const ERROR_ACCESS_DENIED: i32 = 5;
+        const ERROR_INVALID_PARAMETER: i32 = 87;
+        let gone = matches!(
+            error.raw_os_error(),
+            Some(ERROR_ACCESS_DENIED) | Some(ERROR_INVALID_PARAMETER)
+        );
+        // Leave a trace: ACCESS_DENIED can also mean a live process we lack
+        // permission for, not only an exited one — worth grepping logs when
+        // a kill is suspected of silently no-op-ing.
+        tracing::debug!(error = %error, already_gone = gone, "kill reported already-gone");
+        gone
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
 
 impl PtyTerminal {
     /// Create and start a PTY process.
@@ -126,6 +169,8 @@ impl PtyTerminal {
             .context("failed to open PTY pair")?;
 
         // Build the command.
+        // raw spawn allowed here: portable-pty spawns through the pty slave,
+        // not std Command (check-spawn-usage whitelist)
         let mut cmd = CommandBuilder::new(&config.program);
         for arg in &config.args {
             cmd.arg(arg);
@@ -167,6 +212,23 @@ impl PtyTerminal {
             .take_writer()
             .context("failed to take PTY writer")?;
 
+        // Windows: wrap the child in a kill-on-close Job Object so the whole
+        // process tree dies with the terminal (#189). Failure is non-fatal —
+        // kill() falls back to the toolhelp32 tree walk.
+        let child_pid = child.process_id();
+        #[cfg(windows)]
+        let job = child_pid.and_then(|pid| match crate::win::JobHandle::assign(pid) {
+            Ok(job) => Some(job),
+            Err(error) => {
+                warn!(
+                    pid,
+                    %error,
+                    "failed to assign PTY child to a kill-on-close job; falling back to tree kill"
+                );
+                None
+            }
+        });
+
         let (event_tx, event_rx) = mpsc::unbounded_channel::<PtyEvent>();
         let exited = Arc::new(AtomicBool::new(false));
         let child_for_exit = Arc::new(Mutex::new(child));
@@ -190,6 +252,9 @@ impl PtyTerminal {
             event_rx: tokio::sync::Mutex::new(event_rx),
             exited,
             writer: Mutex::new(Some(writer)),
+            child_pid,
+            #[cfg(windows)]
+            job: Mutex::new(job),
         })
     }
 
@@ -334,16 +399,59 @@ impl PtyTerminal {
         events.into()
     }
 
-    /// Kill the PTY child process.
+    /// Kill the PTY child process (and, on Windows, its whole process tree).
     ///
-    /// This sends a termination signal to the child.  The reader thread will
-    /// observe EOF and send an [`PtyEvent::Exit`] event.
+    /// Idempotent: once the child has exited (the reader thread's `exited`
+    /// flag is set) this returns `Ok(())` without touching the OS. A kill
+    /// error that merely indicates the process already exited ("no such
+    /// process") is also treated as success — the goal is "not running", not
+    /// "a signal was delivered". Only a failure to deliver termination to a
+    /// live process is an error.
+    ///
+    /// On Windows the kill-on-close Job Object assigned at spawn is
+    /// terminated (covering grandchildren); without a job, the toolhelp32
+    /// tree-kill fallback runs. On Unix the direct child is signalled
+    /// (portable-pty's `ChildKiller`).
     pub fn kill(&self) -> Result<()> {
+        if !self.is_alive() {
+            return Ok(());
+        }
+
+        #[cfg(windows)]
+        {
+            // The job is the primary mechanism: one terminate covers the
+            // child and every descendant still assigned to it.
+            let job_guard = self
+                .job
+                .lock()
+                .map_err(|e| anyhow::anyhow!("job lock poisoned: {e}"))?;
+            if let Some(job) = job_guard.as_ref() {
+                return job
+                    .terminate()
+                    .context("failed to terminate PTY job object");
+            }
+            drop(job_guard);
+
+            // Fallback: enumerate and terminate the tree by pid.
+            if let Some(pid) = self.child_pid {
+                crate::win::kill_process_tree(pid);
+                return Ok(());
+            }
+        }
+
         let mut killer = self
             .killer
             .lock()
             .map_err(|e| anyhow::anyhow!("killer lock poisoned: {e}"))?;
-        killer.kill().context("failed to kill PTY child process")
+        match killer.kill() {
+            Ok(()) => Ok(()),
+            // The child exited between the liveness check and the signal —
+            // the goal ("not running") is already met. portable-pty's Unix
+            // killer reports this as ESRCH ("no such process") and its
+            // Windows killer as ERROR_ACCESS_DENIED on a dead handle.
+            Err(e) if is_already_gone(&e) => Ok(()),
+            Err(e) => Err(e).context("failed to kill PTY child process"),
+        }
     }
 
     /// Check whether the child process is still running.
@@ -561,6 +669,78 @@ mod tests {
         assert_eq!(config.cols, 80);
         assert_eq!(config.rows, 24);
         assert!(config.args.is_empty());
+    }
+
+    /// Given a PTY child that already exited, when kill is called after the
+    /// exit, then it returns Ok (idempotent — the old code surfaced the
+    /// "no such process" error all the way to the RPC, #189).
+    // Hardcodes /bin/echo and /tmp — Unix-only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn should_return_ok_when_killing_an_already_exited_pty_child() {
+        let config = PtyConfig {
+            program: "/bin/echo".to_string(),
+            args: vec!["bye".to_string()],
+            cwd: PathBuf::from("/tmp"),
+            cols: 80,
+            rows: 24,
+            env: Vec::new(),
+        };
+        let pty = PtyTerminal::spawn(&config).expect("failed to spawn PTY");
+
+        // Drain events until the Exit arrives so `exited` is set.
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+        loop {
+            tokio::select! {
+                event = pty.next_event() => {
+                    if matches!(event, Some(PtyEvent::Exit { .. }) | None) {
+                        break;
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    panic!("timed out waiting for PTY exit");
+                }
+            }
+        }
+        assert!(!pty.is_alive(), "the child must have exited");
+
+        pty.kill()
+            .expect("kill after exit must be Ok, not an error");
+    }
+
+    /// Given a PTY child that already exited, when kill is called twice in a
+    /// row, then both calls return Ok (idempotency holds across repeated
+    /// kills — the terminal pool kills on drop as well as on request).
+    // Hardcodes /bin/echo and /tmp — Unix-only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn should_return_ok_when_kill_is_called_twice_after_exit() {
+        let config = PtyConfig {
+            program: "/bin/echo".to_string(),
+            args: Vec::new(),
+            cwd: PathBuf::from("/tmp"),
+            cols: 80,
+            rows: 24,
+            env: Vec::new(),
+        };
+        let pty = PtyTerminal::spawn(&config).expect("failed to spawn PTY");
+
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
+        loop {
+            tokio::select! {
+                event = pty.next_event() => {
+                    if matches!(event, Some(PtyEvent::Exit { .. }) | None) {
+                        break;
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    panic!("timed out waiting for PTY exit");
+                }
+            }
+        }
+
+        pty.kill().expect("first kill after exit must be Ok");
+        pty.kill().expect("second kill after exit must be Ok");
     }
 
     #[tokio::test]

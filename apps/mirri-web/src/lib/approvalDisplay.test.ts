@@ -22,6 +22,41 @@ describe('buildApprovalBlock (protocol dialect)', () => {
     expect(block).toMatchObject({ kind: 'fileop', op: 'write', path: '/tmp/a.md' });
   });
 
+  it('should carry every creation parameter when the engine sends a scheduled_task_create display', () => {
+    const block = buildApprovalBlock(
+      approval(
+        {
+          kind: 'scheduled_task_create',
+          cron: '15 10 * * 1-5',
+          timezone: 'Asia/Tokyo',
+          workspace_id: 'wd_demo',
+          permission_mode: 'manual',
+          model: 'claude-sonnet-4',
+          title: 'Pick Up Review',
+          prompt: 'review the pickup tickets',
+          recurring: true,
+          max_fires: 5,
+          reason: 'user asked for a weekday review',
+        },
+        'execute CreateScheduledTask',
+        'CreateScheduledTask',
+      ),
+    );
+    expect(block).toMatchObject({
+      kind: 'scheduled_task',
+      cron: '15 10 * * 1-5',
+      timezone: 'Asia/Tokyo',
+      workspaceId: 'wd_demo',
+      permissionMode: 'manual',
+      model: 'claude-sonnet-4',
+      title: 'Pick Up Review',
+      prompt: 'review the pickup tickets',
+      recurring: true,
+      maxFires: 5,
+      reason: 'user asked for a weekday review',
+    });
+  });
+
   it('should show the goal objective when the engine sends a goal_start display', () => {
     const block = buildApprovalBlock(
       approval({ kind: 'goal_start', objective: 'ship the release', completion_criterion: 'all tests green' }, 'execute CreateGoal', 'CreateGoal'),

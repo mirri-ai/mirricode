@@ -167,13 +167,12 @@ onUnmounted(closePanel);
   background: none;
   border: none;
   border-radius: var(--radius-sm);
-  color: var(--muted);
+  color: var(--color-foreground-muted);
   font: inherit;
   font-size: var(--text-base);
   line-height: 1;
   cursor: pointer;
-  opacity: 0.7;
-  transition: opacity 0.12s, color 0.12s, background-color 0.12s;
+  transition: color 0.12s, background-color 0.12s;
   min-height: 22px;
   box-sizing: border-box;
 }
@@ -183,7 +182,6 @@ onUnmounted(closePanel);
 }
 .tu-pill:hover,
 .tu-pill.open {
-  opacity: 1;
   color: var(--color-accent);
   background: var(--hover);
 }

@@ -149,6 +149,10 @@ pub struct SwarmBatchOptions {
     /// The requeue backoff base (test seam to shorten real waits; defaults
     /// to [`RATE_LIMIT_RETRY_BASE_MS`]).
     pub retry_base_ms: Option<u64>,
+    /// The spawning turn's origin (S5 / ADR-001, M1): every spawned member's
+    /// `SpawnRequest` inherits it, so a cron-fired turn's swarm subagents
+    /// stay in the `Cron` lineage. Defaults to `Interactive`.
+    pub turn_origin: crate::permission::TurnOriginContext,
     /// Registers every launched member as a tracked [`TaskManager`] task so
     /// `task.list` can observe it and `task.cancel` / `task.stop` can stop
     /// it individually (US5.1 — the parity the single `Agent` delegation's
@@ -288,6 +292,9 @@ pub async fn run_swarm_batch(
     batch_cancel: CancelToken,
     options: SwarmBatchOptions,
 ) -> Vec<SwarmRunResult> {
+    // S5 / ADR-001 (M1): the spawning turn's origin — every spawned member
+    // inherits it (the Agent tool's propagation, the swarm edition).
+    let turn_origin = options.turn_origin.clone();
     let total = tasks.len();
     let mut pending: VecDeque<TaskState> = tasks
         .into_iter()
@@ -435,6 +442,11 @@ pub async fn run_swarm_batch(
                         swarm_index: Some(state.task.swarm_index),
                         swarm_item: state.task.item.clone(),
                         suppress_rate_limit_failure_event: true,
+                        // S5 / ADR-001 (M1): the member inherits the
+                        // spawning turn's origin — a cron-fired turn's
+                        // swarm subagent stays in the Cron lineage (the
+                        // same propagation the Agent tool applies).
+                        turn_origin: turn_origin.clone(),
                     }),
                     SwarmTaskKind::Resume { agent_id } => host.resume(ResumeRequest {
                         agent_id: agent_id.clone(),

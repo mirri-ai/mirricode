@@ -54,6 +54,7 @@ pub mod interaction;
 pub mod journal_route;
 pub mod live_relay;
 pub mod manager;
+pub mod metadata_port;
 pub mod persistence;
 pub mod question_items;
 pub mod recovery_scan;

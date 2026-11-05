@@ -9,12 +9,13 @@ fn should_return_empty_and_create_dir_when_opened_on_fresh_home() {
     let home = tempfile::tempdir().unwrap();
     let store = CredentialStore::open(home.path()).unwrap();
     assert!(store.read_all().is_empty());
-    assert!(home
-        .path()
-        .join("credentials/credentials.json")
-        .parent()
-        .unwrap()
-        .exists());
+    assert!(
+        home.path()
+            .join("credentials/credentials.json")
+            .parent()
+            .unwrap()
+            .exists()
+    );
 }
 
 #[test]

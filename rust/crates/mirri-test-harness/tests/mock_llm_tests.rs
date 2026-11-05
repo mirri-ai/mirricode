@@ -1,3 +1,4 @@
+// layer: T1
 //! Unit tests for the extended [`MockLlm`]: per-character token streaming
 //! with pacing, never-respond mode, and mid-stream cancellation observation.
 //!

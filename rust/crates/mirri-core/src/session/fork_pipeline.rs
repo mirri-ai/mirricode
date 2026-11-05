@@ -143,8 +143,13 @@ pub(crate) fn filter_forked_ops(ops: Vec<WireOp>) -> Vec<WireOp> {
 fn rewrite_for_fork(op: WireOp) -> Option<WireOp> {
     match op {
         // ADR-F1: cron state is source-session-local; the forked session
-        // starts with no cron registrations or cursors.
-        WireOp::CronAdd { .. } | WireOp::CronDelete { .. } | WireOp::CronCursor { .. } => None,
+        // starts with no cron registrations, cursors, or held fires.
+        WireOp::CronAdd { .. }
+        | WireOp::CronDelete { .. }
+        | WireOp::CronCursor { .. }
+        | WireOp::CronLineageCreated { .. }
+        | WireOp::CronHeldAdd { .. }
+        | WireOp::CronHeldClear { .. } => None,
         // Historical fork markers describe the *source* log's checkpoint
         // boundaries — never a property of the freshly forked log.
         WireOp::Forked { .. } => None,
@@ -248,6 +253,7 @@ mod tests {
             reason: "completed".to_string(),
             error: None,
             duration_ms: None,
+            ended_at: None,
         }
     }
 
@@ -321,6 +327,7 @@ mod tests {
             WireOp::CronCursor {
                 id: "c1".to_string(),
                 last_fired_at: 123,
+                fire_count: None,
             },
             user_append("t1"),
             turn_ended(1),

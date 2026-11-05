@@ -319,6 +319,17 @@ pub struct SessionView {
     /// falls back to `updatedAt`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_used_at: Option<DateTime<Utc>>,
+    /// Whether the session is pinned (SDR-016/017): the sidebar's pinned
+    /// group input, carried from the metadata row.
+    #[serde(default)]
+    pub pinned: bool,
+    /// When the session was pinned — the pinned group's sort key
+    /// (descending).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<String>,
+    /// The pin's color name (the seven-color preset), when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_color: Option<String>,
 }
 
 /// The four-bucket token usage as the wire `SessionView.usage` carries it —
@@ -401,6 +412,11 @@ impl From<&SessionInfo> for SessionView {
             last_seq: 0,
             cwd: None,
             last_used_at: info.last_used_at,
+            // The static summary carries no pin fields — the row overlay
+            // owns them (the embedded engine's precedent).
+            pinned: false,
+            pinned_at: None,
+            pin_color: None,
         }
     }
 }
@@ -462,7 +478,7 @@ async fn session_view(
                 .tail_seq()
         })
         .unwrap_or(0);
-    SessionView {
+    let mut view = SessionView {
         id: session_id.as_str().to_string(),
         title: metadata.title,
         created_at: metadata.created_at,
@@ -480,7 +496,22 @@ async fn session_view(
         last_seq,
         cwd: Some(manager.workspace().cwd().to_string_lossy().into_owned()),
         last_used_at: metadata.last_used_at,
+        // The pin trio post-fills from the metadata ROW (the live scope's
+        // memory never carries pins — the embedded engine's precedent).
+        pinned: false,
+        pinned_at: None,
+        pin_color: None,
+    };
+    // The row overlay (the review's I-2): the metadata ROW is the pin
+    // trio's home — without this, a snapshot resync would erase the
+    // pinned badge of an active session until the next session.list.
+    if let Some(row) = manager.metadata_store().get(session_id).await {
+        view.pinned = row.pinned;
+        view.pinned_at =
+            row.pinned_at.map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
+        view.pin_color = row.pin_color;
     }
+    view
 }
 
 /// Treat a missing/`null` params value as an empty object so callers may
@@ -2363,7 +2394,7 @@ impl RpcHandler for SnapshotSessionHandler {
                         .history()
                         .to_vec();
                     let base_created_at = session.metadata().await.created_at;
-                    let (turn_usages, prompt_ids, open_turn_key, duration_rows) =
+                    let (turn_usages, prompt_ids, open_turn_key, duration_rows, ended_rows) =
                         turn_usage_read_face(
                             self.routing.owning_manager(&params.session_id).as_deref(),
                             &params.session_id,
@@ -2377,7 +2408,8 @@ impl RpcHandler for SnapshotSessionHandler {
                             let row =
                                 message_list_row(message, &agent_id, base_created_at, position);
                             let row = stamp_row_prompt_id(row, message, &prompt_ids);
-                            stamp_row_duration_ms(row, message, &duration_rows)
+                            let row = stamp_row_duration_ms(row, message, &duration_rows);
+                            stamp_row_ended_at(row, message, &ended_rows)
                         })
                         .collect();
                     (messages, turn_usages, open_turn_key)
@@ -2674,8 +2706,9 @@ fn mint_question_ids(questions: &Value) -> Value {
 /// The per-turn usage read face shared by `session.snapshot` and
 /// `message.list`: fold the session's wire log (read-only) into per-turn
 /// usage records and attribute assistant history rows to their turn's
-/// prompt id — plus the `entry_seq → durationMs` map for the row stamps
-/// (last assistant row of each duration-carrying turn). Also surfaces the
+/// prompt id — plus the `entry_seq → durationMs` and
+/// `entry_seq → endedAtMs` maps for the row stamps (last assistant row of
+/// each turn whose `turn.ended` carried the field). Also surfaces the
 /// still-open tail bracket's turn key (the in-flight turn) so
 /// `session.snapshot` can stamp it as `current_prompt_id`. Degrades to
 /// empty when no manager or log is available — the pill simply stays
@@ -2689,9 +2722,16 @@ async fn turn_usage_read_face(
     HashMap<u64, String>,
     Option<String>,
     HashMap<u64, u64>,
+    HashMap<u64, u64>,
 ) {
     let Some(manager) = manager else {
-        return (Vec::new(), HashMap::new(), None, HashMap::new());
+        return (
+            Vec::new(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            HashMap::new(),
+        );
     };
     let fold = manager
         .read_only_turn_usages(&SessionId::new(session_id))
@@ -2704,6 +2744,8 @@ async fn turn_usage_read_face(
         mirri_core::session::turn_usage::assign_turn_rows(&fold, history);
     let duration_rows =
         mirri_core::session::turn_usage::assign_turn_durations(&fold, &assignment);
+    let ended_rows =
+        mirri_core::session::turn_usage::assign_turn_ended_ats(&fold, &assignment);
     let turns = fold
         .turns
         .iter()
@@ -2719,10 +2761,19 @@ async fn turn_usage_read_face(
             if let Some(duration_ms) = record.duration_ms {
                 turn["durationMs"] = json!(duration_ms);
             }
+            if let Some(ended_at) = record.ended_at {
+                turn["endedAtMs"] = json!(ended_at);
+            }
             turn
         })
         .collect();
-    (turns, assignment.prompt_ids, fold.open_turn_key, duration_rows)
+    (
+        turns,
+        assignment.prompt_ids,
+        fold.open_turn_key,
+        duration_rows,
+        ended_rows,
+    )
 }
 
 /// Stamp `promptId` on an assistant row when the fold attributed its
@@ -2754,6 +2805,24 @@ fn stamp_row_duration_ms(
         && let Some(duration_ms) = duration_rows.get(&message.entry_seq)
     {
         row["durationMs"] = json!(duration_ms);
+    }
+    row
+}
+
+/// Stamp `endedAtMs` (epoch ms) on the LAST assistant row of a completed
+/// turn when the fold's `turn.ended` record carried a completion time —
+/// the SAME row [`stamp_row_duration_ms`] stamps (both maps are keyed by
+/// the identical bracket-ordinal attribution). Returns the row for
+/// chaining.
+fn stamp_row_ended_at(
+    mut row: Value,
+    message: &mirri_core::context::ContextMessage,
+    ended_rows: &HashMap<u64, u64>,
+) -> Value {
+    if message.message.role == mirri_core::message::Role::Assistant
+        && let Some(ended_at) = ended_rows.get(&message.entry_seq)
+    {
+        row["endedAtMs"] = json!(ended_at);
     }
     row
 }
@@ -2838,6 +2907,8 @@ impl RpcHandler for ListMessagesHandler {
                 mirri_core::session::turn_usage::assign_turn_rows(&fold, history);
             let duration_rows =
                 mirri_core::session::turn_usage::assign_turn_durations(&fold, &assignment);
+            let ended_rows =
+                mirri_core::session::turn_usage::assign_turn_ended_ats(&fold, &assignment);
             let prompt_ids = assignment.prompt_ids;
             let history_len = history.len();
 
@@ -2881,7 +2952,8 @@ impl RpcHandler for ListMessagesHandler {
                     let row =
                         message_list_row(message, &agent_id, base_created_at, start + offset);
                     let row = stamp_row_prompt_id(row, message, &prompt_ids);
-                    stamp_row_duration_ms(row, message, &duration_rows)
+                    let row = stamp_row_duration_ms(row, message, &duration_rows);
+                    stamp_row_ended_at(row, message, &ended_rows)
                 })
                 .collect();
             (messages, has_more)
@@ -4042,7 +4114,7 @@ fn run_ripgrep(root: &Path, params: &GrepFilesParams) -> RpcResult<RgFilesResult
 /// relative to the root (the parser strips the `./` prefix back off), and
 /// closing stdin keeps a readable fd from being consulted either way.
 fn ripgrep_command(root: &Path, params: &GrepFilesParams) -> std::process::Command {
-    let mut command = std::process::Command::new("rg");
+    let mut command = mirri_os::new_command("rg");
     command
         .arg("--json")
         .arg("--line-number")
@@ -4267,7 +4339,7 @@ impl RpcHandler for GitStatusFilesHandler {
 
 /// Run `git <args>` in `root` and capture the output.
 fn git_output(root: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
-    std::process::Command::new("git")
+    mirri_os::new_command("git")
         .args(args)
         .current_dir(root)
         .output()
@@ -5317,11 +5389,17 @@ mod tests {
         })));
         let manager = Arc::new(manager);
         let session_id = SessionId::new("restore-no-model-record");
+        // ADR-006: the row (through the metadata store port) registers the
+        // persisted session; state.json seeding is retired.
         manager
-            .persistence()
-            .save_state(&session_id, &SessionMetadata::default())
+            .metadata_store()
+            .apply(
+                &session_id,
+                &manager.metadata_workspace_id(),
+                mirri_core::session::manager::full_metadata_patch(&SessionMetadata::default()),
+            )
             .await
-            .expect("the persisted state registers");
+            .expect("the persisted row registers");
         let wire_log_path = manager.persistence().wire_log_path(&session_id);
         let mut log = mirri_persistence::JsonlAppendLog::create(&wire_log_path)
             .await
@@ -5686,6 +5764,7 @@ mod tests {
                 reason: "completed".to_string(),
                 error: None,
                 duration_ms: Some(1200),
+                ended_at: Some(1730000000000),
             })
             .await;
         // The live memory must mirror the wire rows (a live session appends
@@ -5754,9 +5833,14 @@ mod tests {
             messages[0].get("durationMs").is_none(),
             "only assistant rows are stamped"
         );
+        assert!(
+            messages[0].get("endedAtMs").is_none(),
+            "only assistant rows are stamped"
+        );
         assert_eq!(messages[1]["role"], json!("assistant"));
         assert_eq!(messages[1]["promptId"], json!("turn-1"));
         assert_eq!(messages[1]["durationMs"], json!(1200));
+        assert_eq!(messages[1]["endedAtMs"], json!(1730000000000i64));
     }
 
     #[tokio::test]
@@ -5862,6 +5946,7 @@ mod tests {
         assert_eq!(turns[0]["cacheCreationTokens"], json!(200));
         assert_eq!(turns[0]["models"], json!(["kimi-k2"]));
         assert_eq!(turns[0]["durationMs"], json!(1200));
+        assert_eq!(turns[0]["endedAtMs"], json!(1730000000000i64));
 
         // And the assistant row (only) carries the turn's prompt id and the
         // server-measured duration
@@ -5877,8 +5962,13 @@ mod tests {
             messages[0].get("durationMs").is_none(),
             "only assistant rows are stamped"
         );
+        assert!(
+            messages[0].get("endedAtMs").is_none(),
+            "only assistant rows are stamped"
+        );
         assert_eq!(messages[1]["promptId"], json!("turn-1"));
         assert_eq!(messages[1]["durationMs"], json!(1200));
+        assert_eq!(messages[1]["endedAtMs"], json!(1730000000000i64));
     }
 
     #[tokio::test]
@@ -5928,9 +6018,15 @@ mod tests {
             "the earlier assistant row stays unstamped: {}",
             messages[1]
         );
+        assert!(
+            messages[1].get("endedAtMs").is_none(),
+            "the earlier assistant row stays unstamped: {}",
+            messages[1]
+        );
         assert_eq!(messages[2]["role"], json!("assistant"));
         assert_eq!(messages[2]["promptId"], json!("turn-1"));
         assert_eq!(messages[2]["durationMs"], json!(1200));
+        assert_eq!(messages[2]["endedAtMs"], json!(1730000000000i64));
     }
 
     #[tokio::test]
@@ -6012,6 +6108,7 @@ mod tests {
             tool_name: "Task".to_string(),
             tool_call_id: "call-2".to_string(),
             args: json!({ "prompt": "Implement F6 closing batch" }),
+            started_at_ms: 1_730_000_000_000,
         });
         // Let the shadow's fold task consume the published frames.
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -6809,6 +6906,7 @@ mod tests {
                 stop_reason: "completed".to_string(),
                 wire_turn_id: 1,
                 duration_ms: None,
+                ended_at_ms: None,
             });
         // Let the shadow's fold task consume both frames.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

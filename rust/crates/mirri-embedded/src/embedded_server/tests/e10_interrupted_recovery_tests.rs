@@ -50,13 +50,19 @@ fn recovery_server() -> (EmbeddedServer, tempfile::TempDir) {
 
 /// Lay a dead instance's launch marker under the tempdir's lifecycle root.
 fn lay_dead_launch(tmp: &tempfile::TempDir) {
+    lay_dead_launch_at(tmp, dead_started_at());
+}
+
+/// Lay a dead instance's launch marker with an explicit launch moment
+/// (the time-window cases place the session logs relative to it).
+fn lay_dead_launch_at(tmp: &tempfile::TempDir, started_at: u64) {
     let root = lifecycle::lifecycle_root(tmp.path());
     std::fs::create_dir_all(root.join(DEAD_INSTANCE)).expect("instance dir");
     std::fs::write(
         root.join(DEAD_INSTANCE).join("launch.json"),
         serde_json::to_vec(&LaunchRecord {
             instance: DEAD_INSTANCE.to_string(),
-            started_at: dead_started_at(),
+            started_at,
             port: DEAD_PORT,
             pid: 4242,
         })
@@ -185,11 +191,9 @@ async fn should_list_interruptions_after_abnormal_exit_of_previous_instance() {
     )
     .await;
 
-    // When the first RPC settles the startup check
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // When the startup housekeeping settles (the session-list read face no
+    // longer waits for it — ADR-003 c)
+    server.await_housekeeping_settled().await;
 
     // Then the recovery list carries the session with the abnormal cause
     // and the dangling prompt's own timestamp (captured at lay-down time —
@@ -251,11 +255,9 @@ async fn should_list_interruptions_from_graceful_record_with_graceful_exit_cause
         }],
     );
 
-    // When the first RPC settles the startup check
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // When the startup housekeeping settles (the session-list read face no
+    // longer waits for it — ADR-003 c)
+    server.await_housekeeping_settled().await;
 
     // Then the recovery list carries the session with the graceful cause
     // (the record is read straight — D-M2)
@@ -282,11 +284,9 @@ async fn should_not_list_archived_session() {
     )
     .await;
 
-    // When the first RPC settles the startup check
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // When the startup housekeeping settles (the session-list read face no
+    // longer waits for it — ADR-003 c)
+    server.await_housekeeping_settled().await;
 
     // Then the recovery list is empty (D.4: archived sessions never
     // surface as interruptions)
@@ -325,11 +325,9 @@ async fn should_not_list_wait_on_user_session() {
     )
     .await;
 
-    // When the first RPC settles the startup check
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // When the startup housekeeping settles (the session-list read face no
+    // longer waits for it — ADR-003 c)
+    server.await_housekeeping_settled().await;
 
     // Then the recovery list is empty
     let list = server
@@ -360,11 +358,9 @@ async fn should_not_list_wait_on_user_session() {
     )
     .await;
 
-    // When the first RPC settles the startup check
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // When the startup housekeeping settles (the session-list read face no
+    // longer waits for it — ADR-003 c)
+    server.await_housekeeping_settled().await;
 
     // Then the session IS listed — the resolved ask no longer excludes it
     let row = interruption_row(&server, &session_id)
@@ -381,11 +377,9 @@ async fn should_write_launch_marker_on_startup() {
     let (server, tmp) = recovery_server();
     lay_dead_launch(&tmp);
 
-    // When the first RPC settles the startup check
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // When the startup housekeeping settles (the session-list read face no
+    // longer waits for it — ADR-003 c)
+    server.await_housekeeping_settled().await;
 
     // Then this instance's own launch marker exists under the sentinel
     // root (instance id = port + start-moment), and the judged previous
@@ -439,7 +433,9 @@ async fn should_show_interrupted_last_turn_reason_in_session_list() {
     )
     .await;
 
-    // When the session list is read (the same call that settles the check)
+    // When the startup housekeeping settles (the session-list read face no
+    // longer waits for it — ADR-003 c) and the list is read
+    server.await_housekeeping_settled().await;
     let listed = server
         .call_method("session.list", json!({}))
         .await
@@ -471,7 +467,8 @@ async fn should_keep_badge_across_list_refresh() {
     )
     .await;
 
-    // When the list is read twice
+    // When the startup housekeeping settles and the list is read twice
+    server.await_housekeeping_settled().await;
     let _ = server
         .call_method("session.list", json!({}))
         .await
@@ -508,11 +505,9 @@ async fn should_not_dig_up_stale_interruptions_before_last_lifecycle() {
     )
     .await;
 
-    // When the first RPC settles the startup check
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // When the startup housekeeping settles (the session-list read face no
+    // longer waits for it — ADR-003 c)
+    server.await_housekeeping_settled().await;
 
     // Then the recovery list is empty (V2: no digging up stale history)
     let list = server
@@ -542,10 +537,9 @@ async fn should_expire_interruption_after_retention_period() {
         &[prompt(prompt_ms)],
     )
     .await;
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // The startup housekeeping settles explicitly — the session-list read face
+    // no longer waits for it (ADR-003 c)
+    server.await_housekeeping_settled().await;
     assert!(
         interruption_row(&server, &session_id).await.is_some(),
         "the interruption is live before expiry"
@@ -594,10 +588,9 @@ async fn should_remove_interruption_from_list_when_dismissed() {
         &[prompt(dead_started_at() + 30_000)],
     )
     .await;
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // The startup housekeeping settles explicitly — the session-list read face
+    // no longer waits for it (ADR-003 c)
+    server.await_housekeeping_settled().await;
 
     // When the entry is dismissed (and dismissed a second time — the
     // idempotence pin)
@@ -644,10 +637,9 @@ async fn should_clear_every_interruption_when_dismiss_all_invoked() {
         )
         .await;
     }
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // The startup housekeeping settles explicitly — the session-list read face
+    // no longer waits for it (ADR-003 c)
+    server.await_housekeeping_settled().await;
 
     // When dismiss_all runs
     server
@@ -712,11 +704,9 @@ async fn should_skip_closure_backfill_for_compressed_session() {
         "the compression pipeline produced the gz shape"
     );
 
-    // When the first RPC settles the startup check
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // When the startup housekeeping settles (the session-list read face no
+    // longer waits for it — ADR-003 c)
+    server.await_housekeeping_settled().await;
 
     // Then the check completed without a panic and the session is NOT
     // listed (D.4: archived sessions never surface as interruptions —
@@ -805,10 +795,9 @@ async fn should_resume_interrupted_session_and_clear_badge() {
         ],
     )
     .await;
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // The startup housekeeping settles explicitly — the session-list read face
+    // no longer waits for it (ADR-003 c)
+    server.await_housekeeping_settled().await;
     assert_eq!(
         session_list_row(&server, &session_id).await["lastTurnReason"],
         "interrupted",
@@ -884,10 +873,9 @@ async fn should_ensure_resident_before_resume() {
         &[prompt(prompt_ms)],
     )
     .await;
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // The startup housekeeping settles explicitly — the session-list read face
+    // no longer waits for it (ADR-003 c)
+    server.await_housekeeping_settled().await;
     assert!(
         server.resolve_session(&session_id).await.is_err(),
         "the session starts non-resident (the precondition pin)"
@@ -924,10 +912,9 @@ async fn should_carry_recovery_context_in_prompt_origin() {
         &[prompt(prompt_ms)],
     )
     .await;
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // The startup housekeeping settles explicitly — the session-list read face
+    // no longer waits for it (ADR-003 c)
+    server.await_housekeeping_settled().await;
     mock.push_text("origin ack");
 
     // When the interruption is resumed
@@ -966,10 +953,9 @@ async fn should_accept_all_interruptions_when_resume_all_invoked() {
         )
         .await;
     }
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // The startup housekeeping settles explicitly — the session-list read face
+    // no longer waits for it (ADR-003 c)
+    server.await_housekeeping_settled().await;
     for _ in 0..3 {
         mock.push_gated("resume-all reply");
     }
@@ -1101,10 +1087,9 @@ async fn should_not_judge_abnormal_when_graceful_write_lands_in_the_launch_insta
         .with_lifecycle(root.clone(), 55998, instance.to_string())
         .with_models_dev_url(None);
     server.set_recovery_probe(Some(Box::new(|_port, _pid| false)));
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // The startup housekeeping settles explicitly — the session-list read face
+    // no longer waits for it (ADR-003 c)
+    server.await_housekeeping_settled().await;
     // The startup check wrote the launch marker under the injected
     // instance dir (NOT a mint-at-first-RPC one)
     let launch_path = root.join(instance).join("launch.json");
@@ -1231,11 +1216,9 @@ async fn should_list_interruption_in_non_default_workspace_bucket() {
     .expect("state.json");
     std::fs::write(session_dir.join("wire.jsonl"), prompt(prompt_ms)).expect("wire.jsonl");
 
-    // When the first RPC settles the startup check
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // When the startup housekeeping settles (the session-list read face no
+    // longer waits for it — ADR-003 c)
+    server.await_housekeeping_settled().await;
 
     // Then the non-default workspace's interrupted session is listed
     // (F-02: the inference built the registered-but-unbuilt workspace)
@@ -1270,10 +1253,9 @@ async fn should_relist_session_whose_closure_was_already_backfilled() {
         ],
     )
     .await;
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // The startup housekeeping settles explicitly — the session-list read face
+    // no longer waits for it (ADR-003 c)
+    server.await_housekeeping_settled().await;
 
     // Then the session IS listed (the closure is re-derived, not just the
     // dangling prompt) with the closure's own end time as the moment
@@ -1349,10 +1331,9 @@ async fn should_clear_badge_when_user_sends_message_directly() {
         &[prompt(dead_started_at() + 30_000)],
     )
     .await;
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // The startup housekeeping settles explicitly — the session-list read face
+    // no longer waits for it (ADR-003 c)
+    server.await_housekeeping_settled().await;
     assert_eq!(
         session_list_row(&server, &session_id).await["lastTurnReason"],
         "interrupted",
@@ -1423,10 +1404,9 @@ async fn should_report_resume_all_failures_per_item() {
         &[prompt(dead_started_at() + 30_000)],
     )
     .await;
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // The startup housekeeping settles explicitly — the session-list read face
+    // no longer waits for it (ADR-003 c)
+    server.await_housekeeping_settled().await;
     // Both are listed at this point; remove the broken one's directory
     // (the foreign-delete shape — the in-process entry outlives its
     // session on disk).
@@ -1470,10 +1450,9 @@ async fn should_report_earliest_expiry_boundary_and_omit_when_empty() {
     let late = dead_started_at() + 50_000;
     lay_session(&tmp, "expiry-early", "Early", false, &[prompt(early)]).await;
     lay_session(&tmp, "expiry-late", "Late", false, &[prompt(late)]).await;
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // The startup housekeeping settles explicitly — the session-list read face
+    // no longer waits for it (ADR-003 c)
+    server.await_housekeeping_settled().await;
 
     // When the list is read
     let list = server
@@ -1530,10 +1509,9 @@ async fn should_carry_pending_background_hint_into_resume_prompt_text() {
         ],
     )
     .await;
-    server
-        .call_method("session.list", json!({}))
-        .await
-        .expect("first RPC settles the startup check");
+    // The startup housekeeping settles explicitly — the session-list read face
+    // no longer waits for it (ADR-003 c)
+    server.await_housekeeping_settled().await;
 
     // Then the list row carries the pending background hint
     let row = interruption_row(&server, &session_id)
@@ -1608,6 +1586,7 @@ async fn should_fold_interrupted_stop_reason_into_interrupted_outcome() {
         stop_reason: "interrupted".to_string(),
         wire_turn_id: 2,
         duration_ms: None,
+        ended_at_ms: None,
     });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -1620,5 +1599,362 @@ async fn should_fold_interrupted_stop_reason_into_interrupted_outcome() {
         state.last_turn_reason,
         Some(mirri_core::SessionTurnOutcome::Failed),
         "the interrupted stop reason must not fold into failed: {state:?}"
+    );
+}
+
+// ===========================================================================
+// ADR-011 a/b: the abnormal arm's time-window prefilter and the judge /
+// backfill single-pass shared scan
+// ===========================================================================
+
+/// The default-workspace session directory of `session_id` under `tmp`'s
+/// persistence bucket (the `lay_session` layout).
+fn session_dir_of(tmp: &tempfile::TempDir, session_id: &str) -> std::path::PathBuf {
+    tmp.path()
+        .join(".mirri")
+        .join("v3_sessions")
+        .join(mirri_core::encode_work_dir_key(tmp.path()))
+        .join(session_id)
+}
+
+/// Move the session's wire log mtime (the prefilter's only input) to
+/// `modified_at`. Call it after the file's last write so nothing
+/// overwrites the stamp.
+fn set_wire_log_mtime(wire_log: &std::path::Path, modified_at: u64) {
+    let file = std::fs::File::options()
+        .write(true)
+        .open(wire_log)
+        .expect("open the wire log for set_modified");
+    file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(modified_at))
+        .expect("set_modified");
+    let stamped = std::fs::metadata(wire_log)
+        .and_then(|metadata| metadata.modified())
+        .expect("read the stamped mtime");
+    assert_eq!(
+        stamped,
+        std::time::UNIX_EPOCH + std::time::Duration::from_millis(modified_at),
+        "the fixture's mtime stamp did not stick"
+    );
+}
+
+/// should skip a session whose log was last touched before the dead
+/// instance's time window, even though its turn dangles
+#[tokio::test]
+async fn should_skip_sessions_modified_before_the_abnormal_window() {
+    // Given a dead previous instance, a session whose dangling prompt
+    // landed inside its lifetime but whose log was last written BEFORE the
+    // lifetime started (started_at - 61s, just past the 60s floor), and a
+    // fresh session with a log written inside the lifetime
+    //
+    // The judgement alone would report the stale session — its prompt IS
+    // inside the window (started_at + 30s) while the file's mtime sits
+    // before the floor only because the fixture pins it there (the
+    // mtime/prompt divergence is exactly the divergence the grace margin
+    // accepts). Only the prefilter keeps it out, and the prefilter's
+    // effect is "not scanned", which is what the check's observation
+    // records.
+    let (server, tmp) = recovery_server();
+    let started_at = dead_started_at();
+    lay_dead_launch_at(&tmp, started_at);
+    let stale_prompt_ms = started_at + 30_000;
+    let fresh_prompt_ms = started_at + 30_000;
+    let stale_id = lay_session(
+        &tmp,
+        "stale-mtime",
+        "Stale mtime",
+        false,
+        &[prompt(stale_prompt_ms)],
+    )
+    .await;
+    let fresh_id = lay_session(
+        &tmp,
+        "fresh-mtime",
+        "Fresh mtime",
+        false,
+        &[prompt(fresh_prompt_ms)],
+    )
+    .await;
+    let stale_log = session_dir_of(&tmp, &stale_id).join("wire.jsonl");
+    set_wire_log_mtime(&stale_log, started_at - 61_000);
+
+    // When the startup housekeeping settles (the session-list read face no
+    // longer waits for it — ADR-003 c)
+    server.await_housekeeping_settled().await;
+
+    // Then the stale session was skipped without a scan, the fresh one WAS
+    // scanned, and only the in-window session is listed
+    let (scanned, skipped) = server.recovery.abnormal_scan_observation();
+    assert!(
+        !scanned.iter().any(|id| id == &stale_id),
+        "a log untouched before the window must not be opened: {scanned:?}"
+    );
+    assert!(
+        scanned.iter().any(|id| id == &fresh_id),
+        "an in-window log must be scanned: {scanned:?}"
+    );
+    assert_eq!(skipped, 1, "exactly the stale session was prefiltered");
+    assert!(
+        interruption_row(&server, &stale_id).await.is_none(),
+        "the prefiltered session never enters the list"
+    );
+    let row = interruption_row(&server, &fresh_id)
+        .await
+        .expect("the in-window dangling session is listed");
+    assert_eq!(row["cause"], "service_exit");
+    assert_eq!(row["interruptedAt"], fresh_prompt_ms);
+
+    // And the skipped session's log was never backfilled
+    let stale_wire = tokio::fs::read_to_string(&stale_log)
+        .await
+        .expect("stale log");
+    assert_eq!(
+        stale_wire.lines().count(),
+        1,
+        "the prefiltered log holds only its prompt: {stale_wire}"
+    );
+}
+
+/// should use the earliest window when several instances died, so the
+/// older instance's interruptions are not dropped
+#[tokio::test]
+async fn should_use_the_earliest_window_when_multiple_instances_died() {
+    // Given TWO dead instances that started at different moments, and one
+    // dangling session in each instance's own launch window — the older
+    // instance's session log was last written before the NEWER instance
+    // started, so a per-instance (or max-based) window would skip it
+    let (server, tmp) = recovery_server();
+    let older_started_at = dead_started_at() - 10 * 60 * 1000;
+    let newer_started_at = dead_started_at();
+    let root = lifecycle::lifecycle_root(tmp.path());
+    for (instance, started_at) in [
+        ("55827-older", older_started_at),
+        ("55827-newer", newer_started_at),
+    ] {
+        std::fs::create_dir_all(root.join(instance)).expect("instance dir");
+        std::fs::write(
+            root.join(instance).join("launch.json"),
+            serde_json::to_vec(&LaunchRecord {
+                instance: instance.to_string(),
+                started_at,
+                port: DEAD_PORT,
+                pid: 4242,
+            })
+            .unwrap(),
+        )
+        .expect("launch.json");
+    }
+    let older_id = lay_session(
+        &tmp,
+        "older-instance-work",
+        "Older instance work",
+        false,
+        &[prompt(older_started_at + 30_000)],
+    )
+    .await;
+    let newer_id = lay_session(
+        &tmp,
+        "newer-instance-work",
+        "Newer instance work",
+        false,
+        &[prompt(newer_started_at + 30_000)],
+    )
+    .await;
+    // Both logs were last written inside their own instance's window, with
+    // the older one BEFORE the newer instance started — a per-instance (or
+    // max-based) window would prefilter it away. Set last, after the
+    // lay-down writes.
+    set_wire_log_mtime(
+        &session_dir_of(&tmp, &older_id).join("wire.jsonl"),
+        older_started_at + 40_000,
+    );
+    set_wire_log_mtime(
+        &session_dir_of(&tmp, &newer_id).join("wire.jsonl"),
+        newer_started_at + 40_000,
+    );
+
+    // When the startup housekeeping settles (the session-list read face no
+    // longer waits for it — ADR-003 c)
+    server.await_housekeeping_settled().await;
+
+    // Then BOTH sessions are listed: the window is the aggregate minimum
+    // over every dead instance, so the older instance's session survives
+    let older_row = interruption_row(&server, &older_id)
+        .await
+        .expect("the older instance's interrupted session is listed");
+    assert_eq!(older_row["interruptedAt"], older_started_at + 30_000);
+    let newer_row = interruption_row(&server, &newer_id)
+        .await
+        .expect("the newer instance's interrupted session is listed");
+    assert_eq!(newer_row["interruptedAt"], newer_started_at + 30_000);
+}
+
+/// should skip a session whose dangling turn was waiting on the user when
+/// the judgement reads the shared summary (D-M6 through the single-pass
+/// scan, not a second read)
+#[tokio::test]
+async fn should_skip_sessions_with_unresolved_interaction() {
+    // Given a dead previous instance, one session whose dangling turn
+    // holds an unanswered ask and one whose ask was resolved
+    let (server, tmp) = recovery_server();
+    lay_dead_launch(&tmp);
+    let waiting_id = lay_session(
+        &tmp,
+        "waiting-summary",
+        "Waiting work",
+        false,
+        &[
+            prompt(dead_started_at() + 30_000),
+            interaction_request("ask-1", dead_started_at() + 31_000),
+        ],
+    )
+    .await;
+    let answered_id = lay_session(
+        &tmp,
+        "answered-summary",
+        "Answered work",
+        false,
+        &[
+            prompt(dead_started_at() + 30_000),
+            interaction_request("ask-1", dead_started_at() + 31_000),
+            interaction_resolved("ask-1", dead_started_at() + 32_000),
+        ],
+    )
+    .await;
+
+    // When the startup housekeeping settles (the session-list read face no
+    // longer waits for it — ADR-003 c)
+    server.await_housekeeping_settled().await;
+
+    // Then the wait-on-user session is excluded and the answered one listed
+    assert!(
+        interruption_row(&server, &waiting_id).await.is_none(),
+        "an unresolved ask means the turn waited on the user"
+    );
+    assert!(
+        interruption_row(&server, &answered_id).await.is_some(),
+        "a resolved ask no longer excludes the session"
+    );
+}
+
+/// should not backfill a session whose resident recorder already closed
+/// the bracket between the first scan and the write
+#[tokio::test]
+async fn should_not_backfill_when_the_bracket_closed_between_scan_and_write() {
+    // Given a dead previous instance and a dangling session whose journal
+    // is appended (a newer turn.ended — the resident recorder closing the
+    // bracket) right after the shared scan saw it open, injected through
+    // the pre-backfill seam
+    let (server, tmp) = recovery_server();
+    lay_dead_launch(&tmp);
+    let session_id = lay_session(
+        &tmp,
+        "closed-meanwhile",
+        "Closed meanwhile",
+        false,
+        &[prompt(dead_started_at() + 30_000)],
+    )
+    .await;
+    let wire_log = session_dir_of(&tmp, &session_id).join("wire.jsonl");
+    server.set_recovery_pre_backfill(Some({
+        let wire_log = wire_log.clone();
+        let closed_at = dead_started_at() + 40_000;
+        Box::new(move || {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&wire_log)
+                .expect("append the racing closure");
+            writeln!(file, "{}", ended(1, closed_at)).expect("write the racing closure");
+        })
+    }));
+
+    // When the startup housekeeping settles (the session-list read face no
+    // longer waits for it — ADR-003 c)
+    server.await_housekeeping_settled().await;
+
+    // Then the backfill re-read the session and skipped the write — the
+    // journal's last line is the racing closure, not a synthetic
+    // interrupted one (ADR-008: write only against a still-open bracket)
+    let wire = tokio::fs::read_to_string(&wire_log)
+        .await
+        .expect("wire log");
+    let last = wire
+        .lines()
+        .last()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .expect("last wire line");
+    assert_eq!(last["reason"], "completed", "{wire}");
+    assert!(
+        wire.lines().all(|line| !line.contains("\"interrupted\"")),
+        "no synthetic closure was written: {wire}"
+    );
+}
+
+/// Given a dead previous instance and an ARCHIVED session whose wire log
+/// dangles inside the window but whose metadata is the ROW ONLY (the
+/// post-ADR-006 shape: archived lives in the row, no `state.json` was ever
+/// written), When the startup check scans the candidates, Then the archived
+/// filter reads the row's archived flag — the session never surfaces as an
+/// interruption (existence check 8/11 migrates to the metadata row).
+#[tokio::test]
+async fn should_not_list_a_row_archived_session_without_state_json() {
+    // Given the row-only archived session (wire log + the metadata row
+    // carrying archived = true, no state.json)
+    let (server, tmp) = recovery_server();
+    lay_dead_launch(&tmp);
+    let session_id = lay_session(
+        &tmp,
+        "row-archived-dangling",
+        "Row archived work",
+        false, // no state.json archive flag — the row is the only archive source
+        &[prompt(dead_started_at() + 30_000)],
+    )
+    .await;
+    // Overwrite the fixture's state.json-backed archive with the row: apply
+    // the archived patch through the manager's port (the production write
+    // path's shape), then DELETE the state.json the fixture wrote so the
+    // session is row-only.
+    let manager = server.session_manager();
+    manager
+        .metadata_store()
+        .apply(
+            &mirri_core::SessionId::new(&session_id),
+            &manager.metadata_workspace_id(),
+            mirri_core::session::metadata_port::MetadataPatch {
+                title: Some("Row archived work".to_string()),
+                archived: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("apply the archived row");
+    let session_dir = session_dir_of(&tmp, &session_id);
+    std::fs::remove_file(session_dir.join("state.json"))
+        .expect("the fixture's state.json is deletable");
+    assert!(
+        manager
+            .metadata_store()
+            .get(&mirri_core::SessionId::new(&session_id))
+            .await
+            .expect("the row exists")
+            .archived,
+        "the row carries the archive flag"
+    );
+
+    // When the startup housekeeping settles
+    server.await_housekeeping_settled().await;
+
+    // Then the row-archived session is NOT listed (the filter consulted the
+    // row's archived, not a state.json probe)
+    assert!(
+        interruption_row(&server, &session_id).await.is_none(),
+        "a row-archived session without state.json must never surface as an interruption"
+    );
+    // And the scan skipped it BEFORE the wire log was opened (the filter runs
+    // ahead of the prefilter's observation)
+    let (scanned, _) = server.recovery.abnormal_scan_observation();
+    assert!(
+        !scanned.iter().any(|id| id == &session_id),
+        "the archived candidate is never scanned: {scanned:?}"
     );
 }

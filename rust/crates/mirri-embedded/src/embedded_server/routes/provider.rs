@@ -16,6 +16,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "providerDiscovery.refreshProviderModels",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_refresh_provider_models(params)),
+        settlement: Route::SETTLES,
     },
     // Browse the models.dev directory (read-only in-memory/disk cache,
     // zero network; the empty array is the honest not-yet-refreshed
@@ -24,6 +25,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "providerDiscovery.listCatalog",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_list_provider_catalog(params)),
+        settlement: Route::SETTLES,
     },
     // Import one models.dev directory entry as a configured provider plus
     // its full minimal-alias set in one config write transaction.
@@ -31,26 +33,31 @@ pub(super) const ROUTES: &[Route] = &[
         method: "providerDiscovery.importCatalog",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_import_provider_catalog(params)),
+        settlement: Route::SETTLES,
     },
     // The B5-b providerService CRUD (klient providerConfigSchema records).
     Route {
         method: "provider.get",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_provider_get(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "provider.list",
         aliases: &[],
         handler: |server, _params| Box::pin(server.dispatch_provider_list()),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "provider.set",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_provider_set(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "provider.delete",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_provider_delete(params)),
+        settlement: Route::SETTLES,
     },
 ];

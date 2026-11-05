@@ -327,6 +327,7 @@ mod tests {
             tool_call_id: "call-1".to_string(),
             cancel: Default::default(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         })
         .await;
         assert!(!result.is_error);
@@ -418,6 +419,7 @@ mod tests {
             tool_call_id: "call-1".to_string(),
             cancel: Default::default(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         })
         .await;
         assert!(!result.is_error);
@@ -449,6 +451,7 @@ mod tests {
             tool_call_id: "call-1".to_string(),
             cancel: Default::default(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         })
         .await;
         assert!(!result.is_error);
@@ -482,6 +485,7 @@ mod tests {
             tool_call_id: "call-1".to_string(),
             cancel: Default::default(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         })
         .await;
 
@@ -523,6 +527,7 @@ mod tests {
             tool_call_id: "call-1".to_string(),
             cancel: Default::default(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         })
         .await;
 
@@ -564,6 +569,7 @@ mod tests {
             tool_call_id: "call-1".to_string(),
             cancel: Default::default(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         })
         .await;
 
@@ -651,6 +657,7 @@ mod tests {
             tool_call_id: "call-1".to_string(),
             cancel: Default::default(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         })
         .await;
 

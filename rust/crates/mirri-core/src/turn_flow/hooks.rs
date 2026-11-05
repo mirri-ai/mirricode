@@ -141,6 +141,31 @@ pub struct TurnFlowHooksConfig {
     /// [`TurnFlow::agent_id_or_main`](crate::turn_flow::TurnFlow::agent_id_or_main)
     /// applies) so every event names one consistent agent.
     pub agent_id: Option<String>,
+    /// The turn's origin (S4 / ADR-001): `Interactive` for user turns,
+    /// `Cron { .. }` for cron-fired turns. Read from
+    /// the flow's `turn_origin` slot at hooks construction (the same
+    /// plumb-through the flow's `wire_turn_id` rides); consumed by the
+    /// authorize path (injected into the permission context) and the ask
+    /// translation (ADR-002's unattended ask-deny).
+    pub turn_origin: crate::permission::TurnOriginContext,
+    /// V15's asked-ops recorder (stage-2 D.2): called with one
+    /// `{ tool, decision, reason }` entry for every permission outcome
+    /// the authorize site produced (rejected asks, write-class refusals,
+    /// denials). `None` (the default) records nothing — standalone flows
+    /// and interactive turns have no RunRecord to feed.
+    pub asked_ops_recorder: Option<std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
+    /// ADR-021's approval-wait hook (see
+    /// [`crate::turn_flow::ApprovalWaitHook`]): fired when the turn's ask
+    /// parks on the approval gate (`true`) and when the wait resolves on
+    /// ANY exit (`false`). `None` (the default) — only the workspace cron
+    /// run spawner wires one.
+    pub approval_wait_hook: Option<crate::turn_flow::ApprovalWaitHook>,
+    /// V15's asked-ops ledger handle (stage-2 D.2, m3): the SAME Arc the
+    /// recorder pushes into, exposed through
+    /// [`LoopHooks::asked_ops_handle`](crate::hooks::LoopHooks::asked_ops_handle)
+    /// so the tool-executor boundary can share it into subagent spawns.
+    /// `None` (the default) reports no shareable ledger.
+    pub asked_ops_ledger: Option<std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>>,
     /// The pending goal-budget grace reminder (T9): the `record_step_usage`
     /// callback parks the
     /// [`GOAL_BUDGET_STOP_REMINDER`](crate::goal::GOAL_BUDGET_STOP_REMINDER)
@@ -211,6 +236,10 @@ impl Default for TurnFlowHooksConfig {
             turn_start_model: None,
             flag_registry: None,
             todo_list: None,
+            turn_origin: crate::permission::TurnOriginContext::default(),
+            asked_ops_recorder: None,
+            asked_ops_ledger: None,
+            approval_wait_hook: None,
         }
     }
 }
@@ -386,6 +415,16 @@ pub struct TurnFlowHooks {
     llm: Arc<dyn Llm>,
     /// Optional permission manager for the `authorize_tool_execution` hook.
     permission_manager: Option<Arc<PermissionManager>>,
+    /// V15's asked-ops recorder (from the config) — the authorize site's
+    /// per-outcome trace sink.
+    asked_ops_recorder: Option<std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>>,
+    /// V15's asked-ops ledger handle (from the config) — the shareable
+    /// twin of the recorder's sink, handed to subagent spawns.
+    asked_ops_ledger: Option<std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>>,
+    /// ADR-021's approval-wait hook (from the config) — the run-level
+    /// park/resume signal for the cron RunRecord.
+    approval_wait_hook: Option<crate::turn_flow::ApprovalWaitHook>,
+
     /// Optional reverse-RPC callback for `approval.ask` when the permission
     /// policy returns `Ask`. When `None`, the hook falls back to headless
     /// auto-approval or blocking.
@@ -453,6 +492,9 @@ impl TurnFlowHooks {
             injection,
             cancel,
             permission_manager: config.permission_manager.clone().or(permission_manager),
+            asked_ops_recorder: config.asked_ops_recorder.clone(),
+            approval_wait_hook: config.approval_wait_hook.clone(),
+            asked_ops_ledger: config.asked_ops_ledger.clone(),
             goal_manager: config.goal_manager.clone().or(goal_manager),
             interaction_kernel: config.interaction_kernel.clone(),
             wait_registry,
@@ -474,6 +516,21 @@ impl TurnFlowHooks {
 }
 
 impl LoopHooks for TurnFlowHooks {
+    /// The turn's origin (S5 / ADR-001) — read by the tool-executor
+    /// boundary so the Agent tool can propagate the Cron lineage into
+    /// its spawns (the origin rides `ExecutableToolContext`).
+    fn turn_origin(&self) -> crate::permission::TurnOriginContext {
+        self.config.turn_origin.clone()
+    }
+
+    /// The flow's asked-ops ledger handle (V15 / D.2 m3) — the same Arc
+    /// the recorder pushes into; the tool-executor boundary shares it
+    /// into subagent spawns so their permission outcomes land in the
+    /// ledger the cron run spawner drains.
+    fn asked_ops_handle(&self) -> Option<std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>> {
+        self.asked_ops_ledger.clone()
+    }
+
     fn before_step(&self, _ctx: BeforeStepContext) -> HookFuture<EngineResult<BeforeStepResult>> {
         let memory = self.memory.clone();
         let compaction = self.compaction.clone();
@@ -512,6 +569,7 @@ impl LoopHooks for TurnFlowHooks {
             // per-flow counter.
             if let Some(ref event_bus) = event_bus {
                 event_bus.publish(SessionEvent::TurnStepStarted {
+                    agent_id: agent_id.clone(),
                     turn_id: wire_turn_id.clone().unwrap_or_else(|| _ctx.turn_id.clone()),
                     step: _ctx.step,
                 });
@@ -865,6 +923,14 @@ impl LoopHooks for TurnFlowHooks {
         let memory = self.memory.clone();
         let wire_recorder = self.config.wire_recorder.clone();
         let pending_budget_reminder = self.config.pending_budget_reminder.clone();
+        // The flow's agent identity, normalized the same way the before_step
+        // hook does (None ≡ "main") — the step brackets carry it so clients
+        // can route `turn.step.*` frames to the owning agent.
+        let agent_id = self
+            .config
+            .agent_id
+            .clone()
+            .unwrap_or_else(|| "main".to_string());
         Box::pin(async move {
             deduper.lock().unwrap_or_else(|e| e.into_inner()).end_step();
             // The step's usage-attribution model: the same by-model key the
@@ -881,6 +947,7 @@ impl LoopHooks for TurnFlowHooks {
             // usage — the same wire turn id the started event uses).
             if let Some(ref event_bus) = event_bus {
                 event_bus.publish(SessionEvent::TurnStepCompleted {
+                    agent_id: agent_id.clone(),
                     turn_id: wire_turn_id.unwrap_or_else(|| _ctx.turn_id.clone()),
                     step: _ctx.step,
                     input_tokens: _ctx.input_tokens,
@@ -1160,8 +1227,44 @@ impl LoopHooks for TurnFlowHooks {
         // The turn's ADR-006 wait registry — cloned out of `&self` before
         // the async block below (the block outlives the borrow).
         let wait_registry = self.wait_registry.clone();
+        // S4: the turn's origin — captured owned before the async block
+        // (the block outlives the `&self` borrow).
+        let turn_origin = self.config.turn_origin.clone();
+        // ADR-015: the tool's capability-category declaration — the
+        // ReadOnly posture's judgment input (stage-2 D-M2).
+        let tool_readonly = ctx.tool_readonly;
+        // V15's asked-ops recorder (stage-2 D.2): the per-outcome trace
+        // sink — captured owned before the async block.
+        let asked_ops_recorder = self.asked_ops_recorder.clone();
+        // ADR-021: the run-level approval-wait signal (workspace cron
+        // runs only — None everywhere else).
+        let approval_wait_hook = self.approval_wait_hook.clone();
 
         Box::pin(async move {
+            // ADR-015 / stage-2 D-M2: the ReadOnly posture's write-class
+            // refusal — FIRST, before the policy chain evaluates (no mode
+            // approval may wave a write-class tool through a
+            // read-only-postured turn; read-only tools fall through to the
+            // ordinary chain). The judgment input is the tool's own
+            // capability-category declaration carried on the authorize
+            // context, not a name list. The receipt is a tool failure the
+            // model can reroute around — same family as the ask-deny.
+            if matches!(
+                turn_origin,
+                crate::permission::TurnOriginContext::Cron { readonly: true, .. }
+            ) && !tool_readonly
+            {
+                if let Some(record) = &asked_ops_recorder {
+                    record(serde_json::json!({
+                        "tool": tool_name,
+                        "decision": "rejected",
+                        "reason": "read-only posture: the tool does not declare the read-only capability category",
+                    }));
+                }
+                return Ok(AuthorizeToolResult::Blocked {
+                    reason: crate::permission::READONLY_TOOL_DENY_MESSAGE.to_string(),
+                });
+            }
             // The owned inputs the policy context borrows from (the async
             // block cannot borrow `ctx` — `HookFuture` requires 'static).
             let rules = permission_manager.effective_rules();
@@ -1228,6 +1331,7 @@ impl LoopHooks for TurnFlowHooks {
                 session_approvals: &approvals,
                 cancel: &cancel,
                 net_class: net_class_info.clone(),
+                turn_origin: turn_origin.clone(),
             };
 
             // Evaluate the policy chain (sync).
@@ -1248,8 +1352,16 @@ impl LoopHooks for TurnFlowHooks {
                 });
             }
 
+            // V15 (D.2 review — 放行也留痕): the approved outcome's trace
+            // reason — the approval source, captured at whichever branch
+            // produced the approval (rule / gate / reverse-rpc / headless /
+            // pass), so the ledger entry states WHO or WHAT granted it.
+            let mut approved_reason: Option<String> = None;
             let outcome = match policy_result {
-                PermissionPolicyResult::Approve { .. } => PermissionResultOutcome::Approved,
+                PermissionPolicyResult::Approve { .. } => {
+                    approved_reason = Some("auto-approved (permission rule)".to_string());
+                    PermissionResultOutcome::Approved
+                }
                 PermissionPolicyResult::Deny { message, .. } => PermissionResultOutcome::Rejected {
                     feedback: message.unwrap_or_else(|| "Permission denied".to_string()),
                 },
@@ -1257,16 +1369,191 @@ impl LoopHooks for TurnFlowHooks {
                     reason,
                     grant_dir,
                     deny_when_unattended,
-                    ..
+                    never_auto_approve,
                 } => {
-                    // SDR-007 d: a private-network fetch ask must never be
-                    // auto-approved — no approver in headless mode means no
-                    // private-network fetch.
-                    if deny_when_unattended && headless {
+                    // B1 (stage-2 §9.3 / ADR-013 e): a never-auto-approve
+                    // ask is intercepted BEFORE the headless auto-approve
+                    // translation AND before the reverse-RPC fires into an
+                    // auto-answering client — "a user is present but the
+                    // client disconnected while in yolo/auto" is exactly the
+                    // window the headless branch would otherwise swallow
+                    // into `Approved`. The ask stays a presented question:
+                    // it proceeds to the reverse RPC / gate (a connected
+                    // human may still answer), but a delivery failure or an
+                    // unattended/headless posture leaves it pending (the
+                    // gate keeps waiting) — never auto-resolved.
+                    //
+                    // M1 (review — the bit is CONSUMED, not discarded): a
+                    // never-auto-approve ask with NO gate and NO callback
+                    // must not fall into the plain-headless auto-approve
+                    // arm below either — the ask is dropped-with-pending
+                    // posture: rejected with the never-auto-approve
+                    // receipt, because with no gate and no callback there
+                    // is no surface a real user could ever answer on. (The
+                    // gate-armed arm above still parks on the gate — the
+                    // disconnect-wait posture.)
+                    // Which response channel resolved the ask first.
+                    enum AskChannel {
+                        /// The reverse-RPC reply (or its delivery error).
+                        Rpc(Result<serde_json::Value, String>),
+                        /// The gate receiver: `approval.decide` /
+                        /// `interaction.respond` won the race.
+                        Gate(crate::session::gates::ApprovalDecision),
+                        /// The turn was cancelled before either channel
+                        /// answered.
+                        Cancelled,
+                    }
+                    // D.0d / SDR-106 lineage defence, applied at the APPROVAL
+                    // edge (ADR-022 review m-1): a cron-origin turn may not
+                    // create a workspace task, so the call is refused BEFORE
+                    // any card exists — the user is never asked to approve a
+                    // creation the execution would reject anyway.
+                    if tool_name == "CreateScheduledTask"
+                        && matches!(
+                            turn_origin,
+                            crate::permission::TurnOriginContext::Cron { .. }
+                        )
+                    {
+                        PermissionResultOutcome::Rejected {
+                            feedback:
+                                crate::tools::create_scheduled_task::CRON_LINEAGE_CREATE_DENY_MESSAGE
+                                    .to_string(),
+                        }
+                    } else if never_auto_approve && reverse_rpc.is_none() && interaction_kernel.is_none() {
+                        PermissionResultOutcome::Rejected {
+                            feedback:
+                                "该创建审批需要真实用户决策，当前回合无审批通道（无客户端、无审批门）。\
+                                 请等待用户通过审批面处理。"
+                                    .to_string(),
+                        }
+                    } else
+                    // ADR-002 / S6 + batch 2 (A4): a workspace cron run
+                    // never parks on a live chat client's reverse RPC. What
+                    // happens next depends on the task's declared mode:
+                    //
+                    // - `reject_asks` (the legacy ask-deny posture, only
+                    //   pre-batch-2 records): reject with the reroute
+                    //   receipt (never hang).
+                    // - otherwise (`manual`): the ask COALESCES into the
+                    //   execution session's approval gate — the A13 pending
+                    //   channel — and the turn waits for the user's answer
+                    //   there. `yolo` never reaches this arm (its policies
+                    //   approve everything first), so this is precisely the
+                    //   manual-mode workspace-run rule.
+                    // Only the workspace Cron variant is gated;
+                    // goal/notification backgrounds keep their current
+                    // behavior.
+                    if matches!(
+                        turn_origin,
+                        crate::permission::TurnOriginContext::Cron {
+                            workspace: true,
+                            reject_asks: true,
+                            ..
+                        }
+                    ) {
+                        PermissionResultOutcome::Rejected {
+                            feedback: crate::permission::CRON_ASK_DENY_MESSAGE.to_string(),
+                        }
+                    } else if deny_when_unattended && headless {
                         PermissionResultOutcome::Rejected {
                             feedback: "private-network fetch requires user approval; none available in headless mode"
                                 .to_string(),
                         }
+                    } else if let Some(kernel) = interaction_kernel.as_ref().filter(|_| {
+                        // ADR-021 / A4's park rule FIRST: a workspace run
+                        // (nobody watches its chat) parks the ask on the
+                        // gate ALONE — a live reverse-RPC client is not
+                        // required (the lazy execution session has no
+                        // subscriber until the user opens it; the ask
+                        // waits on the gate for `approval.decide`).
+                        matches!(
+                            turn_origin,
+                            crate::permission::TurnOriginContext::Cron {
+                                reject_asks: false,
+                                workspace: true,
+                                ..
+                            }
+                        )
+                    }) {
+                        // The parked ask: gate-only (A13's channel — the
+                        // task page / approval.listPending face), no chat
+                        // card pushed at a session nobody is looking at.
+                        let snapshot = crate::session::gates::ApprovalSnapshot {
+                            tool_name: tool_name.to_string(),
+                            action: action.clone(),
+                            display: ctx_display.clone(),
+                            agent_id: member_agent_uuid(flow_agent_id.as_deref())
+                                .unwrap_or_else(uuid::Uuid::nil),
+                            turn_id: Some(turn_id),
+                            tool_call_id: Some(tool_call_id.clone()),
+                            created_at: crate::session::gates::now_ms(),
+                            approval_rule: (!approval_rule.is_empty())
+                                .then(|| approval_rule.to_string()),
+                            grant_dir: grant_dir.clone(),
+                        };
+                        let (request_id, mut receiver) = kernel
+                            .approval_gate()
+                            .register_with_resume_notify(snapshot, None);
+                        // F1 backstop (review M-1): a dropped ask future
+                        // (the turn hard-dropped, a swarm abort) must not
+                        // leave a zombie `approval.listPending` entry.
+                        let ask_guard = PendingAskGuard::new(Arc::clone(kernel), request_id);
+                        activity.on_approval_pending(&tool_call_id);
+                        // ADR-006 (review B-1): register the gate wait so
+                        // the watchdog reads a pending user decision as
+                        // ADVANCING — without it the registry holds only
+                        // `InStep` (Degraded) and the turn backstop would
+                        // hard-drop a run that is merely waiting for a
+                        // person, failing it after ~40 minutes.
+                        let _approval_gate_wait = wait_registry.as_ref().map(|registry| {
+                            registry.enter(
+                                WaitKind::WaitingGate,
+                                WaitSubject::Gate {
+                                    kernel: Arc::clone(kernel),
+                                },
+                            )
+                        });
+                        if let Some(hook) = &approval_wait_hook {
+                            hook(true);
+                        }
+                        let resolved = tokio::select! {
+                            decision = &mut receiver => {
+                                match decision.unwrap_or(
+                                    crate::session::gates::ApprovalDecision::Timeout,
+                                ) {
+                                    crate::session::gates::ApprovalDecision::Approved => {
+                                        approved_reason =
+                                            Some("gate approved".to_string());
+                                        PermissionResultOutcome::Approved
+                                    }
+                                    crate::session::gates::ApprovalDecision::ApprovedForSession => {
+                                        approved_reason =
+                                            Some("gate approved (session scope)".to_string());
+                                        PermissionResultOutcome::Approved
+                                    }
+                                    crate::session::gates::ApprovalDecision::Denied(feedback) => {
+                                        PermissionResultOutcome::Rejected { feedback }
+                                    }
+                                    crate::session::gates::ApprovalDecision::Timeout => {
+                                        PermissionResultOutcome::Error {
+                                            error: "cancelled by user".to_string(),
+                                        }
+                                    }
+                                }
+                            }
+                            _ = ctx_cancel.cancelled() => {
+                                kernel.approval_gate().withdraw(request_id);
+                                PermissionResultOutcome::Error {
+                                    error: "cancelled by user".to_string(),
+                                }
+                            }
+                        };
+                        ask_guard.mark_settled();
+                        activity.on_approval_resolved(&tool_call_id);
+                        if let Some(hook) = &approval_wait_hook {
+                            hook(false);
+                        }
+                        resolved
                     } else if let Some(ref callback) = reverse_rpc {
                         // Issue an `approval.ask` reverse RPC to the client.
                         // The client presents the approval prompt and returns
@@ -1419,17 +1706,6 @@ impl LoopHooks for TurnFlowHooks {
                             }
                             (kernel.clone(), request_id, receiver)
                         });
-                        // Which response channel resolved the ask first.
-                        enum AskChannel {
-                            /// The reverse-RPC reply (or its delivery error).
-                            Rpc(Result<serde_json::Value, String>),
-                            /// The gate receiver: `approval.decide` /
-                            /// `interaction.respond` won the race.
-                            Gate(crate::session::gates::ApprovalDecision),
-                            /// The turn was cancelled before either channel
-                            /// answered.
-                            Cancelled,
-                        }
                         // ADR-006: the approval-gate wait registers its
                         // WaitingGate entry — the watchdog pulls the
                         // kernel's merged pending list at window expiry
@@ -1470,72 +1746,41 @@ impl LoopHooks for TurnFlowHooks {
                                 // (`approval.decide` / `interaction.respond`
                                 // still decide). Only the turn's own
                                 // cancellation withdraws the entry.
-                                let mut channel = tokio::select! {
-                                    r = callback.call("approval.ask", approval_request) => {
-                                        match &r {
-                                            // The reverse-RPC reply arrived
-                                            // first: resolve the gate so the
-                                            // resolution is recorded and a
-                                            // later `approval.decide` reports
-                                            // not-found; the mapping below is
-                                            // the pre-B4-a one, verbatim.
-                                            Ok(response) => {
-                                                // The reverse-RPC reply
-                                                // decision for THIS ask: a
-                                                // grant-carrying ask approved
-                                                // with session/persist scope
-                                                // applies the directory grant
-                                                // through the kernel's sink
-                                                // BEFORE the gate resolves
-                                                // (plan D3 — the same
-                                                // interpretation
-                                                // `approval.decide` /
-                                                // `interaction.respond`
-                                                // apply at their decision
-                                                // sources).
-                                                let decision =
-                                                    interpret_approval_response(
-                                                        response,
-                                                        grant_dir.as_deref(),
-                                                        kernel
-                                                            .grant_sink()
-                                                            .as_deref(),
-                                                    );
-                                                let _ = kernel
-                                                    .approval_gate()
-                                                    .resolve(request_id, decision);
-                                            }
-                                            Err(err) => {
-                                                // Delivery failed: keep the
-                                                // ask pending on the gate —
-                                                // this is not a user decision
-                                                // and not a cancellation.
-                                                tracing::warn!(
-                                                    request_id = %request_id,
-                                                    error = %err,
-                                                    "approval.ask delivery failed; \
-                                                     keeping the ask pending on the gate"
-                                                );
-                                            }
-                                        };
-                                        AskChannel::Rpc(r)
+                                // Batch 2 (A4) / ADR-021: a WORKSPACE run
+                                // (the execution-session shape — no live
+                                // chat client watches it) whose mode is NOT
+                                // the legacy ask-deny posture (`manual`, and
+                                // vacuously `yolo`) does not push the ask at
+                                // a chat nobody is looking at. The ask stays
+                                // parked on the gate (the A13 pending channel
+                                // the task page renders) and the turn waits
+                                // for the user's decision there; the usual
+                                // cancellation arm still withdraws it. A
+                                // session timer's fire keeps the attended
+                                // chat ask (someone is in that session).
+                                let park_on_gate_only = matches!(
+                                    turn_origin,
+                                    crate::permission::TurnOriginContext::Cron {
+                                        reject_asks: false,
+                                        workspace: true,
+                                        ..
                                     }
-                                    decision = &mut receiver => AskChannel::Gate(decision.unwrap_or(
-                                        crate::session::gates::ApprovalDecision::Timeout,
-                                    )),
-                                    _ = ctx_cancel.cancelled() => {
-                                        kernel.approval_gate().withdraw(request_id);
-                                        AskChannel::Cancelled
-                                    }
-                                };
-                                // A delivery failure is not a resolution:
-                                // keep waiting on the gate receiver until a
-                                // decision arrives or the turn is cancelled
-                                // (cancellation semantics unchanged — the
-                                // `ctx_cancel` arm still withdraws the entry
-                                // and maps to `Cancelled`).
-                                if matches!(channel, AskChannel::Rpc(Err(_))) {
-                                    channel = tokio::select! {
+                                );
+                                // The two channels (detail): the gate
+                                // receiver always counts; the reverse-RPC
+                                // delivery races it unless the ask is
+                                // parked on the gate only.
+                                // ADR-021: the park is a run-visible wait —
+                                // signal the wait BEFORE entering the
+                                // select, and its end on EVERY exit.
+                                if park_on_gate_only
+                                    && let Some(hook) = &approval_wait_hook
+                                {
+                                    hook(true);
+                                }
+                                #[allow(unused_mut)]
+                                let mut channel = if park_on_gate_only {
+                                    let channel = tokio::select! {
                                         decision = &mut receiver => AskChannel::Gate(decision.unwrap_or(
                                             crate::session::gates::ApprovalDecision::Timeout,
                                         )),
@@ -1544,7 +1789,89 @@ impl LoopHooks for TurnFlowHooks {
                                             AskChannel::Cancelled
                                         }
                                     };
-                                }
+                                    if let Some(hook) = &approval_wait_hook {
+                                        hook(false);
+                                    }
+                                    channel
+                                } else {
+                                    let raced = tokio::select! {
+                                        r = callback.call("approval.ask", approval_request) => {
+                                            match &r {
+                                                // The reverse-RPC reply arrived
+                                                // first: resolve the gate so the
+                                                // resolution is recorded and a
+                                                // later `approval.decide` reports
+                                                // not-found; the mapping below is
+                                                // the pre-B4-a one, verbatim.
+                                                Ok(response) => {
+                                                    // The reverse-RPC reply
+                                                    // decision for THIS ask: a
+                                                    // grant-carrying ask approved
+                                                    // with session/persist scope
+                                                    // applies the directory grant
+                                                    // through the kernel's sink
+                                                    // BEFORE the gate resolves
+                                                    // (plan D3 — the same
+                                                    // interpretation
+                                                    // `approval.decide` /
+                                                    // `interaction.respond`
+                                                    // apply at their decision
+                                                    // sources).
+                                                    let decision =
+                                                        interpret_approval_response(
+                                                            response,
+                                                            grant_dir.as_deref(),
+                                                            kernel
+                                                                .grant_sink()
+                                                                .as_deref(),
+                                                        );
+                                                    let _ = kernel
+                                                        .approval_gate()
+                                                        .resolve(request_id, decision);
+                                                }
+                                                Err(err) => {
+                                                    // Delivery failed: keep the
+                                                    // ask pending on the gate —
+                                                    // this is not a user decision
+                                                    // and not a cancellation.
+                                                    tracing::warn!(
+                                                        request_id = %request_id,
+                                                        error = %err,
+                                                        "approval.ask delivery failed; \
+                                                         keeping the ask pending on the gate"
+                                                    );
+                                                }
+                                            };
+                                            AskChannel::Rpc(r)
+                                        }
+                                        decision = &mut receiver => AskChannel::Gate(decision.unwrap_or(
+                                            crate::session::gates::ApprovalDecision::Timeout,
+                                        )),
+                                        _ = ctx_cancel.cancelled() => {
+                                            kernel.approval_gate().withdraw(request_id);
+                                            AskChannel::Cancelled
+                                        }
+                                    };
+                                    // A delivery failure is not a resolution:
+                                    // keep waiting on the gate receiver until a
+                                    // decision arrives or the turn is cancelled
+                                    // (cancellation semantics unchanged — the
+                                    // `ctx_cancel` arm still withdraws the entry
+                                    // and maps to `Cancelled`).
+                                    if matches!(raced, AskChannel::Rpc(Err(_))) {
+                                        tokio::select! {
+                                            decision = &mut receiver => AskChannel::Gate(decision.unwrap_or(
+                                                crate::session::gates::ApprovalDecision::Timeout,
+                                            )),
+                                            _ = ctx_cancel.cancelled() => {
+                                                kernel.approval_gate().withdraw(request_id);
+                                                AskChannel::Cancelled
+                                            }
+                                        }
+                                    } else {
+                                        raced
+                                    }
+                                };
                                 // ADR-011: every gate-registered ask ends
                                 // here — the reverse-RPC reply, the gate
                                 // decision, or the turn's cancellation — so
@@ -1598,7 +1925,10 @@ impl LoopHooks for TurnFlowHooks {
                                     .and_then(serde_json::Value::as_str)
                                     .unwrap_or("rejected");
                                 let resolved = match decision {
-                                    "approved" => PermissionResultOutcome::Approved,
+                                    "approved" => {
+                                        approved_reason = Some("reverse-rpc approved".to_string());
+                                        PermissionResultOutcome::Approved
+                                    }
                                     _ => {
                                         let feedback = response
                                             .get("feedback")
@@ -1626,14 +1956,21 @@ impl LoopHooks for TurnFlowHooks {
                             ),
                             AskChannel::Gate(crate::session::gates::ApprovalDecision::Approved) => {
                                 (
-                                    PermissionResultOutcome::Approved,
+                                    {
+                                        approved_reason = Some("gate approved".to_string());
+                                        PermissionResultOutcome::Approved
+                                    },
                                     Some(json!({ "decision": "approved" })),
                                 )
                             }
                             AskChannel::Gate(
                                 crate::session::gates::ApprovalDecision::ApprovedForSession,
                             ) => (
-                                PermissionResultOutcome::Approved,
+                                {
+                                    approved_reason =
+                                        Some("gate approved (session scope)".to_string());
+                                    PermissionResultOutcome::Approved
+                                },
                                 Some(json!({ "decision": "approved", "scope": "session" })),
                             ),
                             AskChannel::Gate(crate::session::gates::ApprovalDecision::Denied(
@@ -1721,8 +2058,22 @@ impl LoopHooks for TurnFlowHooks {
                     } else if headless {
                         // No callback wired and headless mode: auto-approve
                         // (the host is expected to have its own approval flow
-                        // or has opted into auto-approval).
-                        PermissionResultOutcome::Approved
+                        // or has opted into auto-approval) — EXCEPT a
+                        // never-auto-approve ask (M1's review fix): the
+                        // CreateScheduledTask-family approval must never be
+                        // auto-answered; with no callback AND no gate there
+                        // is no surface a user could answer on, so the ask
+                        // stays pending-blocked rather than approved.
+                        if never_auto_approve {
+                            PermissionResultOutcome::Rejected {
+                                feedback: "该创建审批需要真实用户决策，任何自动应答路径都不可代批\
+（headless 无审批面）。请等待用户通过审批面处理。"
+                                    .to_string(),
+                            }
+                        } else {
+                            approved_reason = Some("auto-approved (headless)".to_string());
+                            PermissionResultOutcome::Approved
+                        }
                     } else {
                         // No callback wired and non-headless: block to
                         // prevent silent auto-approval of tools that require
@@ -1733,7 +2084,10 @@ impl LoopHooks for TurnFlowHooks {
                         }
                     }
                 }
-                PermissionPolicyResult::Pass => PermissionResultOutcome::Approved,
+                PermissionPolicyResult::Pass => {
+                    approved_reason = Some("auto-approved (pass-through)".to_string());
+                    PermissionResultOutcome::Approved
+                }
             };
 
             // Fire the PermissionResult external hook with the final decision
@@ -1752,6 +2106,31 @@ impl LoopHooks for TurnFlowHooks {
                 .await;
             }
 
+            // V15 (stage-2 D.2): the leave-a-trace contract — EVERY
+            // permission outcome on a cron turn lands in the ledger (which
+            // operation, what result), feeding the RunRecord's `asked_ops`
+            // slot the panel renders. D.2's review ruling: the approved
+            // entries are recorded too — 被拒/放行两类都记 — with the reason
+            // carrying the approval source (who/what granted it).
+            if let Some(record) = &asked_ops_recorder
+                && matches!(
+                    turn_origin,
+                    crate::permission::TurnOriginContext::Cron { .. }
+                )
+            {
+                let (decision, reason) = match &outcome {
+                    PermissionResultOutcome::Approved => ("approved", approved_reason.clone()),
+                    PermissionResultOutcome::Rejected { feedback } => {
+                        ("rejected", Some(feedback.clone()))
+                    }
+                    PermissionResultOutcome::Error { error } => ("error", Some(error.clone())),
+                };
+                record(serde_json::json!({
+                    "tool": tool_name,
+                    "decision": decision,
+                    "reason": reason,
+                }));
+            }
             let mut authorize_result = outcome.into_authorize_tool_result();
             // ADR-010 (B1): any approved private-network fetch — an answered
             // ask, session memory, an allow rule, or a default-approve
@@ -1906,9 +2285,7 @@ impl LoopHooks for TurnFlowHooks {
                     let taken_count = (to_flush.len() + to_park.len()) as u32;
                     if let Some(recorder) = &wire_recorder {
                         recorder
-                            .record_op(WireOp::TurnSteerFlushed {
-                                count: taken_count,
-                            })
+                            .record_op(WireOp::TurnSteerFlushed { count: taken_count })
                             .await;
                     }
                     record_steer_flush(&wire_recorder, &todo_list, &to_flush).await;
@@ -2205,6 +2582,7 @@ mod tests {
             session_approvals: &HashSet::new(),
             cancel: &cancel,
             net_class: None,
+            turn_origin: Default::default(),
         };
 
         // Evaluate the full policy chain. Without the fix the result would be
@@ -2247,6 +2625,1020 @@ mod tests {
         let accesses = extract_file_accesses("Read", &args);
         assert_eq!(accesses.len(), 1);
         assert_eq!(accesses[0].operation, AccessOperation::Read);
+    }
+
+    // ------------------------------------------------------------------
+    // unattended ask-deny (stage-1 batch-1, S6 / ADR-002)
+    // ------------------------------------------------------------------
+
+    /// A reverse-RPC callback that counts its invocations — the S6 seam
+    /// proving the unattended gate fires BEFORE the ask is dispatched.
+    #[derive(Default)]
+    struct CountingCallback {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::reverse_rpc::ReverseRpcCallback for CountingCallback {
+        async fn call(
+            &self,
+            _method: &str,
+            _params: serde_json::Value,
+        ) -> Result<serde_json::Value, String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(serde_json::json!({ "decision": "approved" }))
+        }
+    }
+
+    /// Given a session-timer fire (workspace: false) carrying the legacy
+    /// ask-deny bit, when the tool asks, then the ask is NOT rejected by the
+    /// cron origin rule — the user is in that session and can answer.
+    /// (ADR-021 guard: deleting `unattended` must not drag the session-timer
+    /// arm of the deny rule away with it.)
+    #[tokio::test]
+    async fn should_not_reject_an_ask_when_the_cron_turn_is_a_session_timer_fire() {
+        use crate::hooks::{AuthorizeToolContext, AuthorizeToolResult};
+        use crate::llm::{Llm, LlmChatParams, LlmEventStream, ModelCapability};
+        use crate::tool::ToolInputDisplay;
+
+        struct StubLlm {
+            capability: ModelCapability,
+        }
+        impl Llm for StubLlm {
+            fn system_prompt(&self) -> &str {
+                ""
+            }
+            fn model_name(&self) -> &str {
+                "stub"
+            }
+            fn capability(&self) -> &ModelCapability {
+                &self.capability
+            }
+            fn chat(&self, _params: LlmChatParams) -> EngineResult<LlmEventStream> {
+                unreachable!("no step runs in this test")
+            }
+        }
+
+        // A manual-mode manager, an approving reverse-RPC callback, and a
+        // session-timer origin (workspace: false) that still carries the
+        // legacy ask-deny bit — the shape `fire_reject_asks_for` produces
+        // for a pre-batch-2 record with no declared mode.
+        let pm = Arc::new(PermissionManager::new(PermissionMode::Manual, Vec::new()));
+        let callback = Arc::new(CountingCallback::default());
+        let memory = Arc::new(std::sync::Mutex::new(
+            crate::context_memory::ContextMemory::new(),
+        ));
+        let strategy = crate::compaction::CompactionStrategy::default();
+        let compaction = Arc::new(std::sync::Mutex::new(
+            crate::compaction::FullCompaction::new(strategy),
+        ));
+        let hooks = TurnFlowHooks::new(
+            memory,
+            compaction.clone(),
+            Arc::new(std::sync::Mutex::new(crate::turn_flow::SteerBuffer::new())),
+            Arc::new(std::sync::Mutex::new(
+                crate::turn_flow::ToolCallDeduplicator::new(),
+            )),
+            Arc::new(crate::turn_flow::injection::InjectionManager::new()),
+            crate::cancel::CancelToken::new(),
+            TurnFlowHooksConfig {
+                permission_manager: Some(Arc::clone(&pm)),
+                turn_origin: crate::permission::TurnOriginContext::Cron {
+                    reject_asks: true,
+                    workspace: false,
+                    readonly: false,
+                    task_id: "timer-1".to_string(),
+                },
+                ..TurnFlowHooksConfig::default()
+            },
+            Arc::new(StubLlm {
+                capability: ModelCapability::default(),
+            }),
+            Some(Arc::clone(&pm)),
+            None,
+            None,
+            Some(callback.clone()),
+            None,
+            None,
+            None,
+            Arc::new(ActivityTracker::new(compaction)),
+            None,
+        );
+        let args = serde_json::json!({ "command": "ls" });
+        let display = ToolInputDisplay::Generic {
+            summary: "ls".into(),
+        };
+        let ctx = AuthorizeToolContext {
+            turn_id: "turn-1".into(),
+            step: 1,
+            tool_call_id: "call-1".into(),
+            tool_name: "Bash".into(),
+            tool_readonly: false,
+            args: &args,
+            approval_rule: "Bash",
+            display: &display,
+            cancel: crate::cancel::CancelToken::new(),
+        };
+
+        // When the authorize hook runs
+        let result = hooks.authorize_tool_execution(ctx).await.unwrap();
+
+        // Then the ask reached the live client (the user is in this
+        // session) and was answered there — never the cron deny receipt.
+        match result {
+            AuthorizeToolResult::Approved { .. } => {}
+            other => panic!("expected Approved, got {other:?}"),
+        }
+        assert_eq!(
+            callback.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the session-timer ask reaches the live client"
+        );
+    }
+
+    #[tokio::test]
+    async fn should_reject_an_ask_without_dispatching_reverse_rpc_when_the_cron_turn_is_unattended()
+    {
+        use crate::hooks::AuthorizeToolContext;
+        use crate::llm::{Llm, LlmChatParams, LlmEventStream, ModelCapability};
+        use crate::tool::ToolInputDisplay;
+
+        struct StubLlm {
+            capability: ModelCapability,
+        }
+        impl Llm for StubLlm {
+            fn system_prompt(&self) -> &str {
+                ""
+            }
+            fn model_name(&self) -> &str {
+                "stub"
+            }
+            fn capability(&self) -> &ModelCapability {
+                &self.capability
+            }
+            fn chat(&self, _params: LlmChatParams) -> EngineResult<LlmEventStream> {
+                unreachable!("no step runs in this test")
+            }
+        }
+
+        // Given a manual-mode permission manager, a counting reverse-RPC
+        // callback, and hooks configured with an UNATTENDED cron origin —
+        // the turn_flow authorize path
+        let pm = Arc::new(PermissionManager::new(PermissionMode::Manual, Vec::new()));
+        let callback = Arc::new(CountingCallback::default());
+        let memory = Arc::new(std::sync::Mutex::new(
+            crate::context_memory::ContextMemory::new(),
+        ));
+        let strategy = crate::compaction::CompactionStrategy::default();
+        let compaction = Arc::new(std::sync::Mutex::new(
+            crate::compaction::FullCompaction::new(strategy),
+        ));
+        let hooks = TurnFlowHooks::new(
+            memory.clone(),
+            compaction.clone(),
+            Arc::new(std::sync::Mutex::new(crate::turn_flow::SteerBuffer::new())),
+            Arc::new(std::sync::Mutex::new(
+                crate::turn_flow::ToolCallDeduplicator::new(),
+            )),
+            Arc::new(crate::turn_flow::injection::InjectionManager::new()),
+            crate::cancel::CancelToken::new(),
+            TurnFlowHooksConfig {
+                permission_manager: Some(Arc::clone(&pm)),
+                turn_origin: crate::permission::TurnOriginContext::Cron {
+                    workspace: true,
+                    reject_asks: true,
+                    readonly: false,
+                    task_id: "cron-u2".to_string(),
+                },
+                ..TurnFlowHooksConfig::default()
+            },
+            Arc::new(StubLlm {
+                capability: ModelCapability::default(),
+            }),
+            Some(Arc::clone(&pm)),
+            None,
+            None,
+            Some(callback.clone()),
+            None,
+            None,
+            None,
+            Arc::new(ActivityTracker::new(compaction)),
+            None,
+        );
+        let args = serde_json::json!({ "command": "ls" });
+        let display = ToolInputDisplay::Generic {
+            summary: "ls".into(),
+        };
+        let ctx = AuthorizeToolContext {
+            turn_id: "turn-1".into(),
+            step: 1,
+            tool_call_id: "call-1".into(),
+            tool_name: "Bash".into(),
+            tool_readonly: false,
+            args: &args,
+            approval_rule: "Bash",
+            display: &display,
+            cancel: crate::cancel::CancelToken::new(),
+        };
+
+        // When the authorize hook runs
+        let result = hooks.authorize_tool_execution(ctx).await.unwrap();
+
+        // Then the ask was BLOCKED with the unified reroute receipt…
+        match result {
+            crate::hooks::AuthorizeToolResult::Blocked { reason } => {
+                assert_eq!(reason, crate::permission::CRON_ASK_DENY_MESSAGE);
+            }
+            other => panic!("expected Blocked, got {other:?}"),
+        }
+        // …and the reverse RPC was NEVER dispatched — no approval card
+        // can park an unattended turn.
+        assert_eq!(
+            callback.calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "no reverse RPC fired for an unattended ask"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // batch 2 (A4): the three task modes decide where an ask goes
+    // -----------------------------------------------------------------------
+
+    /// One A4 matrix cell: a real `TurnFlowHooks` in the given permission
+    /// MODE, configured with the origin a run of that mode carries
+    /// (`PermissionMode::posture()` → `reject_asks`), a wired approval gate
+    /// (the A13 pending source) and a counting reverse-RPC callback.
+    /// Returns the authorize outcome plus what the two ask surfaces saw.
+    struct A4Cell {
+        outcome: crate::hooks::AuthorizeToolResult,
+        callback_calls: usize,
+        pending_on_gate: usize,
+    }
+
+    async fn a4_cell(mode: PermissionMode, workspace: bool) -> A4Cell {
+        use crate::hooks::AuthorizeToolContext;
+        use crate::llm::{Llm, LlmChatParams, LlmEventStream, ModelCapability};
+        use crate::tool::ToolInputDisplay;
+
+        struct StubLlm {
+            capability: ModelCapability,
+        }
+        impl Llm for StubLlm {
+            fn system_prompt(&self) -> &str {
+                ""
+            }
+            fn model_name(&self) -> &str {
+                "stub"
+            }
+            fn capability(&self) -> &ModelCapability {
+                &self.capability
+            }
+            fn chat(&self, _params: LlmChatParams) -> EngineResult<LlmEventStream> {
+                unreachable!("no step runs in this test")
+            }
+        }
+
+        let pm = Arc::new(PermissionManager::new(mode, Vec::new()));
+        let callback = Arc::new(CountingCallback::default());
+        let approval_gate = std::sync::Arc::new(crate::session::gates::ApprovalGate::new(false));
+        let kernel = std::sync::Arc::new(crate::session::interaction::InteractionKernel::new(
+            std::sync::Arc::clone(&approval_gate),
+            std::sync::Arc::new(crate::session::gates::QuestionGate::new()),
+        ));
+        let memory = Arc::new(std::sync::Mutex::new(
+            crate::context_memory::ContextMemory::new(),
+        ));
+        let compaction = Arc::new(std::sync::Mutex::new(
+            crate::compaction::FullCompaction::new(crate::compaction::CompactionStrategy::default()),
+        ));
+        let hooks = TurnFlowHooks::new(
+            memory,
+            compaction.clone(),
+            Arc::new(std::sync::Mutex::new(crate::turn_flow::SteerBuffer::new())),
+            Arc::new(std::sync::Mutex::new(
+                crate::turn_flow::ToolCallDeduplicator::new(),
+            )),
+            Arc::new(crate::turn_flow::injection::InjectionManager::new()),
+            crate::cancel::CancelToken::new(),
+            TurnFlowHooksConfig {
+                permission_manager: Some(Arc::clone(&pm)),
+                interaction_kernel: Some(std::sync::Arc::clone(&kernel)),
+                turn_origin: crate::permission::TurnOriginContext::Cron {
+                    workspace,
+                    // The mode's kernel posture is what the spawner
+                    // applies; only the legacy ask-deny posture rejects.
+                    reject_asks: matches!(
+                        crate::cron::PermissionMode::from_permission_mode(mode).posture(),
+                        crate::cron::PermissionPosture::AskDeny
+                    ),
+                    readonly: false,
+                    task_id: "cron-a4".to_string(),
+                },
+                ..TurnFlowHooksConfig::default()
+            },
+            Arc::new(StubLlm {
+                capability: ModelCapability::default(),
+            }),
+            Some(Arc::clone(&pm)),
+            None,
+            None,
+            Some(callback.clone()),
+            None,
+            None,
+            None,
+            Arc::new(ActivityTracker::new(compaction)),
+            None,
+        );
+        let args = serde_json::json!({ "command": "npm publish" });
+        let display = ToolInputDisplay::Generic {
+            summary: "npm publish".into(),
+        };
+        let ctx = AuthorizeToolContext {
+            turn_id: "turn-1".into(),
+            step: 1,
+            tool_call_id: "call-1".into(),
+            tool_name: "Bash".into(),
+            tool_readonly: false,
+            args: &args,
+            approval_rule: "Bash",
+            display: &display,
+            cancel: crate::cancel::CancelToken::new(),
+        };
+        // A Manual run parks on the gate: decide it concurrently so the
+        // turn settles (approve), proving the ask COALESCED there.
+        let pending = {
+            let gate = std::sync::Arc::clone(&approval_gate);
+            tokio::spawn(async move {
+                for _ in 0..200 {
+                    let rows = gate.list_pending();
+                    if let Some((id, _)) = rows.first() {
+                        let _ =
+                            gate.resolve(*id, crate::session::gates::ApprovalDecision::Approved);
+                        return 1usize;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                0
+            })
+        };
+        let outcome = hooks.authorize_tool_execution(ctx).await.unwrap();
+        let pending_on_gate = pending.await.unwrap_or(0);
+        A4Cell {
+            outcome,
+            callback_calls: callback.calls.load(std::sync::atomic::Ordering::SeqCst),
+            pending_on_gate,
+        }
+    }
+
+    /// ADR-021 review m-1. Given a CreateScheduledTask call inside a
+    /// workspace cron run (manual mode, a connected gate), when it reaches
+    /// authorization, then it is rejected with the lineage-defence receipt
+    /// BEFORE any approval card exists — the user is never asked to approve
+    /// a creation the execution would refuse anyway.
+    #[tokio::test]
+    async fn should_reject_a_create_scheduled_task_call_from_a_cron_run_before_any_approval_card_exists()
+     {
+        use crate::hooks::AuthorizeToolContext;
+        use crate::llm::{Llm, LlmChatParams, LlmEventStream, ModelCapability};
+        use crate::tool::ToolInputDisplay;
+
+        struct StubLlm {
+            capability: ModelCapability,
+        }
+        impl Llm for StubLlm {
+            fn system_prompt(&self) -> &str {
+                ""
+            }
+            fn model_name(&self) -> &str {
+                "stub"
+            }
+            fn capability(&self) -> &ModelCapability {
+                &self.capability
+            }
+            fn chat(&self, _params: LlmChatParams) -> EngineResult<LlmEventStream> {
+                unreachable!("no step runs in this test")
+            }
+        }
+
+        let pm = Arc::new(PermissionManager::new(PermissionMode::Manual, Vec::new()));
+        let approval_gate = std::sync::Arc::new(crate::session::gates::ApprovalGate::new(false));
+        let kernel = std::sync::Arc::new(crate::session::interaction::InteractionKernel::new(
+            std::sync::Arc::clone(&approval_gate),
+            std::sync::Arc::new(crate::session::gates::QuestionGate::new()),
+        ));
+        let memory = Arc::new(std::sync::Mutex::new(
+            crate::context_memory::ContextMemory::new(),
+        ));
+        let compaction = Arc::new(std::sync::Mutex::new(
+            crate::compaction::FullCompaction::new(crate::compaction::CompactionStrategy::default()),
+        ));
+        let hooks = TurnFlowHooks::new(
+            memory,
+            compaction.clone(),
+            Arc::new(std::sync::Mutex::new(crate::turn_flow::SteerBuffer::new())),
+            Arc::new(std::sync::Mutex::new(
+                crate::turn_flow::ToolCallDeduplicator::new(),
+            )),
+            Arc::new(crate::turn_flow::injection::InjectionManager::new()),
+            crate::cancel::CancelToken::new(),
+            TurnFlowHooksConfig {
+                permission_manager: Some(Arc::clone(&pm)),
+                interaction_kernel: Some(std::sync::Arc::clone(&kernel)),
+                turn_origin: crate::permission::TurnOriginContext::Cron {
+                    workspace: true,
+                    reject_asks: false,
+                    readonly: false,
+                    task_id: "cron-m1".to_string(),
+                },
+                ..TurnFlowHooksConfig::default()
+            },
+            Arc::new(StubLlm {
+                capability: ModelCapability::default(),
+            }),
+            Some(Arc::clone(&pm)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Arc::new(ActivityTracker::new(compaction)),
+            None,
+        );
+        let args = serde_json::json!({ "cron": "0 9 * * *", "prompt": "p" });
+        let display = ToolInputDisplay::Generic {
+            summary: "create".into(),
+        };
+        let ctx = AuthorizeToolContext {
+            turn_id: "turn-1".into(),
+            step: 1,
+            tool_call_id: "call-1".into(),
+            tool_name: "CreateScheduledTask".into(),
+            tool_readonly: false,
+            args: &args,
+            approval_rule: "CreateScheduledTask",
+            display: &display,
+            cancel: crate::cancel::CancelToken::new(),
+        };
+        // Bounded: a creation that parks on the gate instead of being
+        // rejected would wait forever — fail fast, never hang the suite.
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            hooks.authorize_tool_execution(ctx),
+        )
+        .await
+        .expect("the call must be rejected, not parked on the approval gate")
+        .unwrap();
+        match outcome {
+            crate::hooks::AuthorizeToolResult::Blocked { reason } => {
+                assert_eq!(
+                    reason,
+                    crate::tools::create_scheduled_task::CRON_LINEAGE_CREATE_DENY_MESSAGE
+                );
+            }
+            other => panic!("expected Blocked, got {other:?}"),
+        }
+        assert!(
+            approval_gate.list_pending().is_empty(),
+            "no approval card was ever raised"
+        );
+    }
+
+    /// ADR-021 review B-1 / m-2. Given a workspace run parked on the approval
+    /// gate (Manual mode, nobody answering yet), when the turn's wait
+    /// registry is probed, then the parked ask counts as a legitimately
+    /// ADVANCING wait (a pending user decision is alive by design — so the
+    /// turn backstop never hard-drops a run that is merely waiting for a
+    /// person), and once the decision lands the activity view holds no
+    /// pending approval and the registry is idle again.
+    #[tokio::test]
+    async fn should_keep_a_parked_workspace_ask_alive_in_the_wait_registry_and_clear_activity_after_the_decision()
+     {
+        use crate::hooks::AuthorizeToolContext;
+        use crate::llm::{Llm, LlmChatParams, LlmEventStream, ModelCapability};
+        use crate::tool::ToolInputDisplay;
+
+        struct StubLlm {
+            capability: ModelCapability,
+        }
+        impl Llm for StubLlm {
+            fn system_prompt(&self) -> &str {
+                ""
+            }
+            fn model_name(&self) -> &str {
+                "stub"
+            }
+            fn capability(&self) -> &ModelCapability {
+                &self.capability
+            }
+            fn chat(&self, _params: LlmChatParams) -> EngineResult<LlmEventStream> {
+                unreachable!("no step runs in this test")
+            }
+        }
+
+        let pm = Arc::new(PermissionManager::new(PermissionMode::Manual, Vec::new()));
+        let approval_gate = std::sync::Arc::new(crate::session::gates::ApprovalGate::new(false));
+        let kernel = std::sync::Arc::new(crate::session::interaction::InteractionKernel::new(
+            std::sync::Arc::clone(&approval_gate),
+            std::sync::Arc::new(crate::session::gates::QuestionGate::new()),
+        ));
+        let memory = Arc::new(std::sync::Mutex::new(
+            crate::context_memory::ContextMemory::new(),
+        ));
+        let compaction = Arc::new(std::sync::Mutex::new(
+            crate::compaction::FullCompaction::new(crate::compaction::CompactionStrategy::default()),
+        ));
+        let activity = Arc::new(ActivityTracker::new(compaction.clone()));
+        let wait_registry = Arc::new(crate::turn_flow::WaitRegistry::new());
+        let hooks = TurnFlowHooks::new(
+            memory,
+            compaction,
+            Arc::new(std::sync::Mutex::new(crate::turn_flow::SteerBuffer::new())),
+            Arc::new(std::sync::Mutex::new(
+                crate::turn_flow::ToolCallDeduplicator::new(),
+            )),
+            Arc::new(crate::turn_flow::injection::InjectionManager::new()),
+            crate::cancel::CancelToken::new(),
+            TurnFlowHooksConfig {
+                permission_manager: Some(Arc::clone(&pm)),
+                interaction_kernel: Some(std::sync::Arc::clone(&kernel)),
+                turn_origin: crate::permission::TurnOriginContext::Cron {
+                    workspace: true,
+                    reject_asks: false,
+                    readonly: false,
+                    task_id: "cron-b1".to_string(),
+                },
+                ..TurnFlowHooksConfig::default()
+            },
+            Arc::new(StubLlm {
+                capability: ModelCapability::default(),
+            }),
+            Some(Arc::clone(&pm)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Arc::clone(&activity),
+            Some(Arc::clone(&wait_registry)),
+        );
+        let args = serde_json::json!({ "command": "npm publish" });
+        let display = ToolInputDisplay::Generic {
+            summary: "npm publish".into(),
+        };
+        let ctx = AuthorizeToolContext {
+            turn_id: "turn-1".into(),
+            step: 1,
+            tool_call_id: "call-1".into(),
+            tool_name: "Bash".into(),
+            tool_readonly: false,
+            args: &args,
+            approval_rule: "Bash",
+            display: &display,
+            cancel: crate::cancel::CancelToken::new(),
+        };
+        let drive = async {
+            // Wait for the ask to park on the gate.
+            let mut parked = false;
+            for _ in 0..200 {
+                if !approval_gate.list_pending().is_empty() {
+                    parked = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            assert!(parked, "the manual workspace ask parks on the gate");
+            // B-1: a pending user decision is alive by design — the
+            // watchdog must read it as Advancing, never as plain engine
+            // silence (which the backstop would hard-drop).
+            assert!(
+                matches!(
+                    wait_registry.probe(),
+                    crate::turn_flow::TurnWaitState::Advancing
+                ),
+                "a parked ask is a legitimately advancing wait"
+            );
+            // The user approves.
+            let (id, _) = approval_gate.list_pending().remove(0);
+            assert!(approval_gate.resolve(id, crate::session::gates::ApprovalDecision::Approved));
+        };
+        let (outcome, ()) = tokio::join!(hooks.authorize_tool_execution(ctx), drive);
+        let outcome = outcome.expect("authorize");
+        assert!(
+            matches!(outcome, crate::hooks::AuthorizeToolResult::Approved { .. }),
+            "{outcome:?}"
+        );
+        // m-2: no stale pending approval stays in the activity view, and the
+        // registry is idle again.
+        assert!(
+            activity
+                .snapshot()
+                .turn
+                .as_ref()
+                .is_none_or(|turn| turn.pending_approvals.is_empty()),
+            "the decided ask leaves no pending approval in the activity view"
+        );
+        assert!(
+            matches!(
+                wait_registry.probe(),
+                crate::turn_flow::TurnWaitState::Idle
+            ),
+            "the wait registry is idle after the decision"
+        );
+    }
+
+    /// The A4 matrix. Given a workspace run (nobody watches a chat) under
+    /// each of the three modes, when a tool that needs approval runs, then
+    /// the mode's own rule is executed:
+    ///
+    /// - **yolo** — never asks: approved, with NEITHER a reverse-RPC card
+    ///   nor a pending gate entry (the "yolo never produces a prompt"
+    ///   property);
+    /// - **manual** — asks: the ask parks on the approval gate (the A13
+    ///   pending channel, where the user can answer) and NO chat card is
+    ///   pushed at a session nobody is looking at;
+    /// - **auto** — the ordinary auto semantics: approved without asking.
+    ///
+    /// And given an ATTENDED origin (a session run), manual pushes the
+    /// live chat card exactly as before.
+    #[tokio::test]
+    async fn should_route_an_ask_by_the_task_mode_when_the_run_is_unattended() {
+        use crate::hooks::AuthorizeToolResult;
+
+        let yolo = a4_cell(PermissionMode::Yolo, true).await;
+        assert!(
+            matches!(yolo.outcome, AuthorizeToolResult::Approved { .. }),
+            "yolo approves: {:?}",
+            yolo.outcome
+        );
+        assert_eq!(
+            yolo.callback_calls, 0,
+            "yolo never pushes a chat approval card"
+        );
+        assert_eq!(
+            yolo.pending_on_gate, 0,
+            "yolo never registers a pending ask"
+        );
+
+        let manual = a4_cell(PermissionMode::Manual, true).await;
+        assert_eq!(
+            manual.pending_on_gate, 1,
+            "manual parks the ask on the approval gate (the A13 channel)"
+        );
+        assert_eq!(
+            manual.callback_calls, 0,
+            "an unattended manual run does not push a chat card"
+        );
+        assert!(
+            matches!(manual.outcome, AuthorizeToolResult::Approved { .. }),
+            "the gate decision (approved) settles the turn: {:?}",
+            manual.outcome
+        );
+
+        let auto = a4_cell(PermissionMode::Auto, true).await;
+        assert!(
+            matches!(auto.outcome, AuthorizeToolResult::Approved { .. }),
+            "auto follows the ordinary auto semantics: {:?}",
+            auto.outcome
+        );
+
+        let attended_manual = a4_cell(PermissionMode::Manual, false).await;
+        assert_eq!(
+            attended_manual.callback_calls, 1,
+            "an attended manual ask reaches the live chat card"
+        );
+    }
+
+    /// Shared harness for the readonly-posture authorize tests: manual-mode
+    /// permission manager + hooks configured with the given origin and
+    /// asked-ops recorder.
+    async fn readonly_harness(
+        origin: crate::permission::TurnOriginContext,
+        asked_ops: Option<std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>>,
+    ) -> TurnFlowHooks {
+        use crate::llm::{Llm, LlmChatParams, LlmEventStream, ModelCapability};
+
+        struct StubLlm {
+            capability: ModelCapability,
+        }
+        impl Llm for StubLlm {
+            fn system_prompt(&self) -> &str {
+                ""
+            }
+            fn model_name(&self) -> &str {
+                "stub"
+            }
+            fn capability(&self) -> &ModelCapability {
+                &self.capability
+            }
+            fn chat(&self, _params: LlmChatParams) -> EngineResult<LlmEventStream> {
+                unreachable!("no step runs in this test")
+            }
+        }
+
+        let pm = Arc::new(PermissionManager::new(PermissionMode::Yolo, Vec::new()));
+        let memory = Arc::new(std::sync::Mutex::new(
+            crate::context_memory::ContextMemory::new(),
+        ));
+        let compaction = Arc::new(std::sync::Mutex::new(
+            crate::compaction::FullCompaction::new(crate::compaction::CompactionStrategy::default()),
+        ));
+        TurnFlowHooks::new(
+            memory,
+            compaction.clone(),
+            Arc::new(std::sync::Mutex::new(crate::turn_flow::SteerBuffer::new())),
+            Arc::new(std::sync::Mutex::new(
+                crate::turn_flow::ToolCallDeduplicator::new(),
+            )),
+            Arc::new(crate::turn_flow::injection::InjectionManager::new()),
+            crate::cancel::CancelToken::new(),
+            TurnFlowHooksConfig {
+                permission_manager: Some(Arc::clone(&pm)),
+                turn_origin: origin,
+                asked_ops_recorder: asked_ops.map(|ledger| {
+                    let recorder: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync> =
+                        std::sync::Arc::new(move |entry: serde_json::Value| {
+                            ledger.lock().unwrap_or_else(|e| e.into_inner()).push(entry);
+                        });
+                    recorder
+                }),
+                ..TurnFlowHooksConfig::default()
+            },
+            Arc::new(StubLlm {
+                capability: ModelCapability::default(),
+            }),
+            Some(Arc::clone(&pm)),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Arc::new(ActivityTracker::new(compaction)),
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn should_block_a_non_readonly_tool_on_a_readonly_cron_turn_even_in_yolo_mode() {
+        use crate::hooks::AuthorizeToolContext;
+        use crate::tool::ToolInputDisplay;
+
+        // Given a read-only-postured cron turn (yolo mode would otherwise
+        // approve everything) and a WRITE-class tool call
+        let hooks = readonly_harness(
+            crate::permission::TurnOriginContext::Cron {
+                workspace: true,
+                reject_asks: true,
+                readonly: true,
+                task_id: "cron-ro".to_string(),
+            },
+            None,
+        )
+        .await;
+        let args = serde_json::json!({ "file_path": "/tmp/x", "content": "x" });
+        let display = ToolInputDisplay::Generic {
+            summary: "Write".into(),
+        };
+        let ctx = AuthorizeToolContext {
+            turn_id: "turn-1".into(),
+            step: 1,
+            tool_call_id: "call-1".into(),
+            tool_name: "Write".into(),
+            tool_readonly: false,
+            args: &args,
+            approval_rule: "Write",
+            display: &display,
+            cancel: crate::cancel::CancelToken::new(),
+        };
+
+        // When the authorize hook runs
+        let result = hooks.authorize_tool_execution(ctx).await.unwrap();
+
+        // Then the write-class call is BLOCKED with the readonly receipt —
+        // the yolo mode approval never got to wave it through (ADR-015:
+        // the category declaration, not the mode, decides).
+        match result {
+            crate::hooks::AuthorizeToolResult::Blocked { reason } => {
+                assert_eq!(reason, crate::permission::READONLY_TOOL_DENY_MESSAGE);
+            }
+            other => panic!("expected Blocked, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn should_allow_a_readonly_tool_on_a_readonly_cron_turn() {
+        use crate::hooks::AuthorizeToolContext;
+        use crate::tool::ToolInputDisplay;
+
+        // Given the same read-only-postured cron turn and a READ-class tool
+        let hooks = readonly_harness(
+            crate::permission::TurnOriginContext::Cron {
+                workspace: true,
+                reject_asks: true,
+                readonly: true,
+                task_id: "cron-ro".to_string(),
+            },
+            None,
+        )
+        .await;
+        let args = serde_json::json!({ "path": "/tmp/x" });
+        let display = ToolInputDisplay::Generic {
+            summary: "Read".into(),
+        };
+        let ctx = AuthorizeToolContext {
+            turn_id: "turn-1".into(),
+            step: 1,
+            tool_call_id: "call-1".into(),
+            tool_name: "Read".into(),
+            tool_readonly: true,
+            args: &args,
+            approval_rule: "Read",
+            display: &display,
+            cancel: crate::cancel::CancelToken::new(),
+        };
+
+        // When the authorize hook runs
+        let result = hooks.authorize_tool_execution(ctx).await.unwrap();
+
+        // Then the read-class call is approved — the posture refuses only
+        // the write class (yolo mode approves, as it would interactively).
+        match result {
+            crate::hooks::AuthorizeToolResult::Approved { .. } => {}
+            other => panic!("expected Approved, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn should_record_denied_ask_and_readonly_refusal_into_the_asked_ops_ledger() {
+        use crate::hooks::AuthorizeToolContext;
+        use crate::tool::ToolInputDisplay;
+
+        // Given a read-only-postured cron turn with an asked-ops ledger wired
+        let ledger = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let hooks = readonly_harness(
+            crate::permission::TurnOriginContext::Cron {
+                workspace: true,
+                reject_asks: true,
+                readonly: true,
+                task_id: "cron-ro".to_string(),
+            },
+            Some(std::sync::Arc::clone(&ledger)),
+        )
+        .await;
+        let args = serde_json::json!({ "command": "ls" });
+        let display = ToolInputDisplay::Generic {
+            summary: "Bash".into(),
+        };
+        let ctx = AuthorizeToolContext {
+            turn_id: "turn-1".into(),
+            step: 1,
+            tool_call_id: "call-1".into(),
+            tool_name: "Bash".into(),
+            tool_readonly: false,
+            args: &args,
+            approval_rule: "Bash",
+            display: &display,
+            cancel: crate::cancel::CancelToken::new(),
+        };
+
+        // When the authorize hook runs (Bash is write-class on a readonly turn)
+        let _ = hooks.authorize_tool_execution(ctx).await.unwrap();
+
+        // Then the ledger carries exactly one entry naming the tool and the
+        // rejection (V15: 哪个操作、什么结果).
+        let entries = ledger.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(entries.len(), 1, "one entry per refused operation");
+        assert_eq!(entries[0]["tool"], "Bash");
+        assert_eq!(entries[0]["decision"], "rejected");
+    }
+
+    /// Given an ATTENDED cron turn (unattended: false — the Auto posture)
+    /// whose ask is answered "approved" over the reverse RPC, when the
+    /// authorize hook runs, then the ledger carries the APPROVED entry too
+    /// (D.2 review: 被拒/放行两类都记), with the reason naming the
+    /// approval source.
+    #[tokio::test]
+    async fn should_record_an_approved_ask_into_the_asked_ops_ledger() {
+        use crate::hooks::AuthorizeToolContext;
+        use crate::llm::{Llm, LlmChatParams, LlmEventStream, ModelCapability};
+        use crate::tool::ToolInputDisplay;
+
+        struct StubLlm {
+            capability: ModelCapability,
+        }
+        impl Llm for StubLlm {
+            fn system_prompt(&self) -> &str {
+                ""
+            }
+            fn model_name(&self) -> &str {
+                "stub"
+            }
+            fn capability(&self) -> &ModelCapability {
+                &self.capability
+            }
+            fn chat(&self, _params: LlmChatParams) -> EngineResult<LlmEventStream> {
+                unreachable!("no step runs in this test")
+            }
+        }
+
+        // Given a manual-mode manager (the ask actually fires), a reverse-RPC
+        // callback that answers "approved", an attended cron origin, and a
+        // wired asked-ops ledger
+        let pm = Arc::new(PermissionManager::new(PermissionMode::Manual, Vec::new()));
+        let callback = Arc::new(CountingCallback::default());
+        let ledger = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let memory = Arc::new(std::sync::Mutex::new(
+            crate::context_memory::ContextMemory::new(),
+        ));
+        let strategy = crate::compaction::CompactionStrategy::default();
+        let compaction = Arc::new(std::sync::Mutex::new(
+            crate::compaction::FullCompaction::new(strategy),
+        ));
+        let hooks = TurnFlowHooks::new(
+            memory.clone(),
+            compaction.clone(),
+            Arc::new(std::sync::Mutex::new(crate::turn_flow::SteerBuffer::new())),
+            Arc::new(std::sync::Mutex::new(
+                crate::turn_flow::ToolCallDeduplicator::new(),
+            )),
+            Arc::new(crate::turn_flow::injection::InjectionManager::new()),
+            crate::cancel::CancelToken::new(),
+            TurnFlowHooksConfig {
+                permission_manager: Some(Arc::clone(&pm)),
+                turn_origin: crate::permission::TurnOriginContext::Cron {
+                    reject_asks: true,
+                    workspace: false,
+                    readonly: false,
+                    task_id: "cron-auto".to_string(),
+                },
+                asked_ops_recorder: Some({
+                    let ledger = std::sync::Arc::clone(&ledger);
+                    let recorder: std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync> =
+                        std::sync::Arc::new(move |entry: serde_json::Value| {
+                            ledger.lock().unwrap_or_else(|e| e.into_inner()).push(entry);
+                        });
+                    recorder
+                }),
+                ..TurnFlowHooksConfig::default()
+            },
+            Arc::new(StubLlm {
+                capability: ModelCapability::default(),
+            }),
+            Some(Arc::clone(&pm)),
+            // goal_manager, telemetry
+            None,
+            None,
+            // reverse_rpc_callback — the counting callback answering approved
+            Some(callback.clone()),
+            // tool_result_truncator, task_manager, event_bus
+            None,
+            None,
+            None,
+            Arc::new(crate::turn_flow::activity::ActivityTracker::new(Arc::new(
+                std::sync::Mutex::new(crate::compaction::FullCompaction::new(
+                    crate::compaction::CompactionStrategy::default(),
+                )),
+            ))),
+            None,
+        );
+        let args = serde_json::json!({ "command": "ls" });
+        let display = ToolInputDisplay::Generic {
+            summary: "ls".into(),
+        };
+        let ctx = AuthorizeToolContext {
+            turn_id: "turn-1".into(),
+            step: 1,
+            tool_call_id: "call-1".into(),
+            tool_name: "Bash".into(),
+            tool_readonly: false,
+            args: &args,
+            approval_rule: "Bash",
+            display: &display,
+            cancel: crate::cancel::CancelToken::new(),
+        };
+
+        // When the authorize hook runs (the ask is answered approved)
+        let result = hooks.authorize_tool_execution(ctx).await.unwrap();
+
+        // Then the ask WAS dispatched and approved…
+        assert_eq!(
+            callback.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the ask fired over the reverse RPC"
+        );
+        assert!(matches!(
+            result,
+            crate::hooks::AuthorizeToolResult::Approved { .. }
+        ));
+        // …and the ledger carries the approved entry with the source as
+        // the reason (D.2: 放行也留痕).
+        let entries = ledger.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(entries.len(), 1, "the approved ask is recorded too");
+        assert_eq!(entries[0]["tool"], "Bash");
+        assert_eq!(entries[0]["decision"], "approved");
+        assert_eq!(entries[0]["reason"], "reverse-rpc approved");
     }
 
     /// Given a non-file tool (Bash, Glob, Grep), when accesses are extracted,

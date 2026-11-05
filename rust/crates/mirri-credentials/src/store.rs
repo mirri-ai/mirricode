@@ -80,8 +80,12 @@ pub struct CredentialStore {
 impl CredentialStore {
     pub fn open(home: &Path) -> anyhow::Result<Self> {
         let dir = home.join(CREDENTIALS_DIR);
-        LocalSyncFs.mkdir_private(&dir).context("create credentials dir")?;
-        Ok(Self { path: dir.join(CREDENTIALS_FILE) })
+        LocalSyncFs
+            .mkdir_private(&dir)
+            .context("create credentials dir")?;
+        Ok(Self {
+            path: dir.join(CREDENTIALS_FILE),
+        })
     }
 
     pub fn path(&self) -> &Path {
@@ -89,7 +93,9 @@ impl CredentialStore {
     }
 
     pub fn read_all(&self) -> Vec<CredentialRecord> {
-        let Ok(text) = std::fs::read_to_string(&self.path) else { return vec![] };
+        let Ok(text) = std::fs::read_to_string(&self.path) else {
+            return vec![];
+        };
         let parsed: Result<StoreFile, _> = serde_json::from_str(&text);
         match parsed {
             Ok(f) if f.version <= STORE_VERSION => f
@@ -111,7 +117,9 @@ impl CredentialStore {
     }
 
     pub fn get(&self, provider_id: &str) -> Option<CredentialRecord> {
-        self.read_all().into_iter().find(|r| r.provider_id == provider_id)
+        self.read_all()
+            .into_iter()
+            .find(|r| r.provider_id == provider_id)
     }
 
     pub fn reveal(&self, provider_id: &str) -> Option<String> {
@@ -142,20 +150,27 @@ impl CredentialStore {
                     time_updated: now,
                     provider_id: provider_id.into(),
                     value,
-                    encoding: Encoding { cipher: PLAINTEXT.into() },
+                    encoding: Encoding {
+                        cipher: PLAINTEXT.into(),
+                    },
                 }
             }
             None => CredentialRecord {
                 id: format!("cred_{:08}", next_seq(&entries)),
                 provider_id: provider_id.into(),
                 value,
-                encoding: Encoding { cipher: PLAINTEXT.into() },
+                encoding: Encoding {
+                    cipher: PLAINTEXT.into(),
+                },
                 time_created: now,
                 time_updated: now,
             },
         };
         entries.push(record.clone());
-        let file = StoreFile { version: STORE_VERSION, entries };
+        let file = StoreFile {
+            version: STORE_VERSION,
+            entries,
+        };
         // Compact form: the on-disk contract asserts no spaces in
         // `"cipher":"plaintext"` / `"version":1` (see store_tests).
         let bytes = serde_json::to_vec(&file)?;
@@ -172,7 +187,10 @@ impl CredentialStore {
         if entries.len() == before {
             return Ok(false);
         }
-        let bytes = serde_json::to_vec(&StoreFile { version: STORE_VERSION, entries })?;
+        let bytes = serde_json::to_vec(&StoreFile {
+            version: STORE_VERSION,
+            entries,
+        })?;
         mirri_persistence::write_file_atomically(&self.path, &bytes)?;
         Ok(true)
     }

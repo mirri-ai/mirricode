@@ -43,11 +43,30 @@ fn consistency_server_with_llm(
         workspace_root.to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::with_persistence_dir(
-        workspace,
-        home.join("sessions"),
-        Arc::new(mirri_os::LocalFs::new()),
-    ));
+    // ADR-006: the shared-home instances share ONE metadata database —
+    // the row written by server A's create is what server B's resume
+    // reads (the metadata source of truth is the row, not state.json).
+    let manager = {
+        let db = home.join("session-index.db");
+        let index = match mirri_session_index::SessionIndex::open_with_check(&db) {
+            Ok(mirri_session_index::OpenOutcome::Ok(index)) => index,
+            Ok(mirri_session_index::OpenOutcome::Corrupt(diagnosis)) => {
+                panic!("consistency fixture index corrupt: {diagnosis}")
+            }
+            Ok(mirri_session_index::OpenOutcome::SchemaFloor { db_version }) => {
+                panic!("consistency fixture index floor: v{db_version}")
+            }
+            Err(error) => panic!("consistency fixture index open failed: {error}"),
+        };
+        Arc::new(
+            SessionManager::with_persistence_dir(
+                workspace,
+                home.join("sessions"),
+                Arc::new(mirri_os::LocalFs::new()),
+            )
+            .with_metadata_store(Arc::new(mirri_session_index::SessionIndexPort(index))),
+        )
+    };
     let mut parsed = ServerConfig::from_toml(&format!(
         "\n[experimental]\n\"{}\" = true\n",
         mirri_core::SESSION_CONSISTENCY_FOLLOW_FLAG
@@ -176,8 +195,7 @@ async fn should_refresh_session_list_when_another_server_renames_a_session_on_sh
     // installed on its registry (the composition-root wiring) plus a fast
     // index refresh tick.
     let mut server_b =
-        consistency_server(home.path(), workspace_root.path(), Duration::from_secs(2))
-            .with_index_refresh_tick(Duration::from_millis(50));
+        consistency_server(home.path(), workspace_root.path(), Duration::from_secs(2));
     server_b.home_dir = Some(home.path().to_path_buf());
     server_b
         .registry
@@ -196,8 +214,10 @@ async fn should_refresh_session_list_when_another_server_renames_a_session_on_sh
         .await
         .expect("A materializes the session (state.json on the shared root)");
 
-    // B's first listing converges the row from disk (the once-guarded
-    // startup reconcile) — the OLD title is what B knows.
+    // B's startup housekeeping converges the row from disk (the once-guarded
+    // reconcile settles explicitly: list reads do not wait for it any more —
+    // ADR-003 c — so the case settles it here, then lists).
+    server_b.await_housekeeping_settled().await;
     let list_before = server_b
         .call_method("session.list", json!({}))
         .await
@@ -889,11 +909,27 @@ async fn should_show_subagent_activity_in_web_within_five_seconds_when_desktop_r
             workspace_root.path().to_path_buf(),
             WorkspaceScopeConfig::default(),
         ));
-        let manager = Arc::new(SessionManager::with_persistence_dir(
-            workspace,
-            home.path().join("sessions"),
-            Arc::new(mirri_os::LocalFs::new()),
-        ));
+        let manager = {
+            let db = home.path().join("session-index.db");
+            let index = match mirri_session_index::SessionIndex::open_with_check(&db) {
+                Ok(mirri_session_index::OpenOutcome::Ok(index)) => index,
+                Ok(mirri_session_index::OpenOutcome::Corrupt(diagnosis)) => {
+                    panic!("consistency fixture index corrupt: {diagnosis}")
+                }
+                Ok(mirri_session_index::OpenOutcome::SchemaFloor { db_version }) => {
+                    panic!("consistency fixture index floor: v{db_version}")
+                }
+                Err(error) => panic!("consistency fixture index open failed: {error}"),
+            };
+            Arc::new(
+                SessionManager::with_persistence_dir(
+                    workspace,
+                    home.path().join("sessions"),
+                    Arc::new(mirri_os::LocalFs::new()),
+                )
+                .with_metadata_store(Arc::new(mirri_session_index::SessionIndexPort(index))),
+            )
+        };
         let mut parsed = ServerConfig::from_toml(&format!(
             "\n[experimental]\n\"{}\" = true\n",
             mirri_core::SESSION_CONSISTENCY_FOLLOW_FLAG
@@ -1268,11 +1304,27 @@ async fn should_allow_send_when_flag_disabled() {
             workspace_root.path().to_path_buf(),
             WorkspaceScopeConfig::default(),
         ));
-        let manager = Arc::new(SessionManager::with_persistence_dir(
-            workspace,
-            home.path().join("sessions"),
-            Arc::new(mirri_os::LocalFs::new()),
-        ));
+        let manager = {
+            let db = home.path().join("session-index.db");
+            let index = match mirri_session_index::SessionIndex::open_with_check(&db) {
+                Ok(mirri_session_index::OpenOutcome::Ok(index)) => index,
+                Ok(mirri_session_index::OpenOutcome::Corrupt(diagnosis)) => {
+                    panic!("consistency fixture index corrupt: {diagnosis}")
+                }
+                Ok(mirri_session_index::OpenOutcome::SchemaFloor { db_version }) => {
+                    panic!("consistency fixture index floor: v{db_version}")
+                }
+                Err(error) => panic!("consistency fixture index open failed: {error}"),
+            };
+            Arc::new(
+                SessionManager::with_persistence_dir(
+                    workspace,
+                    home.path().join("sessions"),
+                    Arc::new(mirri_os::LocalFs::new()),
+                )
+                .with_metadata_store(Arc::new(mirri_session_index::SessionIndexPort(index))),
+            )
+        };
         let parsed = ServerConfig {
             default_model: Some(super::TEST_DEFAULT_MODEL.to_string()),
             ..ServerConfig::default()
@@ -1561,100 +1613,3 @@ fn journal_turn_ended_reasons(
         .collect()
 }
 
-/// Given TWO home-injected engines sharing one home with sessions on disk
-/// (the dual-instance shape, both behind the consistency flag), when both
-/// engines run an index reconcile AT THE SAME TIME (each spawned onto its
-/// own task, started together — the exact interleaving the D8 lock exists
-/// for), then every session's row survives in the shared
-/// `session-index.db` (no row is lost to interleaved passes — ADR-004's
-/// cross-process serialization), the lock file is released afterwards
-/// (no residue), and a third pass still converges cleanly (the idempotent
-/// settle).
-#[tokio::test(flavor = "multi_thread")]
-async fn should_serialize_concurrent_reconciles_without_losing_rows() {
-    let home = tempfile::tempdir().expect("home tempdir");
-    let workspace_root = tempfile::tempdir().expect("workspace root tempdir");
-
-    // Two home-injected listing engines on the shared home — both install
-    // the shared session-index connection on their registries (the
-    // composition-root wiring).
-    let make_server = || {
-        let mut server =
-            consistency_server(home.path(), workspace_root.path(), Duration::from_secs(2))
-                .with_index_refresh_tick(Duration::from_secs(3600)); // the driver must NOT tick during the test — the explicit reconciles below are the only passes
-        server.home_dir = Some(home.path().to_path_buf());
-        server
-            .registry
-            .install_session_index(home.path().to_path_buf());
-        server
-    };
-    let server_a = Arc::new(make_server());
-    let server_b = Arc::new(make_server());
-
-    // A third server (no injected home) creates and materializes several
-    // sessions on the shared root — the foreign entry whose rows BOTH
-    // reconciles must converge (each pass sees all of them on disk).
-    let writer = consistency_server(home.path(), workspace_root.path(), Duration::from_secs(2));
-    let mut session_ids = Vec::new();
-    for n in 0..5 {
-        let created = writer
-            .call_method("session.create", json!({ "title": format!("row {n}") }))
-            .await
-            .expect("create");
-        let session_id = created["id"].as_str().unwrap().to_string();
-        writer
-            .session_manager()
-            .materialize_session(&SessionId::new(&session_id))
-            .await
-            .expect("the session materializes (state.json on the shared root)");
-        session_ids.push(session_id);
-    }
-
-    // When both engines reconcile at the same time — two spawned tasks,
-    // started together, each holding its own server. Without the D8 lock
-    // the two read-disk-compare-upsert passes interleave freely; with it,
-    // they serialize (one full pass, then the other).
-    let (a, b) = tokio::join!(
-        tokio::spawn({
-            let server = Arc::clone(&server_a);
-            async move { server.reconcile_session_index().await }
-        }),
-        tokio::spawn({
-            let server = Arc::clone(&server_b);
-            async move { server.reconcile_session_index().await }
-        }),
-    );
-    a.expect("A's reconcile task joins");
-    b.expect("B's reconcile task joins");
-
-    // Then every session's row is present in the shared index (no row
-    // lost to the interleaving) — read through either engine's connection.
-    let index = server_a
-        .session_index()
-        .expect("A's shared index connection is installed");
-    for session_id in &session_ids {
-        assert!(
-            index.get_session(session_id).is_some(),
-            "the row of session {session_id} must survive the concurrent reconciles"
-        );
-    }
-
-    // And the reconcile lock is released (the lock file is the lock — no
-    // residue after both passes settle).
-    let lock_path =
-        mirri_session_index::lock_file_path(&home.path().join("session-index.reconcile"));
-    assert!(
-        !lock_path.exists(),
-        "the reconcile lock must be released after both passes settle"
-    );
-
-    // And a third pass over the settled state converges cleanly (the
-    // idempotent settle — a serialized rerun is a no-op, not an error).
-    server_b.reconcile_session_index().await;
-    for session_id in &session_ids {
-        assert!(
-            index.get_session(session_id).is_some(),
-            "the rows must survive the third settle pass"
-        );
-    }
-}

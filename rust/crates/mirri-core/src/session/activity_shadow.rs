@@ -250,6 +250,7 @@ mod tests {
             stop_reason: "completed".to_string(),
             wire_turn_id: 1,
             duration_ms: None,
+            ended_at_ms: None,
         });
         let end = recv_work_changed(&mut rx).await;
         assert!(!end.main_turn_active, "turn end clears the main gate");
@@ -323,6 +324,7 @@ mod tests {
             stop_reason: "completed".to_string(),
             wire_turn_id: 2,
             duration_ms: None,
+            ended_at_ms: None,
         });
         let end = recv_work_changed(&mut rx).await;
         assert!(!end.main_turn_active);
@@ -349,6 +351,7 @@ mod tests {
             error: "turn aborted by the user via message.abort".to_string(),
             error_code: "abort.user_cancelled".to_string(),
             wire_turn_id: 3,
+            ended_at_ms: None,
         });
         let end = recv_work_changed(&mut rx).await;
         assert_eq!(
@@ -378,6 +381,7 @@ mod tests {
             error: "provider unavailable".to_string(),
             error_code: "provider.unavailable".to_string(),
             wire_turn_id: 4,
+            ended_at_ms: None,
         });
         let end = recv_work_changed(&mut rx).await;
         assert_eq!(

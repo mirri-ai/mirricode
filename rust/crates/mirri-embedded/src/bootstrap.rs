@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
+use mirri_core::cron::WorkspaceCronManager;
 use mirri_core::{
     PermissionMode, ProfileManager, ServerConfig, SessionManager, SkillRootChannel, SkillSource,
     WorkspaceId, WorkspaceScope, WorkspaceScopeConfig, WorkspaceTrustLevel, dedupe_skill_roots,
@@ -99,10 +100,14 @@ pub struct EngineParts {
     pub fetch_url_provider: Option<Arc<dyn mirri_core::tools::FetchUrlProvider>>,
     /// The explicitly injected Mirri home directory, when one was given —
     /// the directory holding `config.toml`, `profiles/`, `plugins/`, MCP
-    /// config, and the session persistence root. `None` means every home
-    /// consumer resolves through the env-based
+    /// config, and the session persistence root (`v3_sessions/` and
+    /// `session-index.db`). `None` means every home consumer resolves
+    /// through the env-based
     /// [`mirri_home_dir`](mirri_core::config::mirri_home_dir) exactly as
-    /// before the injection existed.
+    /// before the injection existed; a home that cannot be resolved at
+    /// all is a hard error at assembly (ADR-006 — the metadata store
+    /// needs its database, the no-home shape is out of the product
+    /// surface).
     pub home_dir: Option<PathBuf>,
     /// The SDK's explicit skill directories (v1/v2 `skillDirs`), as given to
     /// [`assemble`] — replayed onto every built workspace's skill catalog by
@@ -169,6 +174,34 @@ pub fn assemble(
     policy: WorkspacePolicy,
     skill_dirs: Vec<PathBuf>,
 ) -> EngineParts {
+    // ADR-006 (fix round 1, ruling on the None-home shape): the metadata
+    // store is the single source of truth, so an assembly MUST have a
+    // home to root `<home>/session-index.db` in. An injected home wins;
+    // `None` falls back to the env-based resolution
+    // (`MIRRICODE_HOME`, then `$HOME/.mirri-code`) — the same chain
+    // `load_config_from_home` below already applies, so this only makes
+    // the requirement explicit where it previously degraded to the
+    // in-memory fixture. A home that cannot be resolved at all is out of
+    // the product surface: the engine refuses to serve (no silent
+    // in-memory degrade, which would silently drop every session row on
+    // restart).
+    // The RAW parameter is kept aside: the MCP user-layer base resolution
+    // must see the caller's original injection state (fix round 2 — R1),
+    // NOT the resolved mirri home. Feeding the resolved home down
+    // `resolve_mcp_home_base` double-nests the user layer
+    // (`<home>/.mirri-code/.mirri-code/mcp.json`) for every entry that
+    // injected no home (ACP, `EngineBridge::new`, `for_cwd`), silently
+    // hiding the user's real `~/.mirri-code/mcp.json`.
+    let raw_home_dir = home_dir.clone();
+    let home_dir: Option<PathBuf> = match resolve_mirri_home(home_dir.as_deref()) {
+        Ok(home) => Some(home),
+        Err(error) => panic!(
+            "mirri home directory is required — the metadata store is the single source \
+             of truth (ADR-006); pass a home or set MIRRICODE_HOME (underlying \
+             resolution error: {error})"
+        ),
+    };
+
     // Auto-discover and load config.toml from the Mirri home directory
     // (migrate → `${VAR}` expand → env overrides; see
     // `load_config_with_migration`).
@@ -178,10 +211,13 @@ pub fn assemble(
     // services: the pool load, the config read/write surface, and the
     // reconcile kernel must all address the same file. An explicit base
     // (`mirri serve` passes `$HOME`) wins; otherwise see
-    // [`resolve_mcp_home_base`].
+    // [`resolve_mcp_home_base`] — over the RAW injection state, so an
+    // un-injected entry falls through to `$HOME` verbatim (the user's
+    // actual `~/.mirri-code/mcp.json`), never the resolved mirri home
+    // (which would double-nest).
     let mcp_home_base = mcp_home_dir
         .clone()
-        .or_else(|| resolve_mcp_home_base(home_dir.as_deref()));
+        .or_else(|| resolve_mcp_home_base(raw_home_dir.as_deref()));
 
     // Auto-discover and load plugins from the Mirri home directory. Loaded
     // BEFORE the profile manager: the plugin agent roots (item H) join the
@@ -276,6 +312,8 @@ pub fn assemble(
         trust_store,
         default_registration_id: Some(default_registration_id.clone()),
         default_scope_id: Some(workspace_id),
+        workspace_registry: std::sync::OnceLock::new(),
+        metadata_store: std::sync::OnceLock::new(),
     });
     let builder: RuntimeBuilder = {
         let shared = Arc::clone(&shared);
@@ -287,10 +325,88 @@ pub fn assemble(
     // `manager_for` fallback and the embedded server's own index reads, so
     // the two never open the file twice. Without a home there is nothing to
     // fall back to: resolution goes active table → bucket probe → not-found.
-    let registry = WorkspaceRegistry::new(Arc::new(NoopResolver), builder);
-    if let Some(home) = &home_dir {
-        registry.install_session_index(home.clone());
+    let registry = Arc::new(WorkspaceRegistry::new(Arc::new(NoopResolver), builder));
+    // The home is required (resolved above): every assembly roots its
+    // session index and its metadata store in `<home>`.
+    let home = home_dir
+        .as_ref()
+        .expect("the resolved home is always present at the wiring point");
+    registry.install_session_index(home.clone());
+    // Task 5b — the production metadata-store wiring: open (or create)
+    // `<home>/session-index.db` through the startup-integrity check and
+    // share the port with every runtime the builder later assembles.
+    // A corrupt database or a future schema floor must NOT degrade to
+    // the in-memory fixture (ADR-006: no silent degrade) — the engine
+    // refuses to serve with a loud error instead.
+    let db_path = home.join("session-index.db");
+    match mirri_session_index::SessionIndex::open_with_check(&db_path) {
+        Ok(mirri_session_index::OpenOutcome::Ok(index)) => {
+            let _ = shared.metadata_store.set(Some(Arc::new(
+                mirri_session_index::SessionIndexPort(index),
+            )));
+        }
+        // The recovery pyramid (ADR-006 Task 11): a corrupt library
+        // recovers instead of refusing to boot — tier 1 restores the
+        // rolling backup, tier 2 half-rebuilds every row from the wire
+        // logs. Only the recovery's own failure (or a future schema
+        // floor) remains a loud boot refusal.
+        Ok(mirri_session_index::OpenOutcome::Corrupt(diagnosis)) => {
+            tracing::warn!(
+                %diagnosis,
+                db = %db_path.display(),
+                "the session metadata database failed its startup integrity check; \
+                 the recovery pyramid runs (backup restore, then half-rebuild)"
+            );
+            let sessions_root = home.join("v3_sessions");
+            // `assemble` is sync (its callers may run before any Tokio
+            // runtime exists — for_cwd); the recovery is async, so it
+            // rides a dedicated current-thread runtime thread (the ACP
+            // migration bridge precedent).
+            let recovery_home = home.clone();
+            let recovered = std::thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .expect("building the recovery runtime")
+                    .block_on(crate::embedded_server::recovery_v3::recover_library(
+                        &recovery_home,
+                        &sessions_root,
+                    ))
+            })
+            .join()
+            .unwrap_or_else(|join_error| {
+                panic!("the recovery pyramid thread panicked: {join_error:?}")
+            })
+            .unwrap_or_else(|recovery_error| {
+                panic!(
+                    "the session metadata database {} is corrupt ({diagnosis}) and the \
+                     recovery failed: {recovery_error}",
+                    db_path.display()
+                )
+            });
+            let _ = shared.metadata_store.set(Some(Arc::new(
+                mirri_session_index::SessionIndexPort(recovered),
+            )));
+        }
+        Ok(mirri_session_index::OpenOutcome::SchemaFloor { db_version }) => {
+            panic!(
+                "the session metadata database {} uses a newer format (v{db_version}) \
+                 than this build understands; upgrade the app to open it",
+                db_path.display()
+            );
+        }
+        Err(error) => {
+            panic!(
+                "failed to open the session metadata database {}: {error}",
+                db_path.display()
+            );
+        }
     }
+    // The runtime builder reaches the registry through `shared` (the
+    // registry is constructed after `shared`, so the Arc lands here the
+    // moment it exists — before any runtime is ever built). This is what
+    // lets every runtime's cron manager mount the SAME shared
+    // `<home>/cron-index.db` connection.
+    let _ = shared.workspace_registry.set(Arc::clone(&registry));
 
     // Restore the cross-engine registry rows (`<home>/workspaces.json`, the
     // TS engine's source of truth): register every row, leave every runtime
@@ -376,7 +492,7 @@ pub fn assemble(
         home_dir,
         skill_dirs: shared.skill_dirs.clone(),
         mcp_home_base,
-        workspace_registry: Arc::new(registry),
+        workspace_registry: registry,
         trust_store: shared.trust_store.clone(),
     }
 }
@@ -416,6 +532,35 @@ pub(crate) struct SharedEngineServices {
     /// The caller-supplied scope id of the default workspace (see
     /// `default_registration_id`).
     pub(crate) default_scope_id: Option<WorkspaceId>,
+    /// The registry the runtime builder mounts the shared cron-index
+    /// connection from (the builder closure sees only `shared`, and the
+    /// registry is constructed AFTER `shared` — it lands here the moment it
+    /// exists, before any runtime is ever built).
+    pub(crate) workspace_registry: std::sync::OnceLock<Arc<WorkspaceRegistry>>,
+    /// The shared metadata store port over `<home>/session-index.db`
+    /// (ADR-006's production wiring — Task 5b): every built runtime's
+    /// `SessionManager` receives this through `with_metadata_store`, so
+    /// the metadata rows of ALL workspaces live in the one home-level
+    /// database (the same connection the index fallback and the listing
+    /// read). Set by `assemble`, which resolves a home unconditionally
+    /// (ADR-006 fix round 1: an unresolvable home is a hard error — the
+    /// no-home shape is out of the product surface); the `None` state is
+    /// only the pre-wiring instant and hand-built test `SharedEngineServices`.
+    pub(crate) metadata_store:
+        std::sync::OnceLock<Option<Arc<mirri_session_index::SessionIndexPort>>>,
+}
+
+impl SharedEngineServices {
+    /// The shared session-index connection behind the metadata-store port
+    /// (the same `<home>/session-index.db` every row write flows through),
+    /// when the assembly wired one. The legacy-session migration's index
+    /// backfill uses it — one connection, one file, no second open.
+    pub(crate) fn session_index_conn(&self) -> Option<Arc<mirri_session_index::SessionIndex>> {
+        self.metadata_store
+            .get()?
+            .as_ref()
+            .map(|port| Arc::clone(&port.0))
+    }
 }
 
 /// Replay the complete skill discovery sequence onto one built workspace
@@ -539,7 +684,20 @@ pub(crate) fn apply_skill_discovery(
 /// the same resolution rule the discovery replay uses for
 /// `extra_skill_dirs`.
 fn resolve_extra_skill_dir(entry: &str, workspace_root: &Path) -> PathBuf {
-    if let Some(home) = std::env::var_os("HOME") {
+    resolve_extra_skill_dir_from(entry, workspace_root, std::env::var_os("HOME"))
+}
+
+/// The pure resolver behind [`resolve_extra_skill_dir`], parameterised
+/// over the os-home so `~` expansion is testable without mutating the
+/// process environment (the `resolve_*_from` convention of
+/// `mirri-os/src/home.rs`): tests pass the fake home directly instead of
+/// pinning `$HOME`.
+fn resolve_extra_skill_dir_from(
+    entry: &str,
+    workspace_root: &Path,
+    os_home: Option<std::ffi::OsString>,
+) -> PathBuf {
+    if let Some(home) = os_home {
         if entry == "~" {
             return PathBuf::from(home);
         }
@@ -692,16 +850,50 @@ pub(crate) fn build_workspace_runtime(
     // With an injected home, session persistence roots under the home
     // (ADR-006-R2: the rust engine's own `v3_sessions/` layout) instead of
     // the workspace-local `<root>/.mirri/v3_sessions`.
-    let session_manager = match &shared.home_dir {
+    // (The `None` arm below is the test-only shape — `assemble` resolves
+    // a home unconditionally since ADR-006 fix round 1; the direct
+    // `build_workspace_runtime` surface keeps the fallback so hand-built
+    // fixtures with no shared services stay constructible.)
+    let mut session_manager = match &shared.home_dir {
         Some(home) => SessionManager::with_persistence_dir(
             workspace,
             home.join("v3_sessions"),
             Arc::new(mirri_os::LocalFs::new()),
         ),
         None => SessionManager::new(workspace),
+    };
+    // Task 5b — the metadata-store port injection: the runtime's manager
+    // writes its metadata rows through the shared home-level SQLite port
+    // (ADR-006's "唯一事实源" landing). The rows file under the
+    // REGISTRATION id (the routing seam's index fallback resolves
+    // row → workspace_id → registration; a cwd-derived key would
+    // mis-file whenever the two differ).
+    if let Some(Some(store)) = shared.metadata_store.get() {
+        session_manager = session_manager
+            .with_metadata_store(Arc::clone(store) as Arc<_>)
+            .with_metadata_workspace_id(reg.id.clone());
     }
-    .with_server_config(Arc::clone(&shared.config));
+    let session_manager = session_manager.with_server_config(Arc::clone(&shared.config));
     let session_manager = Arc::new(session_manager);
+
+    // ADR-006 fix round 2 (R2a) — the legacy workspace-local session
+    // migration: a pre-ADR-006 engine rooted its sessions at
+    // `<root>/.mirri/v3_sessions/` (the no-home ACP / direct-constructor
+    // shape); the home-rooted assembly must adopt them or they vanish
+    // from every listing. On the FIRST build of a workspace whose
+    // legacy root exists, every session directory moves into the home's
+    // corresponding bucket and an index row is minted from its
+    // `state.json` (still a legal read point during the migration
+    // window) so the routing seam resolves it. Idempotent by
+    // construction: the source directory is removed once emptied, so a
+    // later build sees no legacy root and skips (a partially-migrated
+    // set re-runs over the remainder only). Best-effort: a failure logs
+    // and never blocks the runtime build.
+    if let Some(home) = shared.home_dir.as_deref()
+        && let Some(index) = shared.session_index_conn()
+    {
+        migrate_workspace_local_sessions(&reg.root, home, &index);
+    }
 
     // Per-root workspace-pool MCP discovery: the manager (project layers +
     // plugin servers) and the layered config view. The returned private
@@ -724,6 +916,32 @@ pub(crate) fn build_workspace_runtime(
     // `apply_skill_discovery` above — it replays the complete sequence
     // including plugin roots and the disabled-set seed.)
 
+    // The workspace's cron manager (stage-2 T5, ADR-020 since): one per
+    // runtime, attached only on the home-rooted layout — a workspace-local
+    // persistence root (no injected home) keeps `None` and the scheduler's
+    // workspace arm skips that runtime. Home-rooted runtimes mount the
+    // REGISTRY's shared cron-index connection (the same `Arc<CronIndex>`
+    // every runtime and the `cron.listAll` face read), so all writes land
+    // in the one `<home>/cron-index.db`.
+    let cron = shared.home_dir.as_ref().and_then(|home| {
+        shared
+            .workspace_registry
+            .get()
+            .and_then(|registry| registry.shared_cron_index())
+            .map(|index| {
+                std::sync::Arc::new(WorkspaceCronManager::open_with_index(
+                    &reg.id,
+                    &home.join("v3_sessions").join(&reg.id),
+                    // The CronPersistence seam: wrap the shared connection
+                    // in the embedded-layer adapter (the carrier crate stays
+                    // out of mirri-core's dependency tree — zero-IO gate).
+                    std::sync::Arc::new(crate::cron_persistence::SqliteCronPersistence(
+                        index,
+                    )) as std::sync::Arc<dyn mirri_core::cron::CronPersistence + Send + Sync>,
+                ))
+            })
+    });
+
     Ok(WorkspaceRuntime {
         workspace_id: reg.id.clone(),
         scope: Arc::clone(session_manager.workspace()),
@@ -733,7 +951,216 @@ pub(crate) fn build_workspace_runtime(
         trusted: std::sync::atomic::AtomicBool::new(trusted),
         mcp_connect_spawned: std::sync::atomic::AtomicBool::new(false),
         base_hooks,
+        cron,
     })
+}
+
+/// Migrate a workspace's legacy workspace-local sessions into the home
+/// root (ADR-006 fix round 2 / R2a): a pre-ADR-006 engine rooted its
+/// sessions at `<root>/.mirri/v3_sessions/<bucket>/<id>/` (the no-home
+/// ACP / direct-constructor shape); the home-rooted assembly adopts them
+/// by moving every session directory into the home's corresponding
+/// bucket and minting an index row per session from its `state.json`
+/// (still a legal read point during the migration window — Task 7
+/// retires it for the new write paths, not for reading legacy files).
+///
+/// Idempotent by construction: a bucket that no longer exists under the
+/// legacy root contributes nothing, and the legacy root itself is
+/// removed once every bucket under it is empty — a second run sees no
+/// legacy root and skips. A session that already exists in the home's
+/// bucket is NOT overwritten (the home's copy wins — it is the newer
+/// source of truth); the legacy copy is removed.
+///
+/// Best-effort: any failure logs and skips that session; the runtime
+/// build never blocks on the migration. The bucket's `cron/` manifest
+/// directory is deliberately left in place (the session migration moves
+/// sessions only; the cron domain's own one-time import — Task 8, the
+/// registry's `import_legacy_cron_once` — reads the frozen archive where
+/// the legacy engine wrote it).
+fn migrate_workspace_local_sessions(
+    workspace_root: &Path,
+    home: &Path,
+    index: &mirri_session_index::SessionIndex,
+) {
+    let legacy_root = workspace_root.join(".mirri").join("v3_sessions");
+    let Ok(buckets) = std::fs::read_dir(&legacy_root) else {
+        return; // no legacy root → nothing to migrate (the idempotent skip)
+    };
+    let home_root = home.join("v3_sessions");
+    let mut rows: Vec<mirri_session_index::SessionRow> = Vec::new();
+    for bucket in buckets.flatten() {
+        let bucket_path = bucket.path();
+        if !bucket_path.is_dir() {
+            continue;
+        }
+        let Some(bucket_key) = bucket.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let Ok(sessions) = std::fs::read_dir(&bucket_path) else {
+            continue;
+        };
+        for session in sessions.flatten() {
+            let session_path = session.path();
+            if !session_path.is_dir() {
+                continue;
+            }
+            // The workspace cron manifest lives alongside the session
+            // directories (`<bucket>/cron/tasks.json`): it is NOT a
+            // session — moving it would steal the frozen archive out from
+            // under the cron domain's own one-time import (Task 8), and a
+            // target-side collision would DELETE it (the duplicate-drop
+            // below fires on any existing target). Left in place, the
+            // cron import reads it where the legacy engine wrote it.
+            if session.file_name() == "cron" {
+                continue;
+            }
+            let Some(session_id) = session.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            let target = home_root.join(&bucket_key).join(&session_id);
+            if target.exists() {
+                // The home already carries this session (a previous
+                // partial run, or a same-id re-create): the home's copy
+                // is the source of truth — drop the legacy duplicate.
+                if let Err(error) = std::fs::remove_dir_all(&session_path) {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        %error,
+                        "legacy session migration: removing the duplicated legacy copy failed"
+                    );
+                }
+                continue;
+            }
+            if let Err(error) = move_dir(&session_path, &target) {
+                tracing::warn!(
+                    session_id = %session_id,
+                    from = %session_path.display(),
+                    to = %target.display(),
+                    %error,
+                    "legacy session migration: moving the session failed; it stays put"
+                );
+                continue;
+            }
+            // Mint the index row from the migrated session's state.json
+            // (the metadata read is async — a dedicated current-thread
+            // runtime, the `skill_reload::mark_live_sessions` bridge
+            // shape, safe in every caller context).
+            // Mint the index row from the migrated session's state.json
+            // (the metadata read is async — a dedicated current-thread
+            // runtime, the `skill_reload::mark_live_sessions` bridge
+            // shape, safe in every caller context).
+            let row = {
+                let persistence = mirri_core::SessionPersistence::new(
+                    home_root.clone(),
+                    Arc::new(mirri_os::LocalFs::new()),
+                )
+                .with_workspace_key(bucket_key.clone());
+                let session_id = session_id.clone();
+                let bucket_key = bucket_key.clone();
+                let workspace_root = workspace_root.to_path_buf();
+                std::thread::spawn(move || {
+                    tokio::runtime::Builder::new_current_thread()
+                        .build()
+                        .expect("legacy session migration runtime")
+                        .block_on(async move {
+                            let sid = mirri_core::SessionId::new(&session_id);
+                            let info = persistence.read_persisted_info(&sid).await?;
+                            Some(mirri_session_index::SessionRow {
+                                id: session_id,
+                                workspace_id: bucket_key,
+                                cwd: info.metadata.work_dir.clone().or_else(|| {
+                                    Some(workspace_root.to_string_lossy().into_owned())
+                                }),
+                                title: Some(info.metadata.title.clone()),
+                                created_at: info.metadata.created_at,
+                                updated_at: info.metadata.updated_at,
+                                archived: info.metadata.archived,
+                                tags: info.metadata.tags.iter().cloned().collect(),
+                                custom: None,
+                                last_prompt: info.metadata.last_prompt.clone(),
+                                state_mtime: None,
+                                archived_at: info.archived_at,
+                                compressed: info.compressed,
+                                compressed_at: info.compressed_at,
+                                pinned: false,
+                                pinned_at: None,
+                                pin_color: None,
+                                last_used_at: info.metadata.last_used_at,
+                                pre_compressed_size: info
+                                    .pre_compressed_size
+                                    .map(|size| size as i64),
+                            })
+                        })
+                })
+                .join()
+                .unwrap_or_else(|panic| {
+                    tracing::warn!(
+                        panic = ?panic,
+                        "legacy session migration: the state.json reader panicked"
+                    );
+                    None
+                })
+            };
+            match row {
+                Some(row) => rows.push(row),
+                None => tracing::warn!(
+                    session_id = %session_id,
+                    "legacy session migration: the session moved but its state.json \
+                     could not be read (no index row minted; the disk scan still \
+                     finds it)"
+                ),
+            }
+        }
+        // A moved-clean bucket disappears; a skipped-session bucket
+        // stays for the next run (the idempotent remainder).
+        let _ = std::fs::remove_dir(&bucket_path); // fails when non-empty — intended
+    }
+    // The legacy root disappears when its every bucket did (the natural
+    // completion marker — no sentinel file).
+    let _ = std::fs::remove_dir(&legacy_root); // fails when non-empty — intended
+    if !rows.is_empty() {
+        if let Err(error) = index.bulk_upsert_sessions(&rows) {
+            tracing::warn!(
+                %error,
+                count = rows.len(),
+                "legacy session migration: the index backfill failed (the sessions \
+                 moved; the rows rebuild on the next reconcile)"
+            );
+        } else {
+            tracing::info!(
+                count = rows.len(),
+                "legacy session migration: workspace-local sessions adopted into the home root"
+            );
+        }
+    }
+}
+
+/// Move a directory, falling back to a recursive copy + delete when the
+/// rename crosses a filesystem boundary (`EXDEV`).
+fn move_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to.parent().expect("the target has a parent"))?;
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            copy_dir_recursive(from, to)?;
+            std::fs::remove_dir_all(from)
+        }
+    }
+}
+
+fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let source = entry.path();
+        let target = to.join(entry.file_name());
+        if source.is_dir() {
+            copy_dir_recursive(&source, &target)?;
+        } else {
+            std::fs::copy(&source, &target)?;
+        }
+    }
+    Ok(())
 }
 
 /// Resolve the Mirri home directory for server construction.
@@ -941,10 +1368,22 @@ pub(crate) fn profile_discovery_roots(
     injected_home: Option<&Path>,
     plugin_manager: Option<&mirri_plugin_host::PluginManager>,
 ) -> Vec<mirri_core::profile::ProfileSourceRoot> {
+    profile_discovery_roots_from(injected_home, std::env::var_os("HOME"), plugin_manager)
+}
+
+/// The pure resolver behind [`profile_discovery_roots`], parameterised
+/// over the os-home (the `resolve_*_from` convention of
+/// `mirri-os/src/home.rs`) so the generic `~/.agents/agents` root is
+/// testable without pinning `$HOME`.
+pub(crate) fn profile_discovery_roots_from(
+    injected_home: Option<&Path>,
+    os_home: Option<std::ffi::OsString>,
+    plugin_manager: Option<&mirri_plugin_host::PluginManager>,
+) -> Vec<mirri_core::profile::ProfileSourceRoot> {
     let Ok(home_dir) = resolve_mirri_home(injected_home) else {
         return Vec::new();
     };
-    let os_home = std::env::var_os("HOME").map(PathBuf::from);
+    let os_home = os_home.map(PathBuf::from);
     let mut roots: Vec<mirri_core::profile::ProfileSourceRoot> =
         mirri_core::profile::user_profile_root_candidates(&home_dir, os_home.as_deref())
             .into_iter()
@@ -1046,9 +1485,20 @@ fn load_mcp_manager_for_root(
 /// found. Exported so composition roots (the NAPI bridge) can key the
 /// shared user pool by the same home the loader reads.
 pub fn resolve_mcp_home_base(injected_home: Option<&Path>) -> Option<PathBuf> {
+    resolve_mcp_home_base_from(injected_home, std::env::var_os("HOME"))
+}
+
+/// The pure resolver behind [`resolve_mcp_home_base`], parameterised over
+/// the os-home (the `resolve_*_from` convention of `mirri-os/src/home.rs`)
+/// so the `$HOME`-verbatim tier is testable without pinning the process
+/// env. `None` when no home can be resolved from either input.
+pub fn resolve_mcp_home_base_from(
+    injected_home: Option<&Path>,
+    os_home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
     injected_home
         .map(Path::to_path_buf)
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .or_else(|| os_home.map(PathBuf::from))
         .or_else(|| resolve_mirri_home(None).ok())
 }
 
@@ -1113,26 +1563,6 @@ fn permission_mode_from_config(mode: Option<&str>) -> PermissionMode {
     }
 }
 
-/// Test-only `$HOME` synchronization for this crate: the harness runs all
-/// tests of the binary in parallel in one process, and `$HOME` is
-/// process-global — every test that pins `HOME` (bootstrap home isolation,
-/// home-expansion assertions) must hold this lock across its whole
-/// read/write window, or a concurrently running test can observe or clobber
-/// the pinned value.
-#[cfg(test)]
-pub(crate) mod test_env {
-    use std::sync::{Mutex, MutexGuard, OnceLock};
-
-    /// Acquire the crate-wide `$HOME` lock (RAII — hold for the whole
-    /// pinned window).
-    pub fn home_lock() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1140,41 +1570,28 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     /// should expand `~` and `~/…` extra-skill-dir entries against $HOME
-    /// (B8: the TS skillRoots path-resolution parity)
+    /// (B8: the TS skillRoots path-resolution parity) — through the
+    /// injected-home variant, so no process-env pin is involved.
     #[test]
     fn should_expand_home_prefixes_when_resolving_extra_skill_dirs() {
         let root = PathBuf::from("/ws/root");
         let fake_home = tempfile::tempdir().expect("fake home tempdir");
-        // Hold the crate $HOME lock across the pin window and restore with
-        // the match form (an unset original HOME must not leak the pin).
-        let _guard = test_env::home_lock();
-        let previous_home = std::env::var_os("HOME");
-        unsafe {
-            std::env::set_var("HOME", fake_home.path());
-        }
+        let injected = Some(std::ffi::OsString::from(fake_home.path()));
         let resolved = [
-            resolve_extra_skill_dir("~/pdf-skills", &root),
-            resolve_extra_skill_dir("~", &root),
+            resolve_extra_skill_dir_from("~/pdf-skills", &root, injected.clone()),
+            resolve_extra_skill_dir_from("~", &root, injected),
         ];
-        match previous_home {
-            Some(value) => unsafe {
-                std::env::set_var("HOME", value);
-            },
-            None => unsafe {
-                std::env::remove_var("HOME");
-            },
-        }
 
         // Then `~/x` expands under the home and bare `~` is the home itself
         assert_eq!(resolved[0], fake_home.path().join("pdf-skills"));
         assert_eq!(resolved[1], fake_home.path());
         // And absolute entries pass through, relative ones anchor at the root
         assert_eq!(
-            resolve_extra_skill_dir("/abs/skills", &root),
+            resolve_extra_skill_dir_from("/abs/skills", &root, None),
             PathBuf::from("/abs/skills")
         );
         assert_eq!(
-            resolve_extra_skill_dir("rel-skills", &root),
+            resolve_extra_skill_dir_from("rel-skills", &root, None),
             root.join("rel-skills")
         );
     }
@@ -1346,11 +1763,11 @@ mod tests {
         // The profile roots chain probes the real `$HOME` for the generic
         // `~/.agents/agents` root; pin it to an isolated empty home so the
         // test cannot pick up the actual user's profiles (hermetic). The
-        // crate-wide home lock serializes the pin against the other
+        // workspace env lock serializes the pin against the other
         // HOME-reading tests (the env is process-global).
         let isolated_home = tempfile::tempdir().expect("isolated home tempdir");
         let env_name = "HOME";
-        let _home_lock = test_env::home_lock();
+        let _home_lock = mirri_test_support::env::lock(); // env_lock: workspace-wide HOME pin guard
         let previous = std::env::var_os(env_name);
         // SAFETY: the HOME env var is restored immediately after assembly,
         // and no other bootstrap test reads it (they all inject homes), so
@@ -1367,6 +1784,7 @@ mod tests {
             Vec::new(),
         );
         // SAFETY: restore the previous value; see the set_var above.
+        // env_lock: restore under the workspace env lock guard above
         match previous {
             Some(value) => unsafe { std::env::set_var(env_name, value) },
             None => unsafe { std::env::remove_var(env_name) },
@@ -1499,7 +1917,7 @@ mod tests {
         // load_all picks the installed plugin back up, and the profile
         // manager discovers the plugin agent roots) — under the crate
         // $HOME pin (sync only; the async install ran unpinned)
-        let _home_lock = test_env::home_lock();
+        let _home_lock = mirri_test_support::env::lock(); // env_lock: workspace-wide HOME pin guard
         let previous_home = std::env::var_os("HOME");
         // SAFETY: restored after assembly (see the pin at line ~1190).
         unsafe { std::env::set_var("HOME", isolated_home.path()) };
@@ -1512,6 +1930,7 @@ mod tests {
             Vec::new(),
         );
         // SAFETY: restore the previous $HOME (see the set_var above).
+        // env_lock: restore under the workspace env lock guard above
         match previous_home {
             Some(value) => unsafe { std::env::set_var("HOME", value) },
             None => unsafe { std::env::remove_var("HOME") },
@@ -1561,8 +1980,11 @@ mod tests {
         )
         .expect("write config.toml");
         let env_name = "MIRRI_M5_BOOTSTRAP_EXPANSION";
-        // SAFETY: unique var name owned by this test; no other code reads it.
-        unsafe { std::env::set_var(env_name, "expanded") };
+        // SAFETY: unique var name owned by this test; no other code reads
+        // it — set under the workspace env lock anyway (the iron rules:
+        // no bare env mutation even for uniquely named vars).
+        let mut _env = mirri_test_support::env::EnvGuard::new();
+        _env.set(env_name, "expanded");
 
         // When the engine parts are assembled through the funnel path
         let parts = assemble(
@@ -1573,8 +1995,7 @@ mod tests {
             WorkspacePolicy::UntrustedDefault,
             Vec::new(),
         );
-        // SAFETY: unique var name owned by this test; see the set_var above.
-        unsafe { std::env::remove_var(env_name) };
+        drop(_env); // restore the uniquely named var (EnvGuard Drop)
 
         // Then the one-shot migration ran BEFORE env expansion: the loaded
         // config carries the migrated effort AND the expanded model id
@@ -1652,10 +2073,10 @@ mod tests {
         )
         .expect("write mcp.json");
         let env_name = "HOME";
-        let _home_lock = test_env::home_lock();
+        let _home_lock = mirri_test_support::env::lock(); // env_lock: workspace-wide HOME pin guard
         let previous = std::env::var_os(env_name);
         // SAFETY: the HOME env var is restored immediately after assembly,
-        // and the crate-wide home lock serializes this window against the
+        // and the workspace env lock serializes this window against the
         // other HOME-reading tests (the env is process-global and the
         // harness runs the binary's tests in parallel).
         unsafe { std::env::set_var(env_name, real_home.path()) };
@@ -1671,6 +2092,7 @@ mod tests {
             Vec::new(),
         );
         // SAFETY: restore the previous value; see the set_var above.
+        // env_lock: restore under the workspace env lock guard above
         match previous {
             Some(value) => unsafe { std::env::set_var(env_name, value) },
             None => unsafe { std::env::remove_var(env_name) },
@@ -1678,14 +2100,21 @@ mod tests {
 
         // Then the global MCP layer is discovered at <$HOME>/.mirri-code/
         // mcp.json — the user's actual file — not double-nested under
-        // <$HOME>/.mirri-code/.mirri-code/mcp.json
+        // <$HOME>/.mirri-code/.mirri-code/mcp.json. The seeded server is
+        // the proof: the user layer must actually CONTAIN it (a
+        // double-nested resolve finds nothing and leaves the user layer
+        // empty — the fix-round-1 regression this test guards against).
+        let pending = parts
+            .pending_mcp_configs
+            .as_ref()
+            .expect("the discovered server configs must be queued for lazy connect");
         assert!(
-            parts.mcp_manager.is_some(),
-            "the user's global mcp.json must be discovered from $HOME"
-        );
-        assert!(
-            parts.pending_mcp_configs.is_some(),
-            "the discovered server configs must be queued for lazy connect"
+            pending.user.contains_key("test"),
+            "the user layer must load the seeded server from \
+             <$HOME>/.mirri-code/mcp.json, got user keys {:?} \
+             (double-nested resolve reads <$HOME>/.mirri-code/.mirri-code/mcp.json \
+             and finds nothing)",
+            pending.user.keys().collect::<Vec<_>>()
         );
     }
 
@@ -2092,13 +2521,14 @@ mod tests {
 
         // When the discovery replay runs over every source — under the crate
         // $HOME pin (sync only; the async install above ran unpinned)
-        let _home_lock = test_env::home_lock();
+        let _home_lock = mirri_test_support::env::lock(); // env_lock: workspace-wide HOME pin guard
         let previous_home = std::env::var_os("HOME");
         // SAFETY: restored immediately after the replay, under the crate
         // home lock (the existing bootstrap tests' pin pattern).
         unsafe { std::env::set_var("HOME", isolated_home.path()) };
         apply_skill_discovery(&workspace, &config, Some(home.path()), Some(&manager), &[]);
         // SAFETY: restore the previous $HOME (see the set_var above).
+        // env_lock: restore under the workspace env lock guard above
         match previous_home {
             Some(value) => unsafe { std::env::set_var("HOME", value) },
             None => unsafe { std::env::remove_var("HOME") },
@@ -2180,7 +2610,7 @@ mod tests {
         // When the replay runs with the explicit skill dirs (replacement
         // discovery — the plugin roots still ride the sequence), under the
         // crate $HOME pin (sync only; the async install ran unpinned)
-        let _home_lock = test_env::home_lock();
+        let _home_lock = mirri_test_support::env::lock(); // env_lock: workspace-wide HOME pin guard
         let previous_home = std::env::var_os("HOME");
         // SAFETY: restored immediately after the replay (see the pin above).
         unsafe { std::env::set_var("HOME", isolated_home.path()) };
@@ -2192,6 +2622,7 @@ mod tests {
             &[explicit_dir.path().to_path_buf()],
         );
         // SAFETY: restore the previous $HOME (see the set_var above).
+        // env_lock: restore under the workspace env lock guard above
         match previous_home {
             Some(value) => unsafe { std::env::set_var("HOME", value) },
             None => unsafe { std::env::remove_var("HOME") },
@@ -2228,13 +2659,14 @@ mod tests {
     /// home lock — the hermetic-discovery pattern of the skill-priority
     /// tests above, factored for the builtin-channel tests.
     fn with_pinned_home<T>(isolated: &Path, f: impl FnOnce() -> T) -> T {
-        let _home_lock = test_env::home_lock();
+        let _home_lock = mirri_test_support::env::lock(); // env_lock: workspace-wide HOME pin guard
         let previous_home = std::env::var_os("HOME");
-        // SAFETY: restored immediately after `f`, under the crate home lock
+        // SAFETY: restored immediately after `f`, under the workspace env lock
         // (the existing bootstrap tests' pin pattern).
         unsafe { std::env::set_var("HOME", isolated) };
         let out = f();
         // SAFETY: restore the previous $HOME (see the set_var above).
+        // env_lock: restore under the workspace env lock guard above
         match previous_home {
             Some(value) => unsafe { std::env::set_var("HOME", value) },
             None => unsafe { std::env::remove_var("HOME") },
@@ -2660,5 +3092,198 @@ api_key = "sk-from-config"
             !text.contains("sk-from-config"),
             "the compensating cleanup stripped the field: {text}"
         );
+    }
+
+    // ===== Injectable home resolution (16-test-execution-strategy §4.2:
+    // production HOME reads reachable from lib test targets expose a
+    // `resolve_*_from` variant so tests pass the value instead of pinning
+    // the process env) =====
+
+    /// Given an injected fake os-home, when extra-skill-dir entries are
+    /// resolved, then `~` and `~/…` expand under that home — no
+    /// process-env mutation involved (the `resolve_extra_skill_dir_from`
+    /// variant; the env-based `resolve_extra_skill_dir` keeps the
+    /// production behavior).
+    #[test]
+    fn should_expand_tilde_against_the_injected_os_home_when_resolving_extra_skill_dirs() {
+        let root = PathBuf::from("/ws/root");
+        let fake_home = tempfile::tempdir().expect("fake home tempdir");
+
+        let tilde = resolve_extra_skill_dir_from(
+            "~",
+            &root,
+            Some(std::ffi::OsString::from(fake_home.path())),
+        );
+        let nested = resolve_extra_skill_dir_from(
+            "~/pdf-skills",
+            &root,
+            Some(std::ffi::OsString::from(fake_home.path())),
+        );
+
+        // Then `~` is the fake home itself and `~/x` expands under it
+        assert_eq!(tilde, fake_home.path().to_path_buf());
+        assert_eq!(nested, fake_home.path().join("pdf-skills"));
+        // And no injected home leaves the entry un-expanded but still
+        // structurally resolved (the absolute/relative rules still apply)
+        assert_eq!(
+            resolve_extra_skill_dir_from("/abs/skills", &root, None),
+            PathBuf::from("/abs/skills")
+        );
+        assert_eq!(
+            resolve_extra_skill_dir_from("rel-skills", &root, None),
+            root.join("rel-skills")
+        );
+    }
+
+    /// Given an injected fake os-home, when the profile discovery roots are
+    /// built, then the generic `~/.agents/agents` root points under that
+    /// home — no process-env mutation involved.
+    #[test]
+    fn should_list_the_generic_agents_root_under_the_injected_os_home() {
+        let mirri_home = tempfile::tempdir().expect("mirri home tempdir");
+        let os_home = tempfile::tempdir().expect("os home tempdir");
+        std::fs::create_dir_all(os_home.path().join(".agents").join("agents"))
+            .expect("generic agents root");
+        // The legacy root must exist to appear (the chain filters on is_dir).
+        std::fs::create_dir_all(mirri_home.path().join("profiles"))
+            .expect("legacy profiles root");
+
+        let roots = profile_discovery_roots_from(
+            Some(mirri_home.path()),
+            Some(std::ffi::OsString::from(os_home.path())),
+            None,
+        );
+
+        // Then the roots carry the generic root under the injected os-home
+        // and the legacy `<mirri home>/profiles` — none of which required a
+        // `$HOME` pin.
+        let paths: Vec<std::path::PathBuf> = roots.into_iter().map(|root| root.path).collect();
+        assert!(
+            paths.contains(&os_home.path().join(".agents").join("agents")),
+            "the generic root resolves under the injected os home, got: {paths:?}"
+        );
+        assert!(
+            paths.contains(&mirri_home.path().join("profiles")),
+            "the legacy root resolves under the mirri home, got: {paths:?}"
+        );
+    }
+
+    /// Given an injected fake os-home, when the MCP home base is resolved
+    /// with no explicit home, then `$HOME` (the fake) wins — no
+    /// process-env mutation involved.
+    #[test]
+    fn should_use_the_injected_os_home_when_resolving_the_mcp_home_base() {
+        let fake_home = tempfile::tempdir().expect("fake home tempdir");
+
+        let base = resolve_mcp_home_base_from(
+            None,
+            Some(std::ffi::OsString::from(fake_home.path())),
+        );
+
+        // Then the base is the fake os-home (the `$HOME` tier of the chain)
+        assert_eq!(base, Some(fake_home.path().to_path_buf()));
+    }
+
+    /// Given no home anywhere, when the MCP home base is resolved, then the
+    /// chain answers `None` (no `$HOME`, no `MIRRICODE_HOME`) — the
+    /// injected variant makes the previously untestable tail reachable.
+    /// The developer shell's `MIRRICODE_HOME`/`HOME` are cleared for the
+    /// assertion window under the workspace env lock.
+    #[test]
+    fn should_answer_no_mcp_home_base_when_no_home_can_be_resolved() {
+        let mut _env = mirri_test_support::env::EnvGuard::new();
+        _env.remove("MIRRICODE_HOME");
+        _env.remove("HOME");
+        assert_eq!(
+            resolve_mcp_home_base_from(None, None),
+            None,
+            "with no $HOME and no resolvable Mirri home the base is None"
+        );
+    }
+
+    /// Given a workspace carrying a LEGACY workspace-local session
+    /// (`<root>/.mirri/v3_sessions/<bucket>/<id>/` with state.json +
+    /// wire.jsonl — the pre-ADR-006 no-home shape), when an engine is
+    /// assembled over a home, then the session directory moved into the
+    /// home's corresponding bucket, an index row was minted from its
+    /// state.json, and the legacy root is gone — and a SECOND assembly
+    /// over the same home is a no-op (the idempotent skip).
+    #[tokio::test]
+    async fn should_migrate_workspace_local_sessions_into_the_home_when_assembling() {
+        // Given a workspace with one legacy workspace-local session
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let home = tempfile::tempdir().expect("home tempdir");
+        let bucket = encode_work_dir_key(workspace.path());
+        let session_dir = workspace
+            .path()
+            .join(".mirri")
+            .join("v3_sessions")
+            .join(&bucket)
+            .join("sess-legacy-1");
+        std::fs::create_dir_all(&session_dir).expect("create the legacy session dir");
+        std::fs::write(
+            session_dir.join("state.json"),
+            r#"{"version": 3, "title": "Legacy Session", "createdAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-02T00:00:00Z", "workDir": null, "last_prompt": "old hello"}"#,
+        )
+        .expect("write the legacy state.json");
+        std::fs::write(session_dir.join("wire.jsonl"), "{}\n").expect("write the legacy wire log");
+
+        // When the engine parts are assembled over the home (the default
+        // workspace build runs the migration)
+        let parts = assemble(
+            WorkspaceId::new("legacy-migration-ws"),
+            workspace.path().to_path_buf(),
+            Some(home.path().to_path_buf()),
+            None,
+            WorkspacePolicy::UntrustedDefault,
+            Vec::new(),
+        );
+
+        // Then the session directory moved into the home's bucket
+        let migrated = home
+            .path()
+            .join("v3_sessions")
+            .join(&bucket)
+            .join("sess-legacy-1");
+        assert!(
+            migrated.join("wire.jsonl").is_file(),
+            "the legacy session must live under the home's bucket: {}",
+            migrated.display()
+        );
+        // And the legacy root is gone (the natural completion marker)
+        assert!(
+            !workspace.path().join(".mirri").join("v3_sessions").exists(),
+            "the emptied legacy root must be removed"
+        );
+        // And the index row was minted from the legacy state.json
+        let index = parts
+            .session_manager
+            .metadata_store();
+        let record = index
+            .get(&mirri_core::SessionId::new("sess-legacy-1"))
+            .await
+            .expect("the migrated session's row exists");
+        assert_eq!(record.title, "Legacy Session");
+        assert_eq!(record.last_prompt.as_deref(), Some("old hello"));
+
+        // And a second assembly over the same home is a no-op: the row is
+        // untouched (the idempotent skip — no legacy root to re-migrate)
+        let workspace_b = tempfile::tempdir().expect("workspace-b tempdir");
+        let parts_b = assemble(
+            WorkspaceId::new("legacy-migration-ws"),
+            workspace_b.path().to_path_buf(),
+            Some(home.path().to_path_buf()),
+            None,
+            WorkspacePolicy::UntrustedDefault,
+            Vec::new(),
+        );
+        let record_b = parts_b
+            .session_manager
+            .metadata_store()
+            .get(&mirri_core::SessionId::new("sess-legacy-1"))
+            .await
+            .expect("the row survives the second assembly");
+        assert_eq!(record_b.title, "Legacy Session");
     }
 }

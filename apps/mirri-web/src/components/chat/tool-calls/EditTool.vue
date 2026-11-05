@@ -1,10 +1,11 @@
 <!-- apps/mirri-web/src/components/chat/tool-calls/EditTool.vue -->
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, inject, ref, type Ref } from 'vue';
 import type { DiffViewLine, FilePreviewRequest, ToolCall, ToolMedia } from '../../../types';
 import { diffStats } from '../../../lib/diffLines';
 import { buildEditDiffLines, parseArg } from '../../../lib/toolDiff';
 import { normalizeToolName, toolGlyph, toolLabel, toolSummary } from '../../../lib/toolMeta';
+import { formatDuration } from '../../chatTurnRendering';
 import ToolRow from '../ToolRow.vue';
 
 const props = withDefaults(
@@ -15,6 +16,15 @@ const props = withDefaults(
     toolDiffPanel?: boolean;
   }>(),
   { mobile: false, stackPosition: 'single', toolDiffPanel: false },
+);
+
+// US3.8 (ADR-7): live elapsed while running with a server anchor — the
+// frozen `timing` (server duration or flush freeze) wins once settled.
+const tick = inject<Readonly<Ref<number>> | null>('runningToolTick', null);
+const liveTime = computed(() =>
+  tick?.value !== undefined && props.tool.status === 'running' && props.tool.startedAtMs !== undefined
+    ? formatDuration(Math.max(0, tick.value - props.tool.startedAtMs))
+    : undefined,
 );
 
 const emit = defineEmits<{
@@ -80,7 +90,7 @@ function toggle(): void {
     :icon="glyph"
     :name="label"
     :arg="!open ? summary : ''"
-    :time="tool.timing"
+    :time="liveTime ?? tool.timing"
     :open="open"
     :expandable="canExpand || toolDiffPanel"
     :stacked="stackPosition !== 'single'"

@@ -149,6 +149,11 @@ pub struct ServerState {
     /// with a stale snapshot) but still proceed to raise the shutdown
     /// flag. Shared behind an `Arc` so `Clone` keeps one gate per server.
     shutdown_recorded: Arc<std::sync::atomic::AtomicBool>,
+    /// The shutdown library-backup's own once-guard (ADR-006 Task 12 —
+    /// 裁决 2): independent of `shutdown_recorded` so a signal that loses
+    /// the graceful-record race still sees the two-generation snapshot
+    /// of `<home>/session-index.db` taken exactly once per process exit.
+    shutdown_backup_done: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ServerState {
@@ -230,6 +235,7 @@ impl ServerState {
             engine_call_tracker: Arc::new(TaskTracker::new()),
             lifecycle: None,
             shutdown_recorded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            shutdown_backup_done: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -457,14 +463,23 @@ impl ServerState {
     /// engine's running sessions (dropping the ones waiting on a user
     /// decision — D-M6: waiting-on-user is not an interruption) and writes
     /// the graceful-exit record; a write failure logs a warning and never
-    /// blocks the shutdown (F.4). Then raises the shutdown flag — `send_replace`
-    /// so the flag is recorded even when no receiver is currently subscribed
-    /// (e.g. tests running `http::serve` directly).
+    /// blocks the shutdown (F.4). Then interrupts the engine's in-flight
+    /// turns (the snapshot above is taken BEFORE the cancel, so the record
+    /// still lists the interrupted sessions for the next boot's recovery
+    /// list), then raises the shutdown flag — `send_replace` so the flag
+    /// is recorded even when no receiver is currently subscribed (e.g.
+    /// tests running `http::serve` directly).
     ///
     /// The graceful-write is idempotent: concurrent shutdown signals
     /// (Ctrl+C racing the HTTP endpoint) let only the first caller write
     /// the record; later callers skip the write but still raise the flag.
     pub async fn request_shutdown(&self) {
+        // One snapshot feeds both halves of the shutdown: the graceful
+        // record's running-session list AND the engine-side interruption.
+        // The record is written FIRST — a cancelled turn is removed from
+        // the in-flight registry synchronously (the snapshot below would
+        // otherwise miss it and the recovery list would drop the session).
+        let snapshot: Vec<_> = self.engine.snapshot_running_sessions().await;
         if let Some((root, instance)) = &self.lifecycle {
             if self
                 .shutdown_recorded
@@ -474,17 +489,14 @@ impl ServerState {
                 // clobber it with a second snapshot.
             } else {
                 let exited_at = chrono::Utc::now().timestamp_millis().max(0) as u64;
-                let running = self
-                    .engine
-                    .snapshot_running_sessions()
-                    .await
-                    .into_iter()
+                let running = snapshot
+                    .iter()
                     .filter(|session| !session.pending_interaction)
                     .map(
                         |session| mirri_persistence::lifecycle::RunningSessionEntry {
-                            session_id: session.session_id,
-                            workspace_key: session.workspace_key,
-                            title: session.title,
+                            session_id: session.session_id.clone(),
+                            workspace_key: session.workspace_key.clone(),
+                            title: session.title.clone(),
                             interrupted_at: session.last_activity_ms,
                         },
                     )
@@ -504,6 +516,46 @@ impl ServerState {
                     );
                 }
             }
+        }
+        // The engine-side interruption, running AFTER the record is on disk
+        // and BEFORE the flag rises: the record's snapshot saw the turns
+        // still running, while the cancel lands before the drain starts —
+        // a cancelled turn settles inside the drain window instead of
+        // burning all of it. Sessions waiting on a user decision (D-M6)
+        // are excluded — their turns are not "in flight" from the engine's
+        // perspective. Best-effort: an engine without a turn registry
+        // reports none and nothing is cancelled, exactly as before this
+        // seam existed.
+        let to_cancel: Vec<String> = snapshot
+            .iter()
+            .filter(|session| !session.pending_interaction)
+            .map(|session| session.session_id.clone())
+            .collect();
+        if !to_cancel.is_empty() {
+            tracing::info!(
+                sessions = ?to_cancel,
+                "cancelling running turns for graceful shutdown"
+            );
+            self.engine.cancel_running_turns(&to_cancel).await;
+        }
+        // ADR-006 (裁决 2, Task 12): the graceful exit takes the rolling
+        // two-generation snapshot of the session library — the same
+        // discipline the pre-migration backup runs, so a clean shutdown
+        // always leaves a recovery point for the next boot's pyramid.
+        // Best-effort (the F.4 posture): a failed backup logs and never
+        // blocks the shutdown.
+        if !self
+            .shutdown_backup_done
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+            && let Ok(home) = mirri_core::config::mirri_home_dir()
+            && home.join("session-index.db").exists()
+            && let Err(error) =
+                mirri_session_index::backup::backup_library(&home.join("session-index.db"))
+        {
+            tracing::warn!(
+                %error,
+                "failed to snapshot the session library at shutdown; continuing"
+            );
         }
         let _ = self.shutdown_tx.send_replace(true);
     }
@@ -541,9 +593,9 @@ impl ServerState {
     /// 2. **Engine fall-through only when the registry gate passes** — the
     ///    method must be a [`mirri_proto::rpc`] row whose availability
     ///    `serves_server()`. This keeps the serve wire surface exactly the
-    ///    58 methods of today's fact table: embedded-only methods
-    ///    (`cron.list`, `plan.enter`, …) and unknown names answer
-    ///    `-32601`.
+    ///    fact table's server-current rows: embedded-only methods
+    ///    (`session.getHistory`, `config.diagnostics`, …) and unknown names
+    ///    answer `-32601`.
     /// 3. **In-flight tracking** — a fire-mode `message.send` engine call is
     ///    registered in the shared in-flight map (keyed
     ///    `"{session_id}:{agent_id}:{turn_id}"`) and reaped by a watcher on
@@ -701,6 +753,7 @@ mod tests {
     use mirri_core::SessionId;
     use mirri_transport::adapter::EngineError;
     use mirri_transport::adapter::ReverseRpcHandler;
+    use mirri_transport::adapter::RunningSessionSnapshot;
     use mirri_transport::frame::JsonRpcNotification;
     use serde_json::json;
     use tokio::sync::mpsc;
@@ -851,6 +904,7 @@ mod tests {
                     stop_reason: "end_turn".to_string(),
                     wire_turn_id: 0,
                     duration_ms: None,
+                    ended_at_ms: None,
                 });
                 return Ok(json!({
                     "ok": true,
@@ -1098,5 +1152,198 @@ mod tests {
 
         // Then the shutdown flag is raised and no lifecycle side effect occurs
         assert!(*state.shutdown_rx().borrow());
+    }
+
+    /// A stub engine with one running session whose snapshot empties once
+    /// the turns are cancelled — the real engine's registry behaves the
+    /// same (a cancelled turn is synchronously removed from the in-flight
+    /// registry). This is what pins the record-then-cancel ordering: a
+    /// shutdown that cancelled first would write an EMPTY graceful record.
+    struct CancellingEngine {
+        state: Arc<std::sync::Mutex<CancellingEngineLog>>,
+    }
+
+    #[derive(Default)]
+    struct CancellingEngineLog {
+        cancelled: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl EngineAdapter for CancellingEngine {
+        async fn call_method(&self, _method: &str, _params: Value) -> Result<Value, EngineError> {
+            Err(EngineError::MethodNotFound(_method.to_string()))
+        }
+
+        async fn subscribe_events(
+            &self,
+        ) -> Result<mpsc::Receiver<JsonRpcNotification>, EngineError> {
+            let (_tx, rx) = mpsc::channel(8);
+            Ok(rx)
+        }
+
+        async fn on_reverse_rpc(&self, _handler: ReverseRpcHandler) -> Result<(), EngineError> {
+            Ok(())
+        }
+
+        async fn dispose(&self) -> Result<(), EngineError> {
+            Ok(())
+        }
+
+        async fn snapshot_running_sessions(&self) -> Vec<RunningSessionSnapshot> {
+            if self.state.lock().unwrap().cancelled {
+                return Vec::new();
+            }
+            vec![RunningSessionSnapshot {
+                session_id: "session-running".to_string(),
+                workspace_key: "ws".to_string(),
+                title: "running".to_string(),
+                last_activity_ms: 1,
+                pending_interaction: false,
+            }]
+        }
+
+        async fn cancel_running_turns(&self, session_ids: &[String]) {
+            self.state.lock().unwrap().cancelled = true;
+            assert_eq!(session_ids, &["session-running".to_string()]);
+        }
+    }
+
+    /// Given a running session's turn in flight, When a graceful shutdown is
+    /// requested, Then the graceful record is written with the session
+    /// BEFORE the engine cancels the turn — the record must reflect the
+    /// pre-interruption state, or the recovery list would drop the session.
+    #[tokio::test]
+    async fn should_cancel_running_turns_after_graceful_record_on_shutdown() {
+        use mirri_persistence::lifecycle;
+
+        // Given a state whose engine has one running session and a lifecycle
+        // root injected
+        let engine_log = Arc::new(std::sync::Mutex::new(CancellingEngineLog::default()));
+        let mut state = test_state(Arc::new(CancellingEngine {
+            state: Arc::clone(&engine_log),
+        }));
+        let home = tempfile::tempdir().expect("tempdir must be creatable");
+        let root = lifecycle::lifecycle_root(home.path());
+        state.set_lifecycle_root(root.clone(), "55827-1770000001".to_string());
+
+        // When a graceful shutdown is requested
+        state.request_shutdown().await;
+
+        // Then the graceful record carries the running session
+        let record = lifecycle::read_graceful(&root, "55827-1770000001")
+            .await
+            .expect("graceful record written");
+        assert_eq!(
+            record
+                .running_sessions
+                .iter()
+                .map(|s| s.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["session-running"]
+        );
+
+        // And the engine cancelled the session's turn — with a snapshot
+        // that empties after the cancel, this assertion only holds when
+        // the record was written from the pre-cancel snapshot
+        assert!(engine_log.lock().unwrap().cancelled);
+
+        // And the shutdown flag was raised
+        assert!(*state.shutdown_rx().borrow());
+    }
+
+    /// Given an engine with no running sessions, When a graceful shutdown is
+    /// requested, Then the cancel call is a no-op (the default trait method
+    /// observes nothing) and the shutdown flag is still raised — the
+    /// interruption is best-effort and never blocks the shutdown itself.
+    #[tokio::test]
+    async fn should_raise_shutdown_flag_when_engine_has_no_running_turns_to_cancel() {
+        // Given a stub engine with no running sessions and no lifecycle root
+        let state = test_state(Arc::new(StubEngine));
+
+        // When a graceful shutdown is requested
+        state.request_shutdown().await;
+
+        // Then the shutdown flag is raised — the no-running-turns path is
+        // a no-op cancel, not an error
+        assert!(*state.shutdown_rx().borrow());
+    }
+    /// Given a home carrying a session library, When the graceful
+    /// shutdown runs twice (a concurrent signal racing the HTTP endpoint),
+    /// Then the two-generation backup snapshot is taken exactly once and
+    /// the newest generation exists on disk (ADR-006 裁决 2 / Task 12).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn should_snapshot_the_library_once_across_concurrent_shutdown_signals() {
+        let home = tempfile::tempdir().expect("home tempdir");
+        // SAFETY: test-only, single-threaded setup before any parallel test reads it.
+        unsafe { std::env::set_var("MIRRICODE_HOME", home.path()) };
+        let db_path = home.path().join("session-index.db");
+        let index = mirri_session_index::SessionIndex::open(&db_path).unwrap();
+        let now = chrono::Utc::now();
+        index
+            .bulk_upsert_sessions(&[mirri_session_index::SessionRow {
+                id: "session_shutdown".to_string(),
+                workspace_id: "wd_shutdown".to_string(),
+                cwd: None,
+                title: Some("shutdown backup".to_string()),
+                created_at: now,
+                updated_at: now,
+                archived: false,
+                tags: Vec::new(),
+                custom: None,
+                last_prompt: None,
+                state_mtime: None,
+                archived_at: None,
+                compressed: false,
+                compressed_at: None,
+                last_used_at: None,
+                pre_compressed_size: None,
+                pinned: false,
+                pinned_at: None,
+                pin_color: None,
+            }])
+            .unwrap();
+        drop(index);
+
+        struct ShutdownEngine;
+        #[async_trait::async_trait]
+        impl mirri_transport::adapter::EngineAdapter for ShutdownEngine {
+            async fn call_method(
+                &self,
+                _method: &str,
+                _params: serde_json::Value,
+            ) -> Result<serde_json::Value, EngineError> {
+                Ok(serde_json::json!({}))
+            }
+            async fn snapshot_running_sessions(
+                &self,
+            ) -> Vec<RunningSessionSnapshot> {
+                Vec::new()
+            }
+            async fn cancel_running_turns(&self, _session_ids: &[String]) {}
+            async fn subscribe_events(
+                &self,
+            ) -> Result<mpsc::Receiver<JsonRpcNotification>, EngineError> {
+                let (_tx, rx) = mpsc::channel(8);
+                Ok(rx)
+            }
+            async fn on_reverse_rpc(&self, _handler: ReverseRpcHandler) -> Result<(), EngineError> {
+                Ok(())
+            }
+            async fn dispose(&self) -> Result<(), EngineError> {
+                Ok(())
+            }
+        }
+        let state = test_state(std::sync::Arc::new(ShutdownEngine));
+        state.request_shutdown().await;
+        state.request_shutdown().await;
+
+        let newest = home.path().join("session-index.db.bak");
+        assert!(
+            newest.exists(),
+            "the shutdown snapshot's newest generation exists"
+        );
+
+        // SAFETY: test-only teardown.
+        unsafe { std::env::remove_var("MIRRICODE_HOME") };
     }
 }

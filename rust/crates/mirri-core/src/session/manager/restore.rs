@@ -19,8 +19,9 @@ impl SessionManager {
     /// # Errors
     ///
     /// Returns [`SessionError::ResumeFailed`] if the wire log file is
-    /// missing, [`SessionError::StateFile`] if `state.json` cannot be
-    /// loaded, or [`SessionError::AlreadyExists`] if the session is still
+    /// missing, [`SessionError::StateFile`] if neither the metadata row
+    /// nor the legacy `state.json` fallback can be loaded, or
+    /// [`SessionError::AlreadyExists`] if the session is still
     /// registered in the workspace.
     pub async fn resume_session(&self, session_id: &SessionId) -> SessionResult<Arc<SessionScope>> {
         self.resume_session_with_config(session_id, AgentScopeConfig::default())
@@ -137,8 +138,42 @@ impl SessionManager {
             )));
         }
 
-        // 3. Load persisted metadata.
-        let metadata = self.persistence.load_state(session_id).await?;
+        // 3. Load persisted metadata — the metadata ROW first (ADR-006:
+        //    the row is the source of truth; creation itself wrote it),
+        //    falling back to `state.json` only for a row-less session (a
+        //    pre-ADR-006 on-disk session the migration has not adopted yet
+        //    — the one-time migration retires this fallback, Task 5's
+        //    window-keeper). The row's output-only `created_at` stamps
+        //    today for such a replay-backfill; the created_at=now /
+        //    updated_at=historical inversion is accepted (ledger-open).
+        let metadata = match self.metadata_store.get(session_id).await {
+            Some(record) => {
+                // The row carries no custom-title column (ADR-006: the
+                // scope-layer guard `set_auto_title` refuses a title that is
+                // already derived, so a non-placeholder title needs no flag to
+                // stay safe); derive the flag from the placeholder spelling —
+                // the same predicate every auto-title guard consults. Only a
+                // rename that literally reuses the placeholder text loses the
+                // flag, an accepted edge (ledger: Task 6).
+                let is_custom_title =
+                    !crate::session::title::is_untitled_title(&record.title);
+                SessionMetadata {
+                    title: record.title,
+                    is_custom_title,
+                    created_at: record.created_at,
+                    updated_at: record.updated_at,
+                    tags: record.tags.into_iter().collect(),
+                    archived: record.archived,
+                    work_dir: record.cwd,
+                    last_prompt: record.last_prompt,
+                    forked_from: None,
+                    cache_root_id: None,
+                    custom: None,
+                    last_used_at: record.last_used_at,
+                }
+            }
+            None => self.persistence.load_state(session_id).await?,
+        };
 
         // An explicit resume clears any close record from this process —
         // the session is live again.
@@ -554,6 +589,117 @@ impl SessionManager {
         Some(crate::session::turn_usage::fold_turn_usages(&ops))
     }
 
+    /// Read-only cron-task fold of a session's wire log (E.5 / SDR-008,
+    /// stage-1 batch-3): live sessions read their in-memory `CronManager`
+    /// (fresh — `fire_count`, held fires and all); a persisted-only session
+    /// replays its `wire.jsonl` **in memory** exactly like
+    /// [`Self::read_only_histories`] does (no resume, no on-disk side
+    /// effect) and answers the replayed [`AgentState::cron_tasks`] raw
+    /// records. `None` means the session is neither live nor replayable —
+    /// the caller skips the session, never fails the whole aggregation.
+    pub async fn read_only_cron_tasks(
+        &self,
+        session_id: &SessionId,
+    ) -> Option<Vec<serde_json::Value>> {
+        if let Some(session) = self.workspace.get_session(session_id).await {
+            return Some(
+                session
+                    .cron()
+                    .list()
+                    .into_iter()
+                    .map(|task| crate::cron::cron_task_wire(&task))
+                    .collect(),
+            );
+        }
+        let replay = self
+            .replay_agent_state_opt(session_id, false, None)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    session_id = %session_id,
+                    %error,
+                    "read-only cron replay failed; the session degrades out of the aggregation"
+                );
+                error
+            })
+            .ok()?;
+        Some(replay.state.cron_tasks)
+    }
+
+    /// Read-only cron-task fold of a session's wire log, from cache when the
+    /// log is unchanged — the replay seam behind the embedded `cron.listAll`
+    /// aggregation. The aggregation walks EVERY existing session on every
+    /// call, so the per-session full-log replay (parse + snapshot + fold)
+    /// would repeat for unchanged logs on a polling UI's cadence; this face
+    /// keys the result on the log's `(mtime, size)` fingerprint — a stat is
+    /// two orders cheaper than a replay — and replays only when the
+    /// fingerprint moves (an append, a snapshot rewrite, a compression
+    /// swap). Live sessions always answer fresh from their in-memory
+    /// `CronManager` (no cache: the fingerprint would miss in-memory
+    /// `fire_count`/held-fire mutations).
+    ///
+    /// Invalidation is fingerprint-driven per session; a failed replay is
+    /// NOT cached (`None` stays uncached — the next call retries the log, so
+    /// a repaired log re-enters the view on the very next aggregation).
+    pub async fn read_only_cron_tasks_cached(
+        &self,
+        session_id: &SessionId,
+    ) -> Option<Vec<serde_json::Value>> {
+        if self.workspace.get_session(session_id).await.is_some() {
+            return self.read_only_cron_tasks(session_id).await;
+        }
+        let wire_log_path = self.persistence.wire_log_path(session_id);
+        if !self.sync_io.exists(&wire_log_path) {
+            self.cron_replay_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(session_id.as_str());
+            return None;
+        }
+        // Note: `SyncFs::stat` gives lstat semantics and a second-precision
+        // mtime — acceptable here because a monitored wire log only changes
+        // by append (size moves) or compression swap (size/shape move), so a
+        // same-second equal-size rewrite does not occur in practice.
+        let fingerprint = Self::wire_log_fingerprint(self.sync_io.stat(&wire_log_path).ok());
+        {
+            let cache = self.cron_replay_cache.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((cached_fingerprint, cached_tasks)) = cache.get(session_id.as_str())
+                && cached_fingerprint.as_ref() == fingerprint.as_ref()
+            {
+                return Some(cached_tasks.clone());
+            }
+        }
+        let tasks = self.read_only_cron_tasks(session_id).await?;
+        self.cron_replay_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.cron_replay_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id.as_str().to_string(), (fingerprint, tasks.clone()));
+        Some(tasks)
+    }
+
+    /// The number of wire-log replays the cron replay cache has actually
+    /// performed (a test seam for the fingerprint-driven invalidation
+    /// contract: unchanged log → no second replay, changed log → replay).
+    pub fn cron_replay_count(&self) -> usize {
+        self.cron_replay_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The `(mtime, size)` fingerprint of a wire log from its stat —
+    /// `None` (the never-matching sentinel) when the stat fails, so an
+    /// unstattable log always replays rather than trusting a cache entry
+    /// that was minted against a file we can no longer see.
+    fn wire_log_fingerprint(stat: Option<mirri_os::FileStat>) -> Option<WireLogFingerprint> {
+        stat.map(|stat| {
+            (
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(stat.mtime),
+                stat.size,
+            )
+        })
+    }
+
     /// Read-only maximum turn id a session's main-agent wire log has minted —
     /// every turn-id-bearing record counts (ended ids, cancel ids, and the
     /// `turn.prompt` ordinals the aborted/dangling namespace occupies; see
@@ -566,8 +712,7 @@ impl SessionManager {
     /// no turn records.
     pub async fn read_only_max_turn_id(&self, session_id: &SessionId) -> u64 {
         let wire_log_path = self.persistence.wire_log_path(session_id);
-        if !wire_log_path.exists() {
-            // zero-io-allow: baseline Path IO, see F-T13-2
+        if !self.sync_io.exists(&wire_log_path) {
             return 0;
         }
         let migrated_records = match migrate_records_in_memory(&wire_log_path).await {
@@ -1280,6 +1425,13 @@ fn restore_session_scoped_state(agent: &Arc<AgentScope>, state: &AgentState) {
     // deserialize is skipped with a warning (it stays in the wire log) so one
     // bad record never fails the whole resume.
     restore_cron_tasks(&agent.cron(), &state.cron_tasks);
+    // S9: the lineage chain cap count (SDR-106 A.6b) rides the reducer
+    // state alongside the task table.
+    agent.cron().restore_lineage_count(state.cron_lineage_one_shot_created);
+    // C.4 (stage-1 batch-2): the held fires that were still waiting when
+    // the session closed — restored so the reopen redelivers them on the
+    // first idle tick instead of dropping the injections.
+    restore_cron_held(&agent.cron(), &state.cron_held);
 
     // Restore the session todo list replayed from `tools.update_store` (key
     // "todo"). The list is session-scoped; the agent handle reaches the same
@@ -1767,6 +1919,30 @@ fn restore_cron_tasks(cron: &Arc<CronManager>, raw_tasks: &[serde_json::Value]) 
     cron.restore_tasks(tasks);
 }
 
+/// Restore the held cron fires folded from `cron.held` ops (C.4) — the
+/// close-with-held-fires redelivery base. Each record is parsed
+/// individually (a bad record is skipped with a warning; it stays in the
+/// wire log) so one dirty entry never fails the whole resume.
+fn restore_cron_held(cron: &Arc<CronManager>, raw_fires: &[serde_json::Value]) {
+    let mut fires = Vec::with_capacity(raw_fires.len());
+    for raw in raw_fires {
+        match serde_json::from_value::<crate::cron::CronFire>(raw.clone()) {
+            Ok(fire) => fires.push(fire),
+            Err(error) => {
+                tracing::warn!(
+                    raw = %raw,
+                    %error,
+                    "skipping held cron fire record that does not parse; the raw record stays in the wire log"
+                );
+            }
+        }
+    }
+    if fires.is_empty() {
+        return;
+    }
+    cron.restore_held(fires);
+}
+
 /// Parse a permission mode string from the proto state into a
 /// [`PermissionMode`].
 ///
@@ -1865,6 +2041,30 @@ mod tests {
     use super::*;
     use crate::reverse_rpc::ReverseRpcCallback;
     use mirri_proto::SubagentRegistration;
+
+    /// Given a stat of a wire log, when the fingerprint is derived, then it
+    /// is the `(mtime, size)` pair from the stat's second-precision mtime and
+    /// its byte size — the cache invalidation key (zero-IO 契约 6: the stat
+    /// comes from the injected `sync_io`, not `std::fs`).
+    #[test]
+    fn should_derive_the_fingerprint_from_stat_seconds_and_size_when_the_log_exists() {
+        let stat = mirri_os::FileStat {
+            size: 42,
+            is_dir: false,
+            is_file: true,
+            is_symlink: false,
+            mtime: 1_700_000_000,
+            atime: 0,
+            mode: 0o644,
+        };
+        assert_eq!(
+            SessionManager::wire_log_fingerprint(Some(stat)),
+            Some((
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000),
+                42
+            ))
+        );
+    }
 
     /// A reverse-RPC callback that records `approval.ask` payloads and
     /// answers `approved` — the minimal production-contract stand-in.
@@ -2224,6 +2424,7 @@ mod tests {
             reason: "completed".to_string(),
             error: None,
             duration_ms: None,
+            ended_at: None,
         };
         let child_id = "agent-ceiling-1";
         let journal = persistence.agent_wire_log_path(session.id(), child_id);

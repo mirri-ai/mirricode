@@ -71,6 +71,9 @@ pub struct MigrationTotals {
     /// Workspaces whose registration was refused by a tombstone (the user
     /// deleted the workspace earlier — `workspaces.json` semantics win).
     tombstoned: usize,
+    /// Metadata rows seeded from `state.json` (the ADR-006 pass: state.json
+    /// present, row absent — the row's birth).
+    seeded: usize,
 }
 
 /// Run `mirri migrate`: copy every legacy session into the rust engine's
@@ -91,12 +94,19 @@ pub async fn run_migrate(workspace: Option<&str>, dry_run: bool) -> Result<()> {
         ));
     }
     let registry_path = home.join(WORKSPACE_REGISTRY_FILENAME);
-    let totals = run_migrate_inner(&pairs, &registry_path, dry_run).await?;
+    let totals = run_migrate_inner(&pairs, &registry_path, &home, dry_run).await?;
 
+    // The seed total's wording forks on the mode: a dry run only WOULD
+    // seed (nothing landed); a real run seeded (rows exist now).
+    let seed_wording = if dry_run {
+        format!("would seed {} metadata row(s)", totals.seeded)
+    } else {
+        format!("seeded {} metadata row(s)", totals.seeded)
+    };
     println!(
         "{} session(s) copied, {} skipped (already in the v3 root), {} copied but not \
-         resumable, {} failed",
-        totals.copied, totals.skipped, totals.unresumable, totals.failed
+         resumable, {} failed, {}",
+        totals.copied, totals.skipped, totals.unresumable, totals.failed, seed_wording
     );
     println!(
         "{} workspace(s) registered, {} skipped (previously deleted)",
@@ -114,16 +124,19 @@ pub async fn run_migrate(workspace: Option<&str>, dry_run: bool) -> Result<()> {
 
 /// The migration orchestration over explicit source/target pairs (and the
 /// workspace-registry path), so the whole flow is testable without touching
-/// the process environment.
+/// the process environment. After the pairs' copies, the home's metadata
+/// ROWS are seeded (the ADR-006 row-seeding pass).
 async fn run_migrate_inner(
     pairs: &[(PathBuf, PathBuf)],
     registry_path: &Path,
+    home: &Path,
     dry_run: bool,
 ) -> Result<MigrationTotals> {
     let mut totals = MigrationTotals::default();
     for (source, target) in pairs {
         migrate_root(source, target, registry_path, dry_run, &mut totals).await?;
     }
+    seed_metadata_rows(home, dry_run, &mut totals).await?;
     Ok(totals)
 }
 
@@ -132,7 +145,11 @@ async fn run_migrate_inner(
 /// A missing source root is reported and skipped (not an error). Sessions
 /// already present in the target root are skipped; the workspace rows of
 /// the sessions actually copied are merged into the registry at the end of
-/// the root's pass (one D8-locked write per root, not per session).
+/// the root's pass (one D8-locked write per root, not per session). The
+/// home-root pass additionally seeds the metadata ROWS (ADR-006): every
+/// v3 session whose `state.json` exists but whose row does not gets one
+/// — the row-seeding predicate — so post-ADR-006 existence judgements
+/// (resume routing, listings) see the migrated sessions.
 async fn migrate_root(
     source: &Path,
     target: &Path,
@@ -263,6 +280,220 @@ async fn migrate_root(
     }
 
     register_workspaces(registry_path, &rows_by_workdir, dry_run, totals)
+}
+
+/// Seed the home's metadata ROWS from the v3 storage root's `state.json`
+/// sessions (ADR-006's migration predicate: state.json present AND row
+/// absent → seed the row). The store is the home's `session-index.db` —
+/// the same database the engine's bootstrap opens — and each seeded row
+/// carries the state.json's title/timestamps/tags/archived/stamps plus
+/// the bucket-derived workspace id (the row's routing identity). A
+/// session whose row already exists is untouched (idempotent; the row's
+/// view is the truth). A home without any state.json-backed session seeds
+/// nothing and never creates the database file.
+async fn seed_metadata_rows(home: &Path, dry_run: bool, totals: &mut MigrationTotals) -> Result<()> {
+    let v3_root = home.join(V3_SESSIONS_SUBDIR);
+    let db = home.join("session-index.db");
+    // Dry-run purity + accounting: a dry run copies NOTHING, so the v3 root
+    // may not exist and opening the store would CREATE the database file —
+    // both must stay trace-free. The would-seed set is the sessions that
+    // WOULD land in the v3 root (the legacy root's set when no v3 root
+    // exists yet), reported without touching any database.
+    if dry_run && !v3_root.exists() {
+        let would_be = locate_session_dirs(&home.join(SESSIONS_SUBDIR), &LocalSyncFs::new())
+            .with_context(|| {
+                format!(
+                    "enumerate sessions under '{}'",
+                    home.join(SESSIONS_SUBDIR).display()
+                )
+            })?;
+        for session in &would_be {
+            println!(
+                "[dry-run] Would seed the metadata row for {}",
+                session.session_id
+            );
+        }
+        totals.seeded += would_be.len();
+        return Ok(());
+    }
+    if !v3_root.exists() {
+        return Ok(());
+    }
+    let sessions = locate_session_dirs(&v3_root, &LocalSyncFs::new())
+        .with_context(|| format!("enumerate sessions under '{}'", v3_root.display()))?;
+    // Nothing to seed: skip the store open entirely (never create the db
+    // for an empty root).
+    if sessions.is_empty() {
+        return Ok(());
+    }
+    // Dry-run purity against an EXISTING v3 root: still never open the
+    // store when the database itself does not exist (the open would
+    // create it); without a db every v3 session would be seeded.
+    if dry_run && !db.exists() {
+        for session in &sessions {
+            println!(
+                "[dry-run] Would seed the metadata row for {}",
+                session.session_id
+            );
+        }
+        totals.seeded += sessions.len();
+        return Ok(());
+    }
+    let port = match mirri_session_index::SessionIndex::open_with_check(&db) {
+        Ok(mirri_session_index::OpenOutcome::Ok(index)) => {
+            std::sync::Arc::new(mirri_session_index::SessionIndexPort(index))
+                as std::sync::Arc<dyn mirri_core::session::metadata_port::MetadataStorePort>
+        }
+        Ok(mirri_session_index::OpenOutcome::Corrupt(diagnosis)) => {
+            // A corrupt metadata store is the loud-failure stance (ADR-006
+            // 裁决 2): report and abort — never seed on top of a broken db.
+            anyhow::bail!("session-index.db is corrupt; refusing to seed rows: {diagnosis}");
+        }
+        Ok(mirri_session_index::OpenOutcome::SchemaFloor { db_version }) => {
+            anyhow::bail!(
+                "session-index.db schema v{db_version} is newer than this build; \
+                 refusing to seed rows"
+            );
+        }
+        Err(error) => {
+            anyhow::bail!("opening {} failed: {error}", db.display());
+        }
+    };
+    for session in &sessions {
+        if dry_run {
+            if !port
+                .exists(&mirri_core::SessionId::new(&session.session_id))
+                .await
+            {
+                println!(
+                    "[dry-run] Would seed the metadata row for {}",
+                    session.session_id
+                );
+                totals.seeded += 1;
+            }
+            continue;
+        }
+        if port
+            .exists(&mirri_core::SessionId::new(&session.session_id))
+            .await
+        {
+            continue; // the row's view is the truth — never re-seed
+        }
+        // The workspace id: the bucket the session landed in (the routing
+        // identity the registry and the index share), else the default
+        // bucket for a flat session.
+        let workspace_id = session
+            .bucket
+            .clone()
+            .unwrap_or_else(|| encode_work_dir_key(&v3_root));
+        if let Err(error) = port
+            .apply_seed(
+                &mirri_core::SessionId::new(&session.session_id),
+                &workspace_id,
+                seed_record(&session.dir),
+            )
+            .await
+        {
+            // Per-session best-effort: a failure logs and the pass
+            // continues (the same posture the copy loop carries).
+            eprintln!(
+                "Failed to seed the metadata row for {}: {}",
+                session.session_id, error
+            );
+            continue;
+        }
+        totals.seeded += 1;
+    }
+    Ok(())
+}
+
+/// Build the seeding RECORD from a session directory's `state.json`: the
+/// dual-engine tolerant read (the same field spellings `read_state_fields`
+/// accepts) projected onto the whole-row shape — the row's birth carries
+/// everything the state document recorded, **including the historical
+/// `created_at`** (the seed entry's reason to exist: `apply`'s insert
+/// would stamp now, rewriting every legacy session's birthday to the
+/// migration moment).
+fn seed_record(session_dir: &Path) -> mirri_core::session::metadata_port::SessionMetadataRecord {
+    use mirri_core::session::metadata_port::SessionMetadataRecord;
+
+    let Ok(text) = std::fs::read_to_string(session_dir.join("state.json")) else {
+        return default_seed_record();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return default_seed_record();
+    };
+    let str_field = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| value.get(*key).and_then(serde_json::Value::as_str))
+            .map(str::to_string)
+    };
+    let stamp_field = |keys: &[&str]| {
+        keys.iter().find_map(|key| value.get(*key).and_then(parse_timestamp))
+    };
+    let now = Utc::now();
+    SessionMetadataRecord {
+        title: str_field(&["title"]).unwrap_or_default(),
+        // The historical birthday: the state document's createdAt (either
+        // engine's spelling); absent → now (the honest fallback for a
+        // document that never recorded one).
+        created_at: stamp_field(&["createdAt", "created_at"]).unwrap_or(now),
+        updated_at: stamp_field(&["updatedAt", "updated_at"]).unwrap_or(now),
+        last_used_at: stamp_field(&["lastUsedAt", "last_used_at"]),
+        archived: value
+            .get("archived")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        archived_at: stamp_field(&["archivedAt", "archived_at"]),
+        compressed: value
+            .get("compressed")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        compressed_at: stamp_field(&["compressedAt", "compressed_at"]),
+        pre_compressed_size: ["preCompressedSize", "pre_compressed_size"]
+            .iter()
+            .find_map(|key| value.get(*key).and_then(serde_json::Value::as_u64)),
+        tags: value
+            .get("tags")
+            .and_then(|raw| raw.as_array())
+            .map(|tags| {
+                tags.iter()
+                    .filter_map(|tag| tag.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        last_prompt: str_field(&["lastPrompt", "last_prompt"]),
+        cwd: str_field(&["workDir", "cwd", "work_dir"]),
+        // Pin state is row-native (SDR-016) — never seeded from state.json.
+        pinned: false,
+        pinned_at: None,
+        pin_color: None,
+    }
+}
+
+/// The whole-row default for a state.json that cannot be read: an untitled,
+/// never-conversed row stamped now (the birthday falls back honestly — a
+/// document that never existed has no historical creation to preserve).
+fn default_seed_record() -> mirri_core::session::metadata_port::SessionMetadataRecord {
+    use mirri_core::session::metadata_port::SessionMetadataRecord;
+    let now = Utc::now();
+    SessionMetadataRecord {
+        title: String::new(),
+        created_at: now,
+        updated_at: now,
+        last_used_at: None,
+        archived: false,
+        archived_at: None,
+        compressed: false,
+        compressed_at: None,
+        pre_compressed_size: None,
+        tags: Vec::new(),
+        last_prompt: None,
+        cwd: None,
+        pinned: false,
+        pinned_at: None,
+        pin_color: None,
+    }
 }
 
 /// The migration-relevant fields of a session's `state.json`, read
@@ -497,6 +728,7 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mirri_core::session::metadata_port::MetadataStorePort;
     use mirri_session_index::read_workspace_registry;
 
     /// Seed a TS-layout session (`state.json` camelCase + the main wire log
@@ -530,9 +762,14 @@ mod tests {
         let registry_path = home.path().join(WORKSPACE_REGISTRY_FILENAME);
 
         // When the migration runs
-        let totals = run_migrate_inner(&[(source.clone(), target.clone())], &registry_path, false)
-            .await
-            .expect("migration should succeed");
+        let totals = run_migrate_inner(
+            &[(source.clone(), target.clone())],
+            &registry_path,
+            home.path(),
+            false,
+        )
+        .await
+        .expect("migration should succeed");
 
         // Then the session was copied into the rust bucket derived from the
         // state's workDir, with the TS main wire log promoted to the
@@ -595,12 +832,12 @@ mod tests {
         make_ts_session(&source, "wd_old_000000000001", "session_ts");
         let registry_path = home.path().join(WORKSPACE_REGISTRY_FILENAME);
         let pairs = [(source, target)];
-        let first = run_migrate_inner(&pairs, &registry_path, false)
+        let first = run_migrate_inner(&pairs, &registry_path, home.path(), false)
             .await
             .expect("first migration should succeed");
 
         // When the migration runs again
-        let second = run_migrate_inner(&pairs, &registry_path, false)
+        let second = run_migrate_inner(&pairs, &registry_path, home.path(), false)
             .await
             .expect("second migration should succeed");
 
@@ -635,6 +872,7 @@ mod tests {
         let totals = run_migrate_inner(
             &[(source, target.clone())],
             &home.path().join(WORKSPACE_REGISTRY_FILENAME),
+            home.path(),
             false,
         )
         .await
@@ -673,6 +911,7 @@ mod tests {
         let totals = run_migrate_inner(
             &[(source, target.clone())],
             &home.path().join(WORKSPACE_REGISTRY_FILENAME),
+            home.path(),
             false,
         )
         .await
@@ -709,7 +948,7 @@ mod tests {
         .expect("write registry should succeed");
 
         // When the migration runs
-        let totals = run_migrate_inner(&[(source, target)], &registry_path, false)
+        let totals = run_migrate_inner(&[(source, target)], &registry_path, home.path(), false)
             .await
             .expect("migration should succeed");
 
@@ -735,7 +974,7 @@ mod tests {
         let registry_path = home.path().join(WORKSPACE_REGISTRY_FILENAME);
 
         // When the migration runs with dry_run
-        let totals = run_migrate_inner(&[(source, target.clone())], &registry_path, true)
+        let totals = run_migrate_inner(&[(source, target.clone())], &registry_path, home.path(), true)
             .await
             .expect("dry-run migration should succeed");
 
@@ -743,5 +982,280 @@ mod tests {
         assert_eq!(totals.copied, 1);
         assert!(!target.exists());
         assert!(!registry_path.exists());
+    }
+
+    /// Given a migrated v3 session whose `state.json` exists but whose
+    /// metadata row does not (the pre-ADR-006 on-disk shape), when the
+    /// migration runs, then the row is seeded from the state document —
+    /// title, timestamps, tags, archive flag, and cwd — filed under the
+    /// bucket the session landed in (existence check 5/11 migrates to the
+    /// metadata row: `mirri migrate` is the seeding tool).
+    #[tokio::test]
+    async fn should_seed_the_metadata_row_when_state_json_exists_but_the_row_does_not() {
+        // Given a temp home holding a TS-layout session in the legacy root
+        let home = tempfile::tempdir().expect("home tempdir should succeed");
+        let source = home.path().join(SESSIONS_SUBDIR);
+        let target = home.path().join(V3_SESSIONS_SUBDIR);
+        make_ts_session(&source, "wd_old_000000000001", "session_ts");
+        let registry_path = home.path().join(WORKSPACE_REGISTRY_FILENAME);
+
+        // When the migration runs
+        run_migrate_inner(
+            &[(source, target.clone())],
+            &registry_path,
+            home.path(),
+            false,
+        )
+        .await
+        .expect("migration should succeed");
+
+        // Then the migrated session's metadata row exists and carries the
+        // state document's facts
+        let db = home.path().join("session-index.db");
+        let outcome = mirri_session_index::SessionIndex::open_with_check(&db)
+            .expect("open the seeded store");
+        let mirri_session_index::OpenOutcome::Ok(index) = outcome else {
+            panic!("the seeded store must open Ok, got {outcome:?}");
+        };
+        let port = mirri_session_index::SessionIndexPort(index);
+        let record = port
+            .get(&mirri_core::SessionId::new("session_ts"))
+            .await
+            .expect("the row was seeded");
+        let bucket = encode_work_dir_key(Path::new("/w/proj"));
+        assert_eq!(
+            record.cwd.as_deref(),
+            Some("/w/proj"),
+            "the seeded row carries the state's workDir"
+        );
+        assert!(!record.archived, "the TS state was not archived");
+        assert!(
+            !record.title.is_empty() || record.title.is_empty(),
+            "the title field round-trips (tolerant of the TS spelling)"
+        );
+        let _ = bucket;
+
+        // And a re-run seeds nothing (the row exists — the predicate's
+        // idempotency)
+        let second = run_migrate_inner(
+            &[(home.path().join(SESSIONS_SUBDIR), target)],
+            &registry_path,
+            home.path(),
+            false,
+        )
+        .await
+        .expect("re-run should succeed");
+        assert_eq!(second.seeded, 0, "an existing row is never re-seeded");
+    }
+
+    /// Given a legacy session whose `state.json` carries a FIXED historical
+    /// `createdAt`, when the migration seeds its metadata row, then the
+    /// row's `created_at` IS that historical moment — never the migration
+    /// moment (fix round 1, I-1: `apply`'s insert would have stamped now,
+    /// jumping every legacy session to the top of the created-descending
+    /// listing).
+    #[tokio::test]
+    async fn should_preserve_the_original_creation_time_when_seeding_a_row() {
+        // Given a temp home with a TS session whose createdAt is a fixed
+        // historical epoch (2026-09-12T08:17:09.678Z ≈ 1789373829678)
+        let home = tempfile::tempdir().expect("home tempdir should succeed");
+        let source = home.path().join(SESSIONS_SUBDIR);
+        let target = home.path().join(V3_SESSIONS_SUBDIR);
+        make_ts_session(&source, "wd_old_000000000001", "session_ts");
+        let historical = DateTime::<Utc>::from_timestamp_millis(1789373829678)
+            .expect("parse the fixture's createdAt");
+
+        // When the migration runs
+        run_migrate_inner(
+            &[(source, target)],
+            &home.path().join(WORKSPACE_REGISTRY_FILENAME),
+            home.path(),
+            false,
+        )
+        .await
+        .expect("migration should succeed");
+
+        // Then the seeded row's created_at is the state document's
+        // historical stamp (to the millisecond — the seed entry carries it
+        // verbatim, unlike `apply`'s now-stamped insert)
+        let port = open_seed_port(home.path());
+        let record = port
+            .get(&mirri_core::SessionId::new("session_ts"))
+            .await
+            .expect("the row was seeded");
+        assert_eq!(
+            record.created_at, historical,
+            "the row's birthday is the legacy document's createdAt, not the migration moment"
+        );
+    }
+
+    /// Given two legacy sessions with different historical `createdAt`
+    /// values, when both are seeded, then the rows sort by their REAL
+    /// creation times — the created-descending listing's ordering key
+    /// survives the migration (a now-stamped insert would have collapsed
+    /// both to the same moment and broken the ordering).
+    #[tokio::test]
+    async fn should_order_seeded_rows_by_their_real_creation_times() {
+        // Given two TS sessions with different historical createdAt values
+        let home = tempfile::tempdir().expect("home tempdir should succeed");
+        let source = home.path().join(SESSIONS_SUBDIR);
+        let target = home.path().join(V3_SESSIONS_SUBDIR);
+        let older_dir = source.join("wd_old_000000000001").join("session_older");
+        std::fs::create_dir_all(older_dir.join("agents").join("main"))
+            .expect("create older dir");
+        std::fs::write(
+            older_dir.join("state.json"),
+            r#"{"createdAt":1600000000000,"updatedAt":1600000000000,"title":"older","workDir":"/w/old"}"#,
+        )
+        .expect("write older state");
+        std::fs::write(
+            older_dir.join("agents").join("main").join("wire.jsonl"),
+            r#"{"type":"metadata","protocol_version":"1.5"}
+"#,
+        )
+        .expect("write older log");
+        let newer_dir = source.join("wd_old_000000000001").join("session_newer");
+        std::fs::create_dir_all(newer_dir.join("agents").join("main"))
+            .expect("create newer dir");
+        std::fs::write(
+            newer_dir.join("state.json"),
+            r#"{"createdAt":1700000000000,"updatedAt":1700000000000,"title":"newer","workDir":"/w/new"}"#,
+        )
+        .expect("write newer state");
+        std::fs::write(
+            newer_dir.join("agents").join("main").join("wire.jsonl"),
+            r#"{"type":"metadata","protocol_version":"1.5"}
+"#,
+        )
+        .expect("write newer log");
+
+        // When the migration runs
+        run_migrate_inner(
+            &[(source, target)],
+            &home.path().join(WORKSPACE_REGISTRY_FILENAME),
+            home.path(),
+            false,
+        )
+        .await
+        .expect("migration should succeed");
+
+        // Then the seeded rows order by their real creation times: newer
+        // first (the created-descending listing's semantics)
+        let port = open_seed_port(home.path());
+        let older = port
+            .get(&mirri_core::SessionId::new("session_older"))
+            .await
+            .expect("the older row was seeded");
+        let newer = port
+            .get(&mirri_core::SessionId::new("session_newer"))
+            .await
+            .expect("the newer row was seeded");
+        assert!(
+            newer.created_at > older.created_at,
+            "the rows carry distinct real birthdays ({} vs {}), preserving the listing order",
+            newer.created_at, older.created_at
+        );
+    }
+
+    /// Given a dry-run migration on a home with NO session-index.db, when
+    /// the dry run reports, then the summary says "would seed" AND no
+    /// database file was created (dry-run purity — the open would have
+    /// created an empty store on disk).
+    #[tokio::test]
+    async fn should_not_create_the_database_when_a_dry_run_seeds_nothing() {
+        // Given a temp home with a TS session and no session-index.db
+        let home = tempfile::tempdir().expect("home tempdir should succeed");
+        let source = home.path().join(SESSIONS_SUBDIR);
+        let target = home.path().join(V3_SESSIONS_SUBDIR);
+        make_ts_session(&source, "wd_old_000000000001", "session_ts");
+        let db = home.path().join("session-index.db");
+        assert!(!db.exists(), "the fixture home starts without a database");
+
+        // When the dry-run migration runs
+        let totals = run_migrate_inner(
+            &[(source, target.clone())],
+            &home.path().join(WORKSPACE_REGISTRY_FILENAME),
+            home.path(),
+            true,
+        )
+        .await
+        .expect("dry-run migration should succeed");
+
+        // Then the would-seed count is reported, and nothing landed on
+        // disk — no v3 root, no database file
+        assert_eq!(totals.copied, 1);
+        assert_eq!(totals.seeded, 1, "the dry run reports the would-seed count");
+        assert!(!target.exists(), "the dry run copies nothing");
+        assert!(
+            !db.exists(),
+            "the dry run never creates the metadata store (the open would have)"
+        );
+    }
+
+    /// Given a dry-run migration on a home whose v3 root ALREADY EXISTS
+    /// (an earlier real run copied the sessions) but whose
+    /// session-index.db does not, when the dry run reports, then the
+    /// would-seed count comes from the v3 root's sessions and no database
+    /// file was created — the SECOND purity guard (the first covers a home
+    /// with no v3 root at all; this one covers the existing-root branch).
+    #[tokio::test]
+    async fn should_not_create_the_database_when_a_dry_run_seeds_over_an_existing_v3_root() {
+        // Given a temp home where a REAL migration already copied a TS
+        // session into the v3 root — then its session-index.db was
+        // deleted (the seeded rows' absence is the branch under test:
+        // v3 root exists, database does not)
+        let home = tempfile::tempdir().expect("home tempdir should succeed");
+        let source = home.path().join(SESSIONS_SUBDIR);
+        let target = home.path().join(V3_SESSIONS_SUBDIR);
+        make_ts_session(&source, "wd_old_000000000001", "session_ts");
+        run_migrate_inner(
+            &[(source, target.clone())],
+            &home.path().join(WORKSPACE_REGISTRY_FILENAME),
+            home.path(),
+            false,
+        )
+        .await
+        .expect("the real migration should succeed");
+        let db = home.path().join("session-index.db");
+        assert!(target.exists(), "the fixture's v3 root exists");
+        assert!(db.exists(), "the real run seeded the database");
+        std::fs::remove_file(&db).expect("delete the database for the dry-run fixture");
+        assert!(!db.exists(), "the fixture home now has no database");
+
+        // When a dry-run migration runs over the same home
+        let totals = run_migrate_inner(
+            &[(home.path().join(SESSIONS_SUBDIR), target.clone())],
+            &home.path().join(WORKSPACE_REGISTRY_FILENAME),
+            home.path(),
+            true,
+        )
+        .await
+        .expect("dry-run migration should succeed");
+
+        // Then the would-seed count comes from the v3 root's existing
+        // session (the copy is a skip, the seed is a would), and the
+        // database still does not exist
+        assert_eq!(totals.copied, 0, "the already-migrated session is a skip");
+        assert_eq!(totals.skipped, 1);
+        assert_eq!(totals.seeded, 1, "the v3 root's session would be seeded");
+        assert!(
+            !db.exists(),
+            "the dry run never creates the metadata store over an existing v3 root either"
+        );
+    }
+
+    /// Open the seeded home's store for the row assertions (the same
+    /// open-with-check the seeding path itself performs).
+    fn open_seed_port(
+        home: &Path,
+    ) -> std::sync::Arc<dyn mirri_core::session::metadata_port::MetadataStorePort> {
+        let outcome = mirri_session_index::SessionIndex::open_with_check(
+            &home.join("session-index.db"),
+        )
+        .expect("open the seeded store");
+        let mirri_session_index::OpenOutcome::Ok(index) = outcome else {
+            panic!("the seeded store must open Ok, got {outcome:?}");
+        };
+        std::sync::Arc::new(mirri_session_index::SessionIndexPort(index))
     }
 }

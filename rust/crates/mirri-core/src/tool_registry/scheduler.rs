@@ -294,6 +294,7 @@ mod tests {
             tool_call_id: tool_call_id.to_string(),
             cancel: CancelToken::new(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         };
         PendingToolTask {
             tool_call_id: tool_call_id.to_string(),
@@ -323,6 +324,7 @@ mod tests {
             tool_call_id: tool_call_id.to_string(),
             cancel: CancelToken::new(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         };
         let result_text = tool_call_id.to_string();
         PendingToolTask {
@@ -624,6 +626,7 @@ mod tests {
             tool_call_id: tool_call_id.to_string(),
             cancel: CancelToken::new(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         };
         PendingToolTask {
             tool_call_id: tool_call_id.to_string(),

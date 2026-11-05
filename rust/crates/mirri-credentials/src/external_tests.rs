@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use serde_json::json;
 
 use crate::external::{
-    ExternalSourceError, AZURE_CLI, az_args, external_available, obtain_with, parse_az_token,
+    AZURE_CLI, ExternalSourceError, az_args, external_available, obtain_with, parse_az_token,
 };
 
 fn metadata_with(resource: Option<&str>) -> HashMap<String, serde_json::Value> {
@@ -26,10 +26,7 @@ fn should_extract_the_access_token_from_an_azure_cli_json_response() {
 
     // When the token is parsed
     // Then the accessToken field comes out verbatim
-    assert_eq!(
-        parse_az_token(stdout).as_deref(),
-        Some("eyJabc123")
-    );
+    assert_eq!(parse_az_token(stdout).as_deref(), Some("eyJabc123"));
 }
 
 #[test]
@@ -94,7 +91,11 @@ fn should_return_the_token_when_the_runner_succeeds() {
     // When the external source is obtained
     // Then the parsed token comes back
     assert_eq!(
-        obtain_with(&runner, &metadata_with(Some("https://management.azure.com"))).as_deref(),
+        obtain_with(
+            &runner,
+            &metadata_with(Some("https://management.azure.com"))
+        )
+        .as_deref(),
         Ok("tok-ok")
     );
 }
@@ -121,13 +122,15 @@ fn should_return_re_register_guidance_when_resource_name_is_missing() {
 #[test]
 fn should_return_az_login_guidance_when_the_runner_fails() {
     // Given a runner standing in for a missing or logged-out Azure CLI
-    let runner = |_args: &[String]| -> Result<String, String> {
-        Err("az: command not found".to_string())
-    };
+    let runner =
+        |_args: &[String]| -> Result<String, String> { Err("az: command not found".to_string()) };
 
     // When the external source is obtained
-    let err =
-        obtain_with(&runner, &metadata_with(Some("https://management.azure.com"))).unwrap_err();
+    let err = obtain_with(
+        &runner,
+        &metadata_with(Some("https://management.azure.com")),
+    )
+    .unwrap_err();
 
     // Then the error carries the az login action guidance
     assert_eq!(err.method_id, AZURE_CLI);
@@ -140,8 +143,11 @@ fn should_return_unreadable_token_guidance_when_the_runner_output_cannot_be_pars
     let runner = |_args: &[String]| -> Result<String, String> { Ok("garbage".to_string()) };
 
     // When the external source is obtained
-    let err =
-        obtain_with(&runner, &metadata_with(Some("https://management.azure.com"))).unwrap_err();
+    let err = obtain_with(
+        &runner,
+        &metadata_with(Some("https://management.azure.com")),
+    )
+    .unwrap_err();
 
     // Then the error says the token was unreadable
     assert_eq!(err.method_id, AZURE_CLI);

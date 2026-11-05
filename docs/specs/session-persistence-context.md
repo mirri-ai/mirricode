@@ -48,12 +48,12 @@
 
 ### 1.6 IDE 入口（ACP 宿主）存储归属现状（2026-10-28 盘点，ADR-019 立项依据）
 
-- **组合根不注入 home**：ACP 宿主的默认（嵌入引擎）路径以 `EmbeddedServer::for_workspace_root(WorkspaceId::new("acp"), workspace_dir, None, …)` 组装——第三参 `home_dir = None`（`rust/crates/mirri-acp/src/run.rs:103-108`；`MIRRI_ACP_WORKSPACE_DIR` 或当前目录为根）。
-- **无 home 分支的存储落点**：`assemble` 在 `home_dir == None` 时走 `SessionManager::new(workspace)`，会话目录 = `<cwd>/.mirri/v3_sessions/<工作区桶>/<会话 id>/`（`rust/crates/mirri-embedded/src/bootstrap.rs:669-676`；`rust/crates/mirri-core/src/session/manager/mod.rs:339-342`）；同时不安装 `<home>/session-index.db` 索引、不还原 `workspaces.json` 注册表行（`bootstrap.rs:265-267/275-276`）。
+- **组合根不注入 home（2026-11-04 ADR-006 后已失效，保留为历史记录）**：ACP 宿主的默认（嵌入引擎）路径以 `EmbeddedServer::for_workspace_root(WorkspaceId::new("acp"), workspace_dir, None, …)` 组装——第三参 `home_dir = None`（`MIRRI_ACP_WORKSPACE_DIR` 或当前目录为根）。ADR-006 fix round 1 起，`assemble` 对 `None` 走 env 回退链（`MIRRICODE_HOME` → `$HOME/.mirri-code`），不可解析才硬错误——"无 home"形态退出产品面。
+- **存储落点（ADR-006 后现状）**：`home_dir`（注入或 env 回退）一律走 `SessionManager::with_persistence_dir(workspace, <home>/v3_sessions)`，会话目录 = `<home>/v3_sessions/<工作区桶>/<会话 id>/`；`<home>/session-index.db` 索引与 `workspaces.json` 注册表行同样按 home 安装/还原。存量工作区本地会话（`.mirri/v3_sessions/`）在引擎构造时一次性迁入 home 对应桶并回填索引行（bootstrap.rs 的 `migrate_workspace_local_sessions`，幂等：迁移后旧根消失即天然跳过）。
 - **列表钉扎**：`for_workspace_root` 把宿主列表可见性钉死在其根（"the home's workspaces.json may register more … those sessions are not this host's to see"——`rust/crates/mirri-embedded/src/embedded_server/mod.rs:3017-3023`）；按 cwd 的引擎池使同 cwd 会话共享一个引擎（`run.rs:109-138`）。
-- **对照组**：`mirri serve`/`mirri web` 注入解析的 home，存储落 `<home>/v3_sessions/` 并享索引与注册表（`rust/crates/mirri-cli/src/main.rs:161/194/215-222`）——两个存储根互不可见，桌面/网页列表看不到工作区本地的 ACP 会话。
+- **对照组（ADR-006 后两个存储根已合一）**：`mirri serve`/`mirri web` 与 ACP 嵌入路径都落 `<home>/v3_sessions/` 并享索引与注册表——桌面/网页与 ACP 现在看到同一个存储根。
 - **例外通道**：`MIRRI_ACP_REMOTE_ENGINE` 指向远程引擎时，会话由远程端承载（落其 home）——共享场景存在但默认关闭（`run.rs:72-85`）。
-- **存量事实**：`mirri migrate` 的迁移对是「legacy `sessions/` → `v3_sessions/`」（home 侧与 `--workspace` 指定的工作区侧皆然；`rust/crates/mirri-cli/src/migrate.rs:53/83-92`）——它**不覆盖** ACP 会话实际落的工作区本地 rust 会话（`.mirri/v3_sessions/`）。工作区本地 rust 会话目前**没有任何晋升入 home 的路径**（`commands.rs` 的 `session-list` 双根扫描只列不迁），是 ADR-019 落地的配套缺口。
+- **存量事实（2026-11-04 更新）**：`mirri migrate` 的迁移对仍是「legacy `sessions/` → `v3_sessions/`」；但 ACP 的工作区本地 rust 会话（`.mirri/v3_sessions/`）已由 ADR-006 fix round 2 的引擎构造期迁移接管（`migrate_workspace_local_sessions`：目录搬入 home 桶 + 索引行回填，幂等）。cron 任务清单迁移仍待 Task 8 完整版。
 - **治理空白**：`docs/specs` 全域无任何 SDR/ADR 显式裁决过"ACP 会话对 web/desktop 的可见性"——该行为是 ADR-005-R1 认可工作区本地根 + ACP 组合根不注入 home 的叠加涌现，非显式裁决。该空白由需求 SDR-009 裁决。
 
 ## 2. TS 参照基线（agent-core-v2）
@@ -157,3 +157,15 @@
 | 6 | 恢复按需触发面：约 17 个 RPC 调用点对冷会话同步等待完整恢复（含交互/写向调用；命中 live 会话本身毫秒级，慢在恢复） | `rust/crates/mirri-server/src/rpc.rs:649`（live_or_restored_session，调用点 :729/:943/:1036/:1115/:1278/:1331/:1719/:1860/:2089/:2759/:3011/:3142/:3393/:3633/:3912/:4124/:4385） |
 
 对照 ADR-006 已裁决的恢复时序（注册表先行 → 主 agent 记录流为就绪门槛 → 子代理**懒**重放），现状事实 3 属实现违背既定设计；事实 1/2/5 为 SDR-005 新增验收覆盖；事实 4/6 为 ROADMAP 开放项（检查点频率提高、恢复不阻塞读面——后者涉 API 契约，候选单独立项）。
+
+## 10. ADR-006 实施偏离记录（2026-11-05，本批回写）
+
+ADR-006 落地过程中与规格文本的已裁决偏离（均已记录于 worktree ledger，此处为规格侧归档）：
+
+| # | 偏离 | 裁决依据 |
+|---|---|---|
+| 1 | 库级独占采用 take-and-release 探测（`BEGIN IMMEDIATE` + 即刻提交）而非持锁式 `EXCLUSIVE` | 持锁式自死锁（迁移写走共享连接，SQLite 单写槽）；语义等价链 = 进入时写槽空闲 + 进程级文件锁挡外来入口 + 每条 SQL 自带 busy 兜底，失败为 Blocked 可重试而非损坏 |
+| 2 | `KNOWN_SCHEMA_FORMAT` 在 migration_v3 存在镜像常量 | 已加地板自检测试（迁移所盖之章必须通过 `open_with_check`），漂移即红 |
+| 3 | 恢复金字塔半重建的归档态仅从压缩形状推断 | wire log 是唯一幸存证据——未压缩归档会话重建后读作未归档，为诚实限制（模块文档已声明） |
+| 4 | `cron.run.open` 物化的行写入走 `materialize_session`（无 row-exempt 泄漏面） | Task 13 语义闭环：创建不写行（exempt）→ turn settle 不写行（物化门）→ 显式打开才落行 |
+| 5 | 注册写穿（bound workspace → workspaces.json）由迁移承担且每次启动执行 | 原对账 pass 的职责随对账退役迁移；幂等 upsert 保 created_at/sort_order，单行成本可忽略 |

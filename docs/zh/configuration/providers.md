@@ -17,7 +17,7 @@ Mirri Code 支持同时接入多家 LLM 平台——用 Mirri Code 托管服务�
 
 所有供应商默认以流式方式与模型交互。thinking、视觉、工具调用等能力按模型名前缀自动匹配，通常不需要手动声明。
 
-**凭证优先级**：`api_key` 直接字段 > `[providers.<name>.env]` 子表键 > 该供应商类型惯用的 shell 环境变量 > 全部缺失时启动报错。`base_url` 走同样的解析链，最后一步是该供应商类型的内置默认 URL。部分类型（如 `vertexai`）没有惯用的环境变量，解析链会提前结束——详见[配置覆盖：供应商凭证](./overrides.md#供应商凭证)。
+**凭证优先级**：凭证存储（设置 → 供应商 管理）> `[providers.<name>.env]` 子表里该供应商类型惯用的键 > 两者都没有时启动报错。shell 环境变量**不会**被隐式读取。`base_url` 走同样的链路——先 `base_url` 字段，再 `env` 子表里的 `*_BASE_URL` 键——最后一步是该供应商类型的内置默认 URL（仅限一方供应商；其他供应商必须显式配置）。部分类型（如 `vertexai`）没有惯用的键，解析链会提前结束——详见[配置覆盖：供应商凭证](./overrides.md#供应商凭证)。
 
 ## `/provider` — 交互式供应商管理
 
@@ -119,7 +119,7 @@ type = "google-genai"
 api_key = "xxxxx"
 ```
 
-如需经由兼容 Gemini 协议的代理/网关访问，可设置 `base_url`（或 `GOOGLE_GEMINI_BASE_URL` 环境变量）；不填时使用 SDK 默认地址 `https://generativelanguage.googleapis.com`。
+如需经由兼容 Gemini 协议的代理/网关访问，可设置 `base_url`（或 `env` 子表里的 `GOOGLE_GEMINI_BASE_URL` 键）；不填时使用 SDK 默认地址 `https://generativelanguage.googleapis.com`。
 
 > 只填**主机根地址**。Google GenAI SDK 会自行追加 API 版本与路径（如 `/v1beta/models/<model>:generateContent`），所以结尾带 `/v1beta` 会导致路径重复成 `/v1beta/v1beta/…`。
 
@@ -153,7 +153,7 @@ GOOGLE_CLOUD_LOCATION = "us-central1"
 gcloud auth application-default login   # 一次性完成认证
 ```
 
-如需让 Vertex 请求走自定义（如代理）端点，可设置 `base_url`（或 `GOOGLE_VERTEX_BASE_URL` 环境变量）；不填时使用 SDK 默认的区域化 `*-aiplatform.googleapis.com` 地址。与 `google-genai` 一样，只填主机根地址——SDK 会自行追加 `/v1beta1/publishers/google/models/…`。
+如需让 Vertex 请求走自定义（如代理）端点，可设置 `base_url`（或 `env` 子表里的 `GOOGLE_VERTEX_BASE_URL` 键）；不填时使用 SDK 默认的区域化 `*-aiplatform.googleapis.com` 地址。与 `google-genai` 一样，只填主机根地址——SDK 会自行追加 `/v1beta1/publishers/google/models/…`。
 
 ## OAuth 与凭证注入
 

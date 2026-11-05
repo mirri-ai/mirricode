@@ -6,7 +6,7 @@ Mirri Code has three places where runtime parameters can be influenced: the conf
 - **Command-line options** make one-off changes for the current startup; discarded after exit
 - **Environment variables** primarily handle data directory location, OAuth endpoint switching, and a small number of runtime switches — **not a general fallback mechanism for config fields**
 
-This distinction matters: many users run `export MIRRI_API_KEY=xxx` in the shell expecting the CLI to pick it up automatically. For ordinary runtime parameters that is not the case — but provider credentials are a deliberate exception. See [Provider credentials](#provider-credentials) below for why.
+This distinction matters: many users run `export MIRRI_API_KEY=xxx` in the shell expecting the CLI to pick it up automatically — it does not. Provider credentials are never read from the shell environment; see [Provider credentials](#provider-credentials) for how to migrate them into explicit configuration.
 
 ## Three roles of environment variables
 
@@ -26,7 +26,7 @@ For ordinary runtime parameters such as model alias, Plan mode, yolo mode, and S
 A small number of environment variables explicitly override specific config file fields — for example, `MIRRICODE_BACKGROUND_KEEP_ALIVE_ON_EXIT` has higher priority than `[background].keep_alive_on_exit`. These exceptions are noted in [Environment variables](./env-vars.md) and in the relevant field descriptions in [Configuration files](./config-files.md).
 
 ::: warning
-**Ordinary runtime parameters do not fall back to shell environment variables.** Provider `api_key` / `base_url` are a deliberate exception: they follow their own three-step chain — the config field, then the `[providers.<name>.env]` sub-table, then the provider type's conventional shell environment variable — see [Provider credentials](#provider-credentials). The only other exception is the explicit `MIRRICODE_MODEL_*` channel — see [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-mirricode-model).
+**Ordinary runtime parameters do not fall back to shell environment variables — and neither do provider credentials.** `api_key` / `base_url` are resolved only from explicit configuration: the credential store, then the `[providers.<name>.env]` sub-table — see [Provider credentials](#provider-credentials). The only shell-based channel is the explicit `MIRRICODE_MODEL_*` family — see [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-mirricode-model).
 :::
 
 The CLI currently reads a single user-level config file and has no project-level config file mechanism. To isolate config between different projects, point `MIRRICODE_HOME` at different data directories — see [Common scenarios](#common-scenarios) below.
@@ -37,14 +37,13 @@ Provider credentials (`api_key`, `base_url`) follow their own resolution rules, 
 
 For a single provider, credentials are resolved in this order:
 
-1. `[providers.<name>].api_key` — key written directly in the config file; highest priority
-2. The matching key inside the `[providers.<name>.env]` sub-table — `ANTHROPIC_API_KEY` for `type = "anthropic"`, `OPENAI_API_KEY` for `openai` / `openai_responses`, `GOOGLE_API_KEY` for `google` / `google-genai`, `MIRRI_API_KEY` for `kimi` — consulted only when `api_key` is empty or absent
-3. The provider type's conventional shell environment variable (same key names) — consulted when both are absent; types without a conventional variable, such as `vertexai`, skip this step
-4. If none is set — startup fails with an error indicating the provider is missing credentials
+1. The provider's active credential-store entry (managed by the UI — Settings → Providers, or `/provider` in the TUI)
+2. The matching key inside the `[providers.<name>.env]` sub-table — `ANTHROPIC_API_KEY` for `type = "anthropic"`, `OPENAI_API_KEY` for `openai` / `openai_responses`, `GOOGLE_API_KEY` for `google` / `google-genai`, `MIRRI_API_KEY` for `kimi`
+3. If neither is set — startup fails with a clear configuration error naming the provider and the remedy
 
-`base_url` is resolved the same way: first `[providers.<name>].base_url`, then the `*_BASE_URL` key in `[providers.<name>.env]`, then the same-named shell environment variable (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GOOGLE_GEMINI_BASE_URL`, `MIRRI_BASE_URL`), and finally the provider type's built-in default URL.
+`base_url` is resolved the same way: first `[providers.<name>].base_url`, then the `*_BASE_URL` key in `[providers.<name>.env]` (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GOOGLE_GEMINI_BASE_URL`, `MIRRI_BASE_URL`), and finally the provider type's built-in default URL — first-party providers only; every other provider must configure a base URL explicitly.
 
-> The `[providers.<name>.env]` sub-table is a TOML section in the config file — it does not write anything into the shell environment; it is only read as the second step of the credential chain. See the `env` sub-table notes in [providers](./config-files.md#providers).
+> The `[providers.<name>.env]` sub-table is a TOML section in the config file — it does not write anything into the shell environment, and the shell environment is not read as a credential source: the engine uses only explicitly configured credentials. See the `env` sub-table notes in [providers](./config-files.md#providers).
 
 For the full list of credential key names, see [Environment variables: provider credential key names](./env-vars.md#provider-credential-key-names).
 
@@ -82,7 +81,7 @@ Mutual exclusion rules (startup fails if violated):
 MIRRICODE_HOME="$PWD/.mirricode-sandbox" mirri
 ```
 
-**One-off test key** — write a test key into the `env` sub-table so it takes precedence over any shell environment variable:
+**One-off test key** — write a test key into the `env` sub-table (credentials are never read from the shell environment):
 
 ```toml
 [providers.kimi.env]

@@ -13,6 +13,9 @@ withDefaults(
     name: string;
     arg?: string;
     time?: string;
+    /** Hover bubble for `arg` (e.g. the pretty JSON payload); defaults to `arg`. */
+    tooltip?: string;
+    tooltipMaxWidth?: number;
     open?: boolean;
     expandable?: boolean;
     stacked?: boolean;
@@ -21,6 +24,8 @@ withDefaults(
   {
     icon: '',
     arg: '',
+    tooltip: '',
+    tooltipMaxWidth: 280,
     time: '',
     open: false,
     expandable: false,
@@ -56,7 +61,7 @@ function onHeadClick(): void {
     <div class="bh" ref="bhEl" @click="onHeadClick">
       <span v-if="icon" class="gl" v-html="icon" aria-hidden="true" />
       <span class="a">{{ name }}</span>
-      <Tooltip :text="arg">
+      <Tooltip :text="tooltip || arg" variant="code" :max-width="tooltipMaxWidth">
         <span v-if="arg" class="p">{{ arg }}</span>
       </Tooltip>
       <span class="rt">

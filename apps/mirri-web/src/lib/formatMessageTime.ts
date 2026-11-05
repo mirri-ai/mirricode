@@ -1,4 +1,7 @@
-// Format an ISO timestamp for display beneath a user message bubble.
+// apps/mirri-web/src/lib/formatMessageTime.ts
+
+// Format an ISO timestamp for display beneath a message bubble. The moment is
+// always the reader's local wall-clock time; no zone label is appended.
 // - Today:        14:32
 // - Yesterday:    昨天 14:32
 // - This year:    06-15 14:32

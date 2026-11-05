@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { ChatTurn, ToolCall, TurnBlock } from '../src/types';
 // Raw SFC source, so the fork-at-turn button's placement can be asserted
@@ -217,10 +218,10 @@ describe('fork-at-turn button placement', () => {
   const assistantCopyIdx = ChatPaneSource.indexOf('@click="copyAssistantRun(ti)"');
   const userCopyIdx = ChatPaneSource.indexOf('@click.stop="copyUserMessage(turn)"');
 
-  it('should place the fork action inside the assistant run-end footer, next to the copy button', () => {
+  it('should place the fork action inside the assistant run-end footer, after the copy button', () => {
     expect(footerIdx).toBeGreaterThan(-1);
     expect(forkIdx).toBeGreaterThan(footerIdx);
-    expect(forkIdx).toBeLessThan(assistantCopyIdx);
+    expect(forkIdx).toBeGreaterThan(assistantCopyIdx);
   });
 
   it('should not place the fork action on the user message row', () => {
@@ -232,6 +233,25 @@ describe('fork-at-turn button placement', () => {
   it('should gate the fork action on a resolvable per-turn anchor key', () => {
     const forkButton = ChatPaneSource.slice(forkIdx - 200, forkIdx);
     expect(forkButton).toContain('forkAnchorOf(turn.promptId) !== undefined');
+  });
+});
+
+describe('end-of-turn footer timestamp', () => {
+  // The footer (a-msg-ft) must stamp WHEN the turn's report landed, in the
+  // reader's local timezone with an explicit zone label ("14:32 JST"), so the
+  // moment is unambiguous no matter who reads the transcript.
+  const footerIdx = ChatPaneSource.indexOf('class="a-msg-ft"');
+  const endedAtIdx = ChatPaneSource.indexOf('class="a-ended-at"');
+
+  it('should render the ended-at stamp inside the run-end footer', () => {
+    expect(footerIdx).toBeGreaterThan(-1);
+    expect(endedAtIdx).toBeGreaterThan(footerIdx);
+  });
+
+  it('should format the stamp with the local timezone label', () => {
+    const stamp = ChatPaneSource.slice(Math.max(0, endedAtIdx - 300), endedAtIdx);
+    expect(stamp).toContain('turnEndedAtLabel(turn)');
+    expect(stamp).toContain('v-if="turnEndedAtLabel(turn)"');
   });
 });
 
@@ -467,5 +487,30 @@ describe('assistantTurnRenderPlan', () => {
     const textOnly: ChatTurn = { id: 'a2', role: 'assistant', no: 2, text: 'done' };
     const plan2 = assistantTurnRenderPlan([textOnly], 0, null, noneExpanded);
     expect(plan2).toMatchObject({ folded: true, finalText: 'done' });
+  });
+});
+
+describe('live tool timers (US3.8)', () => {
+  // Running cards tick every second from the server's start stamp, and the
+  // moon-side line names the latest running call with its live elapsed.
+  // Asserted on the SFC sources (this suite has no component runner).
+  const genericToolSrc = readFileSync(
+    new URL('../src/components/chat/tool-calls/GenericTool.vue', import.meta.url),
+    'utf8',
+  );
+
+  it('should render the latest running tool timer next to the working moon', () => {
+    // Given the ChatPane component source
+    // When the working placeholder is defined, it binds the active-tool timer
+    expect(ChatPaneSource).toContain('activeTool');
+    expect(ChatPaneSource).toContain('runningToolTick');
+    expect(ChatPaneSource).toContain('workingTool');
+  });
+
+  it('should drive running card timers from the shared tick in renderers', () => {
+    // Given the GenericTool renderer source
+    // When a card runs with a start anchor, the live time wins over the frozen timing
+    expect(genericToolSrc).toContain("'runningToolTick'");
+    expect(genericToolSrc).toContain('liveTime ?? tool.timing');
   });
 });

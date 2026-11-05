@@ -17,7 +17,7 @@ import {
   type WorkspaceSortMode,
 } from '../lib/workspaceOrder';
 import { mergeWorkspaces } from '../lib/mergeWorkspaces';
-import { projectSessionForSort, sortKeyEpoch } from '../lib/sessionSorting';
+import { projectSessionForSort, sortSessionsByUse } from '../lib/sessionSorting';
 import { mergeSnapshotMessages } from '../lib/snapshotMessages';
 import { mergeSnapshotSubagents } from '../lib/taskMerge';
 import { buildSwarmEndedMarkerMessage, shouldAppendSwarmEndedMarker } from '../lib/swarmEndedMarker';
@@ -25,6 +25,7 @@ import { buildApprovalBlock } from '../lib/approvalDisplay';
 import { collaborationSupportedForBackend } from '../lib/backendCapabilities';
 import { nextPermissionFromStatus } from '../lib/permissionMirror';
 import { createCoalescedAsyncRunner } from '../lib/snapshotSync';
+import { skillCacheKeysToRefresh } from '../lib/skillsHotReload';
 import {
   loadUnread,
   loadWorkspaceOrder,
@@ -1196,6 +1197,17 @@ const enqueueEvent = createEventBatcher<PendingAppEvent>(
 // WS subscription (lazy, only when a session is selected)
 // ---------------------------------------------------------------------------
 
+/** The latest skillCatalogChanged event payload, set at the onEvent intercept
+ *  (ADR-013): the SkillsPanel watcher (Task 4) consumes it to re-derive its
+ *  view from the refreshed skill caches. Null until the first event. */
+const lastSkillCatalogChange = ref<{
+  workspaceId: string;
+  added: string[];
+  removed: string[];
+  updated: string[];
+  trigger: 'file' | 'config' | 'plugin' | 'manual';
+} | null>(null);
+
 function connectEventsIfNeeded(): void {
   if (eventConn !== null) return;
   // Guard: jsdom and some environments have no WebSocket
@@ -1216,6 +1228,53 @@ function connectEventsIfNeeded(): void {
         appEvent.type === 'workspaceDeleted'
       ) {
         workspaceState.applyWorkspaceEvent(appEvent);
+        return;
+      }
+
+      // ADR-013 decisions 3-4: skill-catalog change — invalidate the skill
+      // caches of the event's workspace (session keys + workspace key,
+      // only where populated) and surface the non-blocking toast (the
+      // presentation duty of US7.2's UI channel).
+      if (appEvent.type === 'skillCatalogChanged') {
+        const cachedSessions = new Set(
+          Object.keys(modelProvider.skillsBySession.value),
+        );
+        const cachedWorkspaces = new Set(
+          Object.keys(modelProvider.skillsByWorkspace.value),
+        );
+        const { sessions, workspace } = skillCacheKeysToRefresh(
+          appEvent.workspaceId,
+          rawState.sessions,
+          rawState.workspaces,
+          cachedSessions,
+          cachedWorkspaces,
+        );
+        for (const sid of sessions) void modelProvider.loadSkillsForSession(sid);
+        if (workspace) void modelProvider.loadSkillsForWorkspace(appEvent.workspaceId);
+        lastSkillCatalogChange.value = {
+          workspaceId: appEvent.workspaceId,
+          added: [...appEvent.added],
+          removed: [...appEvent.removed],
+          updated: [...appEvent.updated],
+          trigger: appEvent.trigger,
+        };
+        // US7.2 requires the summary to carry counts AND skill names —
+        // cap the name list at 5 total across added/removed/updated (a
+        // big install event must not flood the toast; the full names are
+        // in the skills panel).
+        const nameList = [...appEvent.added, ...appEvent.removed, ...appEvent.updated];
+        const names = nameList.slice(0, 5).join(', ');
+        const namesSuffix = nameList.length > 5 ? ` +${nameList.length - 5}` : '';
+        pushWarning({
+          severity: 'info',
+          title: i18n.global.t('settings.skillsUpdatedTitle'),
+          message:
+            i18n.global.t('settings.skillsUpdatedMessage', {
+              added: appEvent.added.length,
+              removed: appEvent.removed.length,
+              updated: appEvent.updated.length,
+            }) + (names !== '' ? ` — ${names}${namesSuffix}` : ''),
+        });
         return;
       }
 
@@ -2795,11 +2854,19 @@ const workspaceGroups = computed<WorkspaceGroup[]>(() => {
   // times are derived per-row by SessionRow via the work-facts lookup, so
   // this computed is not invalidated by work-facts churn (and the 30s time
   // clock tick no longer recomputes it either).
-  for (const s of rawState.sessions.toSorted((a, b) => sortKeyEpoch(b) - sortKeyEpoch(a))) {
-    if (s.parentSessionId) continue; // child sessions stay out of the list
-    const wid = workspaceIdForSession(s);
+  // SDR-016: the pinned group rides the top of every workspace's list —
+  // the single comparator owns the ordering (pinned first, pinnedAt desc
+  // within the group, recency below).
+  for (const s of sortSessionsByUse(
+    rawState.sessions
+      .filter((session) => !session.parentSessionId) // child sessions stay out of the list
+      .map(projectSessionForSort),
+  )) {
+    const wid = workspaceIdForSession(
+      rawState.sessions.find((session) => session.id === s.id)!,
+    );
     const list = byId.get(wid) ?? [];
-    list.push(projectSessionForSort(s));
+    list.push(s);
     byId.set(wid, list);
   }
   return workspacesView.value.map((w) => ({
@@ -3142,7 +3209,8 @@ function onQuestionRequested(sid: string, question: AppQuestionRequest): void {
 }
 
 function onApprovalRequested(sid: string, approval: AppApprovalRequest): void {
-  // Browser notification when the user isn't watching this session.
+  // Browser notification when the user isn't watching this session. A
+  // scheduled-task creation is an ordinary tool approval now (ADR-022).
   notification.maybeNotifyApproval({
     isUserWatching: isUserWatching(sid),
     sessionTitle: rawState.sessions.find((s) => s.id === sid)?.title ?? '',
@@ -3294,6 +3362,10 @@ export function useMirriWebClient() {
 
     // Actions
     load: workspaceState.load,
+    /** Open a session that may not be in the sidebar list (a scheduled run's
+     *  execution session is hidden from the list but must be openable): fetch
+     *  it into the list, then select it. */
+    openSessionById: workspaceState.openSessionFromDeepLink,
     supportsFileReferences: workspaceState.supportsFileReferences,
     selectSession: async (sessionId: string) => {
       await workspaceState.selectSession(sessionId);
@@ -3387,6 +3459,8 @@ export function useMirriWebClient() {
     pushOperationFailure,
     markToolCallBackgrounded,
     renameSession: workspaceState.renameSession,
+    pinSession: workspaceState.pinSession,
+    unpinSession: workspaceState.unpinSession,
     renameWorkspace: workspaceState.renameWorkspace,
     deleteWorkspace: workspaceState.deleteWorkspace,
     trustWorkspace: workspaceState.trustWorkspace,
@@ -3429,6 +3503,9 @@ export function useMirriWebClient() {
     loadProviders: modelProvider.loadProviders,
     skills,
     refreshSkills,
+    /** Latest skillCatalogChanged payload (ADR-013) — the SkillsPanel watcher
+     *  (Task 4) consumes it to refresh the panel on catalog changes. */
+    lastSkillCatalogChange,
     activateSkill: modelProvider.activateSkill,
     setModel: modelProvider.setModel,
     toggleStarModel: modelProvider.toggleStarModel,

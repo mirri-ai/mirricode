@@ -83,9 +83,28 @@
 
 依赖：P5-1 与 P5-2 可并行；P5-3 与 P5-1 均触及快照折合同一函数，实现时序上先 P5-1 后 P5-3（或同任务交付）避免合并冲突；P5-4 明确不在本批。
 
+## Phase 6 — live 叙事时间线与渲染稳定性（2026-10-31 立项）
+
+> 交付架构 ADR-011。纯 web 修复（零引擎改动——步边界信号已存在）。现状证据见 context §11。
+
+| 条目 | 内容 | 验收锚点 |
+|---|---|---|
+| P6-1 投影层叙事段维护 | 投影层为 live 成员维护按到达顺序的叙事段列表（text/thinking 段 + 投影层铸造的稳定段标识 + 成员级单调序号，段与工具步骤双写序号）；步边界三分支映射（关段记账 / 重试截断至步起点 / 段级一次性尾守卫）；字段消费语义表成文（实施首任务） | ADR-011 ①② |
+| P6-2 归约层消费语义 | 任务行携带叙事段列表（归约层拥有）；段在 taskCreated 替换臂、快照名册合并存活清单、边界/重放路径中的存活与截断规则；遗留消费面（活动行/任务坞/toAgentMember）迁移到段列表派生 | ADR-011 ② |
+| P6-3 归一化单点与渲染 | live 归一化（叙事段 + 步骤 → 内容块流，序号排序、相邻同 kind 段合并）；流式判定改为「归一化末块源自当前开放段」，末位被超越时一次性定态；`MemberFocus` 消费面切换（含滚动跟随 watch 依赖更新） | ADR-011 ②③、US3.1、US2.7 |
+| P6-4 渲染静默性 | 轮询/写回在字段消费语义表内字段无变化时保持成员行对象引用；settle 过渡窗口 live 段与 journal 块序列结构等价（块数、kind 序列、工具卡配对一致） | ADR-011 ④ |
+| P6-5 退役闭环 | 旧单字段 text/thinking 累积路径与双轨写入删除；消费语义表清零双轨标注 | ADR-011 ⑥ |
+
+依赖：P6-2 依赖 P6-1（段的写入先于消费）；P6-3 依赖 P6-2；P6-4 可与 P6-3 并行（不同层）；P6-5 收尾（依赖 P6-2/P6-3 全部消费面迁移完成）。
+
 ## 状态台账
 
 | Phase | 状态 |
+|---|---|
+| Phase 6 | 已完成（2026-10-31，代码 1b6287dc7 squash 合入 latest；P6-1~P6-5 全落地 + 引擎侧补齐 turn.step 四帧 agentId（subagent 域 ADR-015 修订记录）；web 2005 tests + rust 4748 tests + 真实引擎 e2e 绿。遗留：见下方 2026-10-31 登记） |
+
+- 2026-10-31（Phase 6 live 叙事时间线落地，feat-subagent-live-narrative）：起因 sub agent 面板两个用户报告缺陷——工具聚成单个「N tool calls」巨型折叠块（不符合执行时间线）+ 底部叙事区反复重绘。根因（context §11）：live 路三桶数据结构（thinking/text 单字段 + steps 数组）丢失到达顺序 + 流式判定随工具追加翻转 + 1Hz 轮询全量换引用。落地：投影层叙事段（text/thinking 段 + 步骤共用到达序计数器，generation 域 id + seq 编码 generation 保证重连单调）；reducer 段累积 + 步边界三分支（记账/重试截断/run-scoped tombstone）；归一化单点真实穿插；流式判定末块一次性定态；REST 折合无语义变化保行引用；旧单字段路径退役。**引擎侧关键修复**：turn.step.started/completed/retrying/interrupted 四帧补 agent_id（此前缺失导致 ADR-015 步边界机制对子代理从未生效——ADR-015 修订记录）。
+- **遗留登记（独立跟进项，非本批范围）**：① 渲染静默性下一层——`activeAppTasks`/`toAgentMember` 层身份稳定化（行引用达标 ≠ 整链无重算，链路事实见 SDD ledger task-9 报告）；② `backgroundTaskId` 名册合并保活缺口（既存缺陷，影响 delta-gap resync 后终态输出回填与取消）；③ `terminalHistory` + REST 滞后 running 的短暂双行（既存缺陷）；④ steps 无跨代合并（reset 后重放会以投影层列表整体替换，旧工具卡消失——段的 mergeSegments 无 steps 对应物）；⑤ base 自带 cron 时序 flaky（`b2_notification_tests`/`t9_session_title_tests` 在干净 base 上 1/3 次失败，非本批引入，建议向 cron 批次反馈）。
 |---|---|
 | Phase 1 | 已完成（2026-09-15，代码 dc526f72 起 5 提交；真实浏览器验收并入 Phase 2 收尾统一执行） |
 | Phase 2 | 已完成（2026-09-15，代码 083ea322 起 6 提交 + 引擎成员停止补齐 + browser e2e 验收；P-025/026/027 deferred 待裁决） |
@@ -103,3 +122,23 @@
 - glossary：SV1（委托）、SV2（督导）——随本域 v1 同批注册
 
 - 2026-10-23（Phase 5 状态收敛落地，fix-member-status-single-source）：起因桌面端双成员并行委托的两类矛盾状态显示（报告已出仍呼吸灯 / 仍在跑却绿勾+Working）。SDR-009/ADR-010 设计批次（context §10 诊断：双字段分叉 + 五条不对称写路径 + keep-live 幽灵行）后实现落地：`taskStatus.ts` 统一终态↔阶段映射与派生点；reducer/cancelTask/REST 折合/名册合并原子化 + 名册粘滞；投影器四中间态写点终态守卫；keepLiveSubagents 分级对账（蜂群逐成员结局 > 父调用定局 > 已中止，转录加载守卫）；全部读端（含 MemberFocus 实时流）收编统一派生。已知边界（首开转录分页）记 context §10；后续收敛候选（REST 折合三元链收编、taskCreated 替换臂粘滞、fallback 臂直测、守卫风格统一、sideChat 裸读）见 SDD ledger。
+
+## Phase 7 — 折叠态轻量时间线（2026-11-01 立项）
+
+> SDR-010 / 架构 ADR-012。主区默认视觉路径的过程可见性：委派卡折叠态成员行从「单行活动摘要」升级为「最近活动轻量时间线」。纯 web 呈现层，无引擎/协议/归约层改动。
+
+| 条目 | 内容 | 验收锚点 |
+|---|---|---|
+| P7-1 时间线派生 | `swarmCardRows` 纯函数：steps+segments 按 seq 合并取尾部窗口（固定 5）；SwarmMember.timeline（两个构造点）+ 引用稳定 memo | SDR-010、ADR-012 ①③ |
+| P7-2 成员行渲染 | DelegationCard 成员行：工具元素（着色）、叙事元素（首行摘要/思考中标签）、当前高亮完成弱化、awaiting 冻结、无数据回落 | SDR-010、ADR-012 ①④、US1.1/1.2 |
+| P7-3 验收 | 单元 Given-When-Then（穿插序/截断/回落/终态/awaiting 优先级/result-only）+ 真实环境逐帧采样回归 | ADR-012 ⑤ |
+
+开放项（本域登记）：
+- O-7a 详情面板入口深度（ADR-012 有意排除 ④）——三跳入口的信息架构问题，独立评估
+- O-7b 主区 turn 折叠头工具展开（ADR-012 有意排除 ⑤）——跨域，属 conversation-rendering 域，需该域提案承接
+
+## 状态台账（Phase 7）
+
+| Phase | 状态 |
+|---|---|
+| Phase 7 | 已完成（2026-11-02，代码 2ca18634d squash 合入 latest；P7-1~P7-3 全落地；web 2125 tests + typecheck 绿 + 真实环境逐帧验收：工具按执行顺序出现、思考期 Thinking 标签、正文/思考/工具穿插、参数单行摘要、5 元素尾窗滚动） |

@@ -372,7 +372,9 @@ struct ChainArgs {
 /// The chain task's captures: everything the injection loop needs,
 /// cloned from the settlement point's already-captured field Arcs —
 /// deliberately NOT holding `&EmbeddedServer` or `Arc<EmbeddedServer>`
-/// (the hard rule the cron/task drivers set).
+/// (the hard rule the cron/task drivers set). `Clone`: the per-session
+/// cron passes each take their own copy of the shared field Arcs.
+#[derive(Clone)]
 pub(super) struct ChainResources {
     registry: Arc<WorkspaceRegistry>,
     activity_trackers: ActivityTrackerMap,
@@ -891,6 +893,9 @@ async fn inject_goal_continuation_turn(
 
     let turn_end = run_engine_turn(
         flow_handle,
+        // Goal-chain turns are engine-driven, not user- or cron-driven —
+        // the flow's default Interactive origin applies.
+        None,
         agent.hook_engine(),
         external_hook_env,
         Arc::clone(flag_registry),
@@ -940,6 +945,7 @@ async fn inject_goal_continuation_turn(
                     reason: turn_stop_reason_wire(&turn_end.stop_reason).to_string(),
                     error: None,
                     duration_ms: Some(turn_end.duration_ms),
+                    ended_at: Some(turn_end.ended_at),
                 })
                 .await;
             artifacts.event_bus.publish(SessionEvent::TurnCompleted {
@@ -949,6 +955,7 @@ async fn inject_goal_continuation_turn(
                 stop_reason: turn_stop_reason_wire(&turn_end.stop_reason).to_string(),
                 wire_turn_id: turn_end.turn_id,
                 duration_ms: Some(turn_end.duration_ms),
+                ended_at_ms: Some(turn_end.ended_at),
             });
             note_turn_settled(index, registry, session).await;
             let settled =
@@ -980,6 +987,9 @@ async fn inject_goal_continuation_turn(
                 error: error.message(),
                 error_code: error.domain_code().to_string(),
                 wire_turn_id: 0,
+                // No TurnEndResult on this path — the failure moment
+                // is the terminal instant.
+                ended_at_ms: Some(super::message_handlers::now_epoch_ms()),
             });
             note_turn_settled(index, registry, session).await;
             let settled =

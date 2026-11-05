@@ -62,6 +62,16 @@ impl Tool for WebSearchTool {
         })
     }
 
+    /// ADR-015 (stage-2 D-M2): the capability category. WebSearch is NOT
+    /// read-only: the query (model-drafted text carrying repo context)
+    /// leaves the machine for a third-party search service — the same
+    /// egress-facing standard that keeps FetchURL non-readonly applies
+    /// (outbound tools are never observation-only; a read-only-postured
+    /// turn must not be able to exfiltrate workspace content outwards).
+    fn readonly(&self) -> bool {
+        false
+    }
+
     fn resolve_execution(&self, input: serde_json::Value) -> Result<ToolExecution, EngineError> {
         let query: String = input
             .get("query")
@@ -174,6 +184,7 @@ mod tests {
                     tool_call_id: "test-call".into(),
                     cancel: crate::cancel::CancelToken::new(),
                     progress: crate::tool::ToolProgressHandle::default(),
+                    turn_origin: Default::default(),
                 };
                 execute(ctx).await
             }
@@ -275,5 +286,14 @@ mod tests {
     async fn should_declare_web_search_capability() {
         let tool = make_tool(Vec::new());
         assert_eq!(tool.capabilities(), &["web.search".to_string()]);
+    }
+
+    /// Given the egress-facing ADR-015 standard (outbound tools are never
+    /// observation-only), when the WebSearch category is read, then it is
+    /// non-readonly — a read-only-postured cron turn must refuse it.
+    #[test]
+    fn should_not_declare_readonly_because_the_query_leaves_the_machine() {
+        let tool = make_tool(Vec::new());
+        assert!(!tool.readonly());
     }
 }

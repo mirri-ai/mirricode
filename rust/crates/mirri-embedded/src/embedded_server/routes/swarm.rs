@@ -9,16 +9,19 @@ pub(super) const ROUTES: &[Route] = &[
         method: "swarm.enter",
         aliases: &["enterSwarm"],
         handler: |server, params| Box::pin(server.dispatch_enter_swarm(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "swarm.exit",
         aliases: &["exitSwarm"],
         handler: |server, params| Box::pin(server.dispatch_exit_swarm(params)),
+        settlement: Route::SETTLES,
     },
     // Returns a plain boolean (the TS `getSwarmMode` wire type).
     Route {
         method: "swarm.get",
         aliases: &["getSwarmMode"],
         handler: |server, params| Box::pin(server.dispatch_get_swarm_mode(params)),
+        settlement: Route::SETTLES,
     },
 ];

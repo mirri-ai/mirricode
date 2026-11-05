@@ -420,6 +420,19 @@ impl RemoteAdapter {
                 "connection closed during connect".to_string(),
             ));
         }
+
+        // ADR-013 decision 6 (remote mode): the app-level skill-catalog
+        // broadcast is connection-local on the serve wire — subscribe once
+        // per connection (the `skill.subscribe` call the server's forwarder
+        // keys on). Old servers answer method-not-found; best-effort only
+        // (the embedded mode needs none of this — its `subscribe_events`
+        // already carries the direct-form notification).
+        if let Err(error) =
+            call_internal(&inner, "skill.subscribe", json!({}), Some(HANDSHAKE_TIMEOUT)).await
+        {
+            tracing::debug!(%error, "skill.subscribe failed during connect");
+        }
+
         Ok(Arc::new(RemoteAdapter { inner }))
     }
 
@@ -1045,7 +1058,10 @@ fn handle_notification(inner: &Arc<RemoteAdapterInner>, notification: JsonRpcNot
         "pong" => {
             // Liveness is tracked per inbound frame; nothing else to do.
         }
-        method if method == "event" || method.starts_with("event.") => {
+        method if method == "event"
+            || method.starts_with("event.")
+            || method == "skill.catalogChanged" =>
+        {
             if let Some(events) = inner
                 .events
                 .lock()

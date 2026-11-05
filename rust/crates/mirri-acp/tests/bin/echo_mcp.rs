@@ -10,6 +10,11 @@
 //! (defaulting to `echo`), so tests can distinguish multiple instances of
 //! this server by giving each a different tool name (the shadowing tests).
 //!
+//! An optional second argument names a file the server writes its own pid
+//! into at startup and deletes on exit: the dispose-regression test uses it
+//! to observe the child's real lifetime from outside the engine (the
+//! manager's connection tables say nothing about the process).
+//!
 //! Not a `[[test]]` target: this binary is spawned as a child process by
 //! the engine under test (an MCP server config's `command`), never run
 //! directly.
@@ -17,9 +22,18 @@
 use std::io::{BufRead, Write};
 
 fn main() {
-    let tool_name = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "echo".to_string());
+    let mut args = std::env::args().skip(1);
+    let tool_name = args.next().unwrap_or_else(|| "echo".to_string());
+    let pid_file = args.next().map(std::path::PathBuf::from);
+    if let Some(path) = &pid_file
+        && let Err(error) = std::fs::write(path, std::process::id().to_string())
+    {
+        // A failed marker write must not turn into a silent hang: write
+        // what happened to stderr and die loudly (best-effort — stderr is
+        // captured by the transport, so the test's timeout is the backstop).
+        eprintln!("echo-mcp: cannot write pid file {}: {error}", path.display());
+        std::process::exit(1);
+    }
     let stdin = std::io::stdin();
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
@@ -85,5 +99,11 @@ fn main() {
         let mut stdout = std::io::stdout().lock();
         let _ = writeln!(stdout, "{response}");
         let _ = stdout.flush();
+    }
+    if let Some(path) = &pid_file {
+        // Best-effort: a stale file only fails the test that spawned this
+        // server, and on SIGKILL the unlink never runs anyway (the test's
+        // liveness probe — not the file's absence — is the real signal).
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -39,9 +39,7 @@ pub fn mirri_home_dir() -> Option<PathBuf> {
 /// Pure resolver behind [`os_home_dir`], parameterised over the env lookup
 /// so the precedence rules are testable without mutating the process
 /// environment.
-pub fn resolve_os_home_dir_from(
-    get_env: impl Fn(&str) -> Option<OsString>,
-) -> Option<PathBuf> {
+pub fn resolve_os_home_dir_from(get_env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     get_env("HOME")
         .filter(|value| !value.is_empty())
         .or_else(|| get_env("USERPROFILE").filter(|value| !value.is_empty()))
@@ -50,9 +48,7 @@ pub fn resolve_os_home_dir_from(
 
 /// Pure resolver behind [`mirri_home_dir`], parameterised over the env
 /// lookup (see [`resolve_os_home_dir_from`]).
-pub fn resolve_mirri_home_dir_from(
-    get_env: impl Fn(&str) -> Option<OsString>,
-) -> Option<PathBuf> {
+pub fn resolve_mirri_home_dir_from(get_env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     if let Some(mirri_home) = get_env("MIRRICODE_HOME").filter(|value| !value.is_empty()) {
         return Some(PathBuf::from(mirri_home));
     }
@@ -140,10 +136,7 @@ mod tests {
     fn should_derive_the_brand_home_from_the_os_home_when_mirricode_home_is_absent() {
         let dir = resolve_mirri_home_dir_from(fake_env(&[("USERPROFILE", r"C:\Users\user")]))
             .expect("resolution should succeed");
-        assert_eq!(
-            dir,
-            PathBuf::from(r"C:\Users\user").join(".mirri-code")
-        );
+        assert_eq!(dir, PathBuf::from(r"C:\Users\user").join(".mirri-code"));
     }
 
     #[test]

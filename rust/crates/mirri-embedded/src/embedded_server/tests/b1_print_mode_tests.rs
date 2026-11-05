@@ -15,7 +15,7 @@ fn b1_print_server(toml_contents: &str) -> (EmbeddedServer, tempfile::TempDir) {
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let mut parsed = ServerConfig::from_toml(toml_contents).expect("test config should parse");
     // The create chain requires a resolvable model (spec 11 R4 — no
     // built-in fallback): seed the test default unless the TOML sets one.
@@ -23,7 +23,8 @@ fn b1_print_server(toml_contents: &str) -> (EmbeddedServer, tempfile::TempDir) {
         parsed.default_model = Some(super::TEST_DEFAULT_MODEL.to_string());
     }
     let config = Arc::new(RwLock::new(parsed));
-    let server = EmbeddedServer::with_providers(manager, None, None, None, None, config, None);
+    let server = EmbeddedServer::with_providers(manager, None, None, None, None, config, None)
+        .with_home_dir(Some(tmp.path().to_path_buf()));
     (server, tmp)
 }
 

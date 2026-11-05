@@ -345,7 +345,7 @@ async fn mark_sessions_async(scope: &Arc<mirri_core::WorkspaceScope>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bootstrap::test_env;
+    use mirri_test_support::env;
     use mirri_core::SessionId;
     use mirri_core::scope::SessionMetadata;
 
@@ -374,7 +374,7 @@ mod tests {
     /// roots read `$HOME/.agents/skills` at replay time, so the pin keeps
     /// a parallel test's real home from leaking skills in.
     fn with_pinned_home<T>(isolated: &Path, f: impl FnOnce() -> T) -> T {
-        let _home_lock = test_env::home_lock();
+        let _home_lock = env::lock();
         let previous_home = std::env::var_os("HOME");
         // SAFETY: restored immediately after `f`, under the crate home
         // lock (the existing bootstrap tests' pin pattern).
@@ -419,6 +419,8 @@ mod tests {
             trust_store: None,
             default_registration_id: None,
             default_scope_id: None,
+            workspace_registry: std::sync::OnceLock::new(),
+            metadata_store: std::sync::OnceLock::new(),
         });
         let registry = crate::workspace_registry::WorkspaceRegistry::new(
             Arc::new(NoopResolver),

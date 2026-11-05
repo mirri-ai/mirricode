@@ -172,7 +172,7 @@ Outline prompt:
 
 ```
 * Install and upgrade
-  * System requirements: Node.js 24.15.0+, recommend pnpm
+  * System requirements: Node.js 24.22.2+, recommend pnpm
   * Install, upgrade, uninstall steps
 ```
 
@@ -183,7 +183,7 @@ Outline prompt:
 
 ### System requirements
 
-- Node.js 24.15.0+
+- Node.js 24.22.2+
 - Recommend pnpm
 
 ### Install
@@ -200,7 +200,7 @@ Outline prompt:
 ```markdown
 ## Install and upgrade
 
-Mirri Code requires Node.js 24.15.0 or later. We recommend using pnpm for installation and management.
+Mirri Code requires Node.js 24.22.2 or later. We recommend using pnpm for installation and management.
 
 If you haven't installed pnpm yet, please refer to the pnpm installation docs first. Install Mirri Code:
 

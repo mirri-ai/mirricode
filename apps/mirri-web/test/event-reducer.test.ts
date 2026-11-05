@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialState, reduceAppEvent } from '../src/api/daemon/eventReducer';
+import { createAgentProjector } from '../src/api/daemon/agentEventProjector';
 import { shouldClearWorkingFlags } from '../src/composables/useMirriWebClient';
-import type { AppMessage, AppSession, AppTask } from '../src/api/types';
+import type { AppMessage, AppSession, AppTask, NarrativeSegment } from '../src/api/types';
 
 function makeSession(id: string, updatedAt: string): AppSession {
   return {
@@ -249,10 +250,17 @@ describe('reduceAppEvent taskProgress', () => {
     expect(lines?.at(-1)).toBe('line 59');
   });
 
-  it('concatenates subagent text-kind chunks into a growing text block', () => {
+  it('appends subagent text-kind chunks onto the named narrative segment', () => {
     const state = {
       ...createInitialState(),
-      tasksBySession: { 's1': [makeSubagentTask('t1', 's1')] },
+      tasksBySession: {
+        's1': [
+          {
+            ...makeSubagentTask('t1', 's1'),
+            segments: [{ id: 'seg-1', kind: 'text', text: '', seq: 0 }],
+          },
+        ],
+      },
     };
     let next = state;
     for (const chunk of ['Hello', ', ', 'world', '!']) {
@@ -265,27 +273,35 @@ describe('reduceAppEvent taskProgress', () => {
           outputChunk: chunk,
           stream: 'stdout',
           kind: 'text',
+          segmentId: 'seg-1',
         },
         { sessionId: 's1', seq: 1 },
       );
     }
     const task = next.tasksBySession['s1']?.[0];
-    expect(task?.text).toBe('Hello, world!');
+    expect(task?.segments?.[0]?.text).toBe('Hello, world!');
     // Text chunks must not pollute the line-based progress output.
     expect(task?.outputLines ?? []).toHaveLength(0);
   });
 
-  it('preserves accumulated text across a taskCreated replacement', () => {
+  it('preserves accumulated segments across a taskCreated replacement', () => {
     const state = {
       ...createInitialState(),
-      tasksBySession: { 's1': [{ ...makeSubagentTask('t1', 's1'), text: 'partial' }] },
+      tasksBySession: {
+        's1': [
+          {
+            ...makeSubagentTask('t1', 's1'),
+            segments: [{ id: 'seg-1', kind: 'text', text: 'partial', seq: 0 }],
+          },
+        ],
+      },
     };
     const next = reduceAppEvent(
       state,
       { type: 'taskCreated', sessionId: 's1', task: makeSubagentTask('t1', 's1') },
       { sessionId: 's1', seq: 1 },
     );
-    expect(next.tasksBySession['s1']?.[0]?.text).toBe('partial');
+    expect(next.tasksBySession['s1']?.[0]?.segments?.[0]?.text).toBe('partial');
   });
 
   it('preserves subagent identity metadata across a taskCreated replacement with omitted fields', () => {
@@ -300,7 +316,7 @@ describe('reduceAppEvent taskProgress', () => {
             subagentType: 'explore',
             runInBackground: true,
             outputLines: ['old line'],
-            text: 'partial',
+            segments: [{ id: 'seg-1', kind: 'text', text: 'partial', seq: 0 }],
           },
         ],
       },
@@ -316,7 +332,7 @@ describe('reduceAppEvent taskProgress', () => {
       subagentType: 'explore',
       runInBackground: true,
       outputLines: ['old line'],
-      text: 'partial',
+      segments: [{ id: 'seg-1', kind: 'text', text: 'partial', seq: 0 }],
     });
   });
 
@@ -359,6 +375,36 @@ describe('reduceAppEvent taskProgress', () => {
       { sessionId: 's1', seq: 1 },
     );
     expect(next.tasksBySession['s1']?.[0]?.description).toBe('write the tests');
+  });
+
+  it('should match the projector final segment text with no double-counting when every delta arrives as taskCreated-then-taskProgress', () => {
+    // Given a live projector emitting its real per-delta shape: each delta
+    // appends to the projector-side segment first (taskCreated carries the
+    // FULL segment text), then the same delta reaches the reducer again as an
+    // incremental taskProgress chunk — the ADR-011 ② no-double-counting
+    // invariant the segment merge must uphold.
+    const projector = createAgentProjector();
+    const deltas = ['He', 'llo, ', 'wor', 'ld', '!'];
+    let state = { ...createInitialState() };
+
+    // When the projector streams every delta through the reducer unchanged
+    let seq = 1;
+    let finalProjectedSegments: NarrativeSegment[] | undefined;
+    for (const delta of deltas) {
+      for (const event of projector.project('assistant.delta', { agentId: 't1', delta }, 's1', { offset: 0 })) {
+        if (event.type === 'taskCreated') finalProjectedSegments = event.task.segments;
+        state = reduceAppEvent(state, event, { sessionId: 's1', seq: seq++ });
+      }
+    }
+
+    // Then the row's segment text equals the projector's final segment text —
+    // the incremental chunks never re-append text the full replacements
+    // already carried（同 id 段以投影层全量为准，无重复拼接）.
+    const row = state.tasksBySession['s1']?.[0];
+    expect(row?.segments?.map((s) => [s.id, s.text])).toEqual(
+      finalProjectedSegments?.map((s) => [s.id, s.text]),
+    );
+    expect(row?.segments?.[0]?.text).toBe('Hello, world!');
   });
 });
 

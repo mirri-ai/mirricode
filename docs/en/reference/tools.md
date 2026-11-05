@@ -116,21 +116,37 @@ Background task tools manage tasks started via `Bash`, `Agent`, or `AskUserQuest
 
 ## Scheduled Tasks
 
-Scheduled task tools allow the Agent to re-inject a prompt into the current session at a future time — either as a one-time reminder or as a recurring cron-triggered task (periodic checks, daily reports, deployment monitoring, etc.). Schedules are bound to the session and remain active after `mirri resume`, but are not carried into a brand-new session. A single session can hold at most 50 active scheduled tasks. Set `MIRRICODE_DISABLE_CRON=1` to disable them entirely; see [Environment Variables](../configuration/env-vars.md#运行时开关).
+"Do this later" has two shapes, each with its own tool:
+
+- **Timer** (`SetTimer`) — a one-shot delayed callback inside the CURRENT session. For conversational follow-ups such as "check the CI result in 10 minutes".
+- **Scheduled task** (`CreateScheduledTask`) — a routine in the task's workspace, with its own identity and run history. For daily patrols, weekly reports, deployment monitoring, and other long-lived jobs.
+
+A timer needs no approval; every new scheduled task asks you to confirm first. Created tasks are listed, edited, paused and deleted on the Scheduled Tasks page in settings. Set `MIRRICODE_DISABLE_CRON=1` to disable both tools entirely; see [Environment Variables](../configuration/env-vars.md#运行时开关).
 
 | Tool | Default Approval | Description |
 | --- | --- | --- |
-| `CronCreate` | Requires approval | Schedule a prompt to fire at a future time |
-| `CronList` | Auto-allow | List scheduled tasks |
-| `CronDelete` | Requires approval | Cancel a scheduled task |
+| `SetTimer` | Auto-allow | Schedule a one-shot delayed callback in the current session |
+| `CreateScheduledTask` | Requires approval | Create a scheduled task in the task's workspace |
 
-**`CronCreate`** accepts `cron` (a standard 5-field cron expression in the user's local timezone: `minute hour day-of-month month day-of-week`), `prompt` (the text to inject when triggered; UTF-8 limit 8 KB), and optional `recurring` (defaults to `true`; pass `false` for a one-time reminder that auto-deletes after firing). On success, returns an 8-hex-digit `id`, a human-readable `humanSchedule` (e.g., `every 5 minutes`), and `nextFireAt` (the ISO timestamp of the next fire time).
+**`SetTimer`** accepts two arguments: `delay_minutes` (how many whole minutes from now; under a minute rounds up to one) and `message` (the text injected into the session when it fires — write it as the instruction you want to receive then). It fires exactly once and removes itself, so nothing is left to clean up. Detection ticks every 30 seconds, so delivery may land slightly off the requested minute; if a turn is still running at that moment, the message waits for the turn to end, and missed periods coalesce into one fire.
 
-To prevent all users from firing at the same time on the hour, the scheduler applies deterministic jitter: recurring tasks are shifted forward by `min(10% of the period, 15 minutes)`; one-time tasks that fall exactly on `:00` or `:30` are moved forward by up to 90 seconds. If the scheduler misses several fire times (e.g., because the laptop was sleeping), it fires only once on wake-up — the prompt is wrapped in a `<cron-fire>` envelope with a `coalescedCount`. Recurring tasks that have been alive for more than 7 days fire one final time with `stale="true"` and are then automatically deleted; call `CronCreate` again to keep them.
+**`CreateScheduledTask`** requires `cron` (a standard 5-field expression: minute hour day-of-month month day-of-week) and `prompt` (the instruction each run executes — shown verbatim on the approval card so you approve exactly that text). Optional: `recurring` (defaults to `true` — reschedule after every fire; `false` runs once), `timezone` (an IANA name; defaults to the host), `max_fires` (a cap for a recurring task; unset means unbounded), `permission_mode` (`manual` / `auto` / `yolo`, the same three modes as a new session — under `manual` a run that reaches an action needing approval stops and waits for you — the run record shows "Waiting for approval", and you approve or reject inside that run's session), `title`, `model`, `effort`, and `reason` (a note shown on the approval card). Every call raises one approval card that spells out, in plain language, the task name, when it runs, the workspace, the model, the permissions and the instruction — in every permission mode it needs your approval. Approving creates the task right away and the call returns its id; rejecting creates nothing, and the agent sees your reason in that call's result.
 
-**`CronList`** is a read-only tool that accepts no parameters. It returns one record per active task with fields: `id`, `cron`, `humanSchedule`, `nextFireAt`, `recurring`, `ageDays`, and `stale`. Records are separated by `---` and sorted by schedule time.
+To prevent all users from firing at the same time on the hour, the scheduler applies deterministic jitter: recurring tasks are shifted forward by `min(10% of the period, 15 minutes)`; one-time tasks that fall exactly on `:00` or `:30` are moved earlier by up to 90 seconds. If the scheduler misses several fire times (e.g., because the laptop was sleeping), it fires only once on wake-up — the prompt is wrapped in a `<cron-fire>` envelope with a `coalescedCount`. Recurring tasks that have been alive for more than 7 days fire one final time with `stale="true"` and are then automatically deleted.
 
-**`CronDelete`** accepts a single `id`. For recurring tasks, all future fires stop immediately; for one-time tasks, the pending fire is cancelled. One-time tasks that have already fired are auto-deleted, so calling `CronDelete` on an already-fired one-time task returns `No cron job with id ...`. Deletion is irreversible — use `CronCreate` again to restore. `CronDelete` is also blocked in Plan mode.
+### The Scheduled Tasks page
+
+Besides asking the Agent to schedule work, you can manage the workspace's tasks directly on the Scheduled Tasks page in the web settings panel.
+
+- **List**: two-column cards; each card carries the title, an excerpt of the instructions, and a footer line of the repeat rule, the next run and the run count. Clicking a card opens its detail view. Status is a filter row above the list (All / Active / Paused / Failed) — cards carry no status badge and no per-card buttons.
+> Note: the create and edit form currently shows workspace, permission mode, model and thinking effort; the create API still accepts the legacy posture field for older clients.
+
+- **Create**: four stacked blocks — the task title; the schedule (a structured picker: every hour / day / weekday / week / month / custom, no expression to write, plus an optional fire cap for recurring tasks); the prediction timeline; and the instructions each run executes. The bottom row holds four pickers side by side — workspace, permission mode, model and thinking effort — the same choices as starting a session; untouched fields follow the workspace defaults.
+- **Prediction timeline**: "theoretical previous → next → next-next", each point labelled with its timezone. The theoretical previous run is computed, not recorded, so it is de-emphasised and marked "theoretical"; what actually ran lives in the detail view's History tab only.
+- **Detail**: the Settings tab reuses the create form (pre-filled; the task keeps its identity and history), the History tab shows the run records. A task can be paused and resumed; runs missed while paused are not replayed.
+- **Run records**: each run in the History tab shows what triggered it (scheduled / run now / queued follow-up), how late it started versus the plan, and its current status (including "Waiting for approval"). A run only counts as succeeded when its turn actually produced output.
+
+Custom schedules support "every N days/weeks/months" elapsed intervals and an end date (the last day still fires); an end date that equals the first run day makes it a one-off. Actual deliveries may jitter slightly against the planned moments (up to a few minutes for recurring tasks) — both the form and the list show the ideal planned times.
 
 ## Next steps
 

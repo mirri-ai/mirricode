@@ -5,7 +5,7 @@
 //! inline values are unchanged.
 
 use super::super::{invalid_params, normalize_params};
-use super::Route;
+use super::{Route, SettlementClass};
 use mirri_transport::adapter::EngineError;
 use serde::Deserialize;
 use serde::Serialize;
@@ -17,6 +17,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "core.info",
         aliases: &["getCoreInfo"],
         handler: |server, _params| Box::pin(server.dispatch_get_core_info()),
+        settlement: Route::SETTLES,
     },
     // Experimental feature flags — the same registered-flag view
     // `flag.explainAll` serves (the TS wire contract is a bare array,
@@ -26,26 +27,33 @@ pub(super) const ROUTES: &[Route] = &[
         method: "core.experimentalFeatures",
         aliases: &["getExperimentalFeatures"],
         handler: |server, _params| Box::pin(server.dispatch_flag_explain_all()),
+        settlement: Route::SETTLES,
     },
     // M5 drill (§7 criterion 7): a both-method walking the full
     // registry → handler → wire flow. Echoes the `text` param back as
     // `{echo: "<text>"}`; the serve wire rides the engine fall-through
     // with zero transport code.
+    // ADR-003 c read-face whitelist: the echo touches no engine state;
+    // only the census wait remains (a route may not overtake the census
+    // that has yet to see this instance's tasks — ADR-012 c).
     Route {
         method: "core.echo",
         aliases: &[],
         handler: |_server, params| Box::pin(async move { dispatch_core_echo(params) }),
+        settlement: SettlementClass::AwaitCensus,
     },
     // Engine identity as the TS `getMirriConfig`/`config.get` shape.
     Route {
         method: "config.get",
         aliases: &["getMirriConfig"],
         handler: |server, _params| Box::pin(server.dispatch_get_mirri_config()),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "config.diagnostics",
         aliases: &["getConfigDiagnostics"],
         handler: |server, _params| Box::pin(async move { server.dispatch_config_diagnostics() }),
+        settlement: Route::SETTLES,
     },
     // Deep-merges the patch into config.toml and reloads the
     // in-memory snapshot; returns the updated wire shape.
@@ -53,31 +61,37 @@ pub(super) const ROUTES: &[Route] = &[
         method: "config.set",
         aliases: &["setMirriConfig"],
         handler: |server, params| Box::pin(server.dispatch_set_mirri_config(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "config.removeProvider",
         aliases: &["removeMirriProvider"],
         handler: |server, params| Box::pin(server.dispatch_remove_provider(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "config.removeModel",
         aliases: &["removeMirriModel"],
         handler: |server, params| Box::pin(server.dispatch_remove_model(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "model.list",
         aliases: &["listModels"],
         handler: |server, _params| Box::pin(server.dispatch_model_list()),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "model.listProviders",
         aliases: &["listProviders"],
         handler: |server, _params| Box::pin(server.dispatch_model_list_providers()),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "shell.run",
         aliases: &["runShellCommand"],
         handler: |server, params| Box::pin(server.dispatch_run_shell_command(params)),
+        settlement: Route::SETTLES,
     },
     // Cancels a running foreground `!` shell command by its command id (an
     // unknown id is a silent no-op, matching the TS semantics).
@@ -85,11 +99,13 @@ pub(super) const ROUTES: &[Route] = &[
         method: "shell.cancel",
         aliases: &["cancelShellCommand"],
         handler: |server, params| Box::pin(server.dispatch_cancel_shell_command(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "btw.start",
         aliases: &["startBtw"],
         handler: |server, params| Box::pin(server.dispatch_start_btw(params)),
+        settlement: Route::SETTLES,
     },
 ];
 

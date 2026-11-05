@@ -86,6 +86,23 @@ export const ToolInputDisplaySchema = z.discriminatedUnion('kind', [
     mode: z.enum(['manual', 'yolo']),
   }),
   z.object({
+    // A scheduled-task creation the user judges (ADR-022): every parameter
+    // of the task about to be created, rendered as plain language by the
+    // approval card.
+    kind: z.literal('scheduled_task_create'),
+    cron: z.string(),
+    timezone: z.string().optional(),
+    workspace_id: z.string(),
+    permission_mode: z.string().optional(),
+    model: z.string().optional(),
+    effort: z.string().optional(),
+    title: z.string().optional(),
+    prompt: z.string(),
+    recurring: z.boolean(),
+    max_fires: z.number().int().optional(),
+    reason: z.string().optional(),
+  }),
+  z.object({
     kind: z.literal('generic'),
     summary: z.string(),
     detail: z.unknown().optional(),

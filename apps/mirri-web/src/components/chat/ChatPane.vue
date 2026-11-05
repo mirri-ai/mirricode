@@ -1,6 +1,7 @@
 <!-- apps/mirri-web/src/components/chat/ChatPane.vue -->
 <script setup lang="ts">
-import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, inject, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue';
+import type { Ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ChatTurn, ApprovalBlock, FilePreviewRequest, ToolMedia, QueuedPromptView, TurnAttachment } from '../../types';
 import type { AppModel } from '../../api/types';
@@ -18,7 +19,6 @@ import AttachmentChip from './AttachmentChip.vue';
 import MoonSpinner from '../ui/MoonSpinner.vue';
 import Spinner from '../ui/Spinner.vue';
 import Icon from '../ui/Icon.vue';
-import Tooltip from '../ui/Tooltip.vue';
 import TurnUsagePill from './TurnUsagePill.vue';
 import type { TurnUsage } from '../../api/types';
 import { useConfirmDialog } from '../../composables/useConfirmDialog';
@@ -300,12 +300,65 @@ const liveElapsed = useLiveElapsedMs(
   computed(() => streamingTurnId.value !== null),
 );
 
+// US3.8 (ADR-7): shared 1s tick for running tool cards + the moon-side
+// timer — one interval, many consumers (useLiveElapsedMs is single-anchor;
+// the turn-level liveElapsed keeps its own primitive). Stops with the turn
+// so interrupted cards freeze at their last tick frame.
+const runningTick = ref(Date.now());
+let runningTimer: ReturnType<typeof setInterval> | null = null;
+watch(
+  () => props.turnActive,
+  (active) => {
+    if (runningTimer) { clearInterval(runningTimer); runningTimer = null; }
+    runningTick.value = Date.now();
+    if (active) runningTimer = setInterval(() => { runningTick.value = Date.now(); }, 1_000);
+  },
+  { immediate: true },
+);
+onUnmounted(() => { if (runningTimer) clearInterval(runningTimer); });
+// Known boundary: the tool card's third consumer (MemberFocus, in the
+// supervision panel) mounts OUTSIDE this subtree, so it injects no tick and
+// falls back to the frozen `timing` — safe. Covering it would mean lifting
+// this provide up to App.vue.
+// Readonly at the consume side: a tool card only reads the clock, so the
+// provided type narrows consumers instead of exposing a writable ref.
+provide<Readonly<Ref<number>>>('runningToolTick', runningTick);
+
+// US3.8: latest running tool call beside the working moon — max
+// startedAtMs wins among parallel siblings (batch-blocking means a newer
+// call only exists while older batchmates still run).
+const activeTool = computed(() => {
+  if (!props.turnActive) return null;
+  const last = props.turns.at(-1);
+  if (!last) return null;
+  const running = (last.tools ?? []).filter((t) => t.status === 'running' && t.startedAtMs !== undefined);
+  if (running.length === 0) return null;
+  const latest = running.reduce((a, b) => (a.startedAtMs! >= b.startedAtMs! ? a : b));
+  return { name: latest.name, startedAtMs: latest.startedAtMs! };
+});
+// A tick that predates the just-stamped anchor yields a negative span — clamp
+// to 0 so the card never flashes "-1ms" before the next tick.
+const toolElapsedMs = computed(() =>
+  activeTool.value !== null ? Math.max(0, runningTick.value - activeTool.value.startedAtMs) : null,
+);
+
 /** Run-header label: "Worked for 12.3s · 14:32" once a run completes, while
  *  the streaming run shows "Working for 12s · 14:32" (live-ticking) or the
  *  bare "Working… · 14:32" when no start anchor is known — an unanchorable
  *  stream must never be labelled with a fabricated elapsed. Duration reuses
  *  the run-end turn's durationMs semantics (the a-msg-ft footer keys off the
  *  same field) and falls back gracefully when absent. */
+/** The run-end completion stamp for the footer, carried on the turn (see
+ *  messagesToTurns): the engine-authoritative end instant from the wire —
+ *  empty when the engine reported none, so no timestamp renders. Rendered in
+ *  the reader's local timezone, the way the reader's own system spells dates
+ *  and times. The zone is deliberately left off: this line sits at the right
+ *  edge of the footer, where a zone label would cost width without telling the
+ *  reader anything they can act on (it is always their own local zone). */
+function turnEndedAtLabel(turn: ChatTurn): string {
+  return turn.endedAt ? formatMessageTime(turn.endedAt, t('conversation.yesterday')) : '';
+}
+
 function runHeaderLabel(ti: number): string {
   const plan = turnPlan(ti);
   if (!plan) return '';
@@ -316,8 +369,11 @@ function runHeaderLabel(ti: number): string {
     : plan.durationMs !== undefined && plan.durationMs > 0
       ? t('conversation.workedFor', { duration: formatDuration(plan.durationMs) })
       : t('conversation.worked');
-  const timeLabel = plan.createdAt
-    ? formatMessageTime(plan.createdAt, t('conversation.yesterday'))
+  // Show the run's END time (footer-stamp semantics) — the header must not
+  // disagree with the footer's "sent at" moment.
+  const timeIso = plan.endedAt ?? plan.createdAt;
+  const timeLabel = timeIso
+    ? formatMessageTime(timeIso, t('conversation.yesterday'))
     : '';
   return timeLabel ? `${workLabel} · ${timeLabel}` : workLabel;
 }
@@ -949,19 +1005,6 @@ function turnUsageFor(turn: ChatTurn): TurnUsage | undefined {
           v-if="turn.id !== streamingTurnId && isAssistantRunEnd(ti) && (assistantRunFinalText(ti).trim().length > 0 || turn.durationMs !== undefined || turnUsageFor(turn) !== undefined || turn.promptId !== undefined)"
           class="a-msg-ft"
         >
-          <Tooltip :text="`${turn.durationMs} ms`">
-            <span v-if="turn.durationMs !== undefined" class="a-duration">{{ formatDuration(turn.durationMs) }}</span>
-          </Tooltip>
-          <TurnUsagePill v-if="turnUsageFor(turn)" :usage="turnUsageFor(turn)" />
-          <button
-            v-if="!sessionCompressed && forkAnchorOf(turn.promptId) !== undefined"
-            type="button"
-            class="a-cpbtn"
-            :aria-label="t('conversation.forkAtTurnTooltip')"
-            @click.stop="onForkAtTurn(turn)"
-          >
-            <Icon name="git-branch" size="sm" />
-          </button>
           <button
             v-if="assistantRunFinalText(ti).trim().length > 0"
             class="a-cpbtn"
@@ -971,6 +1014,20 @@ function turnUsageFor(turn: ChatTurn): TurnUsage | undefined {
             <Icon v-if="copiedTurn !== turn.id" name="copy" size="sm" />
             <Icon v-else name="check" size="sm" />
           </button>
+          <button
+            v-if="!sessionCompressed && forkAnchorOf(turn.promptId) !== undefined"
+            type="button"
+            class="a-cpbtn"
+            :aria-label="t('conversation.forkAtTurnTooltip')"
+            @click.stop="onForkAtTurn(turn)"
+          >
+            <Icon name="git-branch" size="sm" />
+          </button>
+          <TurnUsagePill v-if="turnUsageFor(turn)" :usage="turnUsageFor(turn)" />
+          <!-- The wall-clock stamp closes the left-anchored metadata group.
+               It carries no affordance, so it renders quieter than the
+               actionable buttons to its left. -->
+          <span v-if="turnEndedAtLabel(turn)" class="a-ended-at">{{ turnEndedAtLabel(turn) }}</span>
         </div>
       </div>
     </template>
@@ -986,6 +1043,9 @@ function turnUsageFor(turn: ChatTurn): TurnUsage | undefined {
          still running). -->
     <div v-if="showWorking" class="sending-placeholder">
       <MoonSpinner :fast="fastMoon" />
+      <span v-if="activeTool && toolElapsedMs !== null" class="working-tool">
+        {{ t('conversation.workingTool', { name: activeTool.name, duration: formatDuration(toolElapsedMs) }) }}
+      </span>
     </div>
 
     <!-- Inline queue — pending user messages shown after the running turn.
@@ -1302,12 +1362,18 @@ function turnUsageFor(turn: ChatTurn): TurnUsage | undefined {
   margin-top: var(--chat-block-gap);
   overflow: visible;
 }
-.a-duration {
+/* End-of-turn wall-clock stamp: the last item of the left-anchored footer
+   group, so it trails the usage pill and the buttons without detaching from
+   them toward the right edge of the message column. Quietest readable step —
+   it is metadata, not content. */
+.a-ended-at {
   display: inline-flex;
   align-items: center;
   font-size: var(--text-base);
-  color: var(--muted);
+  color: var(--color-foreground-subtlest);
   line-height: 1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* Collapse header for an assistant run — robot icon + "Worked for
@@ -1367,18 +1433,18 @@ function turnUsageFor(turn: ChatTurn): TurnUsage | undefined {
   background: none;
   border: none;
   border-radius: var(--radius-sm);
-  color: var(--muted);
+  color: var(--color-foreground-muted);
   font: inherit;
   font-size: var(--text-base);
   line-height: 1;
   cursor: pointer;
-  opacity: 0.7;
-  transition: opacity 0.12s, color 0.12s, background-color 0.12s;
+  /* Actionable: stays a step stronger than the non-interactive stamp beside
+     it, so the row reads "buttons here, timestamp after". */
+  transition: color 0.12s, background-color 0.12s;
   min-height: 22px;
   box-sizing: border-box;
 }
 .a-cpbtn:hover {
-  opacity: 1;
   color: var(--color-accent);
   background: var(--hover);
 }
@@ -1482,6 +1548,17 @@ function turnUsageFor(turn: ChatTurn): TurnUsage | undefined {
 .sending-placeholder {
   align-self: flex-start;
   padding: 10px 0;
+  /* The live tool timer sits inline beside the moon (US3.8). */
+  display: flex;
+  align-items: center;
+}
+/* Latest running tool call + its live elapsed, beside the working moon —
+   the same faint weight ToolRow's `.tm` uses for per-card timings. */
+.working-tool {
+  color: var(--color-text-faint);
+  font-size: 12px;
+  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Skill activation card (replaces raw <mirri-skill-loaded> XML) */

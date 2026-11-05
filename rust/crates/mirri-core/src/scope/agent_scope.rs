@@ -68,10 +68,10 @@ pub struct AgentScope {
     /// writes stay synchronous and parking_lot's API is identical minus
     /// poisoning (guards never fail to acquire).
     ///
-    /// The 21 built-in tools (Bash, Read, Write, Edit, Glob, Grep, TodoList,
-    /// TaskList, TaskStop, TaskOutput, CronCreate, CronDelete, CronList,
-    /// CreateGoal, GetGoal, SetGoalBudget, UpdateGoal, EnterPlanMode,
-    /// ExitPlanMode, select_tools, Skill) are registered here at construction;
+    /// The 18 built-in tools (Bash, Read, Write, Edit, Glob, Grep, TodoList,
+    /// TaskList, TaskStop, TaskOutput, SetTimer, CreateGoal, GetGoal,
+    /// SetGoalBudget, UpdateGoal, EnterPlanMode, ExitPlanMode, Skill)
+    /// are registered here at construction;
     /// they only reach the LLM loop once enabled via `set_active_tools`.
     tool_manager: Arc<parking_lot::RwLock<ToolManager>>,
     /// Permission gate and policy chain (Task 18).
@@ -214,6 +214,8 @@ impl AgentScope {
                 subagent_timeout: config.subagent_timeout,
                 max_swarm_items: config.max_swarm_items,
                 question_channel_wait: config.question_channel_wait,
+                workspace_id: config.workspace_id.clone(),
+                scheduled_task_creator: config.scheduled_task_creator.clone(),
             },
         );
         match config.enabled_tools.clone() {

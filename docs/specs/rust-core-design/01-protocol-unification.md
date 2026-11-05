@@ -1247,6 +1247,7 @@
       }
     },
     "durationMs": { "type": "integer" },
+    "endedAtMs": { "type": "integer", "description": "回合完成的绝对时刻（Unix epoch 毫秒，服务端墙钟）" },
     "blockedByPromptHook": { "type": "boolean", "default": false }
   }
 }
@@ -1346,7 +1347,8 @@ turn 进行中注入额外指令（多模态中断式引导）。
               "content": { "anyOf": [ { "type": "string" }, { "type": "array", "description": "结构化 parts（多模态）" } ] },
               "agentId": { "type": ["string", "null"] },
               "turnId": { "type": ["string", "null"] },
-              "createdAt": { "$ref": "https://mirri.dev/protocol/v1/defs#/$defs/Timestamp" }
+              "createdAt": { "$ref": "https://mirri.dev/protocol/v1/defs#/$defs/Timestamp" },
+              "endedAtMs": { "type": "integer", "description": "回合末行携带该回合的完成时刻（Unix epoch 毫秒，服务端墙钟）——与耗时回填同位；其余行缺省" }
             }
           }
         },
@@ -3167,7 +3169,7 @@ question 域的正向 RPC 入口：反向 RPC `question.ask` 定义见 §8.2；`
 | `turn.step.completed` | ✗ | ✅ | step 完成（含内容/工具结果摘要） |
 | `turn.step.interrupted` | ✗ | ✅ | step 被中断（abort/steer/超时） |
 | `turn.step.retrying` | ✓ | 🚫 | 失败重试提示；随后必有 step.completed/interrupted |
-| `turn.ended` | ✗ | ✅ | turn 结束，负载即 §6.2 的 `TurnEnd` |
+| `turn.ended` | ✗ | ✅ | turn 结束，负载即 §6.2 的 `TurnEnd`（含 `endedAtMs` 完成时刻——见附录 C 2026-11-03 修订） |
 
 ```json
 {
@@ -3243,6 +3245,7 @@ question 域的正向 RPC 入口：反向 RPC `question.ask` 定义见 §8.2；`
         "steps": { "type": "integer" },
         "usage": { "type": "object", "required": ["inputTokens", "outputTokens"], "properties": { "inputTokens": { "type": "integer" }, "outputTokens": { "type": "integer" } } },
         "durationMs": { "type": "integer" },
+        "endedAtMs": { "type": "integer", "description": "回合完成的绝对时刻（Unix epoch 毫秒，服务端计量）——呈现层显示完成时刻的唯一权威来源；与 durationMs 独立携带（时长来自单调时钟，时刻来自墙钟，不可互相推导）" },
         "blockedByPromptHook": { "type": "boolean" }
       }
     }
@@ -4424,6 +4427,10 @@ ACP 宿主（IDE）持有文件系统权限与路径语义；引擎需要读写�
 5. 批处理（数组帧）是否对 HTTP 之外的传输开放（当前仅 WS）。
 
 ## 附录 C：修订记录
+
+### 2026-11-03 turn.ended 增补 endedAtMs（回合完成时刻）
+
+§6.2 `turn-end` 与 §7.2 `turn.ended` 负载增补可选字段 `endedAtMs`（Unix epoch 毫秒，服务端墙钟计量）：回合完成时刻此前不在协议内——消费端只能本地打点（跨端时钟不一致、刷新后丢失）。动机、需求与设计裁决见会话呈现域 [SDR-002](../conversation-rendering-requirements.md) / [ADR-011](../conversation-rendering-architecture.md)。配套：持久化层 `turn.ended` 记录同步携带该字段（旧记录缺 `endedAtMs`，不回填；`durationMs` 与 `endedAtMs` 互相独立，不可互相推导——时长来自单调时钟、时刻来自墙钟）；失败/取消终态的事件负载同样携带该时刻（失败结算点即终止时刻，服务端计量，非推算）；历史读面 `message.list` 在回合末行回填该字段（与耗时回填同位）。
 
 ### 2026-10-13 session.work_changed 事件与 SessionView 运行状态字段登记
 

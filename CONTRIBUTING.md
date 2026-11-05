@@ -36,7 +36,7 @@ For the full project map, see [AGENTS.md](AGENTS.md).
 
 ## Development Setup
 
-Prerequisites: Node.js >= 24.15.0, pnpm 10.33.0, Git.
+Prerequisites: Node.js >= 24.22.2, pnpm 10.33.0, Git.
 
 ```sh
 git clone https://github.com/mirri-ai/mirricode.git

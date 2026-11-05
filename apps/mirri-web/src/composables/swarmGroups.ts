@@ -1,5 +1,8 @@
-import { deriveMemberPhase } from '../lib/taskStatus';
 import type { AppSubagentPhase, AppSuspendedReason, AppTask } from '../api/types';
+import { liveTextTail } from '../lib/memberBlocks';
+import type { SwarmTimelineView } from '../lib/swarmCardRows';
+import { buildMemberTimeline } from '../lib/swarmCardRows';
+import { deriveMemberPhase } from '../lib/taskStatus';
 
 export interface SwarmMember {
   id: string;
@@ -8,8 +11,10 @@ export interface SwarmMember {
   phase: AppSubagentPhase;
   summary?: string;
   outputLines?: string[];
-  /** Accumulated streaming text (text-kind taskProgress) — preferred over
-   *  outputLines/summary when rendering the live swarm row activity/body. */
+  /** The member's current text segment tail, derived from the tail narrative
+   *  segment (ADR-011 ②) — the swarm row's activity/body source when the
+   *  member is streaming text; `undefined` when the tail is reasoning or the
+   *  member has no segments (the row falls back to outputLines/summary). */
   text?: string;
   /** 挂起原因：结构化（ADR-011 投影）或旧引擎遗留字符串；渲染经
    *  `suspendedReasonText` 取文本。 */
@@ -17,6 +22,19 @@ export interface SwarmMember {
   swarmIndex: number;
   /** Resolved model alias the subagent is using. */
   model?: string;
+  /** The member's collapsed-row timeline (ADR-012 ①), derived at the member
+   *  constructor so every downstream row passes the same view object through
+   *  (reference stability comes from `buildMemberTimeline`'s memo, which is
+   *  keyed on the member's own `steps` / `segments` arrays — ADR-012 ③).
+   *
+   *  Derived for terminal members too: a settled member's steps are its
+   *  evidence of what it did, not a live-progress signal.
+   *
+   *  Optional only because a hand-built member (tests, non-task sources) has no
+   *  step/segment array to derive from; both live constructors always fill it.
+   *  An empty view means "nothing arrived yet" — the row falls back to its
+   *  single activity line. */
+  timeline?: SwarmTimelineView;
 }
 
 export interface SwarmGroup {
@@ -70,10 +88,15 @@ export function buildSwarmGroups(tasks: AppTask[]): SwarmGroup[] {
       phase: phaseForTask(task),
       summary: task.outputPreview,
       outputLines: task.outputLines,
-      text: task.text,
+      // ADR-011 ②：活动行取「最后一个 text 段」的尾部；尾部是推理段或无段时
+      // 为 undefined，消费侧回落 outputLines/summary。
+      text: liveTextTail(task.segments),
       suspendedReason: task.suspendedReason,
       swarmIndex: task.swarmIndex,
       model: task.model,
+      // ADR-012 ①：折叠态时间线在构造点派生一次，下游行直接透传同一视图
+      // 对象（引用稳定由 buildMemberTimeline 的 memo 保证）。
+      timeline: buildMemberTimeline(task.steps, task.segments),
     });
     buckets.set(key, list);
   }
@@ -127,10 +150,14 @@ export function swarmMembersByToolCall(tasks: AppTask[]): Map<string, SwarmMembe
       phase: phaseForTask(task),
       summary: task.outputPreview,
       outputLines: task.outputLines,
-      text: task.text,
+      // ADR-011 ②：inline AgentSwarm 卡的 live 进度行同样取段派生尾部。
+      text: liveTextTail(task.segments),
       suspendedReason: task.suspendedReason,
       swarmIndex: task.swarmIndex ?? Number.MAX_SAFE_INTEGER,
       model: task.model,
+      // ADR-012 ①：与 buildSwarmGroups 同构派生——两个构造点产出的成员形状
+      // 一致，下游行无需区分来源。
+      timeline: buildMemberTimeline(task.steps, task.segments),
     });
     buckets.set(task.parentToolCallId, list);
   }

@@ -71,6 +71,9 @@ describe('subagent streaming text', () => {
       outputChunk: 'Hello',
       stream: 'stdout',
       kind: 'text',
+      // ADR-011: the chunk names the narrative segment it grows (generation-
+      // scoped id, g0 = pre-reset).
+      segmentId: 'sub-1-g0-seg-0',
     });
   });
 
@@ -752,7 +755,8 @@ describe('subagent structured live steps (ADR-009)', () => {
     expect(created).toBeDefined();
     if (created?.type === 'taskCreated') {
       expect(created.task.steps).toEqual([
-        { id: 'tc_1', name: 'Read', arg: JSON.stringify({ path: 'a.ts' }), status: 'running', outputLines: [] },
+        // ADR-011: the step carries its arrival-order seq alongside the card data.
+        { id: 'tc_1', name: 'Read', arg: JSON.stringify({ path: 'a.ts' }), status: 'running', outputLines: [], seq: 0 },
       ]);
     }
   });

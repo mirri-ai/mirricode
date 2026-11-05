@@ -174,3 +174,32 @@ describe('listPendingApprovalsResponseSchema (REST pending recovery)', () => {
     });
   });
 });
+
+describe('ToolInputDisplaySchema scheduled_task_create (ADR-022)', () => {
+  it('should accept the structured creation display with every parameter the user judges', async () => {
+    const { ToolInputDisplaySchema } = await import('../display');
+    const parsed = ToolInputDisplaySchema.parse({
+      kind: 'scheduled_task_create',
+      cron: '15 10 * * 1-5',
+      timezone: 'Asia/Tokyo',
+      workspace_id: 'wd_demo',
+      permission_mode: 'manual',
+      title: 'Pick Up Review',
+      prompt: 'review tickets',
+      recurring: true,
+    });
+    expect(parsed.kind).toBe('scheduled_task_create');
+  });
+
+  it('should reject a creation display that omits the cron expression', async () => {
+    const { ToolInputDisplaySchema } = await import('../display');
+    expect(() =>
+      ToolInputDisplaySchema.parse({
+        kind: 'scheduled_task_create',
+        workspace_id: 'wd_demo',
+        prompt: 'p',
+        recurring: true,
+      }),
+    ).toThrow();
+  });
+});

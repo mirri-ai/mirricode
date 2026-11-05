@@ -1,3 +1,4 @@
+// layer: T2
 //! Cross-backend wire-shape contract test.
 //!
 //! After the M5-B3a thinning the server no longer owns engine-domain
@@ -195,17 +196,20 @@ fn should_ignore_element_order_and_repetition_when_normalizing_arrays() {
 /// The process-wide fake `$HOME`. `mirri-server`'s `session.export` resolves
 /// its export root from `$HOME` at call time, so the server's session
 /// persistence root is placed under this directory — export then writes only
-/// inside throwaway test directories. Every test sets the same value before
-/// any handler runs, so concurrent `set_var` calls are benign.
+/// inside throwaway test directories. The one-time init sets the same value
+/// for every test under the workspace env lock, so concurrent readers always
+/// observe the identical shared path (16-test-execution-strategy.md §4.2).
 fn shared_home() -> PathBuf {
     static HOME: OnceLock<PathBuf> = OnceLock::new();
     HOME.get_or_init(|| {
         let dir = tempfile::tempdir().expect("create the shared test home");
         let path = dir.keep();
-        // SAFETY: this is a test binary; every test in it assigns HOME the
-        // same shared path before touching any HOME-reading handler, so all
-        // writers store an identical value.
-        unsafe { std::env::set_var("HOME", &path) };
+        let mut guard = mirri_test_support::env::EnvGuard::new();
+        guard.set("HOME", &path.to_string_lossy());
+        // Leak the guard on purpose: the shared HOME must outlive every test
+        // in this binary — the process exits with the fake home still set,
+        // which is exactly the whole-binary shared fixture this helper is.
+        std::mem::forget(guard);
         path
     })
     .clone()
@@ -924,6 +928,46 @@ async fn should_match_session_domain_wire_shapes_across_backends_when_sessions_a
         );
     }
 
+    // --- session.pin / session.unpin ---------------------------------------
+    // SDR-016/017: both sides answer the klient `noResult` representation
+    // (JSON null) and the pin/unpin round-trip holds on both engines.
+    let srv_pinnable = create_session_on_server(&server, "pinnable").await;
+    let emb_pinnable = create_session_on_embedded(&embedded, "pinnable").await;
+    for (side, engine, session_id) in [
+        ("server", "server", &srv_pinnable),
+        ("embedded", "embedded", &emb_pinnable),
+    ] {
+        let _ = side;
+        let pin = if engine == "server" {
+            call_server(
+                &server,
+                "session.pin",
+                json!({ "sessionId": session_id, "color": "blue" }),
+            )
+            .await
+        } else {
+            call_embedded(
+                &embedded,
+                "session.pin",
+                json!({ "session_id": session_id, "color": "blue" }),
+            )
+            .await
+        };
+        assert_eq!(
+            pin, Ok(Value::Null),
+            "session.pin ({engine}): the klient noResult wire spelling is JSON null"
+        );
+        let unpin = if engine == "server" {
+            call_server(&server, "session.unpin", json!({ "sessionId": session_id })).await
+        } else {
+            call_embedded(&embedded, "session.unpin", json!({ "session_id": session_id })).await
+        };
+        assert_eq!(
+            unpin, Ok(Value::Null),
+            "session.unpin ({engine}): the klient noResult wire spelling is JSON null"
+        );
+    }
+
     // --- session.restore ----------------------------------------------------
     // The B1 EMB backfill: both engines model archive as close-with-files-
     // kept, so restore is the resume path on both. Both sides return the
@@ -1003,6 +1047,7 @@ async fn should_match_session_domain_wire_shapes_across_backends_when_sessions_a
             "messageCount": 0, "lastSeq": 0,
             "cwd": "",
             "lastUsedAt": "",
+            "pinned": false,
         })),
     );
     for (side, result, session_id) in [
@@ -1724,7 +1769,7 @@ async fn should_match_cron_domain_wire_shapes_across_backends_when_a_task_is_see
             "contract tick".to_string(),
             srv_id.clone(),
             true,
-            None,
+            mirri_core::cron::CronCreateOptions::default(),
         )
         .await
         .expect("seed the server cron task");
@@ -1739,7 +1784,7 @@ async fn should_match_cron_domain_wire_shapes_across_backends_when_a_task_is_see
             "contract tick".to_string(),
             emb_id.clone(),
             true,
-            None,
+            mirri_core::cron::CronCreateOptions::default(),
         )
         .await
         .expect("seed the embedded cron task");
@@ -2134,8 +2179,9 @@ async fn should_match_recovery_domain_wire_shapes_across_backends_when_queried()
 /// The M5-B3a registry gate proof: every `serves_server` fact row answers
 /// through the shared dispatch (transport registry or engine fall-through),
 /// and every embedded-only / unimplemented / unknown method answers
-/// method-not-found. The serve wire surface stays EXACTLY the 196
-/// [`mirri_proto::rpc`] facts — no engine-only method leaks onto the wire,
+/// method-not-found. The serve wire surface stays EXACTLY the 200
+/// [`mirri_proto::rpc`] facts (ADR-010 flipped the 4 provider-credential
+/// rows to both) — no engine-only method leaks onto the wire,
 /// no transport registry grows beyond its 25 rows (the B2/B3 flips and the
 /// B4-a/B4-b/B5-a/B5-b rows ride the engine fall-through, not the
 /// transport registry).
@@ -2152,8 +2198,8 @@ async fn should_serve_exactly_the_fact_table_when_the_surface_is_enumerated() {
         .collect();
     assert_eq!(
         serve_surface.len(),
-        196,
-        "the pinned serve surface (17 server-only + 179 both rows — the rust-core-mcp-model batches among them: the M5 mcp.config.preview, the M6 mcp.sync, the M7 mcp.subscribe, the R4 Task 25 agent profile lifecycle rows: enable/disable/reset, the W8 workspace.setTrust row, the collaboration.enter/exit mode-gate pair, the B8 skill.getContent/skill.setEnabled management pair, the B6 cron.delete/cron.trigger management pair, the B7 task.listWorkspace overview row, the 6 session-retention management rows, and the ADR-010 skill.reload management row; the 8 auth rows left with the managed-login removal, plus the ADR-010 skill.subscribe server-only row; plus the E9 file.stat server-only row; plus the 5 interrupted-task recovery rows: recovery.list/resume/resumeAll/dismiss/dismissAll)"
+        210,
+        "the pinned serve surface (17 server-only + 188 both rows — the rust-core-mcp-model batches among them: the M5 mcp.config.preview, the M6 mcp.sync, the M7 mcp.subscribe, the R4 Task 25 agent profile lifecycle rows: enable/disable/reset, the W8 workspace.setTrust row, the collaboration.enter/exit mode-gate pair, the B8 skill.getContent/skill.setEnabled management pair, the B6 cron.delete/cron.trigger management pair, the B7 task.listWorkspace overview row, the 6 session-retention management rows, and the ADR-010 skill.reload management row; the 8 auth rows left with the managed-login removal, plus the ADR-010 skill.subscribe server-only row; plus the E9 file.stat server-only row; plus the 5 interrupted-task recovery rows: recovery.list/resume/resumeAll/dismiss/dismissAll; plus the ADR-010 provider-credential serve flip: credential.list/set/remove/status; plus the cron-scheduling stage-1 batch-3 pair: cron.add / cron.listAll; plus the stage-2 batch-4b query pair: cron.runs.list / cron.run.open (cron.proposals.list retired with the proposal channel in batch 3); plus the 3 batch-2 cron management rows: cron.update / cron.pause / cron.resume; cron.pendingApprovals retired with the pending zone, ADR-022)"
     );
     for method in &serve_surface {
         // A valid dispatch outcome is any error except method-not-found:

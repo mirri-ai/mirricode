@@ -161,6 +161,7 @@ pub(crate) fn apply_absorbed_op(
             turn_id,
             reason,
             duration_ms,
+            ended_at,
             ..
         } => {
             if let Some(event_bus) = event_bus {
@@ -175,6 +176,7 @@ pub(crate) fn apply_absorbed_op(
                     stop_reason: foreign_stop_reason_wire(&reason),
                     wire_turn_id: turn_id,
                     duration_ms,
+                    ended_at_ms: ended_at,
                 });
             }
             // Close any tool exchange the foreign writer left open when it
@@ -436,6 +438,7 @@ mod drain_tests {
             reason: "completed".to_string(),
             error: None,
             duration_ms: None,
+            ended_at: None,
         }
     }
 
@@ -814,6 +817,94 @@ mod drain_tests {
             event,
             crate::session::events::SessionEvent::MessageReceived { .. }
         ));
+    }
+
+    /// Given a foreign writer's journal ending a turn with a measured
+    /// `endedAtMs`, when the manager absorbs it, then the republished
+    /// `event.turn.ended` carries that same instant — the republish passes
+    /// the foreign record's measurement through rather than re-deriving it.
+    #[tokio::test]
+    async fn should_carry_the_foreign_ended_at_when_a_foreign_turn_is_republished() {
+        use crate::scope::WorkspaceScope;
+        use crate::session::manager::SessionManager;
+
+        // Given: a live session with an installed wire log, and a foreign
+        // writer appending one turn.ended carrying a measured instant.
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = std::sync::Arc::new(WorkspaceScope::new(
+            crate::scope::WorkspaceId::new("absorb-ended-at-test-ws"),
+            dir.path().to_path_buf(),
+            crate::scope::WorkspaceScopeConfig::default(),
+        ));
+        let manager = SessionManager::with_persistence_dir(
+            workspace,
+            dir.path().join("sessions"),
+            std::sync::Arc::new(mirri_os::LocalFs::new()),
+        );
+        let session = manager
+            .create_session(SessionMetadata::default(), SessionScopeConfig::default())
+            .await
+            .unwrap();
+        let mut subscriber = {
+            let artifacts = manager
+                .session_artifacts(session.id())
+                .expect("live session has artifacts");
+            artifacts.event_bus.subscribe()
+        };
+        session
+            .create_agent(
+                AgentId::new("main"),
+                crate::scope::AgentScopeConfig::default(),
+            )
+            .await
+            .unwrap();
+
+        let foreign_ended_at = 1_730_000_000_042_u64;
+        let foreign = WireOp::TurnEnded {
+            turn_id: 4,
+            reason: "completed".to_string(),
+            error: None,
+            duration_ms: Some(1200),
+            ended_at: Some(foreign_ended_at),
+        };
+        let wire_log_path = manager.persistence().wire_log_path(session.id());
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&wire_log_path)
+            .unwrap();
+        writeln!(file, "{}", serde_json::to_string(&foreign).unwrap()).unwrap();
+        drop(file);
+
+        // When: the manager absorbs the session's foreign updates
+        let report = manager
+            .absorb_session_foreign_updates(&session)
+            .await
+            .unwrap();
+
+        // Then: the republished turn.ended carries the foreign instant
+        // unchanged — the record is the authority on when that turn ended.
+        assert_eq!(report.ops_absorbed, 1);
+        // Drain to the terminal event: a broadcast channel delivers in
+        // order, and the absorb pass may publish other session events
+        // before the turn bracket.
+        let mut turn_completed = None;
+        while let Ok(event) = subscriber.try_recv() {
+            if let crate::session::events::SessionEvent::TurnCompleted {
+                wire_turn_id,
+                duration_ms,
+                ended_at_ms,
+                ..
+            } = event
+            {
+                turn_completed = Some((wire_turn_id, duration_ms, ended_at_ms));
+            }
+        }
+        let (wire_turn_id, duration_ms, ended_at_ms) =
+            turn_completed.expect("an absorbed turn.ended must republish TurnCompleted");
+        assert_eq!(wire_turn_id, 4);
+        assert_eq!(duration_ms, Some(1200));
+        assert_eq!(ended_at_ms, Some(foreign_ended_at));
     }
 
     /// A helper building the absorb fixtures' foreign child-journal

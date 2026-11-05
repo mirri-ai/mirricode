@@ -268,7 +268,7 @@ function stripTestModules(rawText) {
   let text = rawText;
   // `#[cfg(test)] mod …` / `#[cfg(all(test, …))]` / `#[cfg_attr(…, test)]`
   const cfgTestRe =
-    /#\[[^\n]*\b(?:cfg\(\s*(?:all\(\s*)?test|cfg_attr\([^)]*,\s*test)\b[^\n]*\]\s*\n?\s*mod\s+(\w+)/g;
+    /#\[[^\n]*\b(?:cfg\(\s*(?:all\(\s*)?test|cfg_attr\([^)]*,\s*test)\b[^\n]*\]\s*\n?\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(\w+)/g;
   let match;
   while ((match = cfgTestRe.exec(masked)) !== null) {
     const afterName = masked.slice(match.index + match[0].length);
@@ -454,6 +454,23 @@ const SELFTEST_CASES = [
       { line: 4, pattern: 'Path::metadata()' },
     ],
   },
+  {
+    name: 'visibility-prefixed cfg(test) mod is stripped (pub(super) / pub(crate))',
+    text: [
+      '#[cfg(test)]',
+      'pub(super) mod tests {',
+      '    use std::fs::write;',
+      '    fn helper() { let _ = write; }',
+      '}',
+      '',
+      'pub fn probe() { let _ = std::process::Command::new("ls"); }',
+      '',
+    ].join('\n'),
+    expect: [
+      { line: 7, pattern: 'std::process::' },
+      { line: 7, pattern: 'Command::new' },
+    ],
+  },
 ];
 
 function runSelfTest(verbose = false) {
@@ -560,7 +577,11 @@ function reqwestImmediateDependents() {
 let treeFailures = [];
 const treeInfo = [];
 
-const treeResult = runCargo(['tree', '-p', 'mirri-core', '--prefix', 'none']);
+// The tree walk covers NORMAL edges only (J1 boundary): dev-dependencies
+// are test-only reach (mirri-core carries mirri-cron-index as a dev-dep for
+// the real-SQLite round-trip tests) and never ship in the production
+// dependency tree the zero-IO gate locks.
+const treeResult = runCargo(['tree', '-p', 'mirri-core', '--prefix', 'none', '--edges', 'normal']);
 if (treeResult.status !== 0) {
   treeFailures.push(`cargo tree failed: ${treeResult.stderr.trim().split('\n')[0]}`);
 } else {

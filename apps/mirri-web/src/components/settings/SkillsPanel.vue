@@ -38,7 +38,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 const api = getMirriWebApi();
-const { backend, activeSessionId, activeWorkspaceId, refreshSkills } = useMirriWebClient();
+const { backend, activeSessionId, activeWorkspaceId, refreshSkills, lastSkillCatalogChange } = useMirriWebClient();
 
 // -------------------------------------------------------------------------
 // State
@@ -48,6 +48,14 @@ const loading = ref(false);
 const error = ref('');
 const searchQuery = ref('');
 const togglingName = ref<string | null>(null);
+
+// Manual rescan (ADR-013 decision 5) — in-place result + watcher status.
+const rescanning = ref(false);
+const rescanResult = ref<
+  | { kind: 'changed'; added: number; removed: number; updated: number; watchingOff: boolean }
+  | { kind: 'nochange'; watchingOff: boolean }
+  | null
+>(null);
 
 // SKILL.md viewer (v3-only read face)
 const viewingOpen = ref(false);
@@ -93,6 +101,45 @@ watch(
   () => { void load(); },
   { immediate: true },
 );
+
+// ADR-013 decision 3: the panel self-fetches, so the auto-refresh path must
+// reach it too — watch the last catalog change and reload when mounted.
+watch(lastSkillCatalogChange, (e) => {
+  if (e === null) return;
+  const wid = activeWorkspaceId.value;
+  if (wid === null || e.workspaceId === wid) void load();
+});
+
+async function onRescan(): Promise<void> {
+  rescanning.value = true;
+  rescanResult.value = null;
+  error.value = '';
+  try {
+    const rows = await api.reloadSkills();
+    const total = rows.reduce(
+      (acc, r) => ({
+        added: acc.added + r.added,
+        removed: acc.removed + r.removed,
+        updated: acc.updated + r.updated,
+      }),
+      { added: 0, removed: 0, updated: 0 },
+    );
+    const watchingOff = rows.length > 0 && rows.every((r) => !r.watching);
+    rescanResult.value =
+      total.added + total.removed + total.updated === 0
+        ? { kind: 'nochange', watchingOff }
+        : { kind: 'changed', ...total, watchingOff };
+    // The panel's own list follows the rescan directly (the same lazy-load
+    // face the auto-refresh path uses — but here unconditionally, the user
+    // asked for it).
+    await load();
+    void refreshSkills();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    rescanning.value = false;
+  }
+}
 
 // -------------------------------------------------------------------------
 // Source badges
@@ -221,11 +268,30 @@ function saveDirs(): void {
         :placeholder="t('settings.skillsSearch')"
         :aria-label="t('settings.skillsSearch')"
       />
-      <Button variant="secondary" size="sm" @click="load">{{ t('settings.skillsRefresh') }}</Button>
+      <Button variant="secondary" size="sm" @click="load">{{ t('settings.skillsRefetch') }}</Button>
+      <Button
+        v-if="isV3"
+        variant="secondary"
+        size="sm"
+        :disabled="rescanning"
+        @click="onRescan"
+      >{{ rescanning ? t('settings.skillsReloading') : t('settings.skillsReload') }}</Button>
     </div>
 
     <div v-if="error" class="error-msg">{{ error }}</div>
     <Banner v-if="!isV3" variant="info">{{ t('settings.skillsV3Only') }}</Banner>
+    <Banner v-if="rescanResult?.kind === 'changed'" variant="info">
+      {{ t('settings.skillsReloadResult', {
+        added: rescanResult.added,
+        removed: rescanResult.removed,
+        updated: rescanResult.updated,
+      }) }}
+      <template v-if="rescanResult.watchingOff"> · {{ t('settings.skillsReloadWatchingOff') }}</template>
+    </Banner>
+    <Banner v-else-if="rescanResult?.kind === 'nochange'" variant="info">
+      {{ t('settings.skillsReloadNoChange') }}
+      <template v-if="rescanResult.watchingOff"> · {{ t('settings.skillsReloadWatchingOff') }}</template>
+    </Banner>
 
     <EmptyState v-if="loading">
       <Spinner />

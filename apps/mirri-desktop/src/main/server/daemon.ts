@@ -32,7 +32,7 @@ import {
 export { mirriHome, serverLogPath } from './state';
 
 /** Preferred port for the Desktop server (200 above the CLI default of 58627). */
-const DESKTOP_PORT = 58_627 + 200; // 58827
+export const DESKTOP_PORT = 58_627 + 200; // 58827
 /** How long to keep polling `/healthz` before declaring the server unhealthy. */
 const HEALTH_TIMEOUT_MS = 20_000;
 const HEALTH_POLL_MS = 200;
@@ -129,6 +129,7 @@ export function startMirriServer(
     detached: true,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   });
 
   // Redirect stdout + stderr to the Desktop log file. Best-effort: an error
@@ -289,6 +290,98 @@ function recoverPidFromLegacyLock(): number | undefined {
   if (!existsSync(lockFile)) return undefined;
   const lock = readLock(lockFile);
   return lock?.pid;
+}
+
+// ---------------------------------------------------------------------------
+// shutdownDaemon — the quit handshake
+// ---------------------------------------------------------------------------
+
+/** How often the handshake polls the daemon's liveness while waiting. */
+const SHUTDOWN_POLL_MS = 100;
+
+/**
+ * The quit handshake: stop the Desktop daemon and WAIT for it to die.
+ *
+ * Sequence: SIGTERM → poll `kill(pid, 0)` until the process is gone (bounded
+ * by `graceMs`) → SIGKILL escalation when it ignores the SIGTERM → remove
+ * the desktop state file either way. The wait is what the old fire-and-forget
+ * kill lacked: a daemon that lingers past the app's exit holds port 58827
+ * and the next launch fails with "Address already in use".
+ *
+ * Best-effort throughout: a dead pid (ESRCH) at any step resolves cleanly —
+ * the goal is "the process is gone", and it already is.
+ */
+export async function shutdownDaemon(pid: number, port: number, graceMs: number): Promise<void> {
+  // A non-positive pid means "we reused a listener but never learned its
+  // pid" (the reuse branch's fallback). Signalling it would broadcast
+  // (POSIX kill(-1) targets every process we may signal) — never do that.
+  if (pid <= 0) {
+    removeDesktopState();
+    return;
+  }
+
+  const alreadyDead = (): boolean => {
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ESRCH';
+    }
+  };
+
+  // 1. SIGTERM — the rust server's graceful path (graceful.json + turn
+  //    interruption + drain). An ESRCH here means it died between the state
+  //    read and now — already done.
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') {
+      removeDesktopState();
+      return;
+    }
+    process.stderr.write(
+      `[mirri-desktop] failed to SIGTERM desktop daemon (pid=${pid}): ` +
+        `${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    removeDesktopState();
+    return;
+  }
+
+  // 2. Wait for the exit — the rust shutdown is sub-second once its turns
+  //    are interrupted; the grace window only matters for a wedged drain.
+  const deadline = Date.now() + graceMs;
+  while (Date.now() < deadline) {
+    if (alreadyDead()) {
+      removeDesktopState();
+      return;
+    }
+    await new Promise((resolve) => {
+      setTimeout(resolve, SHUTDOWN_POLL_MS);
+    });
+  }
+
+  // 3. SIGKILL escalation — the daemon ignored the grace window; take the
+  //    port back by force rather than leaking it to the next launch.
+  if (!alreadyDead()) {
+    try {
+      process.kill(pid, 'SIGKILL');
+      process.stderr.write(
+        `[mirri-desktop] daemon (pid=${pid}, port=${port}) ignored SIGTERM for ${graceMs}ms; sent SIGKILL\n`,
+      );
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ESRCH') {
+        process.stderr.write(
+          `[mirri-desktop] failed to SIGKILL desktop daemon (pid=${pid}): ` +
+            `${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      }
+    }
+  }
+
+  // 4. The state file describes a daemon we just stopped either way.
+  removeDesktopState();
 }
 
 // ---------------------------------------------------------------------------

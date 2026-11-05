@@ -57,3 +57,18 @@ pub fn wire_op_schema() -> serde_json::Value {
     let schema: schemars::Schema = schemars::schema_for!(MinimalWireOp);
     serde_json::to_value(&schema).expect("schema is always serializable")
 }
+
+/// The session pin's color label (SDR-016/017): the seven-color preset
+/// the macOS folder-label convention carries. Wire form is snake_case
+/// (the row column, the wire fields, and both SessionViews share the
+/// names).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PinColor {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+    Gray,
+}

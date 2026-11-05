@@ -10,17 +10,20 @@ pub(super) const ROUTES: &[Route] = &[
         method: "message.send",
         aliases: &["prompt"],
         handler: |server, params| Box::pin(server.dispatch_send_message(params)),
+        settlement: Route::SETTLES,
     },
     // Cancels in-flight fire-mode turns of the session.
     Route {
         method: "message.abort",
         aliases: &["cancel"],
         handler: |server, params| Box::pin(server.dispatch_cancel(params)),
+        settlement: Route::SETTLES,
     },
     // Steers the agent's in-flight turn flow with new content.
     Route {
         method: "message.steer",
         aliases: &["steer"],
         handler: |server, params| Box::pin(server.dispatch_steer(params)),
+        settlement: Route::SETTLES,
     },
 ];

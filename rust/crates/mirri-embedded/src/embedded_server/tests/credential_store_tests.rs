@@ -4,15 +4,15 @@
 //! hand-written config key can never silently bypass the store.
 //!
 //! The tests target the pure resolution function so no server has to boot;
-//! env mutation rides the shared [`ENV_LOCK`](crate::providers::ENV_LOCK)
-//! the other env-touching tests serialize on, with capture-and-restore
-//! hygiene for a developer's pre-existing variables.
+//! env mutation rides the workspace-wide
+//! [`mirri_test_support::env::lock`](mirri_test_support::env) every
+//! env-touching test serializes on, with capture-and-restore hygiene for a
+//! developer's pre-existing variables.
 
 use mirri_credentials::{CredentialStore, CredentialValue};
 use serde_json::json;
 
 use crate::providers::config_factory::{ConfigAwareLlmFactory, resolve_provider_credential};
-use crate::providers::ENV_LOCK;
 
 /// An openai-shaped provider wire record with no credential fields —
 /// nothing but the store or the env chain can answer it.
@@ -33,7 +33,7 @@ fn should_prefer_credential_store_over_env_chain() {
     // When the credential is resolved with the env var set (captured and
     // restored so a developer's variable survives the test)
     let resolved = {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         let prior = std::env::var("OPENAI_API_KEY").ok();
         unsafe { std::env::set_var("OPENAI_API_KEY", "sk-env") };
         let resolved = resolve_provider_credential(
@@ -42,6 +42,7 @@ fn should_prefer_credential_store_over_env_chain() {
             &openai_provider_record(),
             "openai",
         );
+        // env_lock: restore under the workspace env lock guard above
         match prior {
             Some(value) => unsafe { std::env::set_var("OPENAI_API_KEY", value) },
             None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
@@ -54,15 +55,17 @@ fn should_prefer_credential_store_over_env_chain() {
 }
 
 #[test]
-fn should_fall_back_to_env_chain_when_store_has_no_entry() {
+fn should_error_when_the_store_has_no_entry_and_only_the_shell_var_is_set() {
     // Given an empty store (no entry for the provider) and the shell
-    // variable set
+    // variable set — the shell tier is retired (#186: explicit
+    // credentials only), so the resolution answers no credential instead
+    // of the env chain's key
     let home = tempfile::tempdir().expect("tempdir");
     let store = CredentialStore::open(home.path()).expect("store opens");
 
     // When the credential is resolved (capture-and-restore env hygiene)
     let resolved = {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         let prior = std::env::var("OPENAI_API_KEY").ok();
         unsafe { std::env::set_var("OPENAI_API_KEY", "sk-env") };
         let resolved = resolve_provider_credential(
@@ -71,6 +74,7 @@ fn should_fall_back_to_env_chain_when_store_has_no_entry() {
             &openai_provider_record(),
             "openai",
         );
+        // env_lock: restore under the workspace env lock guard above
         match prior {
             Some(value) => unsafe { std::env::set_var("OPENAI_API_KEY", value) },
             None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
@@ -78,8 +82,9 @@ fn should_fall_back_to_env_chain_when_store_has_no_entry() {
         resolved
     };
 
-    // Then the env chain answered
-    assert_eq!(resolved, Ok(Some("sk-env".to_string())));
+    // Then no source answered — the shell variable must not serve as a
+    // credential
+    assert_eq!(resolved, Ok(None));
 }
 
 #[test]
@@ -90,7 +95,7 @@ fn should_return_none_when_store_and_env_both_empty() {
 
     // When the credential is resolved (capture-and-restore env hygiene)
     let resolved = {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         let prior = std::env::var("OPENAI_API_KEY").ok();
         unsafe { std::env::remove_var("OPENAI_API_KEY") };
         let resolved = resolve_provider_credential(
@@ -99,6 +104,7 @@ fn should_return_none_when_store_and_env_both_empty() {
             &openai_provider_record(),
             "openai",
         );
+        // env_lock: restore under the workspace env lock guard above
         match prior {
             Some(value) => unsafe { std::env::set_var("OPENAI_API_KEY", value) },
             None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
@@ -134,7 +140,7 @@ fn should_error_with_az_login_guidance_when_the_external_source_fails_to_resolve
 
     // When the credential is resolved (capture-and-restore env hygiene)
     let resolved = {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         let prior = std::env::var("OPENAI_API_KEY").ok();
         unsafe { std::env::set_var("OPENAI_API_KEY", "sk-env") };
         let resolved = resolve_provider_credential(
@@ -143,6 +149,7 @@ fn should_error_with_az_login_guidance_when_the_external_source_fails_to_resolve
             &openai_provider_record(),
             "openai",
         );
+        // env_lock: restore under the workspace env lock guard above
         match prior {
             Some(value) => unsafe { std::env::set_var("OPENAI_API_KEY", value) },
             None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
@@ -184,7 +191,7 @@ fn should_error_when_the_external_method_is_unknown() {
 
     // When the credential is resolved (capture-and-restore env hygiene)
     let resolved = {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         let prior = std::env::var("OPENAI_API_KEY").ok();
         unsafe { std::env::remove_var("OPENAI_API_KEY") };
         let resolved = resolve_provider_credential(
@@ -193,6 +200,7 @@ fn should_error_when_the_external_method_is_unknown() {
             &openai_provider_record(),
             "openai",
         );
+        // env_lock: restore under the workspace env lock guard above
         match prior {
             Some(value) => unsafe { std::env::set_var("OPENAI_API_KEY", value) },
             None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
@@ -218,7 +226,7 @@ fn should_ignore_a_residual_api_key_field_on_the_provider_record() {
 
     // When the credential is resolved (capture-and-restore env hygiene)
     let resolved = {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         let prior = std::env::var("OPENAI_API_KEY").ok();
         unsafe { std::env::remove_var("OPENAI_API_KEY") };
         let resolved =
@@ -450,7 +458,7 @@ fn should_return_the_external_token_when_the_source_resolves() {
     // When the credential is resolved with the stub's directory first on
     // the PATH (capture-and-restore env hygiene)
     let resolved = {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         let prior_path = std::env::var_os("PATH");
         let prior_key = std::env::var("OPENAI_API_KEY").ok();
         let stub_path = format!("{}:", bin.path().display());
@@ -467,6 +475,7 @@ fn should_return_the_external_token_when_the_source_resolves() {
             &openai_provider_record(),
             "openai",
         );
+        // env_lock: restore under the workspace env lock guard above
         match prior_path {
             Some(value) => unsafe { std::env::set_var("PATH", value) },
             None => unsafe { std::env::remove_var("PATH") },

@@ -150,3 +150,46 @@
 裁决：需求 SDR-009 / 架构 ADR-010（终态-阶段原子化 + 终态粘滞 + 统一派生点 + 对账闭环）；引擎侧通道合并不在该批（读侧自愈后残余为有界暂态，另行评估）。
 
 **已知边界（2026-10-23 Phase 5 落地时记档）**：对账的父调用定局判定基于会话转录中该 toolResult 是否已在前端消息存储内。首次打开会话时转录只装最新一页——若父调用的 toolResult 落在更早分页之外且终态事件已丢失，定局会被误判为否、幽灵行收敛为已中止。触发需三重条件叠加（丢终态事件 + 超一页后续对话 + REST 已注销该成员），概率极低；toolResult 天然位于转录尾部进一步收窄。修复方向：转录按需回取父调用所在页或以服务端回合状态为定局信号（P5-4 引擎侧评估时一并考虑）。
+
+## 11. live 叙事三桶结构与渲染抖动（2026-10-31 快照）
+
+**问题现象**（桌面端真实使用报告，sub agent 面板）：
+1. 面板底部叙事区反复重绘/闪动，观感"莫名其妙"；
+2. 工具调用聚合成单个巨型「N tool calls · running/done」折叠块，与真实执行时间线不符。
+
+**数据层事实（live 路三桶结构）**：
+- 投影层（`apps/mirri-web/src/api/daemon/agentEventProjector.ts`）为每个 live 成员维护三个互不排序的累积桶：
+  - `thinking`：所有 `thinking.delta` 拼接成单一字符串（`:632-655`，经 `taskProgress kind:'thinking'` 由 reducer 拼接进 `AppTask.thinking`）；
+  - `text`：所有 `assistant.delta` 拼接成单一字符串（`:661-689`，同上拼进 `AppTask.text`）；
+  - `subagentSteps`：`Map<agentId, AgentStep[]>`，工具步骤数组（`startStep`/`appendStepLine`/`finishStep`，`:402-446`），结构化但无与文本段的相对顺序信息。
+- 归一化层（`apps/mirri-web/src/lib/memberBlocks.ts:157-179` `memberBlocksFromLive`）把三桶硬编码为固定顺序 `[thinking 块][tool×N][text 块]`——文档自述为 ADR-009 开放项 a 的已知降级："live text renders AFTER the tool cards rather than interleaved"。
+- 渲染计划（`apps/mirri-web/src/components/chatTurnRendering.ts:63-107` `renderBlocksFromBlocks`）把连续 tool 块折叠为 `tool-stack`；三桶固定顺序使工具串天然连续不被打断 → 巨型折叠块。主会话无此问题，因为主转录的文本/思考与工具按真实 content 顺序穿插，工具串被自然切开。
+
+**渲染层抖动的三个叠加源（重绘机制清单）**：
+- **流式标记翻转**（`apps/mirri-web/src/components/chat/MemberFocus.vue:93-101`）：`streamingLastText` 以「最后一块是否 text」判定流式；live 期每新增一个工具块，文本块从末位跌落 → `streaming` true→false，下一次文本 delta 到达又追加回末位 → false→true。每次翻转驱动 `Markdown.vue` 在流式降级渲染器与完整渲染器间整体切换（`lib/markdownPerformance.ts:45-48` 自述"turn end one remount is the accepted trade-off"——live 期被放大为每工具至少 3 次翻转 × 数十次）。同理 `ThinkingBlock` 非流式分支套用 2 行高滚动窗（`ThinkingBlock.vue` `.tc` 的 `max-height: 2 行`），被下方增长的工具栈挤压 + 每 delta `scrollTop=scrollHeight`（`lib/scrollFollow.ts`）→ 顶部小块乱跳。
+- **每秒轮询全量写回**（`apps/mirri-web/src/composables/client/useTaskPoller.ts`）：活跃任务存在时 1Hz 轮询，`keepLiveSubagents`（`apps/mirri-web/src/lib/taskMerge.ts:45-121`）为每个 live 成员 `{...live, ...}` 生成新对象引用 → 即使无任何事件，成员对象每秒换引用，`agentPanelMember` → `liveBlocks` → `renderBlocks` 的 computed 链全量重算重 diff。
+- **整链重算**：投影层每个流 delta 先发 `taskCreated`（整 task 替换）再发 `taskProgress`（再替换），reducer（`apps/mirri-web/src/api/daemon/eventReducer.ts:1027-1095`）每次 `[...list]` 数组替换 + `writeMapIfChanged` 写回；rAF 合批（`eventBatcher.ts`）上限 60Hz。computed 链 `activeAppTasks → swarmMembersByToolCallId（每次重 new Map）→ agentPanelMember（toAgentMember 新对象）→ liveBlocks/renderBlocks（每事件重建）`逐级失效。
+
+**步边界信号（2026-10-31 评审修正）**：投影层已把引擎步边界帧转译为 `subagentStepBoundary` AppEvent（`agentEventProjector.ts:560-569`，retry 区分），reducer 已有截断/记账/一次性尾守卫（`eventReducer.ts:1098-1176`，ADR-015）。但真实引擎抓包证实：步边界四帧此前不带 `agentId`（`events.rs` `TurnStepStarted { turn_id, step }` 形状，仅 `TurnStarted` 带），子代理的步边界帧进不了投影层的子代理路由——该转译对子代理从未生效。引擎侧补齐 `agentId` 后（见 subagent 域 ADR-015 修订记录），web 侧消费自动生效。
+
+**消费面清单（单字段 text/thinking 的既有读者）**：
+- `AppTask.text`：任务坞/委托卡片成员行的"当前活动单行摘要"（`swarmGroups.ts` 活动行截断）——消费尾部，不消费顺序；
+- `AppTask.thinking`：`MemberFocus` 推理块（live 期）；
+- dock 的 legacy「Calling …」行（`outputLines`，40 行截断）——活动行回退链。
+
+裁决：架构 ADR-011（live 叙事段 + 归一化单点 + 流式判定不翻转 + 渲染静默性）。
+
+## 12. 委派卡折叠态的活动行替代缺陷（2026-11-01 快照）
+
+ADR-011 落地后的真实环境复现（假 provider 5 回合 4 工具会话 + Playwright 逐帧采样，`\\.tmp/subagent-panel-audit/`）发现：详情面板时间线正确，但主区默认视觉路径的折叠态仍是「单行活动文本」：
+
+- 委派卡成员行 `dc-row-act` = `liveTextTail`（正文段尾部一行）随流式输出每秒替换；工具调用不可见（`DelegationCard.vue` 的 `row.activity`）。
+- 思考期 `liveTextTail` 为 undefined → 活动行回落 `outputLines` 尾行（上一次工具的 "Calling X" 合成行）→ 正文流出后跳回正文尾部——来回横跳（`swarmCardRows.ts` 的 `swarmMemberActivity` 回退链）。
+- 委派卡标题只有 "Task / 描述"，无工具计数指示；详情面板入口需要三跳（turn 折叠行 → 委派卡 → Open）。
+- 活动文本是完整段落原文（数百字符）挤单行 ellipsis。
+- dock 任务行（TasksPane）为「名称+状态+时间」，子代理工具不可见（此为 dock 定位，非缺陷）。
+- 主区 turn 折叠头 "Working for Xs" 下工具过程整体折叠。
+
+根因：ADR-011 ② 只替换了活动行的数据源（`task.text` → `liveTextTail(task.segments)`），没有审视 SDR-003 时代「一行摘要」骨架在「时间线」预期下的呈现语义缺口。
+
+裁决：架构 ADR-012（成员行轻量时间线）。

@@ -1,8 +1,8 @@
 # Rust Core 现状参考（Context）
 
 > **文档类型：参考类**（按 `docs/specs/AGENTS.md` 治理约定）——现状与现状痛点的盘点，随侦察/现状变化更新。 ·
-> 结构快照：2026-09-04（§6 追加：2026-09-11；§7 追加：2026-09-13、重写：2026-10-02；§8 追加：2026-09-14；§10 追加：2026-10-28） ·
-> 配套设计文档：[00-overview.md](00-overview.md) · [01-protocol-unification.md](01-protocol-unification.md) · [05-crate-structure.md](05-crate-structure.md) · [06-cross-platform.md](06-cross-platform.md) · [08-multi-workspace.md](08-multi-workspace.md) · [09-session-title-generation.md](09-session-title-generation.md) · [10-agent-context-assembly.md](10-agent-context-assembly.md) · [11-model-resolution.md](11-model-resolution.md) · [14-acp-desktop-runtime-sharing.md](14-acp-desktop-runtime-sharing.md) ·
+> 结构快照：2026-09-04（§6 追加：2026-09-11；§7 追加：2026-09-13、重写：2026-10-02；§8 追加：2026-09-14；§10 追加：2026-10-28；§11 追加：2026-11-02；§16 追加：2026-11-02） ·
+> 配套设计文档：[00-overview.md](00-overview.md) · [01-protocol-unification.md](01-protocol-unification.md) · [05-crate-structure.md](05-crate-structure.md) · [06-cross-platform.md](06-cross-platform.md) · [08-multi-workspace.md](08-multi-workspace.md) · [09-session-title-generation.md](09-session-title-generation.md) · [10-agent-context-assembly.md](10-agent-context-assembly.md) · [11-model-resolution.md](11-model-resolution.md) · [12-session-fork.md](12-session-fork.md) · [13-builtin-skills.md](13-builtin-skills.md) · [14-acp-desktop-runtime-sharing.md](14-acp-desktop-runtime-sharing.md) · [15-identifier-strategy.md](15-identifier-strategy.md) · [16-test-execution-strategy.md](16-test-execution-strategy.md) ·
 > 本文不描述目标、不含裁决——终态与裁决在设计文档；执行状态在 [ROADMAP.md](ROADMAP.md)。
 
 ## 1. 总体架构现状（对应 00 §1）
@@ -15,7 +15,7 @@ Mirri Code 当前以 TypeScript 引擎（`agent-core-v2` + `kap-server`）为运
 | Web (`apps/mirri-web`) | REST + WebSocket (`/api/v1/*`, `/ws`) | TS `kap-server` → `agent-core-v2` |
 | ACP (`packages/acp-server`) | stdio JSON-RPC 2.0 | TS `agent-core-v2` via `Klient` facade |
 
-Rust 核心（`rust/crates/`，17 个 crate）具备完整的领域功能（Session/Agent/Tool/Permission/Hook/Skill/Plan/Goal/MCP/Persistence）与三端接入交付物（`mirri-node` NAPI、`mirri-acp` stdio binary、`SDKRpcClientRust`）。方法目录与契约 pin 以 mirri-proto 注册表（`rust/crates/mirri-proto/src/rpc/registry.rs`）为事实源；`mirri-server/src/ws_rpc.rs` 承载统一 WS `/api/v1/rpc`（JSON-RPC 2.0），serve 面由注册表驱动。
+Rust 核心（`rust/crates/`，18 个 crate）具备完整的领域功能（Session/Agent/Tool/Permission/Hook/Skill/Plan/Goal/MCP/Persistence）与三端接入交付物（`mirri-node` NAPI、`mirri-acp` stdio binary、`SDKRpcClientRust`）。方法目录与契约 pin 以 mirri-proto 注册表（`rust/crates/mirri-proto/src/rpc/registry.rs`）为事实源；`mirri-server/src/ws_rpc.rs` 承载统一 WS `/api/v1/rpc`（JSON-RPC 2.0），serve 面由注册表驱动。
 
 引擎开关：`MIRRICODE_RUST_ENGINE`（`apps/mirri-code/src/cli/experimental-v2.ts`），优先级 rust > v2（默认）> v1。
 
@@ -39,7 +39,7 @@ Rust core（`rust/crates/mirri-server`）对外暴露 3 种传输，消息格式
 
 ## 3. Crate 结构现状（对应 05 §1.6）
 
-当前 `rust/crates/` 有 **17 个 crate**（核心依赖图 13 个 + 外围 4 个）。与原设计的关键差异：
+当前 `rust/crates/` 有 **18 个 crate**（workspace members 实测，含 `mirri-credentials`、`mirri-session-index`；较 05 §2.2 的目标结构少 `mirri-id` 与 `mirri-auth` 两个）。与原设计的关键差异：
 
 | crate | 目标归属 | 动作 / 现实状态（2026-09-04） |
 |-----------|---------|------|
@@ -219,3 +219,105 @@ Rust core（`rust/crates/mirri-server`）对外暴露 3 种传输，消息格式
 - **ACP 宿主调用面**：`session/fork` 实际调用引擎方法 `forkSession`（`rust/crates/mirri-acp/src/acp_handler.rs:1106`）——不在适配器触发集内；ACP 会话级 MCP overlay 经 `session.create`/`session.resume` 的 `mcpServers` 参数透传（`acp_handler.rs:543-555`）。
 - **desktop 服务发现面**：desktop 固定端口 58827（`apps/mirri-desktop/src/main/server/daemon.ts:35`）、状态文件 `<home>/server/desktop-state.json`（pid+port，`state.ts:11-44`）、token 文件 `<home>/server.token`（`rust/crates/mirri-server/src/server_token.rs:23`）、healthz 公开路由（`rust/crates/mirri-server/src/http.rs:43`）。desktop-lite 自有 daemon 与状态目录（`server-lite/`），不在本探测面。
 - **测试覆盖差异**：`RemoteAdapter` 单测覆盖连接认证/审批 round-trip/连接死亡（`rust/crates/mirri-remote/tests/remote_adapter_tests.rs`，885 行）；ACP 远程宿主整链（`MIRRI_ACP_REMOTE_ENGINE` 端到端）无测试引用该变量。
+
+## 11. 标识符现状（对应 15，快照 2026-11-02）
+
+### 11.1 依赖分布
+
+`uuid` 在工作区 `rust/Cargo.toml:45` 声明（`features = ["v4", "serde"]`），被 9 个 crate 声明为依赖：`mirri-core`、`mirri-server`、`mirri-embedded`、`mirri-persistence`、`mirri-collaboration`、`mirri-plugin-host`、`mirri-remote`、`mirri-test-harness`、`mirri-proto`。其中 `mirri-proto` 是幽灵依赖——`Cargo.toml:12` 声明，`src/` 下零处 `use uuid`（出现的 "uuid" 均为 JSON 字段名字面量，如 `src/reducer.rs:2040`）。
+
+### 11.2 生成点分布
+
+生成方式是分散的 `format!("<prefix>-{}", Uuid::new_v4())` 字符串拼接，前缀载荷见 11.2 表，无统一封装：
+
+| 类别 | 位置 |
+|---|---|
+| 强类型 `Uuid` 字段 | `mirri-core/src/session/events.rs`（`SessionEvent` 13 个字段）、`mirri-core/src/session/gates.rs`（`ApprovalGate`/`QuestionGate` 的 request_id 与 agent_id、两个 pending 映射键、`ResolvedRing`）、`mirri-collaboration/src/session.rs:65` 与 `manager.rs:22` |
+| 字符串拼接生成 | `session-`（`mirri-core/src/session/manager/mod.rs:637,657,673,1084`）、`agent-`（`session/agent_lifecycle.rs:68,111`、`subagent/host.rs:637`）、`task-`（`task.rs:959`、`shell_command.rs:265`）、`turn-`（`subagent/host.rs:1117,1822`、`mirri-embedded/.../message_handlers.rs:1614,1874,2713`、`goal_driver.rs:784`、`task_driver.rs:756`、`cron_driver.rs:1300`）、`msg-`（`message_handlers.rs:842`）、`run-`（`cron/workspace_store.rs:2246,2439`、`cron_run_spawner.rs:203`）、`cron-`（`cron.rs:2110`）、`draft-`（`scheduled_task_create_handlers.rs:95`）、`goal-`/`plan-`/`act-`（`tools/create_goal.rs:145`、`tools/enter_plan_mode.rs:110`、`tools/exit_plan_mode.rs:276`、`session_handlers.rs:5222,5321,6124`）、`term_`（`terminal_pool.rs:358`）、`f_`（`persistence/src/file_store.rs:117`） |
+| 非前缀形态的零散生成 | `mirri-server/src/rpc.rs:104`（error_id，`.simple()` 无连字符）、`http.rs:402`（request id 兜底）、`state.rs:168`（server_id）、`ws_rpc.rs:2094`（ping nonce）、`mirri-embedded/.../mod.rs:1750`（epoch）、`model_handlers.rs:365`（requestId 兜底）、`mirri-remote/src/lib.rs:311`（client id）、`mirri-plugin-host/src/manager.rs:548,1741`、`mirri-persistence/src/file_store.rs:117`、`mirri-core/src/image_pipeline.rs:326`、`tool_result_truncation.rs:108`、`loop_engine/turn_step.rs:292` |
+| 协作成员 id 的特殊拼写 | `mirri-collaboration/src/session.rs:99` 生成 `<role>-<32 位无连字符>`，**无 `agent-` 前缀** |
+
+### 11.3 解析点分布
+
+| 解析点 | 位置 |
+|---|---|
+| 嵌入服务端审批/问答响应 | `mirri-embedded/src/embedded_server/interaction_handlers.rs:99,205,249` |
+| 独立服务端审批/问答响应 | `mirri-server/src/rpc.rs:957,1050,1129` |
+| 交互内核 | `mirri-core/src/session/interaction.rs:188`（respond）、`:271`（is_recently_resolved） |
+| agent 归属 | `mirri-core/src/turn_flow/hooks.rs:288-291`（`member_agent_uuid`）、`:1510`（nil 兜底）、`mirri-server/src/rpc.rs:2229-2235`、`mirri-server/src/ws_rpc.rs:1194` |
+| 任务裸 id 修复 | `mirri-core/src/task.rs:1717-1730` |
+| 事件作用域 id | `mirri-core/src/session/events.rs:859-866`（`uuid_from_id`，未命中静默归 nil） |
+| 协作工具入参 | `mirri-core/src/tools/collaboration.rs:29-34` |
+
+### 11.4 现状痛点
+
+- `uuid_from_id` 与 `member_agent_uuid` 在解析失败时静默归零/退出：新格式 id 一旦进入，归属判定会静默降级为“主 agent”，不报错。
+- 两个服务端各自实现审批/问答 id 解析，任一遗漏即为该宿主全面失效。
+- 协作工具入参 schema 在 6 处声明 `format: "uuid"`（`tools/collaboration.rs:242,415,468,521,582,655`），是面向模型的格式约束。
+- 协作成员 id 不带 `agent-` 前缀，而归属解析按 `agent-` 前缀剥离，两者口径不一致。
+- 传输契约侧（`packages/protocol/src/request-id.ts:1-14`）已采用 26 字符可排序格式并带正则校验，引擎侧仍用随机 UUID。
+
+## 16. 测试执行现状与并行安全摸底（2026-11-02）
+
+> 配套设计：[16-test-execution-strategy.md](16-test-execution-strategy.md)。本节只记机制级现状与实测计数（`rust/` workspace 全量扫描），不含目标与裁决。
+
+### 16.1 进程级环境变量竞态
+
+- **规模**：全 workspace `env::set_var`/`remove_var` 共 **232 处 / 23 个文件**。集中度极高：`rust/crates/mirri-embedded/src/providers/config_factory.rs` 41 处、`rust/crates/mirri-embedded/src/embedded_server/tests.rs` 31 处、`rust/crates/mirri-embedded/src/embedded_server/tests/credential_store_tests.rs` 24 处、`rust/crates/mirri-core/src/scope/workspace_scope.rs` 18 处、`rust/crates/mirri-core/tests/terminal_pool_provider_tests.rs` 7 处。
+- **锁分布**：**14 把互不相识的静态 env/HOME 锁**，其中 3 个 lib 测试目标内部各含多把（同二进制内互不互斥）：
+
+| lib 测试目标 | 内含锁 | 守护变量 |
+|---|---|---|
+| `mirri-core` | `src/flags.rs:458`、`src/tools/agent_swarm_tool.rs:1699`、`src/scope/workspace_scope.rs:434` `home_lock()` | ・`MIRRICODE_EXPERIMENTAL_*`<br>・`MIRRI_AGENT_SWARM_MAX_ITEMS`<br>・`HOME` |
+| `mirri-embedded` | `src/providers/mod.rs:169`（`pub(crate)`，被 config_factory 与 credential_store_tests 共享）、`src/bootstrap.rs:1144` `test_env::home_lock()`、`src/embedded_server/tests.rs:22479` `MANAGED_PLUGIN_ENV_LOCK` | ・`*_API_KEY` / `MIRRI_*`<br>・`HOME`<br>・`MIRRICODE_BASE_URL` |
+| `mirri-acp` | `src/desktop_probe.rs:162`、`src/run.rs:569` | ・`MIRRICODE_HOME`<br>・`MIRRI_ACP_*` |
+
+单锁目标：`rust/crates/mirri-acp/tests/desktop_share_e2e.rs:52`、`rust/crates/mirri-embedded/tests/e2e_real_llm.rs:21`、`rust/crates/mirri-core/tests/terminal_pool_provider_tests.rs:18`、`rust/crates/mirri-core/tests/turn_flow_tests.rs:7761`、`rust/crates/mirri-credentials/src/migration_tests.rs:20`、`rust/crates/mirri-os/src/search.rs:1308`（`PATH`，async 锁）。
+
+- **竞态窗口**（均为实测，非推断）：
+
+  1. **HOME 交叉读写**：`mirri-core` lib 目标内 18 处 HOME 写全部持 `home_lock()`（`scope/workspace_scope.rs:681-990`），但**生产代码的 HOME 读无锁**——`scope/workspace_scope.rs:136,362`（skill root 发现）在任何测试构造 workspace 时读 `$HOME`，可读到另一测试刚 pin 的假 home。
+  2. **flag env 无锁写**：`embedded_server/tests.rs:26500-26501`、`:41805-41810` 对 `MIRRICODE_EXPERIMENTAL_*` 的 set/remove 不持任何锁，而同二进制的每个 server 实例都按需解析这些变量。
+  3. **`MCP_TEST_*` 无锁**：`embedded_server/tests.rs:18057-18114`、`rust/crates/mirri-mcp/tests/config_tests.rs:460,530`、`rust/crates/mirri-mcp/tests/connection_tests.rs:409` 均无锁，靠「变量名唯一」规避（现状理论安全）。
+  4. **整文件串行**：`rust/crates/mirri-acp/tests/desktop_share_e2e.rs:116` 的 `acquire_env_lock()` 在 9 个测试里贯穿整个测试体（含 await），该文件事实上全串行。
+  5. **脆弱约定**：`rust/crates/mirri-test-harness/tests/cross_backend_contract.rs:200-212` 的 `shared_home()` 在 `OnceLock` 内直接 `set_var("HOME")` 无锁，前提是「本二进制所有测试写同一个值」——任一测试改用独立 home 即破。
+
+- **已达标面**：`credential_store_tests.rs`（31 处 `OPENAI_API_KEY` 字样 / 24 处 env 写）与 `config_factory.rs`（41 处）都正确共享 `providers/mod.rs:169` 的锁；`bootstrap.rs` 的 4 个 HOME 写测试全部持 `test_env::home_lock()`。缺的是锁的**唯一性**，不是纪律。
+- **生产代码 HOME 读取点清单**（`16-test-execution-strategy.md` §4.3 注入化范围判据的证据）：除 `mirri-core/src/scope/workspace_scope.rs:136,362` 外，还包括 `rust/crates/mirri-embedded/src/bootstrap.rs:543,963,1067`（skill dir 展开 / home 解析，处于 lib 测试目标的并发路径）、`rust/crates/mirri-embedded/src/providers/config_factory.rs:295`（mirri_home 回退链）；`rust/crates/mirri-cli/src/main.rs:217,364,721` 仅被子进程型测试触达（每进程独立 env），可豁免。
+
+### 16.2 隔离设施现状：三套互不共享
+
+- `rust/crates/mirri-server/tests/common/mod.rs`：`TestServer`（随机端口 + `TempDir` + `home_dir` 注入），`:296-307` 注释说明为何必须隔离 home（否则读取开发者真实 `~/.mirri-code` 缓存，本地 flake）。最完整样板。
+- `rust/crates/mirri-acp/tests/desktop_share_e2e.rs:57,92,116`：`EnvGuard` / `TestEnv` / `acquire_env_lock()`。
+- `rust/crates/mirri-embedded/src/bootstrap.rs:1139-1150`：`test_env::home_lock` + `EnvGuard`。
+- `mirri-test-harness` crate 只提供 wire 层黑盒设施（`MirriHarness` trait、`HttpHarness`、`MockLlm`、`MockLlmFactory`），不提供 HOME / env / 端口隔离 helper。
+- `mirri-core` 的 27 个 `tests/` 文件**没有任何 common 模块**，各自重复 SessionManager / workspace 搭建。
+
+### 16.3 稳定性与耗时
+
+- **真实 sleep**：`tests/` 与 `*_tests.rs` 中约 **344 处** `sleep(`（全 crate 合计 465 处）。重灾三处：`embedded_server/tests.rs` 98、`embedded_server/tests/b2_notification_tests.rs` 91（多为 10–300ms 固定 sleep）、`mirri-core/tests/terminal_pool_tests.rs` 24（200ms 步进 + 5s deadline 轮询）。
+- **可推广范本**：`start_paused` 已有 **36 处 / 6 个文件**（`mirri-core/src/tools/ask_user.rs:1954` 起 7 处、`subagent/swarm_batch.rs` 14、`embedded_server/message_handlers.rs` 10、`loop_engine/shared.rs` 3、`task.rs` 1、`tools/agent_swarm_tool.rs` 1）；`mirri-core` 的 dev-dependency 已带 `tokio/test-util`。
+- **执行器配置为零**：无 `serial_test`、无 `harness = false`、无 `RUST_TEST_THREADS` 特殊设置、无 `.cargo/config.toml`、无 `[profile.test]`、无 nextest。
+- **`#[ignore]` 共 11 处**：真网络 3 处（`mirri-kosong/tests/tls_smoke.rs:34`、`mirri-embedded/tests/e2e_real_llm.rs:42,116`）全部正确 ignore；其余为 `python3` 依赖 4 处、300s 超时 1 处、RSS 手工测量 1 处、跨 crate 占位 2 处。
+- **端口**：`127.0.0.1:0` 随机绑定 21 处，测试内零固定端口监听；`0.0.0.0` 仅出现在 CLI 参数解析断言（`mirri-cli/tests/cli_tests.rs:58`），不实际监听。
+- **目录隔离**：`tempfile::tempdir()` 1462 处 / 124 个文件；`session-index.db` 全部在 tempdir 下。
+- **环境依赖**：`rust/crates/mirri-persistence/src/dir_lock.rs:189,248` 两个测试 spawn `python3` 子进程持锁（跨进程锁语义的唯一验证手段，代价是 python3 硬依赖）。
+
+### 16.4 编译结构
+
+- **cargo target 实测**：18 个 lib 测试目标 + **84 个集成测试二进制**；`mirri-core` 独占 27 个 `tests/*.rs`（40,082 行，约占集成测试代码的全部重量级部分）。
+- **重复 link**：每个 `tests/*.rs` 独立编译并各自 link 一份 `mirri-core` 依赖图。重依赖为 `image`（0.25.9）、`jsonschema`（0.26，transitive 拉入 `reqwest` 0.12）、`chrono-tz`、`rusqlite`（bundled，经 `mirri-session-index`）；`wiremock`（3 个 crate）与 `proptest`（`mirri-proto`）不在 `mirri-core` 依赖图内。
+- **单文件大目标**：`embedded_server/tests.rs` 44,834 行、691 个测试 fn，全部落在单个 lib 测试目标内——编译结构上是最优形态，但 sleep 与 env 竞态最密集（98 处 sleep、31 处 env 写、3 把锁）。
+- **CI 门禁**：单条 `cargo test --workspace --locked`（`.github/workflows/ci.yml:132`）。
+
+### 16.5 已确认无问题项
+
+- 端口：随机分配，无固定端口监听，无 `127.0.0.1:<固定端口>` 绑定。
+- 真实网络：3 处全部 `#[ignore]`。
+- 共享 db 固定路径：无。
+- `insta`：rust 侧零使用（依赖零、`.snap` 文件零）。
+- 固定 `/tmp` 写盘：仅出现在 JSON 字面量与 CLI 参数断言中（`cross_backend_contract.rs:774-788`、`cli_tests.rs:58`），无实际写盘冲突。
+
+### 16.6 演进注记（2026-11-03，16 号设计 R1-R4 落地后）
+
+本节 §16.1-§16.5 记录的是 2026-11-02 摸底时点现状。落地后的现状：全 workspace 环境变量互斥锁收敛到唯一 `mirri-test-support::env::lock()`/`async_lock()`（原 14 把 crate 本地锁全部删除）；生产 HOME 读取经 `resolve_*_from` 注入化（mirri-core workspace_scope / mirri-embedded bootstrap+config_factory）；集成测试二进制 84→20（各 crate ≤3，域组 + `mod {}` 包裹）；`rust/AGENTS.md` 增设「测试铁律」；卫生门禁 `check-test-hygiene.mjs` + baseline 棘轮挂 CI（`rust-test-hygiene-gate` job）。原「三套互不共享的隔离设施」已由 mirri-test-support 统一提供。§16.3 的 sleep 债务按 poll-step/negative-wait/legacy 三类入 baseline 棘轮管理。

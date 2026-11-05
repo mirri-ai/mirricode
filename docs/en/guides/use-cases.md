@@ -121,9 +121,25 @@ Check the production health endpoint every hour and let me know if anything look
 Come back in about 10 minutes and check whether the build has finished.
 ```
 
-Scheduled tasks are bound to their session — closing the UI is fine, and they are reloaded and continue firing when you reopen the same session (for example, restore it from the web UI's session sidebar). They are not carried into brand-new sessions. Recurring tasks expire after 7 days — the agent receives a `stale` signal on the final trigger and decides whether to stop or renew based on your original instructions.
+Scheduled tasks are bound to their session. Closing the UI is fine — they do not fire while the whole application is closed, and when you reopen the same session, the triggers missed in between are coalesced into a single catch-up delivery. They are not carried into brand-new sessions. Recurring tasks expire after 7 days — the agent receives a `stale` signal on the final trigger and decides whether to stop or renew based on your original instructions.
 
-To see what tasks are currently pending, just ask the agent (it calls the read-only `CronList` tool). To cancel a task, tell the agent to remove it or reference its 8-character ID. For the full tool reference, see [Scheduled tasks](../reference/tools.md#scheduled-tasks). The global kill switch is `MIRRICODE_DISABLE_CRON=1`.
+To see the current tasks, open the Scheduled Tasks page in settings. To cancel one, delete it from the task's detail view, or name the task for the agent.
+
+You can also manage them yourself in Settings → Scheduled Tasks, without going through the agent:
+
+- **Create directly**: click New on the task page, pick a schedule and write the instructions — your own creation needs no approval.
+- **One workspace at a time**: the page shows the current workspace's tasks (a session's own timers stay visible, read-only, in that session), filtered by status, so finding a task never depends on having its session open.
+
+For the full tool reference, see [Scheduled tasks](../reference/tools.md#scheduled-tasks). The global kill switch is `MIRRICODE_DISABLE_CRON=1`.
+
+### Workspace tasks (run without any session open)
+
+Session-bound tasks stop when their session is gone. A **workspace task** is the other kind: it belongs to the workspace itself, fires while the application runs (no session needs to be open), and every trigger runs a fresh one-off session that finishes and records its outcome. This is the right shape for delegated routine work — "every morning, sweep the repo and tell me if anything looks wrong".
+
+- **Create directly**: Settings → Scheduled Tasks → *New*. Beyond the schedule and instructions you pick the **permission mode** (manual — the default / auto / yolo, the same three as a new session) and a visible timezone (pre-filled with your local zone — an explicit value, never a silent inherit). Your own creation needs no approval.
+- **Agent creation needs your confirmation**: when the agent asks for a task, a full draft (schedule, instructions, budget, permission mode, model and thinking effort) appears as an approval card and at the top of the task page. No permission mode can auto-approve it; only you can. The instructions are model-drafted, so review them before approving. Denying lets you attach a reason that is relayed back to the agent, and leaves no task behind.
+- **Run history**: each workspace task lists its runs — status, duration, a short summary of what the run produced, and the permission operations that were refused during it. "Open run" materializes that run's session so you can read the full transcript.
+- **Delivery honesty**: workspace rows say "Fires while the service runs"; session rows say "Depends on its session being alive" — both are visible in the same list.
 
 ## Generating and maintaining documentation
 

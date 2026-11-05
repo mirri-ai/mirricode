@@ -127,6 +127,10 @@ export interface AppSession {
    *  `!busy && (cancelled | failed)`. */
   lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled' | 'interrupted';
   archived: boolean;
+  /** SDR-016/017 pin trio. */
+  pinned: boolean;
+  pinnedAt?: string;
+  pinColor?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray';
   /** Whether the session's wire log is gzip-compressed on disk (the
    *  session-retention domain's shape verdict). Absent on older engines. */
   compressed?: boolean;
@@ -242,8 +246,23 @@ export type AppMessageRole = 'user' | 'assistant' | 'tool' | 'system';
 
 export type AppMessageContent =
   | { type: 'text'; text: string }
-  | { type: 'toolUse'; toolCallId: string; toolName: string; input: unknown; outputLines?: string[] }
-  | { type: 'toolResult'; toolCallId: string; output: unknown; isError?: boolean }
+  | {
+      type: 'toolUse';
+      toolCallId: string;
+      toolName: string;
+      input: unknown;
+      outputLines?: string[];
+      /** Server-stamped epoch-ms start (ADR-7). Absent on older engines. */
+      startedAtMs?: number;
+    }
+  | {
+      type: 'toolResult';
+      toolCallId: string;
+      output: unknown;
+      isError?: boolean;
+      /** Server-measured total duration (ADR-7). Absent on older engines. */
+      durationMs?: number;
+    }
   | { type: 'image'; source: ImageSource }
   | { type: 'video'; source: ImageSource }
   | { type: 'file'; fileId: string; name: string; mediaType: string; size: number }
@@ -265,6 +284,12 @@ export interface AppMessage {
   parentMessageId?: string;
   /** Client-side measured duration from turn.started to turn.ended (ms). */
   durationMs?: number;
+  /** Engine-authoritative end-of-turn instant (ISO), stamped on the run-end
+   *  message — live from the `turn.ended` event's `endedAtMs`, on reload from
+   *  the read face's `endedAtMs` row backfill. Absent when the engine reported
+   *  none (older engine, unfinished turn): the footer then renders no
+   *  timestamp. Never a client clock, never createdAt + durationMs. */
+  endedAt?: string;
   metadata?: Record<string, unknown>;
   /** Activated skills recorded on the rewritten body message (ADR-006). */
   withSkills?: Array<{ name: string; target: string; trigger: string }>;
@@ -535,6 +560,29 @@ export interface AgentStep {
   status: 'ok' | 'running' | 'error';
   /** Accumulated progress/output lines (progress frames append, results replace). */
   outputLines: string[];
+  /** Arrival order within the member's live run — the same monotonic counter
+   *  that stamps `NarrativeSegment.seq`, so steps and segments sort into one
+   *  timeline (ADR-011 ①). */
+  seq: number;
+}
+
+/** One arrival-ordered stretch of a live member's narrative (ADR-011 ①): the
+ *  projector mints a segment per uninterrupted text/thinking run, so reasoning
+ *  and output keep their true interleaving with the member's tool steps instead
+ *  of collapsing into two flat accumulators. */
+export interface NarrativeSegment {
+  /** Projector-minted stable id: `${agentId}-g${gen}-seg-${seq}` — the
+   *  generation counter resets with the projector's session state, so a
+   *  post-resync re-mint never reuses a pre-resync id (run-scoped tombstones
+   *  rely on it). */
+  id: string;
+  kind: 'text' | 'thinking';
+  /** The accumulated text of this segment. */
+  text: string;
+  /** Monotonic arrival order within the member's live run. */
+  seq: number;
+  /** One-shot replay guard armed at segment open (ADR-015 d, segment form). */
+  tailGuard?: boolean;
 }
 
 export interface AppTask {
@@ -550,13 +598,6 @@ export interface AppTask {
   outputPreview?: string;
   outputBytes?: number;
   outputLines?: string[]; // accumulated by eventReducer from task.progress chunks
-  /** The subagent's concatenated live output (assistant.delta), accumulated by
-   *  the event reducer from `taskProgress` chunks of kind `text`. Grows in the
-   *  right-side detail panel like a thinking block. */
-  text?: string;
-  /** The member's concatenated live reasoning (thinking.delta), accumulated
-   *  the same way as `text` — the live narrative's thinking block (ADR-009). */
-  thinking?: string;
   subagentPhase?: AppSubagentPhase;
   subagentType?: string;
   parentToolCallId?: string;
@@ -585,19 +626,52 @@ export interface AppTask {
    *  the live path fills this; a settled member's narrative comes from its
    *  journal read face instead. */
   steps?: AgentStep[];
-  /** Reducer-internal: length of text / thinking at the current step's start.
-   *  A retry boundary truncates both fields back to these marks (ADR-015:
-   *  boundary-driven replay dedupe — no content sniffing). */
-  stepTextLen?: number;
-  stepThinkLen?: number;
-  /** Reducer-internal one-shot: the next text/thinking chunk after a boundary
-   *  is eligible for the exact-tail replay guard; consumed on first use. */
-  tailGuard?: boolean;
+  /** The member's arrival-ordered narrative segments (ADR-011 ①): one entry
+   *  per uninterrupted text/thinking run, each stamped with the member's
+   *  monotonic `seq` so the panel can interleave them with `steps` on a single
+   *  timeline. The live path fills this from `taskProgress` chunks carrying a
+   *  `segmentId`. */
+  segments?: NarrativeSegment[];
+  /** Reducer-internal (ADR-011 ①段化): the segment list's step-start mark —
+   *  segment count plus the open (last) segment's text length at the current
+   *  step's start. A retry boundary truncates the segment list back to these
+   *  marks. */
+  stepSegMark?: { count: number; openLen: number };
+  /** Reducer-internal (ADR-011 ①段化): ids of segments dropped by a retry
+   *  boundary's truncation. The projector never truncates its own list, so a
+   *  later taskCreated replay would re-adopt the failed attempt's segments as
+   *  "newly minted" — `mergeSegments` filters these ids out. Live for the
+   *  member's whole run (never cleared at boundaries); the projector's
+   *  generation-scoped segment ids guarantee a post-reset re-mint never
+   *  collides with an old tombstone. */
+  truncatedSegmentIds?: string[];
 }
 
 // ---------------------------------------------------------------------------
 // Cron task (B6 management surface)
 // ---------------------------------------------------------------------------
+
+/** Who created the cron task (cron-scheduling A.1/E.2): the model's
+ * CronCreate tool answers 'agent', the panel's direct create 'user', and
+ * a proposal the user approved 'agent_approved' (stage-2 D.0c — 模型（经
+ * 审批）). */
+export type AppCronTaskOrigin = 'user' | 'agent' | 'agent_approved';
+
+/** The task's permission MODE (cron-improvement A4): the SAME three modes a
+ * session carries, on the SAME wire spelling — what the user picked is what
+ * the run executes. The kernel's posture expansion stays server-side. */
+export type AppCronPermissionMode = 'manual' | 'auto' | 'yolo';
+
+/** The concurrency posture of a workspace task (stage-2 D-M3): skip
+ * (default) / queue. */
+export type AppCronConcurrency = 'skip' | 'queue';
+
+/** The task's ownership scope (stage-2 E.1/E.2): a session task depends on
+ * its session being alive; a workspace task fires while the service
+ * runs. */
+export type AppCronScope =
+  | { kind: 'session'; sessionId: string }
+  | { kind: 'workspace'; workspaceId: string };
 
 /** A session cron task (the v3 rust `cron.list` row). Timestamps are epoch ms. */
 export interface AppCronTask {
@@ -610,6 +684,164 @@ export interface AppCronTask {
   createdAt: number;
   lastFiredAt?: number | null;
   nextFireAt?: number | null;
+  /** Who created the task (stage-1 batch-3); absent on older rows reads as
+   * 'agent' server-side — the field is optional only for tolerance. */
+  origin?: AppCronTaskOrigin;
+  /** The hard fire budget of a recurring task (A.5); undefined = unbounded. */
+  maxFires?: number;
+  /** How many fires the task has delivered (D-M7 — the n of "n / 上限"). */
+  fireCount?: number;
+  /** The task's ownership scope (stage-2 E.1): session or workspace. */
+  scope?: AppCronScope;
+  /** The permission mode the user chose (A4); undefined on pre-batch-2
+   * records — the kernel's default (manual-equivalent canary) applies. */
+  permissionMode?: AppCronPermissionMode;
+  /** The concurrency posture (stage-2 D-M3); undefined = skip. */
+  concurrency?: AppCronConcurrency;
+  /** Whether the user paused the task (A9): a paused task fires nothing and
+   * records nothing until resumed. Undefined on old records reads as false. */
+  paused?: boolean;
+  /** The honest delivery condition (E.2): 服务运行即触发 vs 依赖所属会话存活. */
+  deliveryCondition?: string;
+  /** The task's display title (form batch 6); `null` when none was set —
+   *  the untitled label is the UI's i18n fallback. */
+  title?: string | null;
+  /** The inclusive end date `YYYY-MM-DD` (form batch 6); absent = no end. */
+  endsAt?: string | null;
+  /** The elapsed-interval schedule (form batch 6 / SDR-113); absent = the
+   *  expression drives the schedule. */
+  interval?: AppCronInterval | null;
+  /** The model alias the task's runs bind (form batch 6); absent = the
+   *  workspace default model. */
+  model?: string | null;
+  /** The thinking effort the task's runs carry; absent = the model's
+   *  default. */
+  effort?: string | null;
+  /** The working directory the task's runs execute in; absent = the
+   *  workspace default. */
+  workdir?: string | null;
+  /** The next TWO ideal occurrences (form batch 6, pre-jitter, epoch ms) —
+   *  the residency state's 下次/下下次; a one-shot may carry only one. */
+  nextTwoFires?: number[] | null;
+  /** The most recent non-Skipped run's start (form batch 6, epoch ms) —
+   *  the residency state's 上次运行; null when the task never really ran
+   *  (NOT the last_fired cursor: skipped detections advance it too). */
+  lastRunFromRuns?: number | null;
+}
+
+/** An elapsed-interval schedule (form batch 6 / SDR-113): every N
+ *  days/weeks/months at `time`, counting from `anchorDate`. Mutually
+ *  exclusive with the cron expression. */
+export interface AppCronInterval {
+  every: number;
+  unit: 'day' | 'week' | 'month';
+  time: string;
+  anchorDate: string;
+}
+
+/** The create payload for `cron.add` (E.1 / A.1): the panel's direct
+ *  create. `recurring` defaults to false; `maxFires` only with recurring.
+ *  Form batch 6: the schedule is either `cron` or `interval` (mutually
+ *  exclusive, SDR-113), and the task-form fields ride as optional keys
+ *  (absent = the server's documented defaults). */
+export interface AppCronTaskInput {
+  /** The 5-field cron expression; empty/absent when `interval` is set. */
+  cron?: string;
+  /** The elapsed-interval schedule — the alternative to `cron`. */
+  interval?: AppCronInterval;
+  prompt: string;
+  recurring: boolean;
+  timezone?: string;
+  maxFires?: number;
+  /** The permission mode (A4) — workspace tasks only; undefined leaves the
+   * engine default. Carried verbatim: no frontend posture fold. */
+  permissionMode?: AppCronPermissionMode;
+  /** The concurrency posture (stage-2 D-M3) — workspace tasks only;
+   * undefined = skip. */
+  concurrency?: AppCronConcurrency;
+  /** The task's display title (form batch 6). */
+  title?: string;
+  /** The inclusive end date `YYYY-MM-DD` (B1 / SDR-110). */
+  endsAt?: string;
+  /** The model alias the task's runs bind (VU10). */
+  model?: string;
+  /** The thinking effort the task's runs carry (VU11). */
+  effort?: string;
+  /** The working directory the task's runs execute in (VU10). */
+  workdir?: string;
+}
+
+/** The `cron.update` edit (A9): every field is a replace-or-leave patch —
+ *  an absent key keeps the current value, an explicit `null` clears it
+ *  (title / endsAt / maxFires / model / effort). The workspace is absent
+ *  by design: an edit never moves a task between workspaces. */
+export interface AppCronTaskEdit {
+  title?: string | null;
+  prompt?: string;
+  cron?: string;
+  interval?: AppCronInterval | null;
+  timezone?: string | null;
+  endsAt?: string | null;
+  maxFires?: number | null;
+  model?: string | null;
+  effort?: string | null;
+  permissionMode?: AppCronPermissionMode;
+}
+
+/** The `cron.preview` answer (A5 / B1): the next ideal occurrences plus the
+ *  theoretical past one. `previousT0` is null for a rule that produced no
+ *  occurrence at or before the anchor (a one-off-shaped rule → 「—」). */
+export interface AppCronPreview {
+  occurrences: number[];
+  previousT0: number | null;
+}
+
+/** One task-bearing session group of the aggregated `cron.listAll` view
+ * (E.5 / V8a): the session's tasks plus the honest open flag — an
+ * unopened session's tasks are visible (never hidden), their delivery
+ * still waits for the session to open. */
+export interface AppCronSessionGroup {
+  sessionId: string;
+  title: string;
+  open: boolean;
+  tasks: AppCronTask[];
+}
+
+/** One workspace's tasks in the aggregated `cron.listAll` view (stage-2
+ * E.1/V23): grouped by workspace, each row carrying its honest delivery
+ * condition (服务运行即触发). */
+export interface AppCronWorkspaceGroup {
+  workspaceId: string;
+  tasks: AppCronTask[];
+}
+
+/** One recorded run of a workspace task (stage-2 C.2/V12): status,
+ * timing, the D-M6 summary (the last assistant message truncated — rides
+ * the usage slot's `summary` key), and the execution session's ref. */
+export interface AppCronRun {
+  runId: string;
+  status: 'running' | 'succeeded' | 'failed' | 'rejected' | 'skipped' | 'waiting_approval';
+  startedAt: string;
+  endedAt?: string | null;
+  durationMs?: number | null;
+  /** The usage summary (cost + tokens). NOT yet collected by the executor
+   * — honest '—' until the plumbing lands; the D-M6 summary rides
+   * `usage.summary`. */
+  usage?: { summary?: string } & Record<string, unknown> | null;
+  sessionRef?: string | null;
+  skipReason?: string | null;
+  /** The asked-ops trace (V15): which operation, what result — the
+   * permission outcomes the run's authorize site produced. */
+  askedOps?: Array<{ tool: string; decision: string; reason?: string }>;
+  /** What started the run (ADR-021's launch record) — scheduled / run_now
+   * / queue_drain; null on rows from before the launch record existed. */
+  trigger?: 'scheduled' | 'run_now' | 'queue_drain' | null;
+  /** When the schedule said the run was due (epoch ms) — null for run-now
+   * fires and pre-record rows. */
+  scheduledAt?: number | null;
+  /** How late the run actually started vs. scheduledAt (ms, ≥0) — null
+   * when there is nothing to compare against. */
+  launchDelayMs?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -746,6 +978,14 @@ export type AppEvent =
   | { type: 'workspaceCreated'; workspace: AppWorkspace }
   | { type: 'workspaceUpdated'; workspace: AppWorkspace }
   | { type: 'workspaceDeleted'; workspaceId: string; root: string }
+  | {
+      type: 'skillCatalogChanged';
+      workspaceId: string;
+      added: readonly string[];
+      removed: readonly string[];
+      updated: readonly string[];
+      trigger: 'file' | 'config' | 'plugin' | 'manual';
+    }
   | { type: 'sessionUpdated'; session: AppSession; changedFields: string[] }
   | { type: 'sessionDeleted'; sessionId: string }
   | {
@@ -760,7 +1000,16 @@ export type AppEvent =
       // because the deprecated status_changed fold does not carry it.
       seq?: number;
     }
-  | { type: 'sessionMetaUpdated'; sessionId: string; title?: string; lastPrompt?: string }
+  | {
+      type: 'sessionMetaUpdated';
+      sessionId: string;
+      title?: string;
+      lastPrompt?: string;
+      /** SDR-016/017 pin trio — another client's pin/unpin. */
+      pinned?: boolean;
+      pinnedAt?: string;
+      pinColor?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray';
+    }
   | { type: 'sessionUsageUpdated'; sessionId: string; usage: AppSessionUsage; model?: string; swarmMode?: boolean; planMode?: boolean; collaborationMode?: boolean; thinking?: string }
   | { type: 'historyCompacted'; sessionId: string; beforeSeq: number; reason: string; summaryMessageId?: string }
   | { type: 'compactionStarted'; sessionId: string; trigger: 'manual' | 'auto'; instruction?: string }
@@ -778,7 +1027,7 @@ export type AppEvent =
       seq: number;
     }
   | { type: 'messageCreated'; message: AppMessage }
-  | { type: 'messageUpdated'; sessionId: string; messageId: string; content: AppMessageContent[]; status: 'pending' | 'completed' | 'error'; durationMs?: number }
+  | { type: 'messageUpdated'; sessionId: string; messageId: string; content: AppMessageContent[]; status: 'pending' | 'completed' | 'error'; durationMs?: number; endedAt?: string }
   | { type: 'assistantDelta'; sessionId: string; messageId: string; contentIndex: number; delta: { text?: string; thinking?: string } }
   // Side-channel / non-main-agent streaming: carries text/thinking deltas for a
   // specific agent (e.g. a BTW side chat) without folding them into the parent
@@ -801,12 +1050,15 @@ export type AppEvent =
       stream: 'stdout' | 'stderr';
       /**
        * `line` (default) appends a new progress line (tool-call / tool-progress).
-       * `text` concatenates onto the subagent's growing streamed output
-       * (`AppTask.text`), shown live in the detail panel like a thinking block.
-       * `thinking` concatenates onto the member's live reasoning
-       * (`AppTask.thinking`), the narrative's thinking block (ADR-009).
+       * `text` extends the narrative segment named by `segmentId` — the
+       * subagent's growing streamed output, shown live in the detail panel
+       * like a thinking block (ADR-011 ②).
+       * `thinking` extends the member's live reasoning segment the same way
+       * (ADR-009 / ADR-011 ②).
        */
       kind?: 'line' | 'text' | 'thinking';
+      /** Target narrative segment for kind:'text'|'thinking' chunks (ADR-011). */
+      segmentId?: string;
     }
   | {
       type: 'subagentStepBoundary';
@@ -877,6 +1129,8 @@ export interface AppInFlightToolCall {
   args?: unknown;
   description?: string;
   lastProgress?: { kind: string; text?: string; percent?: number };
+  /** Server-stamped epoch-ms tool start (ADR-7). Absent on older engines. */
+  startedAtMs?: number;
 }
 
 export interface AppInFlightTurn {
@@ -1522,7 +1776,7 @@ export interface AppRecoveryList {
 export interface MirriWebApi {
   getHealth(): Promise<{ status: 'ok'; uptimeSec: number }>;
   getMeta(): Promise<{ serverVersion: string; serverId: string; startedAt: string; capabilities: Record<string, boolean>; openInApps: string[]; dangerousBypassAuth: boolean; backend: 'v1' | 'v2' | 'v3' }>;
-  listSessions(input?: PageRequest & { busy?: boolean; workspaceId?: string; includeArchive?: boolean; archivedOnly?: boolean; excludeEmpty?: boolean }): Promise<Page<AppSession>>;
+  listSessions(input?: PageRequest & { busy?: boolean; workspaceId?: string; includeArchive?: boolean; archivedOnly?: boolean; excludeEmpty?: boolean; pinnedOnly?: boolean }): Promise<Page<AppSession>>;
   /**
    * Global server-side session search (the rust engine's `session.search`
    * literal read face: NFKC + case-folded substring over session titles
@@ -1548,6 +1802,10 @@ export interface MirriWebApi {
    * the v2 wire has no consumer for.
    */
   updateSession(sessionId: string, input: { title?: string; cwd?: string; model?: string; permissionMode?: string; planMode?: boolean; swarmMode?: boolean; collaborationMode?: boolean; goalObjective?: string; goalControl?: 'pause' | 'resume' | 'cancel'; thinking?: string }): Promise<AppSession>;
+  /** SDR-016/017: pin a session with an optional seven-color preset. */
+  pinSession(sessionId: string, color?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray'): Promise<void>;
+  /** SDR-016/017: unpin a session (the whole trio clears). */
+  unpinSession(sessionId: string): Promise<void>;
   getSessionStatus(sessionId: string): Promise<AppSessionRuntimeStatus>;
   /** Current goal snapshot, or null when the session has no active goal. */
   getSessionGoal(sessionId: string): Promise<AppGoal | null>;
@@ -1637,14 +1895,73 @@ export interface MirriWebApi {
   ): Promise<{ activated: true; skillName: string; promptId: string; status: 'queued' | 'running' }>;
   /** Enable/disable a skill at the user level (v3 rust only). */
   setSkillEnabled(skillName: string, enabled: boolean): Promise<{ name: string; enabled: boolean; registered: boolean; disabledSkills: string[] }>;
+  /** Rescan every workspace's skill catalog through the engine's manual
+   * reload RPC (ADR-013 decision 5). v3-only; older backends throw. */
+  reloadSkills(): Promise<Array<{ workspaceId: string; added: number; removed: number; updated: number; watching: boolean }>>;
   /** Read a skill's SKILL.md content (v3 rust only). */
   readSkillContent(skillName: string, sessionId?: string): Promise<{ name: string; content: string }>;
   /** List the session's cron tasks (v3 rust only). */
   listCronTasks(sessionId: string): Promise<AppCronTask[]>;
-  /** Delete one cron task by id (v3 rust only). */
+  /** List EVERY existing session's cron tasks in one aggregated view
+   * (v3 rust only, E.5 / V8a): one group per task-bearing session, live
+   * or persisted — no session needs to be open. Stage-2 E.1/V23: the
+   * workspace groups ride the same answer (workspace-scoped tasks that
+   * fire while the service runs). */
+  listAllCronTasks(): Promise<{
+    sessions: AppCronSessionGroup[];
+    workspaces: AppCronWorkspaceGroup[];
+    disabled: boolean;
+  }>;
+  /** Delete one cron task by id (v3 rust only). A workspace task deletes
+   * through its workspaceId (stage-2 4a arm). */
   deleteCronTask(sessionId: string, taskId: string): Promise<{ deleted: true; taskId: string }>;
-  /** Run one cron task now, leaving its schedule untouched (v3 rust only). */
+  /** Run one cron task now, leaving its schedule untouched (v3 rust
+   * only). A workspace task triggers through its workspaceId. */
   triggerCronTask(sessionId: string, taskId: string): Promise<{ triggered: true; taskId: string }>;
+  /** Create a workspace cron task directly from the management face
+   * (stage-2 D.0c): origin fixed to 'user' server-side, no approval —
+   * the user's own action IS the authorization. */
+  createWorkspaceCronTask(
+    workspaceId: string,
+    input: AppCronTaskInput,
+  ): Promise<AppCronTask>;
+  /** Delete one workspace cron task (stage-2 4a workspace arm). */
+  deleteWorkspaceCronTask(
+    workspaceId: string,
+    taskId: string,
+  ): Promise<{ deleted: true; taskId: string }>;
+  /** Trigger one workspace cron task now (stage-2 4a workspace arm). */
+  triggerWorkspaceCronTask(
+    workspaceId: string,
+    taskId: string,
+  ): Promise<{ triggered: true; taskId: string }>;
+  /** Edit one workspace task in place (A9): identity and run history
+   * survive; the workspace itself is not editable. */
+  updateWorkspaceCronTask(
+    workspaceId: string,
+    taskId: string,
+    edit: AppCronTaskEdit,
+  ): Promise<AppCronTask>;
+  /** Stop one workspace task firing without deleting it (A9). */
+  pauseWorkspaceCronTask(workspaceId: string, taskId: string): Promise<AppCronTask>;
+  /** Resume one paused workspace task from the next future occurrence (A9). */
+  resumeWorkspaceCronTask(workspaceId: string, taskId: string): Promise<AppCronTask>;
+  /** List one workspace task's run records (stage-2 C.2/V12): status,
+   * timing, the D-M6 summary, the execution session ref. */
+  listCronRuns(workspaceId: string, taskId: string): Promise<AppCronRun[]>;
+  /** Open one run record's execution session (stage-2 B.2/C.4,
+   * ADR-008): the explicit-open path that materializes the lazy
+   * execution session into the index. Idempotent. */
+  openCronRun(workspaceId: string, sessionId: string): Promise<{ sessionId: string; materialized: boolean }>;
+  /** Preview a schedule's theoretical moments (v3 rust only, ADR-017 /
+   * A5): the next `count` ideal instants plus the theoretical PAST one
+   * (`previousT0`, null for a rule that never fired before now), all from
+   * the SAME kernel the scheduler runs. A display projection: no task side
+   * effects, not gated on MIRRICODE_DISABLE_CRON. */
+  previewCronSchedule(
+    schedule: { cron?: string; interval?: AppCronInterval },
+    options?: { timezone?: string; count?: number; anchor?: number },
+  ): Promise<AppCronPreview>;
   /** List the user-level permission rules of the shared config snapshot
    *  (v3 rust only, B9 `approval.listRules`). */
   listPermissionRules(): Promise<AppPermissionRule[]>;

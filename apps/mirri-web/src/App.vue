@@ -53,6 +53,7 @@ import type { SwarmMember } from './composables/swarmGroups';
 import { commitLevel, effectiveThinkingLevel, segmentsFor } from './lib/modelThinking';
 import { stripSkillPrefix } from './lib/slashCommands';
 import { parseSwarmCommand } from './lib/swarmCommand';
+import { modelPickerUnavailable } from './lib/modelPickerRefresh';
 import ServerAuthDialog from './components/ServerAuthDialog.vue';
 import ModelPicker from './components/settings/ModelPicker.vue';
 import Onboarding from './components/settings/Onboarding.vue';
@@ -590,13 +591,14 @@ const gateSettingsOpen = ref(false);
 watch(showSetupGate, (show) => {
   if (!show) gateSettingsOpen.value = false;
 });
-/** Initial tab when Settings opens (set by openProviders → 'models', /cron → 'cron'). */
+/** Initial tab when Settings opens (set by openProviders → 'models',
+ *  /cron → 'scheduledTasks'). */
 const initialSettingsTab = ref<
   | 'general'
   | 'models'
   | 'agent'
   | 'skills'
-  | 'cron'
+  | 'scheduledTasks'
   | 'tasks'
   | 'profiles'
   | 'mcp'
@@ -604,6 +606,7 @@ const initialSettingsTab = ref<
   | 'advanced'
   | 'archived'
 >('general');
+
 
 type SubmitPayload = {
   text: string;
@@ -643,26 +646,37 @@ const agentProfilesLoading = ref(false);
 const skippedAgentFiles = ref<AppAgentSkippedFile[]>([]);
 const configSaving = ref(false);
 
-function openModelPicker(): void {
-  modelsLoading.value = true;
+async function openModelPicker(): Promise<void> {
   modelsUnavailable.value = false;
   showModelPicker.value = true;
-  // Full refresh first (every refreshable provider, not just OAuth), so the
-  // list reflects the live catalog — the WS model-catalog event that used to
-  // keep the cache warm is no longer forwarded by the daemon. Runs in the
-  // background and never takes the picker down: it opens immediately with the
-  // already-known models and a refresh failure only leaves those (D-M3). The
-  // rust adapter calls `providerDiscovery.refreshProviderModels` (G-7); a
-  // rejection (e.g. `provider.not_found` from a stale cached catalog) is
-  // degraded silently and the catch keeps the picker usable.
-  void client
-    .refreshAllProviders()
-    .catch(() => {
-      // Refresh failed — keep the picker usable with the cached model list.
-    })
-    .finally(() => {
+  // The picker's data source is the local cache (boot already ran
+  // loadModels); the loading state reflects ONLY that local load — never
+  // the network refresh below (#183: a dead network used to keep the
+  // picker spinning for the full refresh timeout with the cached list
+  // sitting ready underneath).
+  if (client.models.value.length === 0) {
+    modelsLoading.value = true;
+    try {
+      // The local load's own outcome (not the cached list's emptiness):
+      // unavailable is exactly "the load failed AND nothing is cached"
+      // — a healthy load answering an honestly-empty list is not a
+      // failure state (the background refresh never sets this).
+      const localLoadSucceeded = await client.loadModels();
+      modelsUnavailable.value = modelPickerUnavailable(
+        !localLoadSucceeded,
+        client.models.value.length,
+      );
+    } finally {
       modelsLoading.value = false;
-    });
+    }
+  }
+  // Full refresh (every refreshable provider, not just OAuth) in the
+  // background so the list reflects the live catalog — a success silently
+  // folds the refreshed rows in on the composable's own loadModels, a
+  // failure surfaces through useModelProviderState's pushOperationFailure
+  // (#185: the old `.catch(() => {})` here swallowed exactly that
+  // visibility). Nothing here blocks or closes the picker.
+  void client.refreshAllProviders();
 }
 
 async function handleSelectModel(modelId: string): Promise<void> {
@@ -876,9 +890,9 @@ function handleCommand(cmd: string): void {
       showStatusPanel.value = true;
       break;
     case '/cron':
-      // Open the settings overlay directly on the cron management tab
+      // Open the settings overlay directly on the scheduled-task page
       // (the openProviders → 'models' posture).
-      initialSettingsTab.value = 'cron';
+      initialSettingsTab.value = 'scheduledTasks';
       showSettings.value = true;
       break;
     case '/tasks':
@@ -1096,6 +1110,8 @@ function openPr(url: string): void {
           @add-workspace="showAddWorkspace = true"
           @rename="(id, title) => client.renameSession(id, title)"
           @archive="(id) => client.archiveSession(id)"
+          @pin="(id: string, color?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray') => client.pinSession(id, color)"
+          @unpin="(id: string) => client.unpinSession(id)"
           @delete-workspace="(id, mode) => client.deleteWorkspace(id, mode)"
           @reorder-workspaces="client.reorderWorkspaces($event)"
           @set-workspace-sort-mode="client.setWorkspaceSortMode($event)"
@@ -1228,6 +1244,8 @@ function openPr(url: string): void {
         @fork-session="(id) => client.forkSession(id)"
         @fork-session-at-turn="(id: string, turnId: number) => client.forkSession(id, { turnId })"
         @archive-session="(id) => client.archiveSession(id)"
+        @pin-session="(id: string, color?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray') => client.pinSession(id, color)"
+        @unpin-session="(id: string) => client.unpinSession(id)"
         @compact="client.compact()"
         @pick-model="openModelPicker()"
         @select-model="handleComposerSelectModel($event)"
@@ -1505,6 +1523,8 @@ function openPr(url: string): void {
         @add-workspace="showAddWorkspace = true"
         @rename="(id, title) => client.renameSession(id, title)"
         @archive="(id) => client.archiveSession(id)"
+          @pin="(id: string, color?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray') => client.pinSession(id, color)"
+          @unpin="(id: string) => client.unpinSession(id)"
         @delete-workspace="(id, mode) => client.deleteWorkspace(id, mode)"
         @load-more="(id) => void client.loadMoreSessions(id)"
       />

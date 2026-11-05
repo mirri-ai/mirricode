@@ -410,6 +410,23 @@ html[data-color-scheme="dark"][data-accent="mono"] {
   --color-text-muted: #6b7280;
   --color-text-faint: #9aa3af;
   --color-text-on-accent: #ffffff;
+  /* Foreground ramp, canonical naming. The neutral scale is the raw stock for
+     the ramp; the semantic `--color-foreground*` aliases are what components
+     consume. -subtlest is the quietest readable step: metadata that must stay
+     present but never compete with the content (end-of-turn stamps, hints). */
+  --color-neutral-50: oklch(98.5% 0 0);
+  --color-neutral-100: oklch(97% 0 0);
+  --color-neutral-200: oklch(92.2% 0 0);
+  --color-neutral-300: oklch(87% 0 0);
+  --color-neutral-500: oklch(55.6% 0 0);
+  --color-neutral-700: oklch(37.1% 0 0);
+  --color-neutral-800: oklch(26.9% 0 0);
+  --color-neutral-900: oklch(20.5% 0 0);
+  --color-neutral-950: oklch(14.5% 0 0);
+  --color-foreground: var(--color-text);
+  --color-foreground-muted: var(--color-text-muted);
+  --color-foreground-subtle: var(--color-text-faint);
+  --color-foreground-subtlest: color-mix(in oklab, var(--color-neutral-800) 60%, transparent);
   --color-line: #e7eaee;
   --color-line-strong: #d4d9e0;
   --color-accent: var(--accent-primary);
@@ -558,6 +575,7 @@ html[data-color-scheme="dark"] {
   --color-text: #c9cdd4;
   --color-text-muted: #9aa0a8;
   --color-text-faint: #6b7280;
+  --color-foreground-subtlest: color-mix(in oklab, var(--color-neutral-300) 30%, transparent);
   --color-line: #2d333b;
   --color-line-strong: #3d444d;
   --color-accent: #58a6ff;
@@ -597,6 +615,7 @@ html[data-color-scheme="dark"] {
     --color-text: #c9cdd4;
     --color-text-muted: #9aa0a8;
     --color-text-faint: #6b7280;
+    --color-foreground-subtlest: color-mix(in oklab, var(--color-neutral-300) 30%, transparent);
     --color-line: #2d333b;
     --color-line-strong: #3d444d;
     --color-accent: #58a6ff;

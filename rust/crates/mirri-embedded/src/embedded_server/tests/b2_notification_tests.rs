@@ -18,7 +18,9 @@ use super::*;
 
 /// A B2 test bed: a server with the given LLM factory and a fast
 /// task-sweep tick (the notification driver rides the same cadence as
-/// the sweeper).
+/// the sweeper). The cron scheduler's tick is set to the SAME fast value
+/// — every B2 cron test drives due fires through real ticks, so the bed
+/// pre-wires it (no per-test `with_cron_tick` repetition).
 fn b2_server_with_factory(
     factory: Arc<dyn LlmFactory>,
     tick: Duration,
@@ -29,7 +31,7 @@ fn b2_server_with_factory(
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let mut parsed = ServerConfig::from_toml("").expect("test config");
     // The create chain requires a resolvable model (spec 11 R4 — no
     // built-in fallback): seed the test default.
@@ -37,7 +39,9 @@ fn b2_server_with_factory(
     let config = Arc::new(RwLock::new(parsed));
     let server =
         EmbeddedServer::with_providers(manager, Some(factory), None, None, None, config, None)
-            .with_task_sweep_tick(tick);
+        .with_home_dir(Some(tmp.path().to_path_buf()))
+            .with_task_sweep_tick(tick)
+            .with_cron_tick(tick);
     (server, tmp)
 }
 
@@ -867,7 +871,7 @@ async fn should_suppress_notifications_for_tasks_killed_at_session_close() {
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let mut parsed = ServerConfig::from_toml("").expect("test config");
     // The create chain requires a resolvable model (spec 11 R4 — no
     // built-in fallback): seed the test default.
@@ -882,6 +886,7 @@ async fn should_suppress_notifications_for_tasks_killed_at_session_close() {
         config,
         None,
     )
+        .with_home_dir(Some(tmp.path().to_path_buf()))
     .with_task_sweep_tick(Duration::from_millis(50));
     server_b
         .call_method("session.resume", json!({ "sessionId": &session_id }))
@@ -939,7 +944,7 @@ async fn should_suppress_notifications_when_print_mode_drains() {
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let mut parsed =
         ServerConfig::from_toml("[task]\nprintBackgroundMode = \"drain\"\n").expect("test config");
     // The create chain requires a resolvable model (spec 11 R4 — no
@@ -955,6 +960,7 @@ async fn should_suppress_notifications_when_print_mode_drains() {
         config,
         None,
     )
+        .with_home_dir(Some(tmp.path().to_path_buf()))
     .with_task_sweep_tick(Duration::from_millis(50));
     let created = server
         .call_method("session.create", json!({}))
@@ -1030,13 +1036,14 @@ async fn should_silently_reappend_undelivered_notifications_on_resume() {
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let mut parsed = ServerConfig::from_toml("").expect("test config");
     // The create chain requires a resolvable model (spec 11 R4 — no
     // built-in fallback): seed the test default.
     parsed.default_model = Some(super::TEST_DEFAULT_MODEL.to_string());
     let config = Arc::new(RwLock::new(parsed));
-    let server_a = EmbeddedServer::with_providers(manager, None, None, None, None, config, None);
+    let server_a = EmbeddedServer::with_providers(manager, None, None, None, None, config, None)
+        .with_home_dir(Some(tmp.path().to_path_buf()));
     let created = server_a
         .call_method("session.create", json!({}))
         .await
@@ -1107,7 +1114,7 @@ async fn should_silently_reappend_undelivered_notifications_on_resume() {
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let mut parsed = ServerConfig::from_toml("").expect("test config");
     // The create chain requires a resolvable model (spec 11 R4 — no
     // built-in fallback): seed the test default.
@@ -1122,6 +1129,7 @@ async fn should_silently_reappend_undelivered_notifications_on_resume() {
         config,
         None,
     )
+        .with_home_dir(Some(tmp.path().to_path_buf()))
     .with_task_sweep_tick(Duration::from_millis(50));
     server_b
         .call_method("session.resume", json!({ "sessionId": &session_id }))
@@ -1602,7 +1610,7 @@ async fn should_not_create_an_llm_on_ticks_after_the_delivery_settles() {
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let mut parsed = ServerConfig::from_toml("").expect("test config");
     // The create chain requires a resolvable model (spec 11 R4 — no
     // built-in fallback): seed the test default.
@@ -1620,6 +1628,7 @@ async fn should_not_create_an_llm_on_ticks_after_the_delivery_settles() {
         config,
         None,
     )
+        .with_home_dir(Some(tmp.path().to_path_buf()))
     .with_task_sweep_tick(Duration::from_millis(50));
     let created = server
         .call_method("session.create", json!({}))
@@ -1662,16 +1671,12 @@ async fn should_not_create_an_llm_on_ticks_after_the_delivery_settles() {
 /// existing cron e2e family uses).
 fn seed_overdue_cron_task(session: &mirri_core::SessionScope, session_id: &str, prompt: &str) {
     session.cron().restore_tasks([mirri_core::cron::CronTask {
-        id: "cron-b2".to_string(),
-        cron: "* * * * *".to_string(),
-        prompt: prompt.to_string(),
-        session_id: session_id.to_string(),
-        recurring: false,
-        timezone: None,
-        created_at: chrono::Utc::now() - chrono::Duration::minutes(10),
-        last_fired: None,
-        next_fire_at: None,
-    }]);
+            session_id: session_id.to_string(),
+            recurring: false,
+            created_at: chrono::Utc::now() - chrono::Duration::minutes(10),
+            scope: mirri_core::cron::TaskScope::Session,
+            ..mirri_core::cron::cron_task_base("cron-b2", "* * * * *", prompt)
+        }]);
     session.cron().set_next_fire_at(
         "cron-b2",
         Some(chrono::Utc::now() - chrono::Duration::minutes(1)),
@@ -1687,7 +1692,6 @@ async fn should_hold_the_cron_fire_until_idle_and_inject_it_enveloped() {
     let release = mock.push_gated("First reply");
     mock.push_text("cron reply");
     let (server, _tmp) = b2_server(Arc::clone(&mock), Duration::from_millis(50));
-    let server = server.with_cron_tick(Duration::from_millis(50));
     let created = server
         .call_method("session.create", json!({}))
         .await
@@ -1767,6 +1771,199 @@ async fn should_hold_the_cron_fire_until_idle_and_inject_it_enveloped() {
     assert!(
         enveloped_input.contains("</cron-fire>"),
         "the envelope closes: {enveloped_input}"
+    );
+}
+
+/// Seed one overdue cron task with an explicit `recurring` flag on the
+/// session (the held-fire delete tests' white-box seam: the existing
+/// [`seed_overdue_cron_task`] hardcodes one-shot).
+fn seed_overdue_cron_task_with_recurring(
+    session: &mirri_core::SessionScope,
+    session_id: &str,
+    prompt: &str,
+    recurring: bool,
+) -> String {
+    let id = format!("cron-b2-{recurring}");
+    session.cron().restore_tasks([mirri_core::cron::CronTask {
+        session_id: session_id.to_string(),
+        recurring,
+        created_at: chrono::Utc::now() - chrono::Duration::minutes(10),
+        ..mirri_core::cron::cron_task_base(&id, "* * * * *", prompt)
+    }]);
+    session.cron().set_next_fire_at(
+        &id,
+        Some(chrono::Utc::now() - chrono::Duration::minutes(1)),
+    );
+    id
+}
+
+/// Given a busy main-agent turn with a recurring cron fire already held,
+/// when the task is deleted before the turn ends, then the held fire is
+/// purged — the prompt is never injected (#177 P2).
+#[tokio::test]
+async fn should_not_inject_a_held_fire_when_a_recurring_task_is_deleted_mid_turn() {
+    let mock = Arc::new(ScriptedLlm::new());
+    let release = mock.push_gated("First reply");
+    mock.push_text("cron reply");
+    let (server, _tmp) = b2_server(Arc::clone(&mock), Duration::from_millis(50));
+    let created = server
+        .call_method("session.create", json!({ "title": "held purge recurring" }))
+        .await
+        .expect("create");
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    // Given a busy main-agent turn (the first LLM call parks on the gate)
+    server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "original question", "mode": "fire" }),
+        )
+        .await
+        .expect("send");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while mock.chat_call_count() < 1 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the first LLM call must start within 5s"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // And a recurring task coming due mid-turn
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    let task_id = seed_overdue_cron_task_with_recurring(
+        &session,
+        &session_id,
+        "check the deployment",
+        true,
+    );
+
+    // Then across several ticks while the gate holds, the fire is held
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        mock.chat_call_count(),
+        1,
+        "the cron fire must be held while the turn runs"
+    );
+
+    // When the task is deleted while the fire is still held
+    assert!(
+        session.cron().remove(&task_id).await,
+        "the recurring task is still in the table when removed"
+    );
+    release.send(()).expect("the gate receiver is still alive");
+    poll_agent_activity(&server, &session_id, |state| {
+        state["turn"].is_null() && state["lastTurn"].is_object()
+    })
+    .await;
+
+    // Then after several idle ticks the held fire was purged: the prompt
+    // never reaches the model and no further turn runs.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let all = recorded_all(&mock).to_string();
+    assert!(
+        !all.contains("<cron-fire "),
+        "the deleted task's held fire must never be injected: {all}"
+    );
+    assert!(
+        !all.contains("check the deployment"),
+        "the deleted task's prompt must never reach the model: {all}"
+    );
+    assert_eq!(
+        mock.chat_call_count(),
+        1,
+        "only the original busy turn ran"
+    );
+}
+
+/// Given a busy main-agent turn with a one-shot cron fire already held,
+/// when the task is deleted after its fire left the table (one-shots are
+/// removed by `check_due` itself, so `remove` answers false), then the
+/// held fire is still purged — the prompt is never injected (#177 P2;
+/// the naive get()-filter would fail exactly here).
+#[tokio::test]
+async fn should_not_inject_a_held_one_shot_fire_when_its_task_is_deleted_after_firing() {
+    let mock = Arc::new(ScriptedLlm::new());
+    let release = mock.push_gated("First reply");
+    mock.push_text("cron reply");
+    let (server, _tmp) = b2_server(Arc::clone(&mock), Duration::from_millis(50));
+    let created = server
+        .call_method("session.create", json!({ "title": "held purge one-shot" }))
+        .await
+        .expect("create");
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    // Given a busy main-agent turn (the first LLM call parks on the gate)
+    server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "original question", "mode": "fire" }),
+        )
+        .await
+        .expect("send");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while mock.chat_call_count() < 1 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the first LLM call must start within 5s"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // And a one-shot task coming due mid-turn (check_due fires and removes
+    // it from the table; the fire waits in the driver's held buffer)
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    let task_id = seed_overdue_cron_task_with_recurring(
+        &session,
+        &session_id,
+        "check the deployment",
+        false,
+    );
+
+    // Then across several ticks while the gate holds, the fire is held
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        mock.chat_call_count(),
+        1,
+        "the cron fire must be held while the turn runs"
+    );
+
+    // When the task is deleted after firing: the one-shot already left the
+    // table so remove answers false — yet the purge must take effect
+    assert!(
+        !session.cron().remove(&task_id).await,
+        "the one-shot already left the table at check_due"
+    );
+    release.send(()).expect("the gate receiver is still alive");
+    poll_agent_activity(&server, &session_id, |state| {
+        state["turn"].is_null() && state["lastTurn"].is_object()
+    })
+    .await;
+
+    // Then after several idle ticks the held fire was purged: the prompt
+    // never reaches the model and no further turn runs.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let all = recorded_all(&mock).to_string();
+    assert!(
+        !all.contains("<cron-fire "),
+        "the deleted task's held fire must never be injected: {all}"
+    );
+    assert!(
+        !all.contains("check the deployment"),
+        "the deleted task's prompt must never reach the model: {all}"
+    );
+    assert_eq!(
+        mock.chat_call_count(),
+        1,
+        "only the original busy turn ran"
     );
 }
 
@@ -1875,9 +2072,33 @@ async fn should_leave_a_mixed_buffer_untouched_until_the_next_turn() {
         user_at < notification_at,
         "the user steer flushes before the notification: {all}"
     );
+    // The buffer is drained by the turn's `before_step` flush, which
+    // `take_items()`s under its own lock — but the notification driver's
+    // stranded-buffer wakeup ALSO takes the items and pushes them back
+    // when the set is not notification-only (task_driver.rs), so a single
+    // instantaneous read can catch that take/push window and see an empty
+    // buffer that is not the flush's work. Poll for the settled state
+    // (converged empty) instead of asserting on one instant: the durable
+    // fact under test is "the steers reached the model in order and the
+    // buffer no longer holds them", not "no thread held a transient take
+    // at the instant of the read".
+    let settle_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if buffer.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < settle_deadline,
+            "the flush never emptied the buffer"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // And it stays empty: the wakeup path must not have re-parked a
+    // notification the turn already consumed.
+    tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         buffer.lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
-        "the flush emptied the buffer"
+        "the flush emptied the buffer and nothing re-parked it"
     );
 }
 
@@ -1890,7 +2111,6 @@ async fn should_inject_the_enveloped_prompt_when_idle() {
     mock.push_text("ack");
     mock.push_text("cron reply");
     let (server, _tmp) = b2_server(Arc::clone(&mock), Duration::from_millis(50));
-    let server = server.with_cron_tick(Duration::from_millis(50));
     let created = server
         .call_method("session.create", json!({}))
         .await
@@ -2294,7 +2514,7 @@ async fn should_not_redeliver_a_subagent_notification_after_the_session_is_resum
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let mut parsed = ServerConfig::from_toml("").expect("test config");
     // The create chain requires a resolvable model (spec 11 R4 — no
     // built-in fallback): seed the test default.
@@ -2309,6 +2529,7 @@ async fn should_not_redeliver_a_subagent_notification_after_the_session_is_resum
         config,
         None,
     )
+        .with_home_dir(Some(tmp.path().to_path_buf()))
     .with_task_sweep_tick(Duration::from_millis(50));
     let created = server_a
         .call_method("session.create", json!({ "title": "resume no-replay" }))
@@ -2393,7 +2614,7 @@ async fn should_not_redeliver_a_subagent_notification_after_the_session_is_resum
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let mut parsed = ServerConfig::from_toml("").expect("test config");
     // The create chain requires a resolvable model (spec 11 R4 — no
     // built-in fallback): seed the test default.
@@ -2408,6 +2629,7 @@ async fn should_not_redeliver_a_subagent_notification_after_the_session_is_resum
         config,
         None,
     )
+        .with_home_dir(Some(tmp.path().to_path_buf()))
     .with_task_sweep_tick(Duration::from_millis(50));
     server_b
         .call_method("session.resume", json!({ "sessionId": &session_id }))
@@ -2451,7 +2673,7 @@ async fn should_not_redeliver_a_subagent_notification_after_the_session_is_resum
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let mut parsed = ServerConfig::from_toml("").expect("test config");
     // The create chain requires a resolvable model (spec 11 R4 — no
     // built-in fallback): seed the test default.
@@ -2466,6 +2688,7 @@ async fn should_not_redeliver_a_subagent_notification_after_the_session_is_resum
         config,
         None,
     )
+        .with_home_dir(Some(tmp.path().to_path_buf()))
     .with_task_sweep_tick(Duration::from_millis(50));
     server_c
         .call_method("session.resume", json!({ "sessionId": &session_id }))
@@ -2508,7 +2731,7 @@ async fn should_re_park_a_pending_subagent_notification_steer_on_resume() {
             tmp.path().to_path_buf(),
             WorkspaceScopeConfig::default(),
         ));
-        let manager = Arc::new(SessionManager::new(workspace));
+        let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
         // A profile manager wires the production subagent host into the
         // create path — the busy-path exclusion (the host's per-child
         // `running` flag) needs the host.
@@ -2535,6 +2758,7 @@ async fn should_re_park_a_pending_subagent_notification_steer_on_resume() {
             config,
             None,
         )
+        .with_home_dir(Some(tmp.path().to_path_buf()))
         .with_task_sweep_tick(Duration::from_millis(50))
     };
 
@@ -2582,6 +2806,7 @@ async fn should_re_park_a_pending_subagent_notification_steer_on_resume() {
             swarm_index: None,
             swarm_item: None,
             suppress_rate_limit_failure_event: false,
+            turn_origin: Default::default(),
         })
         .expect("spawn");
     // Drive the child turn on the runtime so it is genuinely mid-turn —
@@ -2834,13 +3059,14 @@ async fn should_not_re_park_a_pre_fix_subagent_notification_steer_into_main_on_r
             tmp.path().to_path_buf(),
             WorkspaceScopeConfig::default(),
         ));
-        let manager = Arc::new(SessionManager::new(workspace));
+        let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
         let mut parsed = ServerConfig::from_toml("").expect("test config");
         // The create chain requires a resolvable model (spec 11 R4 — no
         // built-in fallback): seed the test default.
         parsed.default_model = Some(super::TEST_DEFAULT_MODEL.to_string());
         let config = Arc::new(RwLock::new(parsed));
         EmbeddedServer::with_providers(manager, None, None, None, None, config, None)
+        .with_home_dir(Some(tmp.path().to_path_buf()))
             .with_task_sweep_tick(Duration::from_millis(50))
     };
     let build_server_b = || {
@@ -2849,7 +3075,7 @@ async fn should_not_re_park_a_pre_fix_subagent_notification_steer_into_main_on_r
             tmp.path().to_path_buf(),
             WorkspaceScopeConfig::default(),
         ));
-        let manager = Arc::new(SessionManager::new(workspace));
+        let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
         let mut parsed = ServerConfig::from_toml("").expect("test config");
         // The create chain requires a resolvable model (spec 11 R4 — no
         // built-in fallback): seed the test default.
@@ -2864,6 +3090,7 @@ async fn should_not_re_park_a_pre_fix_subagent_notification_steer_into_main_on_r
             config,
             None,
         )
+        .with_home_dir(Some(tmp.path().to_path_buf()))
         .with_task_sweep_tick(Duration::from_millis(50))
     };
 
@@ -3051,13 +3278,14 @@ async fn should_silently_reappend_a_notification_whose_steer_was_flushed_but_nev
             tmp.path().to_path_buf(),
             WorkspaceScopeConfig::default(),
         ));
-        let manager = Arc::new(SessionManager::new(workspace));
+        let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
         let mut parsed = ServerConfig::from_toml("").expect("test config");
         // The create chain requires a resolvable model (spec 11 R4 — no
         // built-in fallback): seed the test default.
         parsed.default_model = Some(super::TEST_DEFAULT_MODEL.to_string());
         let config = Arc::new(RwLock::new(parsed));
         EmbeddedServer::with_providers(manager, None, None, None, None, config, None)
+        .with_home_dir(Some(tmp.path().to_path_buf()))
             .with_task_sweep_tick(Duration::from_millis(50))
     };
     let build_server_b = || {
@@ -3066,7 +3294,7 @@ async fn should_silently_reappend_a_notification_whose_steer_was_flushed_but_nev
             tmp.path().to_path_buf(),
             WorkspaceScopeConfig::default(),
         ));
-        let manager = Arc::new(SessionManager::new(workspace));
+        let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
         let mut parsed = ServerConfig::from_toml("").expect("test config");
         // The create chain requires a resolvable model (spec 11 R4 — no
         // built-in fallback): seed the test default.
@@ -3081,6 +3309,7 @@ async fn should_silently_reappend_a_notification_whose_steer_was_flushed_but_nev
             config,
             None,
         )
+        .with_home_dir(Some(tmp.path().to_path_buf()))
         .with_task_sweep_tick(Duration::from_millis(50))
     };
 
@@ -3285,13 +3514,14 @@ async fn should_silently_reappend_undelivered_subagent_notifications_on_resume()
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let mut parsed = ServerConfig::from_toml("").expect("test config");
     // The create chain requires a resolvable model (spec 11 R4 — no
     // built-in fallback): seed the test default.
     parsed.default_model = Some(super::TEST_DEFAULT_MODEL.to_string());
     let config = Arc::new(RwLock::new(parsed));
-    let server_a = EmbeddedServer::with_providers(manager, None, None, None, None, config, None);
+    let server_a = EmbeddedServer::with_providers(manager, None, None, None, None, config, None)
+        .with_home_dir(Some(tmp.path().to_path_buf()));
     let created = server_a
         .call_method("session.create", json!({ "title": "resume child restore" }))
         .await
@@ -3372,7 +3602,7 @@ async fn should_silently_reappend_undelivered_subagent_notifications_on_resume()
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let mut parsed = ServerConfig::from_toml("").expect("test config");
     // The create chain requires a resolvable model (spec 11 R4 — no
     // built-in fallback): seed the test default.
@@ -3387,6 +3617,7 @@ async fn should_silently_reappend_undelivered_subagent_notifications_on_resume()
         config,
         None,
     )
+        .with_home_dir(Some(tmp.path().to_path_buf()))
     .with_task_sweep_tick(Duration::from_millis(50));
     server_b
         .call_method("session.resume", json!({ "sessionId": &session_id }))
@@ -4193,4 +4424,915 @@ async fn should_use_pinned_model_for_notification_turn_addressed_to_subagent() {
         !settled.contains(&"second-model".to_string()),
         "the main agent's live model must not leak into the subagent's notification turn: {settled:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// MIRRICODE_DISABLE_CRON (ADR-006 / E.4): the scheduler-halt and honest-list
+// layers, exercised through the embedded server's real wire-log resume path.
+// The creation-refusal layer lives with the tool's unit tests
+// (mirri-core tools/cron_create.rs); `cron.trigger` (manual run-now) stays
+// outside the switch by design — E.4 covers creation, scheduling, and
+// listing only.
+// ---------------------------------------------------------------------------
+
+/// Given a server started with cron scheduling disabled and a resumed
+/// session holding an overdue task, when several driver ticks pass, then
+/// the task never fires — no injection reaches the model and no
+/// `cron.fired` event is published (the driver never enters its check
+/// loop).
+#[tokio::test]
+async fn should_not_fire_overdue_tasks_when_scheduling_is_disabled() {
+    let mock = Arc::new(ScriptedLlm::new());
+    let (server, _tmp) = b2_server(Arc::clone(&mock), Duration::from_millis(50));
+    let server = server.with_cron_scheduling_disabled(true);
+    let created = server
+        .call_method("session.create", json!({}))
+        .await
+        .expect("create");
+    let session_id = created["id"].as_str().unwrap().to_string();
+    // Materialize the session (SDR-004 lazy physical creation) so the
+    // close→append→resume flow below has a wire log to extend.
+    converse_once(&server, &session_id).await;
+    server
+        .call_method("session.close", json!({ "session_id": &session_id }))
+        .await
+        .expect("close");
+    // Craft an overdue task record straight onto the wire log (the F16
+    // DTO shape: camelCase, epoch millis, tags.sessionId) — the same
+    // hand-written-overdue-task pattern the tests.rs cron suite uses.
+    {
+        let manager = server.session_manager();
+        let wire_log_path = manager
+            .persistence()
+            .wire_log_path(&mirri_core::SessionId::new(&session_id));
+        let mut log = JsonlAppendLog::open_for_append(&wire_log_path)
+            .await
+            .expect("open wire log");
+        let overdue_ms = (chrono::Utc::now() - chrono::Duration::minutes(16)).timestamp_millis();
+        log.append(&WireOp::CronAdd {
+            task: json!({
+                "id": "cron-overdue-disabled",
+                "cron": "*/5 * * * *",
+                "prompt": "overdue tick",
+                "recurring": true,
+                "createdAt": overdue_ms,
+                "lastFiredAt": overdue_ms,
+                "tags": { "sessionId": &session_id },
+            }),
+        })
+        .await
+        .expect("append cron.add");
+    }
+
+    // Resume spawns the cron driver — which must return before entering
+    // the check loop (ADR-006 layer 2).
+    server
+        .call_method("session.resume", json!({ "session_id": &session_id }))
+        .await
+        .expect("resume");
+    let mut events = server.subscribe_events().await.expect("subscribe");
+
+    // Then over many sub-second ticks the overdue task never fires: no
+    // model injection, no cron.fired event on the wire.
+    let chat_calls_at_start = mock.chat_call_count();
+    for _ in 0..10 {
+        let event = tokio::time::timeout(Duration::from_millis(50), events.recv()).await;
+        if let Ok(notification) = event {
+            let notification = notification.expect("event channel stays open");
+            assert_ne!(
+                notification.method, "event.cron.fired",
+                "no cron.fired event while scheduling is disabled"
+            );
+        }
+    }
+    assert_eq!(
+        mock.chat_call_count() - chat_calls_at_start,
+        0,
+        "no injection reaches the model while scheduling is disabled"
+    );
+    // The task itself is untouched — still listed, still overdue.
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    assert!(
+        session.cron().get("cron-overdue-disabled").is_some(),
+        "the disabled driver leaves existing tasks alone (no pruning)"
+    );
+}
+
+/// Given a server started with cron scheduling disabled and a session
+/// with tasks, when `cron.list` is called, then the list is served and
+/// reports `disabled: true` — the honest-list layer (E.4).
+#[tokio::test]
+async fn should_report_the_disabled_state_when_listing_cron_tasks_while_scheduling_is_disabled() {
+    let (server, _tmp) = b2_server(Arc::new(ScriptedLlm::new()), Duration::from_millis(50));
+    let server = server.with_cron_scheduling_disabled(true);
+    let created = server
+        .call_method("session.create", json!({}))
+        .await
+        .expect("create");
+    let session_id = created["id"].as_str().unwrap().to_string();
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    session
+        .cron()
+        .add(
+            "0 9 * * *".into(),
+            "morning".into(),
+            session_id.clone(),
+            true,
+            mirri_core::cron::CronCreateOptions::default(),
+        )
+        .await
+        .expect("seed task");
+
+    let listed = server
+        .call_method("cron.list", json!({ "sessionId": &session_id }))
+        .await
+        .expect("cron.list");
+
+    // The read face stays available and tells the truth about why nothing
+    // will fire.
+    assert_eq!(listed["disabled"], true);
+    let tasks = listed["tasks"].as_array().expect("tasks array");
+    assert_eq!(tasks.len(), 1, "the existing task is still listed");
+    // Sanity: the enabled default answers false on the same server shape.
+    let (enabled_server, _tmp2) =
+        b2_server(Arc::new(ScriptedLlm::new()), Duration::from_millis(50));
+    let enabled_created = enabled_server
+        .call_method("session.create", json!({}))
+        .await
+        .expect("create");
+    let enabled_id = enabled_created["id"].as_str().unwrap().to_string();
+    let enabled_listed = enabled_server
+        .call_method("cron.list", json!({ "sessionId": &enabled_id }))
+        .await
+        .expect("cron.list");
+    assert_eq!(enabled_listed["disabled"], false);
+}
+
+// ===========================================================================
+// Batch 2 — the unified server-level cron scheduler (C.1 / V10) and the
+// held-fire persistence (C.4)
+// ===========================================================================
+
+/// Seed an overdue one-shot cron task directly into a live session's cron
+/// manager (the white-box driver of the scheduler tests: the next
+/// scheduler tick must pick it up).
+async fn seed_overdue_one_shot(
+    server: &EmbeddedServer,
+    session_id: &str,
+    task_id: &str,
+    prompt: &str,
+) {
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(session_id))
+        .await
+        .expect("session is live");
+    session.cron().restore_tasks([mirri_core::cron::CronTask {
+        session_id: session_id.to_string(),
+        recurring: false,
+        created_at: chrono::Utc::now() - chrono::Duration::minutes(10),
+        ..mirri_core::cron::cron_task_base(task_id, "* * * * *", prompt)
+    }]);
+    session
+        .cron()
+        .set_next_fire_at(task_id, Some(chrono::Utc::now() - chrono::Duration::minutes(1)));
+}
+
+/// Given two sessions under ONE server sharing one scheduler tick, when
+/// both carry an overdue task, then BOTH receive their injection — the
+/// server-level scheduler drives every live session, not one driver per
+/// session (C.1 / V10).
+#[tokio::test]
+async fn should_inject_both_sessions_when_two_sessions_share_one_scheduler_tick() {
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("reply one");
+    mock.push_text("reply two");
+    let (server, _tmp) = b2_server(Arc::clone(&mock), Duration::from_millis(50));
+    let first = server
+        .call_method("session.create", json!({ "title": "first" }))
+        .await
+        .expect("create first");
+    let second = server
+        .call_method("session.create", json!({ "title": "second" }))
+        .await
+        .expect("create second");
+    let first_id = first["id"].as_str().unwrap().to_string();
+    let second_id = second["id"].as_str().unwrap().to_string();
+
+    seed_overdue_one_shot(&server, &first_id, "cron-first", "first session tick").await;
+    seed_overdue_one_shot(&server, &second_id, "cron-second", "second session tick").await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let fed = recorded_all(&mock).to_string();
+        if fed.contains("first session tick") && fed.contains("second session tick") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "both sessions must be injected by the shared scheduler: {fed}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Given two sessions under one server, when one closes while the other
+/// carries an overdue task, then the surviving session's task still fires —
+/// a session closing never stops the others' scheduling (V10).
+#[tokio::test]
+async fn should_keep_scheduling_the_other_session_when_one_session_closes() {
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("survivor reply");
+    let (server, _tmp) = b2_server(Arc::clone(&mock), Duration::from_millis(50));
+    let closing = server
+        .call_method("session.create", json!({ "title": "closing" }))
+        .await
+        .expect("create closing");
+    let survivor = server
+        .call_method("session.create", json!({ "title": "survivor" }))
+        .await
+        .expect("create survivor");
+    let closing_id = closing["id"].as_str().unwrap().to_string();
+    let survivor_id = survivor["id"].as_str().unwrap().to_string();
+
+    seed_overdue_one_shot(&server, &survivor_id, "cron-survivor", "survivor tick").await;
+
+    server
+        .call_method("session.close", json!({ "session_id": &closing_id }))
+        .await
+        .expect("close");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if recorded_all(&mock).to_string().contains("survivor tick") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the surviving session must keep being scheduled: {}",
+            recorded_all(&mock)
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Given a BUSY session, when its cron task is manually triggered
+/// (run-now), then the fire is HELD — no concurrent injection while the
+/// turn runs (C.3 / SDR-004) — and after the busy turn settles the held
+/// fire is injected by the scheduler's idle drain, while the task's
+/// schedule is untouched (run-now never moves the cursor).
+#[tokio::test]
+async fn should_hold_a_manual_trigger_while_the_session_is_busy_and_deliver_on_idle() {
+    let mock = Arc::new(ScriptedLlm::new());
+    let release = mock.push_gated("busy reply");
+    mock.push_text("delivered fire reply");
+    let (server, _tmp) = b2_server(Arc::clone(&mock), Duration::from_millis(50));
+    let created = server
+        .call_method("session.create", json!({ "title": "trigger-gate" }))
+        .await
+        .expect("create");
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    // A running (busy) turn on the session's main agent
+    server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "hold the turn", "mode": "fire" }),
+        )
+        .await
+        .expect("send");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while mock.chat_call_count() < 1 {
+        assert!(tokio::time::Instant::now() < deadline, "the busy turn must start");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // And a recurring cron task, manually triggered while the turn runs
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    session.cron().restore_tasks([mirri_core::cron::CronTask {
+            session_id: session_id.clone(),
+            recurring: true,
+            created_at: chrono::Utc::now() - chrono::Duration::minutes(10),
+            scope: mirri_core::cron::TaskScope::Session,
+            ..mirri_core::cron::cron_task_base("cron-gate", "*/5 * * * *", "gated manual fire")
+        }]);
+    // The natural schedule sits far in the future — only the manual
+    // trigger can deliver this fire.
+    session
+        .cron()
+        .set_next_fire_at("cron-gate", Some(chrono::Utc::now() + chrono::Duration::days(1)));
+    drop(session);
+
+    let triggered = server
+        .call_method(
+            "cron.trigger",
+            json!({ "session_id": &session_id, "task_id": "cron-gate" }),
+        )
+        .await
+        .expect("trigger");
+    assert_eq!(triggered["triggered"], true, "the trigger is accepted");
+
+    // Then while the gate holds, no second turn runs (C.3)
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(
+        mock.chat_call_count(),
+        1,
+        "the manual trigger must not inject while the turn runs: {}",
+        recorded_all(&mock)
+    );
+
+    // When the busy turn settles
+    release.send(()).expect("the gate receiver is alive");
+
+    // Then the held fire is delivered on the first idle tick
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if recorded_all(&mock).to_string().contains("gated manual fire") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the held manual fire must be delivered after the busy turn: {}",
+            recorded_all(&mock)
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // And the schedule is untouched: the task never fired naturally
+    // (tomorrow's next_fire_at unchanged — run-now does not move the
+    // cursor), and it is still registered.
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    let task = session.cron().get("cron-gate").expect("task survives");
+    assert!(
+        task.next_fire_at.unwrap() > chrono::Utc::now() + chrono::Duration::hours(23),
+        "run-now leaves the schedule untouched: {:?}",
+        task.next_fire_at
+    );
+    assert_eq!(task.fire_count, 0, "run-now never counts (D-M7)");
+    // The clear lands right after the injected turn settles — the same
+    // scheduler iteration, but the assertion must tolerate the settle's
+    // async tail (poll briefly instead of asserting instantaneously).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !session.cron().held_fires().is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the delivered fire cleared its hold"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Given a busy session whose task fires while busy, when the session
+/// CLOSES with the fire still held and is then RESUMED, then the held fire
+/// is redelivered after the reopen (C.4 — the envelope is visible to the
+/// model; "closed means lost" is retired).
+#[tokio::test]
+async fn should_redeliver_a_held_fire_when_the_session_closes_and_reopens() {
+    let mock = Arc::new(ScriptedLlm::new());
+    let release = mock.push_gated("busy reply");
+    mock.push_text("redelivered fire reply");
+    let (server, _tmp) = b2_server(Arc::clone(&mock), Duration::from_millis(50));
+    let created = server
+        .call_method("session.create", json!({ "title": "held-close" }))
+        .await
+        .expect("create");
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    // A running (busy) turn — the fire below comes due while it runs
+    server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "hold the turn", "mode": "fire" }),
+        )
+        .await
+        .expect("send");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while mock.chat_call_count() < 1 {
+        assert!(tokio::time::Instant::now() < deadline, "the busy turn must start");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // A one-shot task coming due mid-turn: the scheduler holds its fire
+    // (write-before-inject), the turn keeps running.
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    session.cron().restore_tasks([mirri_core::cron::CronTask {
+        session_id: session_id.clone(),
+        recurring: false,
+        // Backdated enough that the close→reopen redelivery lands past
+        // the C.2a lateness threshold — the envelope must carry the mark.
+        created_at: chrono::Utc::now() - chrono::Duration::minutes(10),
+        ..mirri_core::cron::cron_task_base("cron-held", "* * * * *", "held across the close")
+    }]);
+    session
+        .cron()
+        .set_next_fire_at("cron-held", Some(chrono::Utc::now() - chrono::Duration::minutes(2)));
+    drop(session);
+    // Let the scheduler tick: the fire is detected and held (never
+    // injected while the gate holds).
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(
+        mock.chat_call_count(),
+        1,
+        "the fire must be held while the turn runs"
+    );
+
+    // When the session CLOSES with the fire still held (the busy turn is
+    // still gated — close does not wait for it here; the close path
+    // settles in-flight turns itself)
+    server
+        .call_method("session.close", json!({ "session_id": &session_id }))
+        .await
+        .expect("close");
+    // Release the gated turn so nothing dangles.
+    release.send(()).expect("the gate receiver is alive");
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // And the session is RESUMED
+    server
+        .call_method("session.resume", json!({ "session_id": &session_id }))
+        .await
+        .expect("resume");
+
+    // Then the held fire is redelivered once the (now idle) session is
+    // drained — the envelope is visible to the model, carrying the C.2a
+    // lateness mark (the fire was scheduled two minutes before it landed).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let redelivered = loop {
+        let found = {
+            let recorded = mock
+                .recorded_messages
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            recorded
+                .iter()
+                .map(|messages| messages.to_string())
+                .find(|text| text.contains("held across the close") && text.contains("<cron-fire "))
+        };
+        if let Some(text) = found {
+            break text;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the held fire must be redelivered after the reopen: {}",
+            recorded_all(&mock)
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert!(
+        redelivered.contains("lateByMs=\\\""),
+        "the redelivered fire carries the lateness mark: {redelivered}"
+    );
+}
+
+/// Given a session whose held fire's task is DELETED (the real
+/// session-deletion cascade through the `retention.delete` RPC — the
+/// unified delete executor), when the scheduler next drains, then no
+/// injection happens and the session itself is gone from the live table —
+/// the held fire dies with its session (#177 held-side semantics, the V4
+/// cascade criterion: the deletion path, not a bare task remove).
+#[tokio::test]
+async fn should_cascade_clear_held_fires_when_the_session_is_deleted() {
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("materialize reply");
+    let (server, _tmp) = b2_server(Arc::clone(&mock), Duration::from_millis(50));
+    let created = server
+        .call_method("session.create", json!({ "title": "held-delete" }))
+        .await
+        .expect("create");
+    let session_id = created["id"].as_str().unwrap().to_string();
+    // Materialize the session (SDR-004): the retention delete needs the
+    // session directory on disk, and this is the only LLM call that may
+    // EVER happen (the doomed fire must never reach the model).
+    converse_once(&server, &session_id).await;
+
+    // A held fire whose task exists (a recurring task, so the entry sits
+    // on the live task table — the session deletion takes the task, the
+    // hold, and the wire log with it)
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    session.cron().restore_tasks([mirri_core::cron::CronTask {
+            session_id: session_id.clone(),
+            recurring: true,
+            created_at: chrono::Utc::now() - chrono::Duration::minutes(10),
+            scope: mirri_core::cron::TaskScope::Session,
+            ..mirri_core::cron::cron_task_base("cron-doomed", "0 0 1 1 *", "never naturally")
+        }]);
+    session
+        .cron()
+        .hold_fire(mirri_core::cron::CronFire {
+            task_id: "cron-doomed".to_string(),
+            prompt: "doomed held fire".to_string(),
+            cron: "0 0 1 1 *".to_string(),
+            recurring: true,
+            coalesced_count: 1,
+            stale: false,
+            maxed_out: false,
+            readonly: false,
+            scheduled_at: None,
+            late_by_ms: None,
+            scope: mirri_core::cron::TaskScope::Session,
+        ended: false,
+        })
+        .await;
+    drop(session);
+
+    // When the SESSION is deleted through the real retention delete RPC
+    // (the unified executor: directory, index row, the works)
+    let deleted = server
+        .call_method("retention.delete", json!({ "session_id": &session_id }))
+        .await
+        .expect("retention delete");
+    assert_eq!(deleted["ok"], true, "the delete succeeded: {deleted}");
+
+    // Then the session's on-disk directory is gone — the held fire, its
+    // task, and the whole wire log left with it (the V4 cascade criterion:
+    // the deletion path took the session, not a bare task remove).
+    let manager = server.session_manager();
+    let session_dir = manager.persistence().session_dir(&SessionId::new(&session_id));
+    assert!(
+        !session_dir.is_dir(),
+        "the deleted session's directory must be gone: {}",
+        session_dir.display()
+    );
+
+    // And across several scheduler ticks, NO injection happens (the only
+    // LLM call ever made was the materializing turn).
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        mock.chat_call_count(),
+        1,
+        "the held fire must not inject after its session was deleted: {}",
+        recorded_all(&mock)
+    );
+}
+
+/// Given a busy session with two due periods of one task, when both fires
+/// are held, then after the busy window the drain delivers ONE merged
+/// injection with the counts accumulated (C.4's coalesce-on-hold).
+#[tokio::test]
+async fn should_merge_a_new_due_fire_into_the_held_one_while_busy() {
+    let mock = Arc::new(ScriptedLlm::new());
+    let release = mock.push_gated("busy reply");
+    mock.push_text("merged fire reply");
+    let (server, _tmp) = b2_server(Arc::clone(&mock), Duration::from_millis(50));
+    let created = server
+        .call_method("session.create", json!({ "title": "held-merge" }))
+        .await
+        .expect("create");
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    // A running (busy) turn
+    server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "hold the turn", "mode": "fire" }),
+        )
+        .await
+        .expect("send");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while mock.chat_call_count() < 1 {
+        assert!(tokio::time::Instant::now() < deadline, "the busy turn must start");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // A recurring task with two consecutive due periods (the first fire is
+    // held; the rescheduled second comes due on the next tick and merges)
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    session.cron().restore_tasks([mirri_core::cron::CronTask {
+            session_id: session_id.clone(),
+            recurring: true,
+            created_at: chrono::Utc::now() - chrono::Duration::minutes(10),
+            scope: mirri_core::cron::TaskScope::Session,
+            ..mirri_core::cron::cron_task_base("cron-merge", "* * * * *", "merge me")
+        }]);
+    session
+        .cron()
+        .set_next_fire_at("cron-merge", Some(chrono::Utc::now()));
+    drop(session);
+    // The first due pass holds the fire (still busy).
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        mock.chat_call_count(),
+        1,
+        "the first fire is held while the turn runs"
+    );
+
+    // Force a second due period (the white-box cursor reset — the next
+    // scheduler tick fires and merges into the held one).
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    session
+        .cron()
+        .set_next_fire_at("cron-merge", Some(chrono::Utc::now()));
+    drop(session);
+
+    // When the busy turn settles
+    release.send(()).expect("the gate receiver is alive");
+
+    // Then ONE merged injection is delivered, carrying both periods
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let merged = loop {
+        let found = {
+            let recorded = mock
+                .recorded_messages
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            recorded
+                .iter()
+                .map(|messages| messages.to_string())
+                .find(|text| text.contains("merge me") && text.contains("<cron-fire "))
+        };
+        if let Some(text) = found {
+            break text;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the merged held fire must be delivered: {}",
+            recorded_all(&mock)
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert!(
+        merged.contains("coalescedCount=\\\""),
+        "the merged injection carries the held periods: {merged}"
+    );
+    // The white-box cursor resets make every 50ms tick fire a period —
+    // far more than the two the test forced, but the assertion's point
+    // is the MERGE (one injection, a count > 1 accumulating the holds),
+    // not the exact number.
+    let count = merged
+        .split("coalescedCount=\\\"")
+        .nth(1)
+        .and_then(|rest| rest.split('\\').next())
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or(0);
+    assert!(
+        count >= 2,
+        "the merged injection accumulated the held periods (count={count}): {merged}"
+    );
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    // The clear lands right after the injected turn settles (the same
+    // scheduler iteration's async tail — poll briefly).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !session.cron().held_fires().is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the delivered merged fire cleared its hold"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// Given a session with an overdue one-shot task but a server whose LLM
+/// factory always FAILS to build the provider, when the scheduler drains
+/// the held fire, then the hold is CLEARED (M3) — the injection can
+/// never succeed, so an every-tick retry queue would only spin forever.
+#[tokio::test]
+async fn should_clear_the_held_fire_when_the_llm_provider_cannot_be_created() {
+    // A factory that always fails create_llm — visible to the b2 module
+    // through the tests.rs module tree.
+    struct B2FailingLlmFactory;
+    impl LlmFactory for B2FailingLlmFactory {
+        fn create_llm(&self, _config: &AgentScopeConfig) -> Result<Arc<dyn Llm>, String> {
+            Err("broken provider config".to_string())
+        }
+    }
+    let (server, _tmp) =
+        b2_server_with_factory(Arc::new(B2FailingLlmFactory), Duration::from_millis(50));
+    let created = server
+        .call_method("session.create", json!({ "title": "held-llm-fail" }))
+        .await
+        .expect("create");
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    seed_overdue_one_shot(&server, &session_id, "cron-llm-fail", "never delivered").await;
+
+    // Then the fire is held, the drain tries to inject, the provider
+    // build fails — and the hold is cleared within a few ticks (no
+    // unbounded retry, no held-queue buildup).
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !session.cron().held_fires().is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the undeliverable fire must clear its hold instead of retrying forever"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    // And the hold STAYS cleared across further ticks (the one-shot task
+    // itself is gone — check_via_due removed it when it fired — so no new
+    // fire can re-enter the queue either).
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(
+        session.cron().held_fires().is_empty(),
+        "the held queue must not rebuild from a permanent failure"
+    );
+}
+
+/// Given a session whose held fire exists, when a run-now trigger holds a
+/// second fire of the SAME task while busy, then the busy-branch answer
+/// reports `held: true` (m2) — and the idle direct-inject answer carries
+/// no `held` key at all ("delivered", not "queued").
+#[tokio::test]
+async fn should_report_held_true_when_a_manual_trigger_queues_behind_a_busy_turn() {
+    let mock = Arc::new(ScriptedLlm::new());
+    let release = mock.push_gated("busy reply");
+    mock.push_text("delivered fire reply");
+    let (server, _tmp) = b2_server(Arc::clone(&mock), Duration::from_millis(50));
+    let created = server
+        .call_method("session.create", json!({ "title": "trigger-held-key" }))
+        .await
+        .expect("create");
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    // A running (busy) turn
+    server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "hold the turn", "mode": "fire" }),
+        )
+        .await
+        .expect("send");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while mock.chat_call_count() < 1 {
+        assert!(tokio::time::Instant::now() < deadline, "the busy turn must start");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    session.cron().restore_tasks([mirri_core::cron::CronTask {
+            session_id: session_id.clone(),
+            recurring: true,
+            created_at: chrono::Utc::now() - chrono::Duration::minutes(10),
+            scope: mirri_core::cron::TaskScope::Session,
+            ..mirri_core::cron::cron_task_base("cron-key", "*/5 * * * *", "gated manual fire")
+        }]);
+    session
+        .cron()
+        .set_next_fire_at("cron-key", Some(chrono::Utc::now() + chrono::Duration::days(1)));
+    drop(session);
+
+    // When the trigger runs while the turn holds the flow (busy branch)
+    let triggered = server
+        .call_method(
+            "cron.trigger",
+            json!({ "session_id": &session_id, "task_id": "cron-key" }),
+        )
+        .await
+        .expect("trigger");
+    // Then the ack distinguishes "queued" from "delivered": held == true
+    assert_eq!(triggered["triggered"], true, "the trigger is accepted");
+    assert_eq!(
+        triggered["held"], true,
+        "the busy branch reports held:true (queued, not delivered): {triggered}"
+    );
+
+    // And once the turn settles and the held fire drains, a SECOND
+    // trigger on the now-idle session answers with NO held key (the
+    // direct-inject posture).
+    release.send(()).expect("the gate receiver is alive");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if recorded_all(&mock).to_string().contains("gated manual fire") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the held manual fire must be delivered after the busy turn: {}",
+            recorded_all(&mock)
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    // The delivered fire's turn must fully settle before the second
+    // trigger: the held-clear lands in the same scheduler iteration's
+    // async tail (poll the hold queue, then let one settle beat pass so
+    // the flow lock is visibly released).
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !session.cron().held_fires().is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the delivered fire cleared its hold"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    mock.push_text("second direct fire reply");
+    let triggered_again = server
+        .call_method(
+            "cron.trigger",
+            json!({ "session_id": &session_id, "task_id": "cron-key" }),
+        )
+        .await
+        .expect("second trigger");
+    assert_eq!(triggered_again["triggered"], true);
+    assert!(
+        triggered_again.get("held").is_none(),
+        "the idle direct inject carries no held key (delivered): {triggered_again}"
+    );
+}
+
+/// Given a server whose scheduler pass panics for ONE session, when
+/// another session's task is due, then the other session's fire still
+/// injects (M2 — a per-session panic never takes the scheduler loop
+/// down; `cron_scheduler_spawned` stays latched with a live loop).
+#[tokio::test]
+async fn should_keep_scheduling_other_sessions_when_one_sessions_pass_panics() {
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("survivor reply");
+    let (server, _tmp) = b2_server(Arc::clone(&mock), Duration::from_millis(50));
+    let panicking = server
+        .call_method("session.create", json!({ "title": "panicking" }))
+        .await
+        .expect("create panicking");
+    let survivor = server
+        .call_method("session.create", json!({ "title": "survivor" }))
+        .await
+        .expect("create survivor");
+    let panicking_id = panicking["id"].as_str().unwrap().to_string();
+    let survivor_id = survivor["id"].as_str().unwrap().to_string();
+
+    // The panicking session holds an overdue one-shot task; the M2 test
+    // seam arms its pass to panic at the entry of EVERY scheduler visit
+    // (a genuine panic inside the spawned per-session body).
+    seed_overdue_one_shot(&server, &panicking_id, "cron-poison", "poison fire").await;
+    server.set_cron_pass_panic_session(Some(panicking_id.clone()));
+
+    // And the survivor session's task is due too (the pass order within a
+    // tick is the listing's; over enough ticks both get their chance).
+    seed_overdue_one_shot(&server, &survivor_id, "cron-survivor", "survivor fire").await;
+
+    // Then across many ticks the survivor's fire is delivered — the
+    // panicking session's pass failure (a JoinError each tick) never
+    // stopped the scheduler loop.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if recorded_all(&mock).to_string().contains("survivor fire") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the surviving session must keep being scheduled while the \
+             other session's pass panics: {}",
+            recorded_all(&mock)
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    // And the panicking session's own fire was never injected (its pass
+    // died before any injection every tick).
+    assert!(
+        !recorded_all(&mock).to_string().contains("poison fire"),
+        "the panicking session's fire must not inject"
+    );
+    // Disarm the seam BEFORE the test ends: the scheduler task outlives
+    // the server (its captured Arcs keep it alive), and an armed seam
+    // would keep panicking every tick for the rest of the process — the
+    // panic storm starves the OTHER tests sharing this runtime.
+    server.set_cron_pass_panic_session(None);
 }

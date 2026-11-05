@@ -449,10 +449,14 @@ pub(super) struct SkillReloadResult {
     pub workspaces: Vec<SkillReloadWorkspaceResult>,
 }
 
-/// `cron.list` — the session's cron tasks as pre-serialized entries.
+/// `cron.list` — the session's cron tasks as pre-serialized entries, plus
+/// the scheduling-disabled state (ADR-006 / E.4: the list stays readable
+/// with the switch on and reports it — `disabled` is always present,
+/// `false` when scheduling is active).
 #[derive(Debug, Serialize)]
 pub(super) struct CronTasksResult {
     pub tasks: Vec<serde_json::Value>,
+    pub disabled: bool,
 }
 
 /// `cron.delete` — acknowledgement of one removed cron task.
@@ -463,12 +467,62 @@ pub(super) struct CronDeleteResult {
     pub task_id: String,
 }
 
+/// `cron.add` — acknowledgement of one user-created cron task (E.1 / A.1,
+/// stage-1 batch-3): the created task's key fields echoed back so the
+/// caller can confirm the stored shape (origin always "user" on this
+/// face). Same key set as the `cron.list` row (minus `stale`, which is a
+/// per-check verdict, not a creation fact).
+#[derive(Debug, Serialize)]
+pub(super) struct CronAddResult {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+    pub cron: String,
+    pub recurring: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_fires: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    pub origin: mirri_core::cron::TaskOrigin,
+    pub fire_count: u32,
+    pub created_at: i64,
+    #[serde(rename = "nextFireAt")]
+    pub next_fire_at: Option<i64>,
+    /// The workspace the task was created in (stage-2 T4): `None` on the
+    /// session arm (the stage-1 shape — no key on the wire), the
+    /// workspace id on the workspace arm.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+}
+
+/// `cron.listAll` — the cross-session aggregated listing (E.5 / V8a): one
+/// group per task-bearing session (live or persisted), each carrying the
+/// session's id / title / honest open flag and its task rows (the same
+/// projection `cron.list` serves). The `disabled` flag rides along
+/// exactly like `cron.list`'s (E.4 layer 3).
+#[derive(Debug, Serialize)]
+pub(super) struct CronAllTasksResult {
+    pub sessions: Vec<serde_json::Value>,
+    /// The workspace task groups (stage-2 T6 — E.1/V23): one group per
+    /// task-bearing workspace, each carrying the workspace id and its
+    /// task rows (the same projection the session groups serve).
+    pub workspaces: Vec<serde_json::Value>,
+    pub disabled: bool,
+}
+
 /// `cron.trigger` — acknowledgement of one accepted manual fire.
+///
+/// `held` is `Some(true)` only when the busy gate queued the fire (the
+/// target agent's turn was running, so the fire waits on the held channel
+/// for the next idle drain); an idle direct inject answers with no `held`
+/// key at all (m2: "delivered" vs "queued" — the caller can distinguish
+/// the two without polling).
 #[derive(Debug, Serialize)]
 pub(super) struct CronTriggerResult {
     pub triggered: bool,
     #[serde(rename = "taskId")]
     pub task_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held: Option<bool>,
 }
 
 /// `plan.status` — the session's plan-mode state.

@@ -125,10 +125,16 @@ Rust core 功能完备 → Web 切到 Rust server → ACP 切到 Rust binary →
 | [08-multi-workspace.md](08-multi-workspace.md) | 多工作区架构：WorkspaceRegistry（一进程多工作区）、工作区生命周期与身份、信任门、workspace.*/session.* 契约终态语义 |
 | [09-session-title-generation.md](09-session-title-generation.md) | 会话标题生成：轮次内注入 + 标题工具 + 命名守卫 + 兜底链 |
 | [10-agent-context-assembly.md](10-agent-context-assembly.md) | 会话代理 system prompt 组装：语言指令 / AGENTS.md / 工作目录披露 |
+| [11-model-resolution.md](11-model-resolution.md) | 模型裁定链：别名解析、provider 装配、降级与覆盖 |
+| [12-session-fork.md](12-session-fork.md) | 会话分叉管道：wire 截取边界、血缘、锚点校验、原子落位 |
+| [13-builtin-skills.md](13-builtin-skills.md) | 内置技能注册通道：资产表、发现优先级、禁止模型调用硬门 |
+| [14-acp-desktop-runtime-sharing.md](14-acp-desktop-runtime-sharing.md) | ACP 与桌面端运行时共享：远程链与共享 home |
+| [15-identifier-strategy.md](15-identifier-strategy.md) | 实体标识符体系：ULID 生成、旧 UUID 双格式兼容、唯一发源地 `mirri-id`、哨兵语义、排序边界 |
 | [context.md](context.md) | 现状参考（参考类）：当前架构、协议现状、crate 差异、跨平台模块状态 |
 | [plans/02-phase2-web-migration.md](plans/02-phase2-web-migration.md) | 迁移计划（计划类）：Web 前端切到 Rust server 的路线与灰度回滚 |
 | [plans/03-phase3-tui-acp-migration.md](plans/03-phase3-tui-acp-migration.md) | 迁移计划（计划类）：TUI NAPI binding + ACP Rust binary 的 FFI 设计与桥接 |
 | [plans/04-phase4-ts-retirement.md](plans/04-phase4-ts-retirement.md) | 迁移计划（计划类）：TS engine 退役的删除清单、klient 契约迁移、回滚方案 |
+| [plans/14-ulid-identifier-migration.md](plans/14-ulid-identifier-migration.md) | 迁移计划（计划类）：UUID → ULID 的执行批次、硬门禁与风险登记 |
 | [ROADMAP.md](ROADMAP.md) | 执行状态唯一源：契约治理、B6/TS 退役、分发打包、卫生项、真实遗留清单 |
 
 域级 spec（同仓库 docs/specs/）：
@@ -149,6 +155,7 @@ Rust core 功能完备 → Web 切到 Rust server → ACP 切到 Rust binary →
 | REST 保留 | 仅 healthz/meta/shutdown | 运维探活不需要 WS 握手开销 |
 | Session 持久化 | wire.jsonl (单向兼容) | 旧 session 一次性迁移，新格式不向后兼容 |
 | 路径编码 | POSIX 风格 wire 格式 | 统一约定，OS 边界转换 |
+| 实体标识符 | ULID（读入兼容旧 UUID） | 可排序、格式约定单一来源；见 §7 ADR-003 与 [15-identifier-strategy.md](15-identifier-strategy.md) |
 
 ## 6. 验收标准
 
@@ -217,3 +224,35 @@ Rust core 功能完备 → Web 切到 Rust server → ACP 切到 Rust binary →
 - 本文档 §2 架构图（终端 UI 行）、§2.1 三路径表（终端 UI 行）、§3 阶段图（Phase 4 后续）、§5 决策表（TUI 传输行）、ADR-001 决策 2（加指针）
 - [ROADMAP.md](ROADMAP.md) 1.5 行（状态与说明刷新为 ADR-002 选型）与新增后续项（ratatui TUI 重构执行线，排在 TS 面退役之后）
 - 与 [plans/03-phase3-tui-acp-migration.md](plans/03-phase3-tui-acp-migration.md) 的 NAPI 设计无冲突：该文件 NAPI 部分已被 ADR-001 作废，ratatui 路径不经 NAPI
+
+### ADR-003 · 2026-11-02 · 实体标识符统一为 ULID，读入兼容旧 UUID
+
+**背景与动机**（现状盘见 [context.md](context.md)）：
+
+- 会话、agent、任务、回合、审批与问答请求等实体都用随机格式的 128 位标识符指称，这类标识符不携带时间信息，任何“按产生顺序”的呈现都只能依赖另存的时间戳
+- 标识符的生成与解析分散在多个 crate 与多个解析点，格式约定没有单一事实源，新增一处前缀或一处解析都可能与既有约定脱节
+- 传输契约里已有一类标识符采用字典序可排序格式，引擎侧仍用随机格式，两套约定长期并存需要解释
+
+**决策**：
+
+1. **新生成的实体标识符一律为 ULID**（128 位、毫秒时间戳前缀、Crockford Base32 26 字符），使标识符自身携带产生时间并可按字典序排列
+2. **存量兼容而非数据迁移**：解析与反序列化同时接受 ULID 与 UUID，存量会话目录、任务、事件日志继续可读、可回放，不做任何数据重写
+3. **写出保真**：以规范形态读入的标识符在再次写出时保持原字符串不变；非规范形态规范化输出且幂等（不变量见 [15-identifier-strategy.md](15-identifier-strategy.md) §4.2）
+4. **单一发源地**：标识符的生成、解析、前缀清单集中在一处实现，其他模块不得自行拼接或解析；`uuid` 从工作区依赖中移除
+5. **“无身份”显式化**：表示“主 agent / 未知来源”的哨兵值有唯一规范形态，旧数据中的历史拼写归一到它
+6. **标识符不承担业务顺序**：同一毫秒内的 ULID 顺序是随机的，业务顺序一律以显式顺序字段为准
+
+**被否决的备选**：
+
+- **各模块各自生成与解析**：兼容逻辑会被复制到十几处，将来下线旧格式需要逐处排查，无法满足决策 4
+- **不做兼容、只认新格式**：存量会话与任务在升级后消失，对已发布版本的用户是破坏性变更
+- **启动时一次性把旧标识符重写为新格式**：最终态更干净，但要改动会话目录名、事件日志与全部引用关系，迁移失败即丢数据，成本与风险远高于兼容读取
+
+**影响范围**：
+
+- 本文档 §4 文档索引（新增 15 号设计文档与对应计划）、§5 决策表（新增实体标识符行）
+- [05-crate-structure.md](05-crate-structure.md) §1.6 / §2 依赖图与 crate 计数 / §2.3 分层规则 / §3 各 crate 依赖列 / §6.2 workspace 依赖表（新增 `mirri-id`，`mirri-proto` 不再依赖 `uuid`）
+- [15-identifier-strategy.md](15-identifier-strategy.md)（设计终态）与 [plans/14-ulid-identifier-migration.md](plans/14-ulid-identifier-migration.md)（执行计划）
+- [context.md](context.md) §11（标识符现状快照）
+- [../glossary.md](../glossary.md) X 节（实体标识符 / 哨兵标识符 / 请求追踪 id）
+- [ROADMAP.md](ROADMAP.md) 1.13 行

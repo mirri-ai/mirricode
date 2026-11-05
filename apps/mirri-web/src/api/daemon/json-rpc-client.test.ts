@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { JsonRpcCallError, JsonRpcClient } from './json-rpc-client';
 import type { JsonRpcClientOptions, RpcEvent } from './json-rpc-client';
+import { WsRpcApi } from './ws-rpc-api';
+import type { MirriEventHandlers } from '../types';
 
 // ---------------------------------------------------------------------------
 // Mock WebSocket — implements the DOM WebSocket surface the client touches
@@ -495,3 +497,133 @@ describe('JsonRpcClient heartbeat', () => {
 async function flushMicrotasks(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+// ---------------------------------------------------------------------------
+// WsRpcApi handshake wiring — the skill-catalog subscription
+// (skill.subscribe) issued from onStateChange(true)
+// ---------------------------------------------------------------------------
+
+/**
+ * A self-driving WebSocket stub: plays the server side of the protocol
+ * (server_hello on open, client_hello ack from send) so opening the socket
+ * completes the handshake synchronously — the same contract the MockWebSocket
+ * above implements, collapsed into one class for the WsRpcApi wiring test
+ * (WsRpcApi takes no wsFactory; the stub is injected via the global).
+ */
+class HandshakeStubWebSocket {
+  static instances: HandshakeStubWebSocket[] = [];
+
+  readyState = 0; // CONNECTING
+  sent: string[] = [];
+
+  onopen: ((ev: Event) => unknown) | null = null;
+  onmessage: ((ev: MessageEvent) => unknown) | null = null;
+  onerror: ((ev: Event) => unknown) | null = null;
+  onclose: ((ev: CloseEvent) => unknown) | null = null;
+
+  constructor() {
+    HandshakeStubWebSocket.instances.push(this);
+  }
+
+  /** Test control: open the socket and deliver server_hello (the real server
+   *  sends it right after the upgrade). */
+  open(): void {
+    this.readyState = 1; // OPEN
+    this.onopen?.(new Event('open'));
+    this.serverSend({
+      jsonrpc: '2.0',
+      method: 'server_hello',
+      params: { serverId: 'test-server', version: '0.0.0-test', heartbeatMs: 15_000 },
+    });
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+    const frame = JSON.parse(data) as Record<string, unknown>;
+    if (frame['method'] === 'client_hello') {
+      this.serverSend({ jsonrpc: '2.0', id: frame['id'], result: { accepted: true } });
+    }
+  }
+
+  close(): void {
+    this.readyState = 3; // CLOSED
+    this.onclose?.({ code: 1000, reason: '', wasClean: true } as CloseEvent);
+  }
+
+  private serverSend(frame: unknown): void {
+    this.onmessage?.({ data: JSON.stringify(frame) } as MessageEvent);
+  }
+}
+
+describe('WsRpcApi skill catalog handshake subscription', () => {
+  beforeEach(() => {
+    HandshakeStubWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', HandshakeStubWebSocket);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('should call skill.subscribe once per completed handshake when the connection comes up', async () => {
+    // Given a WsRpcApi whose real JsonRpcClient runs against the
+    // self-driving handshake stub (the constructor's onStateChange wiring
+    // is the unit under test, so the client itself must be real)
+    const api = new WsRpcApi('ws://test.local/api/v1/rpc', 'http://test.local', undefined);
+    const callSpy = vi
+      .spyOn(JsonRpcClient.prototype, 'call')
+      .mockImplementation(() => Promise.resolve(undefined));
+    const handlers: MirriEventHandlers = {
+      onEvent: vi.fn(),
+      onResync: vi.fn(),
+      onError: vi.fn(),
+      onConnectionChange: vi.fn(),
+    };
+
+    // When the UI binds its handlers (connectEvents eagerly connects) and
+    // the socket opens — the stub completes the handshake inline
+    api.connectEvents(handlers);
+    HandshakeStubWebSocket.instances[0]?.open();
+    await flushMicrotasks();
+
+    // Then the app-level subscription is issued exactly once, with the
+    // empty-params call
+    const subscribeCalls = callSpy.mock.calls.filter(([method]) => method === 'skill.subscribe');
+    expect(subscribeCalls).toEqual([['skill.subscribe', {}]]);
+    callSpy.mockRestore();
+    api.close();
+  });
+
+  it('should stay silent when an old backend answers skill.subscribe with method-not-found', async () => {
+    // Given a WsRpcApi over the handshake stub whose server answers
+    // skill.subscribe with -32601 (an old backend without the method)
+    const api = new WsRpcApi('ws://test.local/api/v1/rpc', 'http://test.local', undefined);
+    const callSpy = vi
+      .spyOn(JsonRpcClient.prototype, 'call')
+      .mockImplementation((method: string) => {
+        if (method === 'skill.subscribe') {
+          return Promise.reject(
+            new JsonRpcCallError({ code: -32601, message: 'method not found: skill.subscribe' }),
+          );
+        }
+        return Promise.resolve(undefined);
+      });
+    const handlers: MirriEventHandlers = {
+      onEvent: vi.fn(),
+      onResync: vi.fn(),
+      onError: vi.fn(),
+      onConnectionChange: vi.fn(),
+    };
+
+    // When the UI binds and the handshake completes
+    api.connectEvents(handlers);
+    HandshakeStubWebSocket.instances[0]?.open();
+    await flushMicrotasks();
+
+    // Then no error reaches the UI — the silent degradation the spec
+    // mandates (the connection itself stays up)
+    expect(handlers.onError).not.toHaveBeenCalled();
+    callSpy.mockRestore();
+    api.close();
+  });
+});

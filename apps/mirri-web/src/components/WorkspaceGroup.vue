@@ -44,6 +44,8 @@ const emit = defineEmits<{
   selectSession: [sessionId: string];
   renameSession: [id: string, title: string];
   archiveSession: [id: string];
+  pinSession: [id: string, color?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray'];
+  unpinSession: [id: string];
   loadMore: [workspaceId: string];
   toggleExpand: [workspaceId: string];
   wsDragstart: [workspaceId: string];
@@ -172,6 +174,8 @@ function onHeaderDragStart(event: DragEvent): void {
         @select="emit('selectSession', $event)"
         @rename="(id, title) => emit('renameSession', id, title)"
         @archive="emit('archiveSession', $event)"
+        @pin="(id, color) => emit('pinSession', id, color)"
+        @unpin="emit('unpinSession', $event)"
       />
       <button
         v-if="group.hasMore || group.loadingMore"

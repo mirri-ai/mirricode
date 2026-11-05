@@ -15,6 +15,15 @@
 //   const projector = createAgentProjector();
 //   const appEvents = projector.project(rawType, payload, sessionId);
 //   // call reset() when re-subscribing / resyncing a session
+//
+// 字段消费语义表（ADR-011 ②，投影层与归一化层通信的唯一契约）：
+//   | 字段                  | 写者                       | 读者                              | 语义                                  |
+//   |-----------------------|----------------------------|-----------------------------------|---------------------------------------|
+//   | AppTask.segments      | reducer（经 taskProgress） | MemberFocus 归一化、活动行派生、折叠态时间线派生（DelegationCard 成员行，呈现层消费面——ADR-012） | 按 seq 排序的叙事段（live 权威）      |
+//   | NarrativeSegment.seq  | 投影层                     | 归一化、折叠态时间线派生（呈现层消费面——ADR-012） | 段在成员事件流中的到达序（编码 generation：reset 后恒大于旧代，见 nextSeq） |
+//   | AgentStep.seq         | 投影层                     | 归一化、折叠态时间线派生（DelegationCard 成员行，呈现层消费面——ADR-012） | 步骤在成员事件流中的到达序（同上编码 generation） |
+//   | AppTask.stepSegMark   | reducer（步边界）          | reducer（重试截断）               | 步起点段记账——重试截断回退锚点        |
+//   （ADR-011 ⑥：旧单字段 text/thinking 累积路径已退役——上表即全部消费面）
 
 import type {
   AgentStep,
@@ -27,6 +36,7 @@ import type {
   AppSubagentPhase,
   AppTask,
   AppTaskStatus,
+  NarrativeSegment,
   TurnUsage,
 } from '../types';
 import { i18n } from '../../i18n';
@@ -160,9 +170,6 @@ export interface SessionState {
   turnTextLen: number;
   turnThinkLen: number;
 
-  // Tool timing
-  toolStartTimes: Map<string, number>;
-
   // Usage accumulator
   totalInput: number;
   totalOutput: number;
@@ -198,6 +205,25 @@ export interface SessionState {
   // step list so `taskCreated` (full-row replacement) keeps the panel fresh.
   subagentSteps: Map<string, AgentStep[]>;
 
+  // Arrival-ordered narrative segments per member agent (ADR-011 ①): the
+  // projector mints one segment per uninterrupted text/thinking run so the
+  // panel renders the member's true interleaving instead of two flat
+  // accumulators. Cleared with the rest of the state on reset() — the
+  // reconnect-replay branch starts over from an empty segment list.
+  subagentSegments: Map<string, NarrativeSegment[]>;
+  // Monotonic arrival counter per member agent — shared by segments and tool
+  // steps so both sort onto ONE timeline.
+  subagentSeq: Map<string, number>;
+  // Generation counter incremented on every reset() — segment ids minted
+  // after a reset embed it (`${agentId}-g${gen}-seg-${seq}`), so ids never
+  // collide across resets. This keeps reducer-side tombstones (dropped
+  // segment ids, live for the member's whole run) from swallowing segments
+  // legitimately re-minted after a resync.
+  segmentGeneration: number;
+  // The member's currently open segment id, if any. A boundary frame closes
+  // it, so the next delta mints a new segment instead of extending the old one.
+  subagentOpenSeg: Map<string, string>;
+
   // Bubble cleared by turn.step.retrying, to be reused by the retried
   // step.started (same turn) instead of stacking a new bubble.
   retryReuseMsgId: string | undefined;
@@ -212,7 +238,6 @@ function createSessionState(): SessionState {
     currentAssistantMsgId: undefined,
     turnTextLen: 0,
     turnThinkLen: 0,
-    toolStartTimes: new Map(),
     totalInput: 0,
     totalOutput: 0,
     totalCacheRead: 0,
@@ -226,6 +251,10 @@ function createSessionState(): SessionState {
     messages: [],
     subagentMeta: new Map(),
     subagentSteps: new Map(),
+    subagentSegments: new Map(),
+    subagentSeq: new Map(),
+    segmentGeneration: 0,
+    subagentOpenSeg: new Map(),
     retryReuseMsgId: undefined,
   };
 }
@@ -351,6 +380,7 @@ function patchSubagent(
     ...prev,
     ...patch,
     steps: state.subagentSteps.get(subagentId) ?? prev.steps,
+    segments: state.subagentSegments.get(subagentId) ?? prev.segments,
     id: subagentId,
     agentId: subagentId,
     sessionId,
@@ -395,6 +425,25 @@ function normalizeStepOutput(output: unknown): string[] {
   return [JSON.stringify(output)];
 }
 
+/** Take the next arrival-order number for the member (ADR-011 ①): one
+ *  monotonic counter shared by narrative segments and tool steps, so the two
+ *  lists sort into a single timeline.
+ *
+ *  The value encodes the projector generation (I-1, ADR-011 ①):
+ *  `generation * 1e9 + counter`. reset() rebuilds the session state, so the
+ *  raw counter restarts at 0 — a generation-1 seq of 0 would otherwise sort
+ *  BEFORE the generation-0 segments that survive in the reducer across the
+ *  reset, flipping the member timeline on reconnect. Encoding the generation
+ *  in the high bits keeps every post-reset mint strictly above every
+ *  pre-reset one. Safe for Number.MAX_SAFE_INTEGER: the generation is one
+ *  session's resync count (single digits in practice, bounded well below
+ *  ≈9.0e6 in any realistic run). */
+function nextSeq(state: SessionState, agentId: string): number {
+  const seq = state.subagentSeq.get(agentId) ?? 0;
+  state.subagentSeq.set(agentId, seq + 1);
+  return state.segmentGeneration * 1e9 + seq;
+}
+
 /** Append a new running step for the member's tool call (ADR-009): the
  *  projector keeps one step per tool call id; a duplicate started frame for
  *  the same id (reconnect replay) refreshes the arg in place instead of
@@ -409,10 +458,81 @@ function startStep(state: SessionState, agentId: string, toolCallId: unknown, na
     arg: stepArgString(args),
     status: 'running',
     outputLines: [],
+    seq: existing >= 0 ? steps[existing]!.seq : nextSeq(state, agentId),
   };
   if (existing >= 0) steps[existing] = step;
   else steps.push(step);
   state.subagentSteps.set(agentId, steps);
+}
+
+/** Append a delta onto the member's open narrative segment, minting a new one
+ *  when there is none open or the open segment is of the other kind (ADR-011
+ *  ①). Returns the segment id the chunk belongs to, so the emitted
+ *  `taskProgress` can name it (reducer consumption, Task 2).
+ *
+ *  A fresh segment is minted with `tailGuard: true` (ADR-015 d, segment form):
+ *  the segment's first post-reconnect chunk is eligible for the exact-tail
+ *  replay check. Consuming the guard is the reducer's job — the projector only
+ *  mirrors the armed flag onto the row it hands over. */
+function appendSegment(
+  state: SessionState,
+  agentId: string,
+  kind: 'text' | 'thinking',
+  delta: string,
+): string {
+  let segments = state.subagentSegments.get(agentId) ?? [];
+  const openId = state.subagentOpenSeg.get(agentId);
+  const openIdx = openId === undefined ? -1 : segments.findIndex((s) => s.id === openId);
+
+  if (openIdx >= 0 && segments[openIdx]!.kind === kind) {
+    const seg: NarrativeSegment = { ...segments[openIdx]!, text: segments[openIdx]!.text + delta };
+    segments = [...segments.slice(0, openIdx), seg, ...segments.slice(openIdx + 1)];
+    state.subagentSegments.set(agentId, segments);
+    return seg.id;
+  }
+
+  // No open segment, or the kind flipped: the previous segment stays as-is
+  // (no truncation — its content is real narrative) and loses its guard.
+  if (openIdx >= 0) {
+    const closed: NarrativeSegment = { ...segments[openIdx]!, tailGuard: undefined };
+    segments = [...segments.slice(0, openIdx), closed, ...segments.slice(openIdx + 1)];
+  }
+  const seq = nextSeq(state, agentId);
+  const seg: NarrativeSegment = {
+    // Generation-scoped id: the counter resets with the session state, so a
+    // post-resync re-minted segment must never reuse a pre-resync id (the
+    // reducer's run-scoped tombstones would swallow it). The seq encodes the
+    // same generation (see nextSeq), keeping the merged timeline ordered.
+    id: `${agentId}-g${state.segmentGeneration}-seg-${seq}`,
+    kind,
+    text: delta,
+    seq,
+    tailGuard: true,
+  };
+  segments = [...segments, seg];
+  state.subagentSegments.set(agentId, segments);
+  state.subagentOpenSeg.set(agentId, seg.id);
+  return seg.id;
+}
+
+/** Close the member's open segment (ADR-011 ① 段边界): the four durable
+ *  boundary frames all close it without truncating — the boundary only ends
+ *  the stretch, the next delta mints a new segment. Retry truncation belongs to
+ *  the reducer (ADR-015 rule a, segment form). */
+function closeOpenSegment(state: SessionState, agentId: string): void {
+  const openId = state.subagentOpenSeg.get(agentId);
+  if (openId === undefined) return;
+  state.subagentOpenSeg.delete(agentId);
+  const segments = state.subagentSegments.get(agentId);
+  if (!segments) return;
+  const idx = segments.findIndex((s) => s.id === openId);
+  if (idx < 0) return;
+  const closed: NarrativeSegment = { ...segments[idx]!, tailGuard: undefined };
+  state.subagentSegments.set(agentId, [
+    ...segments.slice(0, idx),
+    closed,
+    ...segments.slice(idx + 1),
+  ]);
 }
 
 /** Append a progress line onto the member's open step. */
@@ -558,6 +678,9 @@ function projectSubagentProgress(
   // replaces the failed attempt instead of double-appending. Boundary
   // frames carry no panel progress themselves.
   if (SUBAGENT_BOUNDARY_FRAMES.has(rawType)) {
+    // ADR-011 ① 段边界：四类边界帧统一关段且不截断——这一段到此为止，下一个
+    // delta 自然铸造新段；重试截断归 reducer（ADR-015 a 的段化）。
+    closeOpenSegment(state, subagentId);
     return [
       {
         type: 'subagentStepBoundary',
@@ -570,8 +693,9 @@ function projectSubagentProgress(
 
   // ADR-009: a member's tool events maintain structured live steps on the
   // task row (name / arg / status / output lines) IN ADDITION to the legacy
-  // text-line synthesis below — the panel consumes the steps; the "Calling …"
-  // lines stay for the dock and other line-based consumers until they migrate.
+  // "Calling …" text-line synthesis below — the panel consumes the steps; the
+  // synthesized lines are still produced because the dock's activity line
+  // (swarmMemberActivity) falls back to their tail.
   if (rawType === 'tool.use' || rawType === 'tool.call.started' || rawType === 'tool.progress' || rawType === 'tool.result') {
     const previous = state.subagentMeta.get(subagentId);
     // The lifecycle events (subagent.completed/failed) own the terminal state:
@@ -627,8 +751,9 @@ function projectSubagentProgress(
   }
 
   // The subagent's own streamed reasoning (ADR-009 live narrative): forwarded
-  // like assistant.delta below, concatenated into `AppTask.thinking` so the
-  // panel shows the member's thinking block growing live.
+  // like assistant.delta below, accumulated into an arrival-ordered narrative
+  // segment (ADR-011 ①) so the panel shows the member's thinking block growing
+  // live and keeps its true position relative to the member's tool steps.
   if (rawType === 'thinking.delta') {
     const delta = stringField(payload, 'delta');
     if (!delta) return [];
@@ -636,6 +761,7 @@ function projectSubagentProgress(
     // ADR-010 ② 终态粘滞：迟到的流片段既不该复活终态行也不该续流 —
     // 直接丢弃（The lifecycle events own the terminal state).
     if (previous && isTerminalStatus(previous.status)) return [];
+    const segmentId = appendSegment(state, subagentId, 'thinking', delta);
     const task = patchSubagent(state, sessionId, subagentId, {
       status: 'running',
       subagentPhase: 'working',
@@ -650,14 +776,16 @@ function projectSubagentProgress(
       outputChunk: delta,
       stream: 'stdout',
       kind: 'thinking',
+      segmentId,
     });
     return out;
   }
 
-  // The subagent's own streamed text: forward each delta as a `text`-kind
-  // progress chunk so the reducer concatenates it into `AppTask.text`, letting
-  // the right-side detail panel show the subagent's output growing live (like
-  // a thinking block) instead of staying blank until the first tool call.
+  // The subagent's own streamed text: forward each delta as an arrival-ordered
+  // narrative segment (ADR-011 ①) — the reducer appends it to the segment the
+  // chunk names, letting the right-side detail panel show the subagent's
+  // output growing live (like a thinking block) instead of staying blank until
+  // the first tool call.
   if (rawType === 'assistant.delta') {
     const delta = stringField(payload, 'delta');
     if (!delta) return [];
@@ -670,6 +798,7 @@ function projectSubagentProgress(
     // ADR-010 ② 终态粘滞：迟到的流片段既不该复活终态行也不该续流 —
     // 直接丢弃（The lifecycle events own the terminal state).
     if (previous && isTerminalStatus(previous.status)) return [];
+    const segmentId = appendSegment(state, subagentId, 'text', delta);
     const task = patchSubagent(state, sessionId, subagentId, {
       status: 'running',
       subagentPhase: 'working',
@@ -684,6 +813,7 @@ function projectSubagentProgress(
       outputChunk: delta,
       stream: 'stdout',
       kind: 'text',
+      segmentId,
     });
     return out;
   }
@@ -794,10 +924,20 @@ function appendToolUse(
   toolName: string,
   input: unknown,
   outputLines?: string[],
+  startedAtMs?: number,
 ): void {
   const msg = state.messages.find((m) => m.id === messageId);
   if (!msg) return;
-  msg.content.push({ type: 'toolUse', toolCallId, toolName, input, outputLines });
+  // `startedAtMs` is spread conditionally: an engine predating ADR-7 yields no
+  // anchor, and an explicit `undefined` would key `in` as present downstream.
+  msg.content.push({
+    type: 'toolUse',
+    toolCallId,
+    toolName,
+    input,
+    outputLines,
+    ...(startedAtMs === undefined ? undefined : { startedAtMs }),
+  });
 }
 
 function toolProgressOutput(payload: Record<string, unknown>): { outputChunk: string; stream: 'stdout' | 'stderr' } | null {
@@ -828,12 +968,23 @@ function appendToolResultMessage(
   output: unknown,
   isError: boolean,
   promptId: string,
+  durationMs?: number,
 ): AppMessage {
   const msg: AppMessage = {
     id: ulid('msg_'),
     sessionId,
     role: 'tool',
-    content: [{ type: 'toolResult', toolCallId, output, isError }],
+    // `durationMs` is spread conditionally (same honest-degradation rule as
+    // appendToolUse): no server measurement → no key at all.
+    content: [
+      {
+        type: 'toolResult',
+        toolCallId,
+        output,
+        isError,
+        ...(durationMs === undefined ? undefined : { durationMs }),
+      },
+    ],
     createdAt: new Date().toISOString(),
     promptId,
   };
@@ -936,7 +1087,13 @@ export function createAgentProjector(): AgentProjector {
   }
 
   function reset(sessionId: string): void {
-    sessions.set(sessionId, createSessionState());
+    const previous = sessions.get(sessionId);
+    sessions.set(
+      sessionId,
+      previous === undefined
+        ? createSessionState()
+        : { ...createSessionState(), segmentGeneration: previous.segmentGeneration + 1 },
+    );
   }
 
   function seedUsage(sessionId: string, usage: AppSessionUsage): void {
@@ -995,8 +1152,8 @@ export function createAgentProjector(): AgentProjector {
         toolName: tool.name,
         input: tool.args ?? {},
         outputLines,
+        startedAtMs: tool.startedAtMs,
       });
-      s.toolStartTimes.set(tool.toolCallId, Date.now());
     }
     s.currentAssistantMsgId = msg.id;
     // Seeded step-relative lengths; the next turn.step.started resets both.
@@ -1167,10 +1324,28 @@ export function createAgentProjector(): AgentProjector {
         // sessionMetaUpdated that patches only the changed meta fields.
         const title: string | undefined = p?.patch?.title ?? p?.title;
         const lastPrompt: string | undefined = p?.patch?.lastPrompt;
-        const patch: { title?: string; lastPrompt?: string } = {};
+        const patch: {
+          title?: string;
+          lastPrompt?: string;
+          pinned?: boolean;
+          pinnedAt?: string;
+          pinColor?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray';
+        } = {};
         if (typeof title === 'string' && title.length > 0) patch.title = title;
         if (typeof lastPrompt === 'string') patch.lastPrompt = lastPrompt;
-        if (patch.title !== undefined || patch.lastPrompt !== undefined) {
+        // SDR-016/017: the pin trio (multi-window sync — another client's
+        // pin/unpin lands through this patch).
+        if (typeof p?.patch?.pinned === 'boolean') {
+          patch.pinned = p.patch.pinned;
+          // The engine's unpin patch carries explicit nulls → undefined.
+          patch.pinnedAt = p.patch.pinnedAt ?? undefined;
+          patch.pinColor = p.patch.pinColor ?? undefined;
+        }
+        if (
+          patch.title !== undefined ||
+          patch.lastPrompt !== undefined ||
+          patch.pinned !== undefined
+        ) {
           out.push({ type: 'sessionMetaUpdated', sessionId, ...patch });
         }
         break;
@@ -1346,13 +1521,14 @@ export function createAgentProjector(): AgentProjector {
         const toolName: string = p?.name ?? p?.toolName ?? '';
         const args = p?.args ?? p?.input ?? {};
 
-        appendToolUse(s, msgId, toolCallId, toolName, args);
+        // ADR-7: server-stamped start only — no local-clock fallback. An engine
+        // predating ADR-7 simply yields no anchor, and the display layer then
+        // shows no timer (honest degradation, never a fabricated number).
+        const startedAtMs = typeof p?.startedAtMs === 'number' ? p.startedAtMs : undefined;
+        appendToolUse(s, msgId, toolCallId, toolName, args, undefined, startedAtMs);
 
         const msg = getMsgById(s, msgId);
         const contentIndex = msg ? msg.content.length - 1 : 0;
-
-        // Record start time
-        s.toolStartTimes.set(toolCallId, Date.now());
 
         // Emit messageUpdated so the reducer knows about the new tool-use slot
         if (msg) {
@@ -1405,11 +1581,19 @@ export function createAgentProjector(): AgentProjector {
         const output = p?.output;
         const isError: boolean = p?.isError ?? false;
 
-        const startTime = s.toolStartTimes.get(toolCallId) ?? Date.now();
-        s.toolStartTimes.delete(toolCallId);
-        void (Date.now() - startTime); // duration — unused at client level
+        // ADR-7: server-measured duration only — no local-span fallback (the
+        // rejected pure-client alternative).
+        const durationMs = typeof p?.durationMs === 'number' ? p.durationMs : undefined;
 
-        const resultMsg = appendToolResultMessage(s, sessionId, toolCallId, output, isError, promptId);
+        const resultMsg = appendToolResultMessage(
+          s,
+          sessionId,
+          toolCallId,
+          output,
+          isError,
+          promptId,
+          durationMs,
+        );
         out.push({ type: 'messageCreated', message: cloneMessage(resultMsg) });
 
         // Reset assistant message tracking — next step.started will create a fresh one
@@ -1520,6 +1704,14 @@ export function createAgentProjector(): AgentProjector {
           finishAssistantMessage(s, msgId);
           const msg = getMsgById(s, msgId);
           if (msg) {
+            // The final assistant row's createdAt is that STEP's start
+            // (multi-step turns create one row per step), so the completion
+            // instant can only come from the engine's own measurement of the
+            // turn end — never a client-side clock, never derived from
+            // createdAt + durationMs. Absent (older engine) → the footer
+            // renders no timestamp.
+            const endedAtMs = numberField(p ?? {}, 'endedAtMs');
+            const endedAt = endedAtMs !== undefined ? new Date(endedAtMs).toISOString() : undefined;
             out.push({
               type: 'messageUpdated',
               sessionId,
@@ -1527,6 +1719,7 @@ export function createAgentProjector(): AgentProjector {
               content: msg.content.map((c) => ({ ...c })),
               status: reason === 'failed' || reason === 'filtered' ? 'error' : 'completed',
               durationMs,
+              endedAt,
             });
           }
         }
@@ -1623,7 +1816,6 @@ export function createAgentProjector(): AgentProjector {
         }
         s.turnTextLen = 0;
         s.turnThinkLen = 0;
-        s.toolStartTimes.clear();
         break;
       }
 

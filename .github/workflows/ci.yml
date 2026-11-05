@@ -155,6 +155,42 @@ jobs:
       - name: Zero-IO gate (mirri-core direct-IO ban)
         run: node scripts/check-zero-io.mjs
 
+      - name: Spawn hygiene gate (raw Command::new ban)
+        run: node ../scripts/check-spawn-usage.mjs
+
+  # Test hygiene gate (16-test-execution-strategy.md §4.5): no new bare
+  # set_var / bare sleep / missing layer tags beyond the checked-in
+  # ratchet baseline. Needs no compilation — pure source scan.
+  rust-test-hygiene-gate:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: rust
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test hygiene gate (env lock / sleep / layer tags)
+        run: node scripts/check-test-hygiene.mjs
+
+  # RustSec advisories + license + source gate for the rust workspace
+  # (cargo-deny, config in rust/deny.toml). Runs as its own job because it
+  # needs no compilation cache — cargo-deny reads Cargo.lock directly.
+  rust-deny:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # `arguments` must NOT repeat the `check` subcommand: the action's
+      # `command` input already defaults to `check` and prepends it, so
+      # "… check check" would fail with "invalid value 'check'".
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: rust/Cargo.toml
+          arguments: --all-features
+
   lint:
     runs-on: ubuntu-latest
 
@@ -177,7 +213,7 @@ jobs:
       # does not collect them; run them directly alongside the other root
       # script checks in this job.
       - name: Root script tests (node:test)
-        run: node --test scripts/*.test.mjs
+        run: node --test scripts/*.test.mjs rust/scripts/*.test.mjs
 
   typecheck:
     runs-on: ubuntu-latest

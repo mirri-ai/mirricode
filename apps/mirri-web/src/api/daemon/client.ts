@@ -343,8 +343,15 @@ export class DaemonMirriWebApi implements MirriWebApi {
       includeArchive?: boolean;
       archivedOnly?: boolean;
       excludeEmpty?: boolean;
+      pinnedOnly?: boolean;
     },
   ): Promise<Page<AppSession>> {
+    // SDR-016: the pinnedOnly filter is a v2 wire capability — the v1 REST
+    // daemon has no equivalent, and silently ignoring it would return a
+    // full page the caller asked to be pinned-only. Fail loud instead.
+    if (input?.pinnedOnly === true) {
+      throw new Error('pinnedOnly is not supported on the v1 REST daemon');
+    }
     const query: Record<string, string | number | boolean | undefined> = {
       before_id: input?.beforeId,
       after_id: input?.afterId,
@@ -400,6 +407,21 @@ export class DaemonMirriWebApi implements MirriWebApi {
   // agent_config are dispatched to the matching core RPCs (setModel/setThinking/
   // setPermission/enterPlan|cancelPlan); the live values are read back from
   // GET /sessions/{id}/status (the profile echo's agent_config can be stale/"").
+  async pinSession(
+    sessionId: string,
+    _color?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray',
+  ): Promise<void> {
+    // SDR-016/017: the v1 REST daemon has no pin route — fail loud (the
+    // steerPrompts precedent), never a silent no-op.
+    void sessionId;
+    throw new Error('pinSession is not supported on the v1 REST daemon');
+  }
+
+  async unpinSession(sessionId: string): Promise<void> {
+    void sessionId;
+    throw new Error('unpinSession is not supported on the v1 REST daemon');
+  }
+
   async updateSession(
     sessionId: string,
     input: {
@@ -574,6 +596,7 @@ export class DaemonMirriWebApi implements MirriWebApi {
                 args: t.args,
                 description: t.description,
                 lastProgress: t.last_progress,
+                startedAtMs: t.started_at_ms,
               })),
               promptId: data.in_flight_turn.current_prompt_id,
             },
@@ -948,9 +971,17 @@ export class DaemonMirriWebApi implements MirriWebApi {
     throw new Error('skill content viewing requires the v3 (rust) backend');
   }
 
+  async reloadSkills(): Promise<Array<{ workspaceId: string; added: number; removed: number; updated: number; watching: boolean }>> {
+    throw new Error('reloadSkills requires the v3 (rust) backend');
+  }
+
   async listCronTasks(): Promise<never> {
     // The v1/v2 REST surface has no cron-management routes; the
     // caller-side backend gate never reaches this branch (B6 D-4).
+    throw new Error('cron task management requires the v3 (rust) backend');
+  }
+
+  async listAllCronTasks(): Promise<never> {
     throw new Error('cron task management requires the v3 (rust) backend');
   }
 
@@ -960,6 +991,45 @@ export class DaemonMirriWebApi implements MirriWebApi {
 
   async triggerCronTask(): Promise<never> {
     throw new Error('cron task management requires the v3 (rust) backend');
+  }
+
+  async createWorkspaceCronTask(): Promise<never> {
+    throw new Error('cron task management requires the v3 (rust) backend');
+  }
+
+  async deleteWorkspaceCronTask(): Promise<never> {
+    throw new Error('cron task management requires the v3 (rust) backend');
+  }
+
+  async triggerWorkspaceCronTask(): Promise<never> {
+    throw new Error('cron task management requires the v3 (rust) backend');
+  }
+
+  async updateWorkspaceCronTask(): Promise<never> {
+    throw new Error('cron task management requires the v3 (rust) backend');
+  }
+
+  async pauseWorkspaceCronTask(): Promise<never> {
+    throw new Error('cron task management requires the v3 (rust) backend');
+  }
+
+  async resumeWorkspaceCronTask(): Promise<never> {
+    throw new Error('cron task management requires the v3 (rust) backend');
+  }
+
+  async listCronRuns(): Promise<never> {
+    throw new Error('cron task management requires the v3 (rust) backend');
+  }
+
+  async openCronRun(): Promise<never> {
+    throw new Error('cron task management requires the v3 (rust) backend');
+  }
+
+  async previewCronSchedule(): Promise<never> {
+    // The v1/v2 REST surface has no cron routes; the preview is a
+    // display projection the v3 form consumes (the caller-side backend
+    // gate never reaches this branch).
+    throw new Error('cron schedule preview requires the v3 (rust) backend');
   }
 
   async listPermissionRules(): Promise<never> {

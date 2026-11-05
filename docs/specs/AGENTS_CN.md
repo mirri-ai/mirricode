@@ -10,7 +10,7 @@
 
 | 类型 | 内容 | 允许修改的触发 |
 |---|---|---|
-| **设计/规格**（`*-requirements.md`、`*-architecture.md`、`rust-core-design/0*.md`，及经登记的域内设计子类——当前 `tool-calling-builtin-tools.md`（逐工具接口规格）、`skills-builtin-skills.md`（逐内置技能需求规格）与 `file-reference-uiux.md`（文件引用能力的域内交互契约）） | **仅终态**：目标描述、契约、需求、架构裁决、Trade-offs、风险 | 只有设计本身变了（新增/修订裁决、需求变更，以 SDR/ADR 形式追加，见下文） |
+| **设计/规格**（`*-requirements.md`、`*-architecture.md`、`rust-core-design/0*.md`，及经登记的域内设计子类——当前 `tool-calling-builtin-tools.md`（逐工具接口规格）、`skills-builtin-skills.md`（逐内置技能需求规格）、`file-reference-uiux.md`（文件引用能力的域内交互契约）与 `tools/*-design.md`（逐工具增强设计，如 `tools/grep-design.md`、`tools/glob-design.md`、`tools/bash-design.md`）） | **仅终态**：目标描述、契约、需求、架构裁决、Trade-offs、风险 | 只有设计本身变了（新增/修订裁决、需求变更，以 SDR/ADR 形式追加，见下文） |
 | **参考**（`*-context.md`） | 现状与现状痛点的盘点（代码事实、两侧差异矩阵、侦察产出、差距速览） | 随侦察/现状变化更新；每份带快照日期 |
 | **计划**（`*/plans/*.md`、`{domain}-ROADMAP.md`，域目录内的目录级 `ROADMAP.md` 等价；`proposals.md`——跨域未裁决提案的唯一登记处） | 迁移计划、阶段切分、开放项汇总、执行状态 | 随执行推进随时更新 |
 | **共享术语**（`glossary.md`） | 横跨多个域的术语的唯一规范定义（规范名、形态与示例、出现位置、禁止的叫法、同名异义警示） | 随引入/修订该跨域术语的域 spec 变更**同批**更新（见下文「跨域术语」） |

@@ -19,6 +19,8 @@ members = [
     "crates/mirri-node",
     "crates/mirri-remote",
     "crates/mirri-test-harness",
+    "crates/mirri-test-support",
+    "crates/mirri-cron-index",
 ]
 
 [workspace.package]
@@ -50,18 +52,21 @@ parking_lot = { version = "0.12", features = ["send_guard"] }
 thiserror = "2"
 anyhow = "1"
 tokio-util = "0.7"
-notify = "6"
+notify = "8"
 futures = "0.3"
 jsonschema = "0.26"
 globset = "0.4"
 regex = "1"
 proptest = "1"
-rusqlite = { version = "0.40", features = ["bundled"] }
+# `backup` (ADR-006): the online backup API behind the session index's
+# rolling two-generation backup discipline — a WAL-consistent snapshot, not a
+# file copy.
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 # A3 (D-A3): in-memory zip unpacking for zip-url plugin installs (replaces
 # the system curl+unzip). Pure Rust; only lands in mirri-plugin-host's tree,
 # never in mirri-core's (the zero-IO gate's dependency whitelist is per-tree
 # and plugin-host is outside mirri-core's).
-zip = "2"
+zip = "9.2"
 
 # 日常本地构建：不加全程序 LTO、codegen-units 走默认 16，尾部串行
 # （大 crate 的单 codegen + ThinLTO 链接）大幅缩短。仅保留 strip 让

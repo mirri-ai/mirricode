@@ -48,6 +48,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use mirri_core::config::redact_config_wire;
+use mirri_core::cron::{CronCreateOptions, TaskOrigin};
 use mirri_core::goal_status_wire;
 use mirri_core::message::ContentPart;
 use mirri_core::session_export::{ExportSessionPayload, SessionExporter};
@@ -56,15 +57,16 @@ use mirri_core::task_notification::{
 };
 use mirri_core::{
     AgentId, AgentLifecycle, AgentScopeConfig, AgentTask, CloseReason, ESSENTIAL_PROFILE_NAME,
-    PermissionMode, PromptOrigin, ProviderType, RpcTool, ServerConfig, SessionEvent, SessionId,
-    SessionMetadata, SessionScope, SwarmModeTrigger, TaskStatus, ThinkingEffort, uuid_from_id,
-    validate_workspace_path,
+    PermissionMode, PromptOrigin, ProviderType, RpcTool, ServerConfig, ServerEvent, SessionEvent,
+    SessionId, SessionMetadata, SessionScope, SwarmModeTrigger, TaskStatus, ThinkingEffort,
+    uuid_from_id, validate_workspace_path,
 };
 use mirri_proto::{ReplayLimits, WireOp};
 use mirri_transport::adapter::EngineError;
 
+use crate::embedded_server::model_handlers::resolve_wire_protocol;
 use crate::llm_factory::SubagentLlmAdapter;
-use crate::providers::config_factory::resolve_provider_env_chain;
+use crate::providers::config_factory::{credential_type_for_wire, resolve_provider_env_chain};
 
 use super::additional_dirs::{
     file_dirs_of, find_project_root, paths_equal, read_workspace_local_toml,
@@ -73,15 +75,15 @@ use super::additional_dirs::{
 };
 use super::responses::{
     ActivateSkillResult, AddAdditionalDirResult, BtwStartResult, ContextSummary, CoreInfoResult,
-    CronDeleteResult, CronTasksResult, ExportResult, GetConfigResult, GetContextResult,
-    GetPermissionResult, GetUsageResult, GoalResult, PlanStatusResult, RegisterToolResult,
-    SESSION_SCOPE_KIND, SessionAgentResult, SessionDetailsResult, SessionHandleResult,
-    SessionMetaResult, SessionSearchHitResult, SessionSearchResult, SetActiveToolsResult,
-    SetModelResult, SetUserToolEnabledResult, ShellRunResult, SkillGetContentResult,
-    SkillReloadResult, SkillReloadWorkspaceResult, SkillSetEnabledResult, UndoResult,
-    UnregisterToolResult, ack, to_result,
+    CronAddResult, CronAllTasksResult, CronDeleteResult, CronTasksResult, ExportResult,
+    GetConfigResult, GetContextResult, GetPermissionResult, GetUsageResult, GoalResult,
+    PlanStatusResult, RegisterToolResult, SESSION_SCOPE_KIND, SessionAgentResult,
+    SessionDetailsResult, SessionHandleResult, SessionMetaResult, SessionSearchHitResult,
+    SessionSearchResult, SetActiveToolsResult, SetModelResult, SetUserToolEnabledResult,
+    ShellRunResult, SkillGetContentResult, SkillReloadResult, SkillReloadWorkspaceResult,
+    SkillSetEnabledResult, UndoResult, UnregisterToolResult, ack, to_result,
 };
-use super::session_routing::resume_session_not_found;
+use super::session_routing::{resume_session_not_found, workspace_owner_via};
 use super::task_driver::{notification_recorder, task_addressee_id};
 use super::{
     AgentRefParams, DEFAULT_MAIN_AGENT_ID, EmbeddedServer, ListingVisibility, SessionIdParams,
@@ -90,6 +92,73 @@ use super::{
     subagent_model_target_rejection, token_usage_to_json, token_usage_ts_json,
     turn_flow_config_from,
 };
+
+/// The `cron.add` params (stage-2 T4): the session/workspace routing
+/// pair plus the task's creation fields. Hoisted out of the dispatcher
+/// so the two arm fns share it.
+#[derive(Debug, Deserialize)]
+struct CronAddParams {
+    #[serde(alias = "sessionId")]
+    #[serde(default)]
+    session_id: Option<String>,
+    /// The workspace the task is created in (stage-2 T4 — D.0c's
+    /// user-direct-creation face): carrying it routes the creation
+    /// to the workspace cron manager; omitting it keeps the
+    /// stage-1 session flow byte-identical. Exactly one of the
+    /// two must be present.
+    #[serde(default, alias = "workspaceId")]
+    workspace_id: Option<String>,
+    /// The 5-field cron expression; may be empty when an `interval` rides
+    /// the same request (SDR-113's mutual exclusion: exactly one of the
+    /// two schedule shapes). The manager's create validates the pair.
+    #[serde(default)]
+    cron: String,
+    prompt: String,
+    #[serde(default)]
+    recurring: bool,
+    #[serde(default, alias = "maxFires")]
+    max_fires: Option<u32>,
+    #[serde(default)]
+    timezone: Option<String>,
+    /// The runtime permission posture of a workspace task (stage-2
+    /// D-M2 / D.1). Batch 2 (A4) retires it from the product face: the
+    /// wire carries [`permission_mode`] and the posture is its kernel
+    /// expansion. Still accepted (an old client) — and ignored when a
+    /// mode rides the same request.
+    #[serde(default, alias = "permissionPosture")]
+    permission_posture: Option<mirri_core::cron::PermissionPosture>,
+    /// The task's permission mode (batch 2 / A4): the SAME three modes a
+    /// session carries (`manual` / `auto` / `yolo`), verbatim. `None` =
+    /// the pre-batch-2 default posture (ask-deny). Only honored on the
+    /// workspace arm.
+    #[serde(default, alias = "permissionMode")]
+    permission_mode: Option<mirri_core::cron::PermissionMode>,
+    /// The concurrency posture (stage-2 D-M3): skip (the default)
+    /// or queue. Only honored on the workspace arm.
+    #[serde(default)]
+    concurrency: mirri_core::cron::TaskConcurrency,
+    // --- ADR-019 透传链 (form batch 6): the task-creation form's optional
+    // task fields. All absent-tolerant (wire 缺键 = 服务端缺省, 旧记录零迁移).
+    /// The task's display title.
+    #[serde(default)]
+    title: Option<String>,
+    /// The model alias the task's runs bind (VU10).
+    #[serde(default)]
+    model: Option<String>,
+    /// The thinking effort the task's runs carry (VU11).
+    #[serde(default)]
+    effort: Option<mirri_core::profile::ThinkingEffort>,
+    /// The working directory the task's runs execute in (VU10).
+    #[serde(default)]
+    workdir: Option<String>,
+    /// The inclusive end date, `YYYY-MM-DD` (B1 / SDR-110).
+    #[serde(default, alias = "endsAt")]
+    ends_at: Option<chrono::NaiveDate>,
+    /// The elapsed-interval schedule (SDR-113) — mutually exclusive with
+    /// `cron`.
+    #[serde(default)]
+    interval: Option<mirri_core::cron::IntervalSpec>,
+}
 
 impl EmbeddedServer {
     // --- dispatch ---------------------------------------------------------
@@ -507,6 +576,20 @@ impl EmbeddedServer {
         if let (Some(llm_factory), Some(profile_manager)) =
             (&self.llm_factory, &self.profile_manager)
         {
+            // V15 / D.2 m3: the main flow's asked-ops ledger rides the
+            // host — a cron-fired turn's delegated members record their
+            // permission outcomes into the trace the run spawner drains.
+            // Get-or-create the main flow FIRST so the host shares the
+            // SAME ledger the dispatch path uses.
+            let asked_ops = self
+                .get_or_create_turn_flow(
+                    session.id().as_str(),
+                    DEFAULT_MAIN_AGENT_ID,
+                    &resolved_model_alias,
+                )
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .asked_ops_handle();
             // The session's event bus rides the host so the subagent
             // lifecycle (`subagent.spawned`/`started`/`completed`/`failed`)
             // reaches the session's subscribers.
@@ -526,7 +609,8 @@ impl EmbeddedServer {
                 .with_nesting_limits(1, session.config().max_nesting_depth)
                 .with_turn_id_source(session_artifacts.as_ref().map(|a| a.turn_id_counter()))
                 .with_tool_result_home(self.home_dir().map(ToOwned::to_owned))
-                .with_flag_registry(Arc::clone(self.flag_registry())),
+                .with_flag_registry(Arc::clone(self.flag_registry()))
+                .with_asked_ops(Some(asked_ops)),
             );
             // Kept as a concrete handle so the live config can be bound
             // after `create_agent` (below) — the config carries the trait
@@ -542,6 +626,38 @@ impl EmbeddedServer {
         }
         if let Some(ref provider) = self.fetch_url_provider {
             agent_config.fetch_url_provider = Some(Arc::clone(provider));
+        }
+
+        // C2 / ADR-022: the CreateScheduledTask wiring — the session's
+        // workspace id (the ROUTED workspace, never the process default)
+        // and the registry-backed creator ride the agent config so the
+        // approved tool creates with the right face. Only a home-rooted
+        // workspace has a cron store; a bucket-less runtime keeps the tool
+        // out of the table.
+        let creator = Arc::new(
+            super::scheduled_task_create_handlers::RegistryScheduledTaskCreator::new(
+                Arc::clone(&self.registry),
+            ),
+        );
+        if let Some(workspace_id) = params.workspace_id.as_deref() {
+            if self
+                .registry
+                .built_runtime(workspace_id)
+                .is_some_and(|runtime| runtime.cron().is_some())
+            {
+                agent_config.workspace_id = Some(workspace_id.to_string());
+                agent_config.scheduled_task_creator = Some(Arc::clone(&creator)
+                    as Arc<dyn mirri_core::tools::create_scheduled_task::ScheduledTaskCreator>);
+            }
+        } else if let Some(workspace_id) = self.registry.default_workspace_id()
+            && self
+                .registry
+                .built_runtime(&workspace_id)
+                .is_some_and(|runtime| runtime.cron().is_some())
+        {
+            agent_config.workspace_id = Some(workspace_id);
+            agent_config.scheduled_task_creator = Some(Arc::clone(&creator)
+                as Arc<dyn mirri_core::tools::create_scheduled_task::ScheduledTaskCreator>);
         }
 
         session
@@ -634,9 +750,9 @@ impl EmbeddedServer {
         }
 
         self.spawn_session_relay(session.id().as_str());
-        // The session's cron driver ticks its due tasks (event + prompt
-        // injection) for as long as the session lives.
-        self.spawn_cron_driver(session.id().as_str());
+        // The server-level cron scheduler (spawned once per server through
+        // the call_method seam) covers every live session's due checks —
+        // including this one.
         // The session's task sweeper terminates expired background tasks
         // (real cancellation) for as long as the session lives (B1).
         self.spawn_task_driver(session.id().as_str());
@@ -706,9 +822,12 @@ impl EmbeddedServer {
             page_size: Option<u64>,
             #[serde(default)]
             busy: Option<bool>,
+            #[serde(default, alias = "pinnedOnly")]
+            pinned_only: Option<bool>,
         }
         let params: ListSessionsParams = serde_json::from_value(normalize_params(params))
             .map_err(|e| invalid_params(e.to_string()))?;
+        let pinned_only = params.pinned_only == Some(true);
         let archived_only = params.archived_only == Some(true);
         let include_archive = archived_only || params.include_archive == Some(true);
         let exclude_empty = params.exclude_empty == Some(true);
@@ -757,6 +876,11 @@ impl EmbeddedServer {
                     info,
                     cwd: None,
                     last_prompt: None,
+                    // The disk-scan fallback has no row to overlay — the
+                    // merged-with-index path owns the pin trio.
+                    pinned: false,
+                    pinned_at: None,
+                    pin_color: None,
                 });
             }
             entries.sort_by(|a, b| {
@@ -771,6 +895,13 @@ impl EmbeddedServer {
         // rows (the fetch above already included them).
         if archived_only {
             entries.retain(|entry| entry.info.archived);
+        }
+        // The pinned filter (SDR-016 / Task 18's out-of-window load): keep
+        // ONLY pinned rows. Filter-only — the ordering (pinned group first)
+        // is the listing's own; the parameter never changes cursor
+        // semantics.
+        if pinned_only {
+            entries.retain(|entry| entry.pinned);
         }
         // SDR-004: a never-conversed session is hidden under
         // `exclude_empty` — `last_prompt` NULL or empty (the TS judgment).
@@ -841,6 +972,16 @@ impl EmbeddedServer {
                 }
             };
             view.last_prompt = entry.last_prompt.clone();
+            // The pin trio overlay (SDR-016/017): the merged entry's row
+            // values win for persisted-only rows; a LIVE row's view above
+            // already overlay-ed them (build_session_view's index read) —
+            // but the merged entry read the row through the same index,
+            // so the assignment is idempotent either way.
+            view.pinned = entry.pinned;
+            view.pinned_at = entry.pinned_at.map(|at| {
+                at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+            });
+            view.pin_color = entry.pin_color.clone();
             // The interrupted-task recovery badge override (spec §2.1
             // interception point ① / §2.2's OR-merge): an unsettled,
             // unexpired entry in the in-process recovery list rewrites
@@ -1423,6 +1564,10 @@ impl EmbeddedServer {
                 .map(|artifacts| artifacts.turn_id_counter());
             parent_config.event_bus = event_bus.clone();
             let flow_config = self.turn_flow_config_for(&parent_config.model_id);
+            // V15 / D.2 m3: capture the model id BEFORE the config moves
+            // into the host builder — the asked-ops ledger binding below
+            // get-or-creates the main flow with it.
+            let main_model_id = parent_config.model_id.clone();
             let host = Arc::new(
                 mirri_core::SessionSubagentHost::new(
                     Arc::downgrade(&session),
@@ -1439,7 +1584,21 @@ impl EmbeddedServer {
                 .with_nesting_limits(1, session.config().max_nesting_depth)
                 .with_turn_id_source(turn_id_source)
                 .with_tool_result_home(self.home_dir().map(ToOwned::to_owned))
-                .with_flag_registry(Arc::clone(self.flag_registry())),
+                .with_flag_registry(Arc::clone(self.flag_registry()))
+                // V15 / D.2 m3: the resumed session's main flow shares its
+                // asked-ops ledger through the host (same shape as the
+                // create path — cron-delegated members' outcomes land in
+                // the RunRecord trace).
+                .with_asked_ops(Some(
+                    self.get_or_create_turn_flow(
+                        &params.session_id,
+                        DEFAULT_MAIN_AGENT_ID,
+                        &main_model_id,
+                    )
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .asked_ops_handle(),
+                )),
             );
             // spec 11 R5/A3 (defect B): bind the host to the resumed main
             // agent's LIVE config handle — children spawned after a later
@@ -1511,8 +1670,8 @@ impl EmbeddedServer {
         }
 
         self.spawn_session_relay(session.id().as_str());
-        // The resumed session's cron driver picks up its restored tasks.
-        self.spawn_cron_driver(session.id().as_str());
+        // The server-level cron scheduler picks up the resumed session's
+        // restored tasks (and its restored held fires) on its next tick.
         // The resumed session's task sweeper drives its rehydrated tasks
         // (a hung task left by the previous process gets terminated, B1).
         self.spawn_task_driver(session.id().as_str());
@@ -1753,38 +1912,71 @@ impl EmbeddedServer {
             Ok(()) => {
                 // Live close: the archived flag IS the product contract (it
                 // is what keeps the session out of default listings), so a
-                // failed flag write propagates instead of degrading to an
-                // un-archived closed session.
+                // failed ROW write propagates instead of degrading to an
+                // un-archived closed session (ADR-006: the row is the
+                // flag's durable carrier). The state.json backstop is
+                // retired (Task 7 — the row stands alone; `set_archived`
+                // routes through the same store when it does run).
                 owner_manager
-                    .persistence()
-                    .set_archived(&session_id, true)
+                    .metadata_store()
+                    .apply(
+                        &session_id,
+                        &owner_manager.metadata_workspace_id(),
+                        mirri_core::session::metadata_port::MetadataPatch {
+                            archived: Some(true),
+                            // The archive stamp (§3.1 — the retention
+                            // pipeline's "archived N days" anchor; the
+                            // review's I-1: a bare archived flip would
+                            // leave row-only sessions perpetually
+                            // un-compressible).
+                            archived_at: Some(Some(chrono::Utc::now())),
+                            ..Default::default()
+                        },
+                    )
                     .await
-                    .map_err(session_error)?;
+                    .map_err(|error| {
+                        session_error(mirri_core::SessionError::StateFile(error.to_string()))
+                    })?;
             }
             Err(mirri_core::SessionError::NotFound(_)) => {
                 // TS parity: a session that exists only on disk
                 // (persisted-but-not-live) can still be archived — the TS
-                // engine flips the `archived` flag in `state.json` without
-                // touching a live session. `close_session` fails with
-                // `NotFound` because the session is not in the workspace;
-                // the flag write is the whole archive operation. If the
-                // session has no state.json either, `set_archived` errors —
-                // an unknown session id is correctly a failure.
+                // engine flips the `archived` flag without touching a live
+                // session. `close_session` fails with `NotFound` because
+                // the session is not in the workspace; the flag write is
+                // the whole archive operation — the row write is the whole
+                // archive operation, and an unknown session id correctly
+                // fails on it.
                 owner_manager
-                    .persistence()
-                    .set_archived(&session_id, true)
+                    .metadata_store()
+                    .apply(
+                        &session_id,
+                        &owner_manager.metadata_workspace_id(),
+                        mirri_core::session::metadata_port::MetadataPatch {
+                            archived: Some(true),
+                            // The archive stamp (§3.1 — the retention
+                            // pipeline's "archived N days" anchor; the
+                            // review's I-1: a bare archived flip would
+                            // leave row-only sessions perpetually
+                            // un-compressible).
+                            archived_at: Some(Some(chrono::Utc::now())),
+                            ..Default::default()
+                        },
+                    )
                     .await
-                    .map_err(session_error)?;
+                    .map_err(|error| {
+                        session_error(mirri_core::SessionError::StateFile(error.to_string()))
+                    })?;
             }
             Err(error) => return Err(session_error(error)),
         }
         // The routing seam's first level (W3 forward-wiring): the archived
         // session leaves the active table like a closed one.
         self.forget_active_session(&params.session_id);
-        // Phase 3: the archived flag is part of what a listing filters on,
-        // so the row is refreshed from the just-written `state.json`
-        // (best-effort; a failure never fails the RPC).
-        self.index_refresh_from_disk(&session_id).await;
+        // ADR-006: the archived column group landed in the metadata ROW
+        // through the store (the dispatch's apply above) — the post-archive
+        // `index_refresh_from_disk` whole-row rebuild is retired (Task 7;
+        // Task 6 already migrated the read faces to the row).
         // Archived sessions leave the workspace like closed ones — their
         // activity views are disposed (a restore folds into fresh views).
         // These are idempotent no-ops for the persisted-only branch above.
@@ -1802,6 +1994,108 @@ impl EmbeddedServer {
         // JSON has no `undefined`, so the wire spelling is JSON `null`), not
         // the `{ok: true}` ack the engine previously sent.
         Ok(Value::Null)
+    }
+
+    /// `session.pin` (SDR-016/017, ADR-006 Task 15): pin the session with
+    /// an optional color from the seven-color preset. The write rides the
+    /// owning workspace's metadata store port — ONLY the pin trio (a pin
+    /// is not usage; `updated_at` stays untouched, SDR-004/014). Works for
+    /// both live and persisted-only sessions (the row is the target; the
+    /// live scope's memory never carries pins). An unknown color name
+    /// rejects the whole request.
+    pub(super) async fn dispatch_pin_session(&self, params: Value) -> Result<Value, EngineError> {
+        #[derive(Debug, Deserialize)]
+        struct PinSessionParams {
+            #[serde(alias = "sessionId")]
+            session_id: String,
+            /// One of the seven preset names; absent pins without a color.
+            #[serde(default)]
+            color: Option<String>,
+        }
+        let params: PinSessionParams = serde_json::from_value(normalize_params(params))
+            .map_err(|e| invalid_params(e.to_string()))?;
+        // The color validates BEFORE any write: an unknown name rejects
+        // the whole request (no partial pin).
+        let color = match params.color.as_deref() {
+            None => None,
+            Some(name) => Some(parse_pin_color(name).ok_or_else(|| {
+                invalid_params(format!(
+                    "unknown pin color '{name}': expected one of red/orange/yellow/green/blue/purple/gray"
+                ))
+            })?),
+        };
+
+        let (owner_manager, _owning_workspace) = self.resolve_session_owner(&params.session_id)?;
+        let session_id = SessionId::new(&params.session_id);
+        owner_manager
+            .set_pin(&session_id, color)
+            .await
+            .map_err(session_error)?;
+        // A live session's index row also carries the trio — the
+        // write-through above already updated the store (the index IS the
+        // store), but the in-memory recency stamp the merged listing
+        // caches needs no refresh (pins sort first regardless).
+
+        // Announce the metadata change (the multi-window sync face,
+        // `session.meta.updated`).
+        self.publish_pin_event(&params.session_id, true, color);
+
+        // The klient contract models the method as `noResult`.
+        Ok(Value::Null)
+    }
+
+    /// `session.unpin`: clear the whole pin trio (pinned=false, the
+    /// stamps and color to None) — same recency-untouched posture.
+    pub(super) async fn dispatch_unpin_session(&self, params: Value) -> Result<Value, EngineError> {
+        #[derive(Debug, Deserialize)]
+        struct UnpinSessionParams {
+            #[serde(alias = "sessionId")]
+            session_id: String,
+        }
+        let params: UnpinSessionParams = serde_json::from_value(normalize_params(params))
+            .map_err(|e| invalid_params(e.to_string()))?;
+        let (owner_manager, _owning_workspace) = self.resolve_session_owner(&params.session_id)?;
+        let session_id = SessionId::new(&params.session_id);
+        owner_manager
+            .clear_pin(&session_id)
+            .await
+            .map_err(session_error)?;
+
+        self.publish_pin_event(&params.session_id, false, None);
+        Ok(Value::Null)
+    }
+
+    /// The `session.meta.updated` publication for a pin/unpin (the pin
+    /// patch form Task 18's web projector whitelists).
+    fn publish_pin_event(
+        &self,
+        session_id: &str,
+        pinned: bool,
+        color: Option<mirri_proto::PinColor>,
+    ) {
+        let mut patch = serde_json::json!({ "pinned": pinned });
+        if pinned {
+            let row_pinned_at = self
+                .session_index()
+                .and_then(|index| index.get_session(session_id))
+                .and_then(|row| row.pinned_at);
+            if let Some(at) = row_pinned_at {
+                patch["pinnedAt"] = serde_json::json!(at.to_rfc3339());
+            }
+            if let Some(color) = color {
+                patch["pinColor"] = serde_json::json!(pin_color_wire_name(color));
+            }
+        } else {
+            patch["pinnedAt"] = serde_json::Value::Null;
+            patch["pinColor"] = serde_json::Value::Null;
+        }
+        self.publish_session_event(
+            session_id,
+            SessionEvent::SessionMetaUpdated {
+                title: None,
+                patch: Some(patch),
+            },
+        );
     }
 
     /// `session.restore` — the B1 EMB backfill of the klient
@@ -1848,18 +2142,38 @@ impl EmbeddedServer {
         // Clear the persisted archived flag so the session re-enters default
         // listings (only `session.restore` clears it — a plain
         // `session.resume`/`session.reload` keeps the flag, matching the TS
-        // split). The session is live again; the `state.json` write is what
-        // matters — through the owning workspace's persistence (W3).
+        // split). The session is live again; the ROW write (ADR-006) is the
+        // durable carrier. The state.json backstop is retired (Task 7 —
+        // the row stands alone; the restore_decompress above already routed
+        // the column-group clear through the same store when it ran).
         let session_id = SessionId::new(&parsed.session_id);
         let (owner_manager, _owning_workspace) = self.resolve_session_owner(&parsed.session_id)?;
         owner_manager
-            .persistence()
-            .set_archived(&session_id, false)
+            .metadata_store()
+            .apply(
+                &session_id,
+                &owner_manager.metadata_workspace_id(),
+                mirri_core::session::metadata_port::MetadataPatch {
+                    archived: Some(false),
+                    // §3.1 restore semantics: a restored session is
+                    // un-archived AND uncompressed (ADR-004), so the
+                    // archive stamp and the whole compression cache batch
+                    // clear together (the tri-state `Some(None)` clear).
+                    archived_at: Some(None),
+                    compressed: Some(false),
+                    compressed_at: Some(None),
+                    pre_compressed_size: Some(None),
+                    ..Default::default()
+                },
+            )
             .await
-            .map_err(session_error)?;
+            .map_err(|error| {
+                session_error(mirri_core::SessionError::StateFile(error.to_string()))
+            })?;
         // The live session's in-memory metadata was rebuilt from the
-        // (archived) state.json by the resume, so clear it there too — the
-        // live view and any later `save_state` (e.g. a rename) stay honest.
+        // (archived) row by the resume, so clear it there too — the
+        // live view and any later metadata write-through (e.g. a rename)
+        // stay honest.
         if let Some(session) = owner_manager.get_session(&session_id).await {
             session
                 .update_metadata(|metadata| metadata.archived = false)
@@ -1867,11 +2181,11 @@ impl EmbeddedServer {
             // Phase 3: the restored (un-archived) row re-enters default
             // listings — the live metadata is the freshest view.
             self.index_upsert_live(&session_id, &session.metadata().await);
-        } else {
-            // A persisted-only restore still needs its row refreshed from
-            // the just-cleared flag on disk.
-            self.index_refresh_from_disk(&session_id).await;
         }
+        // A persisted-only restore: the archived column group landed in the
+        // metadata ROW through the store (the dispatch's apply above) —
+        // the post-restore `index_refresh_from_disk` whole-row rebuild is
+        // retired (Task 7).
         Ok(result)
     }
 
@@ -2072,6 +2386,10 @@ impl EmbeddedServer {
                 .map(|artifacts| artifacts.turn_id_counter());
             parent_config.event_bus = event_bus.clone();
             let flow_config = self.turn_flow_config_for(&parent_config.model_id);
+            // V15 / D.2 m3: capture the model id BEFORE the config moves
+            // into the host builder — the asked-ops ledger binding below
+            // get-or-creates the main flow with it.
+            let main_model_id = parent_config.model_id.clone();
             let host = Arc::new(
                 mirri_core::SessionSubagentHost::new(
                     Arc::downgrade(&new_session),
@@ -2088,7 +2406,20 @@ impl EmbeddedServer {
                 .with_nesting_limits(1, new_session.config().max_nesting_depth)
                 .with_turn_id_source(turn_id_source)
                 .with_tool_result_home(self.home_dir().map(ToOwned::to_owned))
-                .with_flag_registry(Arc::clone(self.flag_registry())),
+                .with_flag_registry(Arc::clone(self.flag_registry()))
+                // V15 / D.2 m3: the adopted session's main flow shares its
+                // asked-ops ledger through the host (same shape as the
+                // create path).
+                .with_asked_ops(Some(
+                    self.get_or_create_turn_flow(
+                        new_session.id().as_str(),
+                        DEFAULT_MAIN_AGENT_ID,
+                        &main_model_id,
+                    )
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .asked_ops_handle(),
+                )),
             );
             // spec 11 R5/A3 (defect B): bind the host to the forked main
             // agent's LIVE config handle — children spawned after a later
@@ -2250,19 +2581,27 @@ impl EmbeddedServer {
         session.touch_last_used().await;
         let metadata = session.metadata().await;
 
-        // 2. `state.json` write-through (best-effort, the note_turn_settled
-        //    pattern): a touch must survive a restart, or the sidebar
-        //    re-sorts back on reload.
+        // 2. Metadata row write-through (best-effort, the note_turn_settled
+        //    pattern — ADR-006 裁决 4: the patch names ONLY `last_used_at`;
+        //    a concurrent writer's disjoint field survives): a touch
+        //    must survive a restart, or the sidebar re-sorts back on reload.
         if let Ok((owner_manager, _workspace_id)) = self.resolve_session_owner(&params.session_id)
             && let Err(error) = owner_manager
-                .persistence()
-                .save_state(&session_id, &metadata)
+                .metadata_store()
+                .apply(
+                    &session_id,
+                    &owner_manager.metadata_workspace_id(),
+                    mirri_core::session::metadata_port::MetadataPatch {
+                        last_used_at: Some(metadata.last_used_at),
+                        ..Default::default()
+                    },
+                )
                 .await
         {
             tracing::warn!(
                 session_id = %session_id,
                 %error,
-                "touch state save failed; the last-used recency stays in memory"
+                "touch metadata write failed; the last-used recency stays in memory"
             );
         }
 
@@ -2662,6 +3001,10 @@ impl EmbeddedServer {
                 .map(|artifacts| artifacts.turn_id_counter());
             parent_config.event_bus = event_bus.clone();
             let flow_config = self.turn_flow_config_for(&parent_config.model_id);
+            // V15 / D.2 m3: capture the model id BEFORE the config moves
+            // into the host builder — the asked-ops ledger binding below
+            // get-or-creates the main flow with it.
+            let main_model_id = parent_config.model_id.clone();
             let host = Arc::new(
                 mirri_core::SessionSubagentHost::new(
                     Arc::downgrade(&new_session),
@@ -2678,7 +3021,20 @@ impl EmbeddedServer {
                 .with_nesting_limits(1, new_session.config().max_nesting_depth)
                 .with_turn_id_source(turn_id_source)
                 .with_tool_result_home(self.home_dir().map(ToOwned::to_owned))
-                .with_flag_registry(Arc::clone(self.flag_registry())),
+                .with_flag_registry(Arc::clone(self.flag_registry()))
+                // V15 / D.2 m3: the forked session's main flow shares its
+                // asked-ops ledger through the host (same shape as the
+                // create path).
+                .with_asked_ops(Some(
+                    self.get_or_create_turn_flow(
+                        new_session.id().as_str(),
+                        DEFAULT_MAIN_AGENT_ID,
+                        &main_model_id,
+                    )
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .asked_ops_handle(),
+                )),
             );
             // spec 11 R5/A3 (defect B): bind the host to the child main
             // agent's LIVE config handle — children spawned after a later
@@ -2882,7 +3238,12 @@ impl EmbeddedServer {
             None => None,
         };
 
-        let exporter = SessionExporter::with_mirri_home(&mirri_home);
+        let exporter = SessionExporter::with_mirri_home(&mirri_home).with_metadata_store(
+            // ADR-006: the manifest's title/activity facts read the
+            // metadata ROW first (the server's injected port — the same
+            // store every write path applies through).
+            mirri_core::SessionManager::metadata_store(self.session_manager().as_ref()).clone(),
+        );
         let payload = ExportSessionPayload {
             session_id: params.session_id.clone(),
             output_path,
@@ -4238,21 +4599,14 @@ impl EmbeddedServer {
             .cron()
             .list()
             .into_iter()
-            .map(|task| {
-                json!({
-                    "id": task.id,
-                    "cron": task.cron,
-                    "prompt": task.prompt,
-                    "recurring": task.recurring,
-                    "timezone": task.timezone,
-                    "stale": session.cron().is_stale(&task, chrono::Utc::now()),
-                    "createdAt": task.created_at.timestamp_millis(),
-                    "lastFiredAt": task.last_fired.map(|at| at.timestamp_millis()),
-                    "nextFireAt": task.next_fire_at.map(|at| at.timestamp_millis()),
-                })
-            })
+            .map(|task| self.cron_task_row(&task, None))
             .collect();
-        to_result(CronTasksResult { tasks })
+        // ADR-006 / E.4 layer 3: the read face stays available and reports
+        // the disabled state honestly.
+        to_result(CronTasksResult {
+            tasks,
+            disabled: self.cron_scheduling_disabled,
+        })
     }
 
     /// `cron.delete` — remove one of the session's cron tasks by id (B6
@@ -4267,16 +4621,49 @@ impl EmbeddedServer {
         #[derive(Debug, Deserialize)]
         struct CronDeleteParams {
             #[serde(alias = "sessionId")]
-            session_id: String,
+            #[serde(default)]
+            session_id: Option<String>,
+            /// The workspace the task lives in (stage-2 T8): carrying it
+            /// routes the removal to the workspace cron manager.
+            #[serde(default, alias = "workspaceId")]
+            workspace_id: Option<String>,
             #[serde(alias = "taskId")]
             task_id: String,
         }
         let params: CronDeleteParams = serde_json::from_value(normalize_params(params))
             .map_err(|e| invalid_params(e.to_string()))?;
+        // The workspace arm (stage-2 T8 — C.1: the workspace task's delete
+        // is the same management semantics on the workspace's manager).
+        if let Some(workspace_id) = params.workspace_id {
+            let runtime = self
+                .registry
+                .built_runtime(&workspace_id)
+                .ok_or_else(|| not_found(format!("workspace not found: {workspace_id}")))?;
+            let cron = runtime
+                .cron()
+                .ok_or_else(|| not_found(format!("workspace not found: {workspace_id}")))?;
+            let deleted = cron.remove(&params.task_id).await;
+            if !deleted {
+                return Err(not_found(format!(
+                    "cron task not found: {}",
+                    params.task_id
+                )));
+            }
+            self.emit_server_event(ServerEvent::CronWorkspaceChanged { workspace_id });
+            return to_result(CronDeleteResult {
+                deleted: true,
+                task_id: params.task_id,
+            });
+        }
+        let Some(session_id) = params.session_id else {
+            return Err(invalid_params(
+                "cron.delete requires sessionId or workspaceId",
+            ));
+        };
         let session = self
-            .resolve_session(&params.session_id)
+            .resolve_session(&session_id)
             .await
-            .map_err(|_| not_found(format!("session not found: {}", params.session_id)))?;
+            .map_err(|_| not_found(format!("session not found: {session_id}")))?;
         let deleted = session.cron().remove(&params.task_id).await;
         if !deleted {
             return Err(not_found(format!(
@@ -4293,6 +4680,694 @@ impl EmbeddedServer {
     // (`cron.trigger`, the run-now sibling of this write face, lives in
     // `cron_driver.rs` next to the inject_cron_prompt pipeline it reuses —
     // the two handlers share only the route table.)
+
+    /// `cron.add` — the user-creation face (E.1 / A.1, stage-1 batch-3):
+    /// the same `CronManager::add` the model's `CronCreate` tool drives,
+    /// with `origin = User`. The model-side budget gate (A.2a) does NOT
+    /// apply — it hangs on the tool face's tool-name match, so the user
+    /// face cannot trigger it (A.1: the user's own decision, any budget).
+    /// The STRUCTURAL validations still apply (they live in `add` itself):
+    /// max_fires on a one-shot is rejected, max_fires = 0 is rejected, an
+    /// invalid expression is rejected before anything registers.
+    ///
+    /// The switch layer: `MIRRICODE_DISABLE_CRON=1` refuses creation here
+    /// too (E.4 layer 1 — the switch covers every creation face, not just
+    /// the model tool).
+    pub(super) async fn dispatch_add_cron_task(&self, params: Value) -> Result<Value, EngineError> {
+        let params: CronAddParams = serde_json::from_value(normalize_params(params))
+            .map_err(|e| invalid_params(e.to_string()))?;
+        if self.cron_scheduling_disabled {
+            // E.4 layer 1 — the switch covers every creation face, both
+            // scopes (stage-2 T4: 双面拒).
+            return Err(invalid_params("定时任务已禁用（MIRRICODE_DISABLE_CRON）"));
+        }
+        match (params.session_id.clone(), params.workspace_id.clone()) {
+            // The stage-1 session flow, unchanged.
+            (Some(session_id), None) => self.add_session_cron_task(&params, session_id).await,
+            // The workspace arm (stage-2 T4 — A.1: 用户直建, origin User;
+            // the structural validations live in the manager's add).
+            (None, Some(workspace_id)) => self.add_workspace_cron_task(&params, workspace_id).await,
+            _ => Err(invalid_params(
+                "cron.add requires exactly one of sessionId or workspaceId",
+            )),
+        }
+    }
+
+    /// The session arm of `cron.add` — the stage-1 flow, extracted
+    /// verbatim (T4: the entry split must not touch it).
+    #[allow(clippy::too_many_arguments)]
+    async fn add_session_cron_task(
+        &self,
+        params: &CronAddParams,
+        session_id: String,
+    ) -> Result<Value, EngineError> {
+        let session = self
+            .resolve_session(&session_id)
+            .await
+            .map_err(|_| not_found(format!("session not found: {session_id}")))?;
+        let task_id = session
+            .cron()
+            .add(
+                params.cron.clone(),
+                params.prompt.clone(),
+                session_id,
+                params.recurring,
+                CronCreateOptions {
+                    timezone: params.timezone.clone(),
+                    max_fires: params.max_fires,
+                    origin: TaskOrigin::User,
+                    cron_lineage: false,
+                    // A4: the session arm accepts the same three modes as
+                    // the workspace arm — dropping it here silently
+                    // ignored a caller's declared law.
+                    permission_posture: params.permission_posture,
+                    permission_mode: params.permission_mode,
+                    title: params.title.clone(),
+                    model: params.model.clone(),
+                    effort: params.effort.clone(),
+                    workdir: params.workdir.clone(),
+                    ends_at: params.ends_at,
+                    interval: params.interval.clone(),
+                    ..CronCreateOptions::default()
+                },
+            )
+            .await
+            .map_err(|e| invalid_params(e.to_string()))?;
+        let task = session.cron().get(&task_id).ok_or_else(|| {
+            EngineError::Internal("cron.add: the task vanished before its ack".to_string())
+        })?;
+        to_result(CronAddResult {
+            task_id: task.id.clone(),
+            cron: task.cron.clone(),
+            recurring: task.recurring,
+            max_fires: task.max_fires,
+            timezone: task.timezone.clone(),
+            origin: task.origin,
+            fire_count: task.fire_count,
+            created_at: task.created_at.timestamp_millis(),
+            next_fire_at: task.next_fire_at.map(|at| at.timestamp_millis()),
+            scope: None,
+        })
+    }
+
+    /// The workspace arm of `cron.add` (stage-2 T4 — D.0c 用户直建, A.1):
+    /// the task is created on the workspace's cron manager (origin User,
+    /// the scope forced to the workspace), persists through the shared
+    /// SQLite `scheduled_tasks` index (ADR-020), and is scheduled by the
+    /// unified scheduler's workspace arm the moment it lands. The
+    /// workspace must be a REGISTERED row — an unbuilt-but-registered one
+    /// builds on demand (A14: the aggregate list shows such workspaces, so
+    /// their creation and management faces must address them); an unknown
+    /// id answers not_found.
+    #[allow(clippy::too_many_arguments)]
+    async fn add_workspace_cron_task(
+        &self,
+        params: &CronAddParams,
+        workspace_id: String,
+    ) -> Result<Value, EngineError> {
+        // A14: the form's workspace picker lists EVERY registered workspace
+        // (the panel joins workspace.list), so a creation may target one
+        // whose runtime was never built. A creation RPC is an explicit user
+        // action on a REGISTERED row — build the runtime on demand rather
+        // than answering not_found (the lazy-build precedent of every other
+        // first-touch face).
+        let runtime = match self.registry.built_runtime(&workspace_id) {
+            Some(runtime) => runtime,
+            None => match self.registry.ensure_built(&workspace_id) {
+                Some(Ok(runtime)) => runtime,
+                // Unregistered id (or a build failure): the honest refusal.
+                Some(Err(error)) => {
+                    return Err(invalid_params(format!(
+                        "building workspace {workspace_id} failed: {error}"
+                    )));
+                }
+                None => {
+                    return Err(not_found(format!("workspace not found: {workspace_id}")));
+                }
+            },
+        };
+        let manager = runtime.cron().ok_or_else(|| {
+            invalid_params(format!(
+                "workspace {workspace_id} has no workspace cron store (no home-rooted \
+                 sessions bucket)"
+            ))
+        })?;
+        let task_id = manager
+            .add(
+                params.cron.clone(),
+                params.prompt.clone(),
+                params.recurring,
+                CronCreateOptions {
+                    timezone: params.timezone.clone(),
+                    max_fires: params.max_fires,
+                    origin: TaskOrigin::User,
+                    cron_lineage: false,
+                    scope: mirri_core::cron::TaskScope::Workspace(workspace_id.clone()),
+                    permission_posture: params.permission_posture,
+                    permission_mode: params.permission_mode,
+                    concurrency: params.concurrency,
+                    title: params.title.clone(),
+                    model: params.model.clone(),
+                    effort: params.effort.clone(),
+                    workdir: params.workdir.clone(),
+                    ends_at: params.ends_at,
+                    interval: params.interval.clone(),
+                },
+            )
+            .await
+            .map_err(|e| invalid_params(e.to_string()))?;
+        let task = manager.get(&task_id).ok_or_else(|| {
+            EngineError::Internal("cron.add: the task vanished before its ack".to_string())
+        })?;
+        // T2's change notification — the management plane's refresh signal.
+        self.emit_server_event(ServerEvent::CronWorkspaceChanged {
+            workspace_id: workspace_id.clone(),
+        });
+        to_result(CronAddResult {
+            task_id: task.id.clone(),
+            cron: task.cron.clone(),
+            recurring: task.recurring,
+            max_fires: task.max_fires,
+            timezone: task.timezone.clone(),
+            origin: task.origin,
+            fire_count: task.fire_count,
+            created_at: task.created_at.timestamp_millis(),
+            next_fire_at: task.next_fire_at.map(|at| at.timestamp_millis()),
+            scope: Some(workspace_id),
+        })
+    }
+
+    // ------------------------------------------------------------------
+    // batch 2 (A9): cron.update / cron.pause / cron.resume
+    // ------------------------------------------------------------------
+    //
+    // The workspace task face only: a workspace task is the product's
+    // standing object, and the store's whole-document atomic write is what
+    // makes "edit in place, history intact" honest. A session timer keeps
+    // its existing lifecycle (delete + recreate) — it is not a standing
+    // object.
+
+    /// The workspace a task-management call addresses, plus the manager:
+    /// the shared prologue of the three A9 RPCs. Same A14 posture as
+    /// `cron.add`: the aggregate list shows tasks of never-built runtimes,
+    /// so managing one (update/pause/resume/delete) builds on demand —
+    /// a registered row is addressable, an unregistered id is not.
+    fn cron_workspace_manager(
+        &self,
+        workspace_id: &str,
+    ) -> Result<std::sync::Arc<mirri_core::cron::workspace_store::WorkspaceCronManager>, EngineError>
+    {
+        let runtime = match self.registry.built_runtime(workspace_id) {
+            Some(runtime) => runtime,
+            None => match self.registry.ensure_built(workspace_id) {
+                Some(Ok(runtime)) => runtime,
+                Some(Err(error)) => {
+                    return Err(invalid_params(format!(
+                        "building workspace {workspace_id} failed: {error}"
+                    )));
+                }
+                None => return Err(not_found(format!("workspace not found: {workspace_id}"))),
+            },
+        };
+        runtime
+            .cron()
+            .cloned()
+            .ok_or_else(|| not_found(format!("workspace not found: {workspace_id}")))
+    }
+
+    /// `cron.update` — edit one workspace task in place (A9): title,
+    /// instruction, schedule (expression or interval, with its timezone and
+    /// end date), and the execution environment (permission mode, model,
+    /// effort). The workspace is NOT editable (a request naming another
+    /// workspace is refused by the store). The task id, its identity, and
+    /// its run history survive; the next fire is recomputed from the new
+    /// schedule.
+    pub(super) async fn dispatch_update_cron_task(
+        &self,
+        params: Value,
+    ) -> Result<Value, EngineError> {
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct UpdateParams {
+            #[serde(default, alias = "workspaceId")]
+            workspace_id: Option<String>,
+            #[serde(alias = "taskId")]
+            task_id: String,
+            /// The target workspace as a DIFFERENT field name, so a
+            /// well-meaning client sending it is refused explicitly
+            /// instead of silently ignored (the id in `workspaceId` is the
+            /// addressing one).
+            #[serde(default)]
+            workspace: Option<String>,
+            #[serde(default)]
+            title: Option<Option<String>>,
+            #[serde(default)]
+            prompt: Option<String>,
+            #[serde(default)]
+            cron: Option<String>,
+            #[serde(default)]
+            interval: Option<Option<mirri_core::cron::IntervalSpec>>,
+            #[serde(default)]
+            timezone: Option<Option<String>>,
+            #[serde(default, alias = "endsAt")]
+            ends_at: Option<Option<String>>,
+            #[serde(default, alias = "maxFires")]
+            max_fires: Option<Option<u32>>,
+            #[serde(default)]
+            model: Option<Option<String>>,
+            #[serde(default)]
+            effort: Option<Option<mirri_core::profile::ThinkingEffort>>,
+            #[serde(default, alias = "permissionMode")]
+            permission_mode: Option<Option<mirri_core::cron::PermissionMode>>,
+        }
+        let params: UpdateParams = serde_json::from_value(normalize_params(params))
+            .map_err(|e| invalid_params(e.to_string()))?;
+        if self.cron_scheduling_disabled {
+            return Err(invalid_params("定时任务已禁用（MIRRICODE_DISABLE_CRON）"));
+        }
+        let workspace_id = self.resolve_cron_workspace(params.workspace_id.as_deref())?;
+        let cron = self.cron_workspace_manager(&workspace_id)?;
+        let ends_at = params
+            .ends_at
+            .map(|value| match value {
+                None => Ok(None),
+                Some(raw) => chrono::NaiveDate::parse_from_str(&raw, "%Y-%m-%d")
+                    .map(Some)
+                    .map_err(|e| invalid_params(format!("endsAt must be YYYY-MM-DD: {e}"))),
+            })
+            .transpose()?;
+        let edit = mirri_core::cron::workspace_store::WorkspaceTaskEdit {
+            title: params.title,
+            prompt: params.prompt,
+            cron: params.cron,
+            interval: params.interval,
+            timezone: params.timezone,
+            ends_at,
+            max_fires: params.max_fires,
+            model: params.model,
+            effort: params.effort,
+            permission_mode: params.permission_mode,
+            workspace_id: params.workspace,
+        };
+        let updated = cron
+            .update(&params.task_id, edit)
+            .await
+            .map_err(|e| invalid_params(e.to_string()))?;
+        self.emit_server_event(ServerEvent::CronWorkspaceChanged {
+            workspace_id: workspace_id.clone(),
+        });
+        Ok(self.cron_task_row(&updated, Some(&cron.runs(&updated.id))))
+    }
+
+    /// `cron.pause` / `cron.resume` — the shared body (`paused` flag).
+    /// Paused: the schedule stops firing and records nothing (the paused
+    /// window leaves no trace). Resumed: the next fire is recomputed from
+    /// now — the first future occurrence, no catch-up backlog.
+    async fn dispatch_set_cron_paused(
+        &self,
+        params: Value,
+        paused: bool,
+    ) -> Result<Value, EngineError> {
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct PauseParams {
+            #[serde(default, alias = "workspaceId")]
+            workspace_id: Option<String>,
+            #[serde(alias = "taskId")]
+            task_id: String,
+        }
+        let params: PauseParams = serde_json::from_value(normalize_params(params))
+            .map_err(|e| invalid_params(e.to_string()))?;
+        let workspace_id = self.resolve_cron_workspace(params.workspace_id.as_deref())?;
+        let cron = self.cron_workspace_manager(&workspace_id)?;
+        let changed = if paused {
+            cron.set_paused(&params.task_id, true)
+                .await
+                .map_err(|e| invalid_params(e.to_string()))?
+        } else {
+            cron.resume(&params.task_id).await.is_some()
+        };
+        if !changed {
+            return Err(not_found(format!(
+                "cron task not found: {}",
+                params.task_id
+            )));
+        }
+        let task = cron
+            .get(&params.task_id)
+            .ok_or_else(|| not_found(format!("cron task not found: {}", params.task_id)))?;
+        self.emit_server_event(ServerEvent::CronWorkspaceChanged {
+            workspace_id: workspace_id.clone(),
+        });
+        Ok(self.cron_task_row(&task, Some(&cron.runs(&task.id))))
+    }
+
+    /// `cron.pause` (A9): stop firing one workspace task, keeping its
+    /// identity and history.
+    pub(super) async fn dispatch_pause_cron_task(
+        &self,
+        params: Value,
+    ) -> Result<Value, EngineError> {
+        self.dispatch_set_cron_paused(params, true).await
+    }
+
+    /// `cron.resume` (A9): continue a paused task from the next future
+    /// occurrence.
+    pub(super) async fn dispatch_resume_cron_task(
+        &self,
+        params: Value,
+    ) -> Result<Value, EngineError> {
+        self.dispatch_set_cron_paused(params, false).await
+    }
+
+    /// `cron.listAll` — the cross-session aggregated listing (E.5 / V8a,
+    /// stage-1 batch-3: the session-level aggregation — every EXISTING
+    /// session's tasks, live or persisted, without opening any of them).
+    ///
+    /// Source walk (`read_only_histories`' posture): every live session
+    /// answers from its in-memory `CronManager` (fresh `fire_count` and
+    /// held-fire state); every persisted-only session is discovered through
+    /// the same union the listing surfaces use (the session index's rows
+    /// plus the live set) and answered by an in-memory wire-log replay
+    /// (`read_only_cron_tasks` — no resume, no on-disk side effect; a
+    /// session that does not replay degrades out of the view, never fails
+    /// the RPC).
+    ///
+    /// Only task-bearing sessions appear as groups (an empty session is
+    /// not a group — the view answers "where are my tasks", not "what are
+    /// my sessions"). Each group carries the session's id, title, and an
+    /// honest `open` flag; visibility is global, DELIVERY stays
+    /// session-scoped (C.2 — an unopened session's row reports its real
+    /// condition instead of hiding it).
+    ///
+    /// The honest-list layer (E.4): the aggregated face reports the
+    /// scheduling-disabled state exactly like `cron.list`.
+    ///
+    /// Cost shape (review Major 1): every call walks every existing
+    /// session; a live session answers from memory, a persisted-only one
+    /// replays its wire log. Two mitigations keep a polling UI's cadence
+    /// affordable — the per-session replay is cached on the wire log's
+    /// `(mtime, size)` fingerprint (see
+    /// [`SessionManager::read_only_cron_tasks_cached`]), and the whole
+    /// aggregation is throttled to [`CRON_LIST_ALL_MIN_INTERVAL`] (1s: a
+    /// second call inside the window answers the stored sessions
+    /// verbatim, `disabled` still live).
+    pub(super) async fn dispatch_list_all_cron_tasks(
+        &self,
+        params: Value,
+    ) -> Result<Value, EngineError> {
+        if !params.is_null() && !params.as_object().is_some_and(|object| object.is_empty()) {
+            return Err(invalid_params("cron.listAll takes no params"));
+        }
+        // The top-level throttle (review Major 1): a second aggregation inside
+        // [`CRON_LIST_ALL_MIN_INTERVAL`] answers the stored sessions verbatim
+        // (the walk replays every persisted session's wire log — a polling
+        // UI's back-to-back calls must not repeat it). `disabled` stays LIVE
+        // (one field read) so a config flip never waits out the window.
+        {
+            let cache = self
+                .cron_list_all_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some((at, sessions)) = cache.as_ref()
+                && at.elapsed() < super::CRON_LIST_ALL_MIN_INTERVAL
+            {
+                // The workspace arm rides the same throttle: the stored
+                // groups answer verbatim (a back-to-back call must not
+                // re-walk the stores).
+                let workspaces = self.cron_workspace_groups_snapshot().unwrap_or_default();
+                return to_result(CronAllTasksResult {
+                    sessions: sessions.clone(),
+                    workspaces,
+                    disabled: self.cron_scheduling_disabled,
+                });
+            }
+        }
+        // The union of candidate session ids, per BUILT workspace runtime:
+        // the live sessions first (the fresh in-memory arm), then the
+        // manager's persisted-only rows (its `list_all_sessions` walks the
+        // workspace's own bucket — every existing session of that
+        // workspace, no home/index dependency), finally the session index
+        // rows as a catch-all for workspaces without a built runtime.
+        // Keyed so a live session appears exactly once.
+        let mut session_ids: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let runtimes = self.registry.built_runtimes();
+        for runtime in &runtimes {
+            for info in runtime.manager.list_all_sessions(true).await {
+                if seen.insert(info.id.clone()) {
+                    session_ids.push(info.id);
+                }
+            }
+        }
+        for live in self.live_session_infos_all_workspaces().await {
+            if seen.insert(live.id.clone()) {
+                session_ids.push(live.id);
+            }
+        }
+        if let Some(index) = self.session_index()
+            && let Ok(rows) = index.list_sessions(mirri_session_index::ListOpts {
+                include_archived: true,
+                ..mirri_session_index::ListOpts::default()
+            })
+        {
+            for row in rows {
+                if seen.insert(row.id.clone()) {
+                    session_ids.push(row.id);
+                }
+            }
+        }
+        let mut sessions: Vec<Value> = Vec::new();
+        for session_id in session_ids {
+            // Resolve the owning manager through the routing seam (never
+            // the default workspace silently); an ownerless id (a stale
+            // index row) degrades out of the view.
+            let Some(owner) = workspace_owner_via(&self.registry, &session_id) else {
+                continue;
+            };
+            let sid = mirri_core::SessionId::new(&session_id);
+            // The honest open flag, re-verified against the owner's live
+            // table (a session closed between the listing and the read
+            // must not report open); the live session's title rides the
+            // same resolution.
+            let live = owner.manager.workspace().get_session(&sid).await;
+            let open = live.is_some();
+            let title = match &live {
+                Some(session) => Some(session.metadata().await.title),
+                None => self
+                    .session_index()
+                    .and_then(|index| index.get_session(&session_id))
+                    .and_then(|row| row.title),
+            };
+            // The fingerprint-keyed replay cache (review Major 1): a live
+            // session still answers fresh from its in-memory `CronManager`;
+            // a persisted-only session replays only when its wire log's
+            // (mtime, size) moved since the last aggregation.
+            let Some(raw_tasks) = owner.manager.read_only_cron_tasks_cached(&sid).await else {
+                continue;
+            };
+            let mut tasks: Vec<Value> = raw_tasks
+                .iter()
+                .filter_map(|raw| self.cron_aggregate_row(raw, None))
+                .collect();
+            if tasks.is_empty() {
+                continue;
+            }
+            tasks.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+            sessions.push(json!({
+                "sessionId": session_id,
+                "title": title.unwrap_or_else(|| session_id.clone()),
+                "open": open,
+                "tasks": tasks,
+            }));
+        }
+        sessions.sort_by(|a, b| a["sessionId"].as_str().cmp(&b["sessionId"].as_str()));
+        // The workspace arm (stage-2 T6 — E.1/V23; ADR-020 since): one
+        // table scan over the shared `scheduled_tasks` index. The manager's
+        // in-memory projection stays the truth for scheduling; the index
+        // answers listings. A workspace whose runtime was never built still
+        // shows its group here (the aggregate view's "no group missing"
+        // half) — the legacy store-file fingerprint cache is retired with
+        // the JSON media it watched (the 1 s throttle above still bounds
+        // the read rate).
+        let mut workspaces_by_id: std::collections::BTreeMap<String, Vec<Value>> =
+            std::collections::BTreeMap::new();
+        if let Some(index) = self.shared_cron_index() {
+            for row in index.list_all().unwrap_or_default() {
+                let Ok(body) = serde_json::from_str::<serde_json::Value>(&row.body) else {
+                    continue;
+                };
+                let Some(task_value) = body.get("task") else { continue };
+                // runs ride the body; cron_aggregate_row consumes (task, runs).
+                let runs: Vec<mirri_core::cron::RunRecord> = body
+                    .get("runs")
+                    .and_then(|runs| serde_json::from_value(runs.clone()).ok())
+                    .unwrap_or_default();
+                if let Some(row_value) = self.cron_aggregate_row(task_value, Some(&runs)) {
+                    workspaces_by_id
+                        .entry(row.workspace_id.clone())
+                        .or_default()
+                        .push(row_value);
+                }
+            }
+        }
+        let workspaces: Vec<Value> = workspaces_by_id
+            .into_iter()
+            .map(|(workspace_id, tasks)| {
+                json!({ "workspaceId": workspace_id, "tasks": tasks })
+            })
+            .collect();
+        // Store the computed answer for the throttle window's verbatim
+        // replay; a failed dispatch (an early error return above) leaves the
+        // PREVIOUS answer in place, never a half-computed one.
+        self.cron_list_all_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace((std::time::Instant::now(), sessions.clone()));
+        self.cron_workspace_groups_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(workspaces.clone());
+        to_result(CronAllTasksResult {
+            sessions,
+            workspaces,
+            disabled: self.cron_scheduling_disabled,
+        })
+    }
+
+    /// The workspace groups of the LAST aggregation (T6's throttle arm) —
+    /// `None` when no aggregation ran yet.
+    fn cron_workspace_groups_snapshot(&self) -> Option<Vec<Value>> {
+        self.cron_workspace_groups_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// `cron.list` 的行投影（E.2/V9）：one cron task → the wire row with
+    /// the stage-1 scheduling fields (origin, maxFires,
+    /// fireCount) — the single projection both the per-session list and
+    /// the aggregated listAll rows share, so the two faces cannot drift.
+    ///
+    /// Form batch 6 (T7, VU18): the row carries the residency-state
+    /// projections — `nextTwoFires` (the preview kernel's next two ideal
+    /// occurrences, pre-jitter, computed from the task's own schedule
+    /// so the list page needs no per-row RPC) and `lastRunFromRuns`
+    /// (the most recent non-Skipped run's start — the caller passes the
+    /// task's run records; session tasks have none, answering `null`).
+    pub(super) fn cron_task_row(
+        &self,
+        task: &mirri_core::cron::CronTask,
+        runs: Option<&[mirri_core::cron::RunRecord]>,
+    ) -> Value {
+        // The two next occurrences (the O-2 ruling: the view carries the
+        // projection directly — no per-row preview RPC on the list page).
+        let next_two: Vec<i64> =
+            mirri_core::cron::CronManager::task_preview_fires(task, 2, chrono::Utc::now())
+                .iter()
+                .map(|at| at.timestamp_millis())
+                .collect();
+        // The most recent non-Skipped run's start (ADR-017: NOT the
+        // `last_fired` cursor — the cursor advances on skipped
+        // detections too and would masquerade as a run).
+        let last_run_from_runs = runs
+            .and_then(|runs| {
+                runs.iter()
+                    .rev()
+                    .find(|run| run.status != mirri_core::cron::RunStatus::Skipped)
+            })
+            .map(|run| run.started_at.timestamp_millis());
+        json!({
+            "id": task.id,
+            "cron": task.cron,
+            "prompt": task.prompt,
+            "recurring": task.recurring,
+            "timezone": task.timezone,
+            "stale": self.cron_stale(task),
+            "origin": task.origin,
+            "maxFires": task.max_fires,
+            "fireCount": task.fire_count,
+            "createdAt": task.created_at.timestamp_millis(),
+            "lastFiredAt": task.last_fired.map(|at| at.timestamp_millis()),
+            "nextFireAt": task.next_fire_at.map(|at| at.timestamp_millis()),
+            // Form batch 6 (T7): the residency-state three-moment
+            // projections (VU18).
+            "nextTwoFires": next_two,
+            "lastRunFromRuns": last_run_from_runs,
+            // Form batch 6 (T1/T13, VU9/VU13): the task-form fields —
+            // the title verbatim (`null` when unset — the presentation
+            // layer's i18n owns the untitled fallback, review m6: the
+            // server never hardcodes a locale), the schedule shape
+            // (interval tasks carry the structured spec; cron tasks
+            // rely on the expression), the end date, and the
+            // environment overrides (absent = follow the workspace
+            // defaults).
+            "title": task.title,
+            "endsAt": task.ends_at.map(|date| date.to_string()),
+            "interval": task.interval,
+            "model": task.model,
+            "effort": task.effort,
+            "workdir": task.workdir,
+            // Stage-2 T6 (E.1/E.2): the ownership scope + the honest
+            // delivery condition, both scope-derived — a session task
+            // needs its session alive, a workspace task fires while the
+            // service runs.
+            "scope": match &task.scope {
+                mirri_core::cron::TaskScope::Session =>
+                    json!({ "kind": "session", "sessionId": task.session_id }),
+                mirri_core::cron::TaskScope::Workspace(workspace_id) =>
+                    json!({ "kind": "workspace", "workspaceId": workspace_id }),
+            },
+            // Batch 2 (A4): the mode the user chose (verbatim) plus its
+            // kernel posture expansion — old rows carry the posture only.
+            "permissionMode": task.permission_mode,
+            "permissionPosture": task.permission_posture,
+            "paused": task.paused,
+            "concurrency": task.concurrency,
+            "deliveryCondition": match &task.scope {
+                mirri_core::cron::TaskScope::Session =>
+                    "依赖所属会话存活",
+                mirri_core::cron::TaskScope::Workspace(_) =>
+                    "服务运行即触发",
+            },
+        })
+    }
+
+    /// The stale verdict for one task on this server's semantics (the
+    /// fire-refresh TTL, B.1) — the core's standalone rule (`is_stale`'s
+    /// twin without a manager handle, for the aggregation's replayed
+    /// rows).
+    fn cron_stale(&self, task: &mirri_core::cron::CronTask) -> bool {
+        mirri_core::cron::CronManager::task_is_stale(task, chrono::Utc::now())
+    }
+
+    /// One raw cron task record → the aggregated row (the `cron_task_row`
+    /// projection applied to the shape-tolerant parse). A persisted
+    /// record carries no absolute next fire (it is recomputed on restore);
+    /// the aggregation answers the ideal pre-jitter occurrence computed
+    /// from the expression (`CronManager::next_fire_for`) so the row's
+    /// "when would this fire" stays honest for unopened sessions. `None`
+    /// skips the record (the parse's own tolerance — the same skip the
+    /// resume path applies).
+    fn cron_aggregate_row(
+        &self,
+        raw: &Value,
+        runs: Option<&[mirri_core::cron::RunRecord]>,
+    ) -> Option<Value> {
+        let task = mirri_core::cron::cron_task_from_wire(raw)?;
+        let mut row = self.cron_task_row(&task, runs);
+        if task.next_fire_at.is_none() {
+            // The schedule-shape-aware twin of the expression-only walk:
+            // an interval task's next occurrence comes from the interval
+            // branch (its expression slot is empty).
+            row["nextFireAt"] =
+                mirri_core::cron::CronManager::task_preview_fires(&task, 1, chrono::Utc::now())
+                    .first()
+                    .map(|at| json!(at.timestamp_millis()))
+                    .unwrap_or(Value::Null);
+        }
+        Some(row)
+    }
 
     // --- plan domain (Phase 4.4) ------------------------------------------
 
@@ -4887,7 +5962,7 @@ impl EmbeddedServer {
         #[derive(Debug, Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct ListSkillsParams {
-            #[serde(default, alias = "workspace_id")]
+            #[serde(default, alias = "workspaceId", alias = "workspace_id")]
             workspace_id: Option<String>,
             #[serde(default, alias = "session_id")]
             session_id: Option<String>,
@@ -5123,21 +6198,22 @@ impl EmbeddedServer {
     /// 6): rescan every built workspace runtime through the serialized
     /// [`SkillReloadOrchestrator`](crate::skill_reload::SkillReloadOrchestrator)
     /// (Manual trigger) and answer the per-workspace diff counts plus each
-    /// workspace's watcher status (R4). The sweep also refreshes the lazy
-    /// watcher mounts first (the same lazy-attach pass every dispatcher
-    /// call runs, so a just-flipped flag or a recovered skill root mounts
-    /// on the next reload). Registered-but-unbuilt runtimes pick the new
-    /// catalog up when they are first built.
+    /// workspace's watcher status (R4). The sweep also refreshes the
+    /// watcher mounts first (SDR-011: hosts mount explicitly; this refresh
+    /// lets a just-flipped flag or a recovered skill root mount on the
+    /// next reload). Registered-but-unbuilt runtimes pick the new catalog
+    /// up when they are first built.
     pub(super) async fn dispatch_skill_reload(&self, params: Value) -> Result<Value, EngineError> {
         // Accept both the empty payload and an explicit {}-shaped object;
         // any other shape is rejected (the method has no parameters).
         if !params.is_null() && !params.as_object().is_some_and(|obj| obj.is_empty()) {
             return Err(invalid_params("skill.reload takes no parameters"));
         }
-        // Refresh the lazy watcher mounts (flag flip / recovered roots
-        // take effect on the manual reload too — the same pass every
-        // dispatcher call runs).
-        self.spawn_skill_watchers();
+        // Refresh the watcher mounts (SDR-011: hosts mount watchers
+        // explicitly; the manual reload ALSO refreshes them so a flag
+        // flip or recovered skill root takes effect on the next rescan
+        // — its `watching` answer stays honest either way).
+        self.mount_skill_watchers();
         self.await_skill_watcher_mounts().await;
         let config = self
             .config
@@ -5950,16 +7026,18 @@ impl EmbeddedServer {
     /// addition is contract-safe; consumers that predate it compose the
     /// `provider/model` display key client-side.
     pub(super) async fn dispatch_model_list(&self) -> Result<Value, EngineError> {
+        // P5 C1: 进入名称解析前确保目录已从磁盘缓存恢复（懒加载）——重启
+        // 后没有 refresh 时首个 list 也从缓存兜底名称；后台预热任务与本次
+        // 调用先到先得（ensure 幂等，后到者直接返回）。The lazy load runs
+        // BEFORE the config guard below: the guard is not Send, so it must
+        // not live across the load's await point.
+        self.ensure_models_dev_catalog_loaded().await;
+
         let config = self.config.read().unwrap_or_else(|e| e.into_inner());
         let wire = config.to_mirri_config_wire();
 
         let models = wire.get("models").and_then(|m| m.as_object());
         let providers = wire.get("providers").and_then(|p| p.as_object());
-
-        // P5 C1: 进入名称解析前确保目录已从磁盘缓存恢复（懒加载）——重启
-        // 后没有 refresh 时首个 list 也从缓存兜底名称；后台预热任务与本次
-        // 调用先到先得（ensure 幂等，后到者直接返回）。
-        self.ensure_models_dev_catalog_loaded();
 
         // The models.dev directory (may be `None` — see the doc comment).
         // Held once up front so the resolution chain below (D-M1) can
@@ -6060,18 +7138,25 @@ impl EmbeddedServer {
                     // source: an active credential-store entry (any value
                     // type) OR the env chain answering — the config
                     // `apiKey` field no longer counts (field tier
-                    // retired, D-M3).
+                    // retired, D-M3). The chain keys off the resolved
+                    // WIRE protocol (a custom-type provider answers
+                    // through its wire's conventional key) — the shared
+                    // `credential_type_for_wire` normalization keeps
+                    // this verdict aligned with the request paths.
                     let provider_type = entry
                         .get("type")
                         .and_then(|v| v.as_str())
                         .unwrap_or("openai")
                         .trim()
                         .to_ascii_lowercase();
+                    let wire_protocol = resolve_wire_protocol(None, &provider_type);
+                    let credential_type =
+                        credential_type_for_wire(&provider_type, wire_protocol.unwrap_or(""));
                     let has_api_key = self
                         .factory_credentials()
                         .map(|store| store.get(id).is_some())
                         .unwrap_or(false)
-                        || resolve_provider_env_chain(entry, &provider_type).is_some();
+                        || resolve_provider_env_chain(entry, credential_type).is_some();
 
                     let provider_models: Vec<String> = models
                         .map(|m| {
@@ -6629,4 +7714,33 @@ async fn record_model_switch(
         },
     );
     Ok(())
+}
+
+/// Parse a wire color name into the preset enum (the seven-color
+/// SDR-017 preset; unknown names answer None — the caller rejects).
+fn parse_pin_color(name: &str) -> Option<mirri_proto::PinColor> {
+    match name {
+        "red" => Some(mirri_proto::PinColor::Red),
+        "orange" => Some(mirri_proto::PinColor::Orange),
+        "yellow" => Some(mirri_proto::PinColor::Yellow),
+        "green" => Some(mirri_proto::PinColor::Green),
+        "blue" => Some(mirri_proto::PinColor::Blue),
+        "purple" => Some(mirri_proto::PinColor::Purple),
+        "gray" => Some(mirri_proto::PinColor::Gray),
+        _ => None,
+    }
+}
+
+/// The wire (camelCase-adjacent) name of a pin color — the event patch's
+/// and the view's spelling.
+fn pin_color_wire_name(color: mirri_proto::PinColor) -> &'static str {
+    match color {
+        mirri_proto::PinColor::Red => "red",
+        mirri_proto::PinColor::Orange => "orange",
+        mirri_proto::PinColor::Yellow => "yellow",
+        mirri_proto::PinColor::Green => "green",
+        mirri_proto::PinColor::Blue => "blue",
+        mirri_proto::PinColor::Purple => "purple",
+        mirri_proto::PinColor::Gray => "gray",
+    }
 }

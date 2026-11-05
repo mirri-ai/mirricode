@@ -109,6 +109,11 @@ struct ChildEntry {
     /// [`SubagentHandle`](super::SubagentHandle) so the tool layer can
     /// forward real activity into the tracked task's liveness window.
     activity: Arc<ActivityTracker>,
+    /// The lineage the child was spawned under (S5 / ADR-001
+    /// propagation): a cron-fired turn's spawns carry the `Cron` origin
+    /// onto their flows (grandchildren inherit it the same way — the
+    /// entry is the persistence point across the child's resume cycles).
+    turn_origin: crate::permission::TurnOriginContext,
 }
 
 /// Production [`SubagentHost`] backed by [`SessionScope`].
@@ -196,6 +201,14 @@ pub struct SessionSubagentHost {
     /// server's own turn flows use). `None` (the default) falls back to
     /// the env-based brand home.
     tool_result_home: Option<PathBuf>,
+    /// The spawning turn's asked-ops ledger (V15 / D.2 m3): the host is
+    /// built per parent agent, so the ledger shares the parent's
+    /// lifecycle — every child flow this host mints records its
+    /// permission outcomes into it, and a cron-fired turn's delegated
+    /// members' refusals land in the RunRecord's `asked_ops` trace the
+    /// panel renders. `None` (the default — interactive hosts, tests)
+    /// keeps child ledgers local (their traces are never drained).
+    asked_ops: Option<std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>>,
     /// This host's depth in the dispatch tree (B4 T5, SDR-B4-03): the
     /// session main agent's host is 1; every nested host is one deeper.
     nesting_depth: u32,
@@ -372,9 +385,23 @@ impl SessionSubagentHost {
             event_bus,
             turn_id_source: None,
             tool_result_home: None,
+            asked_ops: None,
             nesting_depth: 1,
             max_nesting_depth: DEFAULT_MAX_NESTING_DEPTH,
         }
+    }
+
+    /// Bind the spawning turn's asked-ops ledger (V15 / D.2 m3 — see
+    /// [`Self::asked_ops`]): the Agent / AgentSwarm tool face passes the
+    /// executing turn's ledger handle so child flows record their
+    /// permission outcomes into the same trace the cron run spawner
+    /// drains; nested hosts inherit the parent host's handle.
+    pub fn with_asked_ops(
+        mut self,
+        ledger: Option<std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>>,
+    ) -> Self {
+        self.asked_ops = ledger;
+        self
     }
 
     /// Bind the session's turn-id allocator (see [`Self::turn_id_source`])
@@ -485,6 +512,12 @@ impl SessionSubagentHost {
                     flow.set_turn_id_source(Arc::clone(source));
                 }
                 let tracker = flow.activity_tracker();
+                // V15 / D.2 m3: an adopted (restart-restored) child shares
+                // the host's ledger when one is bound, matching the live
+                // spawn path.
+                if let Some(ledger) = &self.asked_ops {
+                    flow.share_asked_ops(std::sync::Arc::clone(ledger));
+                }
                 ChildEntry {
                     profile_name,
                     model,
@@ -492,6 +525,11 @@ impl SessionSubagentHost {
                     running: false,
                     swarm_item: None,
                     activity: tracker,
+                    // S5: a restored child has no persisted spawn origin —
+                    // it runs Interactive until re-proven otherwise (the
+                    // lineage marker is a spawn-time fact, not persisted
+                    // across restarts in batch 1).
+                    turn_origin: crate::permission::TurnOriginContext::default(),
                 }
             });
     }
@@ -570,6 +608,17 @@ impl SubagentHost for SessionSubagentHost {
         // spawn choke point both the `Agent` and `AgentSwarm` tools
         // dispatch through, and the only component that knows the
         // calling agent's profile context.
+        //
+        // SDR-015: the essential default profile is refused FIRST with
+        // its dedicated message — no allowlist (including a same-name
+        // user override re-adding "agent") can lift this refusal, so the
+        // generic not-allowed text would mislead the caller into editing
+        // an allowlist that cannot help.
+        if request.profile_name == crate::profile::ESSENTIAL_PROFILE_NAME {
+            return Err(EngineError::RequestInvalid(
+                crate::profile::essential_profile_not_dispatchable_message(),
+            ));
+        }
         let allowlist = self.effective_allowlist();
         if !allowlist.contains(&request.profile_name) {
             return Err(EngineError::RequestInvalid(
@@ -685,6 +734,7 @@ impl SubagentHost for SessionSubagentHost {
             .with_nesting_limits(self.nesting_depth + 1, self.max_nesting_depth)
             .with_turn_id_source(self.turn_id_source.clone())
             .with_tool_result_home(self.tool_result_home.clone())
+            .with_asked_ops(self.asked_ops.clone())
             .with_caller_profile(Some(request.profile_name.clone())),
         );
         // The nested host's shared parent-config handle is bound inside the
@@ -729,6 +779,20 @@ impl SubagentHost for SessionSubagentHost {
             // activity clock is frozen (the child waiting on a task /
             // gate — the fork/converted incident shapes).
             let child_registry = flow.wait_registry();
+            // S5 / ADR-001 propagation: the child's flow inherits the
+            // spawning turn's origin — a cron-fired turn's spawns stay in
+            // the Cron lineage (the defense line cannot be bypassed by
+            // delegating the creation to a subagent; grandchildren inherit
+            // the same way through their own spawn requests).
+            flow.set_turn_origin(request.turn_origin.clone());
+            // V15 / D.2 m3: the child's flow records its permission
+            // outcomes into the SHARED ledger when the host carries one
+            // (the cron run spawner drains it into the RunRecord);
+            // otherwise the child keeps its own local, never-drained
+            // ledger (an interactive turn — no trace is rendered).
+            if let Some(ledger) = &self.asked_ops {
+                flow.share_asked_ops(std::sync::Arc::clone(ledger));
+            }
             (
                 Arc::new(tokio::sync::Mutex::new(flow)),
                 tracker,
@@ -749,6 +813,7 @@ impl SubagentHost for SessionSubagentHost {
                     running: true,
                     swarm_item: request.swarm_item.clone(),
                     activity: Arc::clone(&activity_tracker),
+                    turn_origin: request.turn_origin.clone(),
                 },
             );
         }
@@ -1575,7 +1640,7 @@ impl SubagentHost for SessionSubagentHost {
         //    concurrent second resume impossible — the pre-fix code had no
         //    running-state flag, so a mid-run resume queued a second turn on
         //    the same TurnFlow.
-        let (profile_name, model, turn_flow, activity) = {
+        let (profile_name, model, turn_flow, activity, entry_origin) = {
             let mut children = self.children.lock().unwrap_or_else(|e| e.into_inner());
             let entry = children.get_mut(&request.agent_id).ok_or_else(|| {
                 EngineError::RequestInvalid(format!(
@@ -1595,8 +1660,20 @@ impl SubagentHost for SessionSubagentHost {
                 entry.model.clone(),
                 Arc::clone(&entry.turn_flow),
                 Arc::clone(&entry.activity),
+                // S5: the entry's stored lineage rides the resume — a
+                // resumed lineage child keeps its origin for the new run.
+                entry.turn_origin.clone(),
             )
         };
+        if let Ok(mut flow) = turn_flow.try_lock() {
+            flow.set_turn_origin(entry_origin);
+            // V15 / D.2 m3: a resumed member records into the shared
+            // ledger too (its spawn-time entry already shares it; this
+            // re-share covers an entry adopted without one).
+            if let Some(ledger) = &self.asked_ops {
+                flow.share_asked_ops(std::sync::Arc::clone(ledger));
+            }
+        }
 
         // 2. Capture for completion future.
         let session_weak = self.session.clone();
@@ -2406,6 +2483,7 @@ async fn record_subagent_turn_ended(
                 .to_string(),
             error: None,
             duration_ms: Some(result.duration_ms),
+            ended_at: Some(result.ended_at),
         })
         .await;
 }
@@ -2835,6 +2913,7 @@ mod tests {
             swarm_index: None,
             swarm_item: None,
             suppress_rate_limit_failure_event: false,
+            turn_origin: Default::default(),
         })
         .unwrap()
     }
@@ -3180,6 +3259,7 @@ mod tests {
             swarm_index: None,
             swarm_item: None,
             suppress_rate_limit_failure_event: false,
+            turn_origin: Default::default(),
         });
 
         // Then the spawn proceeds and the handle carries the validated alias
@@ -3220,6 +3300,7 @@ mod tests {
             swarm_index: None,
             swarm_item: None,
             suppress_rate_limit_failure_event: false,
+            turn_origin: Default::default(),
         });
 
         // Then the spawn fails with a RequestInvalid error naming the valid
@@ -3270,6 +3351,7 @@ mod tests {
             swarm_index: None,
             swarm_item: None,
             suppress_rate_limit_failure_event: false,
+            turn_origin: Default::default(),
         });
 
         // Then the error inlines the curated listing (alias + description) so
@@ -3326,6 +3408,7 @@ mod tests {
                 swarm_index: None,
                 swarm_item: None,
                 suppress_rate_limit_failure_event: false,
+                turn_origin: Default::default(),
             })
             .err()
             .unwrap()
@@ -3380,6 +3463,7 @@ mod tests {
             swarm_index: None,
             swarm_item: None,
             suppress_rate_limit_failure_event: false,
+            turn_origin: Default::default(),
         });
 
         // Then the override passes through unvalidated (no aliases configured)
@@ -3493,7 +3577,64 @@ mod tests {
             swarm_index: None,
             swarm_item: None,
             suppress_rate_limit_failure_event: false,
+            turn_origin: crate::permission::TurnOriginContext::default(),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // turn-origin propagation (stage-1 batch-1, S5 / ADR-001)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn should_inherit_the_cron_lineage_on_the_child_flow_when_spawned_from_a_cron_turn() {
+        // Given a spawn request carrying a Cron origin (an unattended
+        // cron-fired turn spawning a subagent)
+        let host = make_host_for_caller(make_allowlist_profile_manager(), Some("reviewer"));
+        let mut request = spawn_request("coder");
+        request.turn_origin = crate::permission::TurnOriginContext::Cron {
+            reject_asks: true,
+            workspace: false,
+            readonly: false,
+            task_id: "cron-lineage-1".to_string(),
+        };
+
+        // When the child spawns
+        let handle = host.spawn(request).expect("spawn succeeds");
+
+        // Then the child's flow carries the inherited Cron origin — the
+        // lineage is not reset by the delegation.
+        let origin = with_child_flow(&host, &handle.agent_id, |flow| flow.turn_origin());
+        assert_eq!(
+            origin,
+            crate::permission::TurnOriginContext::Cron {
+                reject_asks: true,
+                workspace: false,
+                readonly: false,
+                task_id: "cron-lineage-1".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn should_default_to_interactive_on_the_child_flow_when_spawned_from_an_interactive_turn() {
+        let host = make_host_for_caller(make_allowlist_profile_manager(), Some("reviewer"));
+        let handle = host.spawn(spawn_request("coder")).expect("spawn succeeds");
+
+        let origin = with_child_flow(&host, &handle.agent_id, |flow| flow.turn_origin());
+        assert_eq!(origin, crate::permission::TurnOriginContext::Interactive);
+    }
+
+    /// Lock the host's children map and run `f` on the child's flow — the
+    /// white-box seam the propagation tests read through.
+    fn with_child_flow<T>(
+        host: &SessionSubagentHost,
+        agent_id: &str,
+        f: impl FnOnce(&TurnFlow) -> T,
+    ) -> T {
+        let children = host.children.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = children.get(agent_id).expect("child is registered");
+        let flow = entry.turn_flow.blocking_lock();
+        f(&flow)
     }
 
     /// Given a caller profile declaring `subagents: ["coder"]`, When it
@@ -3562,6 +3703,109 @@ mod tests {
     fn should_spawn_builtin_profiles_for_unbound_caller_under_default_allowlist() {
         let host = make_host_for_caller(Arc::new(ProfileManager::new()), None);
         assert!(host.spawn(spawn_request("explore")).is_ok());
+    }
+
+    /// Given the built-in essential profile, When the main agent tries to
+    /// spawn `agent`, Then the spawn is refused — the essential default
+    /// profile is never dispatchable (SDR-015), regardless of any
+    /// same-name override re-adding it to the allowlist.
+    #[test]
+    fn should_refuse_spawning_the_essential_profile_under_the_default_allowlist() {
+        let host = make_host_for_caller(Arc::new(ProfileManager::new()), None);
+        let result = host.spawn(spawn_request(crate::profile::ESSENTIAL_PROFILE_NAME));
+        let Err(EngineError::RequestInvalid(msg)) = &result else {
+            panic!("expected RequestInvalid refusal, got a spawn handle instead");
+        };
+        assert!(
+            msg.contains("essential"),
+            "the refusal must name the essential-profile ruling: {msg}"
+        );
+    }
+
+    /// Given a user profile whose own allowlist names `agent`, When a
+    /// caller bound to that profile spawns `agent`, Then the spawn is
+    /// refused with the DEDICATED essential-profile message (not the
+    /// generic not-allowed text) — the hard refusal covers every caller
+    /// arm, bound or unbound.
+    #[test]
+    fn should_refuse_spawning_the_essential_profile_for_a_bound_caller_too() {
+        let manager = Arc::new(ProfileManager::new());
+        manager
+            .register(crate::profile::AgentProfile {
+                name: "reviewer".to_string(),
+                model: "claude-sonnet-4-20250514".to_string(),
+                subagents: Some(vec![crate::profile::ESSENTIAL_PROFILE_NAME.to_string()]),
+                ..Default::default()
+            })
+            .unwrap();
+        let host = make_host_for_caller(manager, Some("reviewer"));
+        let result = host.spawn(spawn_request(crate::profile::ESSENTIAL_PROFILE_NAME));
+        let Err(EngineError::RequestInvalid(msg)) = &result else {
+            panic!("expected RequestInvalid refusal, got a spawn handle instead");
+        };
+        assert!(
+            !msg.contains("Allowed subagent types"),
+            "the dedicated refusal must be used, not the generic allowlist text: {msg}"
+        );
+    }
+
+    /// Given an essential-profile override that re-adds its own name to its
+    /// allowlist (the D16 same-name user file), When the main agent spawns
+    /// `agent`, Then the spawn is STILL refused — the SDR-015
+    /// non-dispatchable ruling wins over the content override for this name.
+    #[test]
+    fn should_refuse_spawning_the_essential_profile_even_when_overridden_to_allow_it() {
+        let manager = Arc::new(ProfileManager::new());
+        let mut essential = crate::profile::AgentProfile {
+            name: crate::profile::ESSENTIAL_PROFILE_NAME.to_string(),
+            ..Default::default()
+        };
+        essential.subagents = Some(vec![crate::profile::ESSENTIAL_PROFILE_NAME.to_string()]);
+        manager
+            .register(essential)
+            .expect("the essential override registers");
+        let host = make_host_for_caller(manager, None);
+        assert!(
+            host.spawn(spawn_request(crate::profile::ESSENTIAL_PROFILE_NAME))
+                .is_err(),
+            "the essential profile must stay non-dispatchable under a same-name override"
+        );
+    }
+
+    /// Given a caller that explicitly allowlists a NON-essential user
+    /// profile, When that profile is spawned, Then the spawn proceeds — the
+    /// SDR-015 ruling singles out the essential name only; user-created
+    /// profiles (even fully-capable ones) remain dispatchable as declared.
+    #[test]
+    fn should_spawn_a_user_profile_that_is_not_the_essential_name() {
+        let manager = Arc::new(ProfileManager::new());
+        manager
+            .register(crate::profile::AgentProfile {
+                name: "my-generalist".to_string(),
+                model: "claude-sonnet-4-20250514".to_string(),
+                subagents: Some(vec!["my-generalist".to_string()]),
+                ..Default::default()
+            })
+            .unwrap();
+        let host = make_host_for_caller(manager, Some("my-generalist"));
+        assert!(host.spawn(spawn_request("my-generalist")).is_ok());
+    }
+
+    /// Given the built-in essential profile, When the dispatchable profile
+    /// listing is built, Then the essential name does not appear — the LLM
+    /// never perceives the non-dispatchable default as an option.
+    #[test]
+    fn should_hide_the_essential_profile_from_the_dispatchable_listing() {
+        let host = make_host_for_caller(Arc::new(ProfileManager::new()), None);
+        let names: Vec<String> = host
+            .available_profiles()
+            .into_iter()
+            .map(|i| i.name)
+            .collect();
+        assert!(
+            !names.contains(&crate::profile::ESSENTIAL_PROFILE_NAME.to_string()),
+            "the essential profile must not be listed as dispatchable: {names:?}"
+        );
     }
 
     /// Given an unbound caller and an essential profile whose allowlist is
@@ -4157,6 +4401,7 @@ mod tests {
                 swarm_index: Some(0),
                 swarm_item: None,
                 suppress_rate_limit_failure_event: true,
+                turn_origin: Default::default(),
             })
             .unwrap();
         let outcome = (&mut handle.completion).await;
@@ -4217,6 +4462,7 @@ mod tests {
                 swarm_index: Some(0),
                 swarm_item: None,
                 suppress_rate_limit_failure_event: false,
+                turn_origin: Default::default(),
             })
             .unwrap();
         let outcome = (&mut handle.completion).await;
@@ -4265,6 +4511,7 @@ mod tests {
                 swarm_index: Some(0),
                 swarm_item: None,
                 suppress_rate_limit_failure_event: true,
+                turn_origin: Default::default(),
             })
             .unwrap();
         let agent_id = handle.agent_id.clone();
@@ -4903,6 +5150,7 @@ mod tests {
                 swarm_index: None,
                 swarm_item: None,
                 suppress_rate_limit_failure_event: false,
+                turn_origin: Default::default(),
             })
             .expect("spawn with a live parent model resolves");
         let completion = (&mut handle.completion)
@@ -4990,6 +5238,7 @@ mod tests {
                 swarm_index: None,
                 swarm_item: None,
                 suppress_rate_limit_failure_event: false,
+                turn_origin: Default::default(),
             })
             .expect("spawn with a profile default resolves");
         let _ = (&mut handle.completion)
@@ -5063,6 +5312,7 @@ mod tests {
             swarm_index: None,
             swarm_item: None,
             suppress_rate_limit_failure_event: false,
+            turn_origin: Default::default(),
         }) {
             Err(err) => err,
             Ok(_) => panic!("the three-nothing spawn must be refused"),
@@ -5510,6 +5760,7 @@ mod tests {
                 swarm_index: None,
                 swarm_item: None,
                 suppress_rate_limit_failure_event: false,
+                turn_origin: Default::default(),
             })
             .unwrap();
         let _ = (&mut handle.completion).await.expect("child completes");
@@ -6017,10 +6268,10 @@ mod tests {
                     text_response("goal created"),
                     vec![
                         LlmEvent::ToolCall {
-                            tool: "CronCreate".to_string(),
+                            tool: "SetTimer".to_string(),
                             args: serde_json::json!({
-                                "cron": "0 9 * * *",
-                                "prompt": "check the build"
+                                "delay_minutes": 10,
+                                "message": "check the build"
                             }),
                             call_id: "call-1".to_string(),
                         },

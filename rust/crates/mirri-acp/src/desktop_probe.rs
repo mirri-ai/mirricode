@@ -153,13 +153,8 @@ fn parse_major(version: &str) -> Option<u64> {
 mod tests {
     use super::*;
 
-    /// Serializes tests that mutate process environment variables.
-    ///
-    /// `std::env::set_var`/`remove_var` are `unsafe` in edition 2024, and
-    /// environment reads/writes race across threads when tests run in
-    /// parallel, so every env-mutating test holds this lock and restores
-    /// the previous value on drop.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // Env-mutating tests serialize on the workspace-wide env lock
+    // (mirri-test-support) instead of a crate-local mutex.
 
     /// Saves the current value of a touched variable and restores it on
     /// drop, so tests never leak env state into each other.
@@ -254,7 +249,7 @@ mod tests {
         // When probing
         // Then the result is None with no side effects (no port contact)
         let _env = {
-            let _lock = ENV_LOCK.lock().unwrap();
+            let _lock = mirri_test_support::env::lock();
             let home = tempfile::tempdir().unwrap();
             // SAFETY: guarded by ENV_LOCK and restored by EnvGuard's Drop.
             unsafe { std::env::set_var("MIRRICODE_HOME", home.path()) };
@@ -300,10 +295,18 @@ mod tests {
     #[tokio::test]
     async fn should_return_none_when_the_recorded_pid_is_dead() {
         // Given a state file whose pid belongs to an exited process
+        // (a shell built-in that exits immediately — `true` does not exist
+        // as a program on Windows)
         let home = tempfile::tempdir().unwrap();
         tokio::fs::create_dir_all(home.path().join("server"))
             .await
             .unwrap();
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .spawn()
+            .unwrap();
+        #[cfg(not(windows))]
         let mut child = std::process::Command::new("true").spawn().unwrap();
         let dead_pid = child.id() as i64;
         let _ = child.wait();
@@ -384,10 +387,6 @@ mod tests {
         shutdown.send(()).unwrap();
     }
 
-    // Gated on Windows until `probe_process` gains a real non-Unix
-    // implementation: it currently reports every pid as not alive there,
-    // so this happy path can never succeed (see the linked issue).
-    #[cfg(not(windows))]
     #[tokio::test]
     async fn should_return_the_ws_url_and_token_when_every_probe_step_passes() {
         // Given a live local HTTP server answering healthz with the
@@ -445,7 +444,6 @@ mod tests {
         .unwrap();
     }
 
-    use std::sync::Mutex;
 
     /// One-shot local HTTP server answering `GET /api/v1/healthz` with
     /// `body`, mirroring the server's ApiResponse envelope
