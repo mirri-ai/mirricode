@@ -10295,6 +10295,92 @@ async fn should_stop_task_and_return_it_when_task_stop_called_with_reason() {
 }
 
 #[tokio::test]
+async fn should_stop_the_task_when_task_cancel_is_given_the_agent_id() {
+    // Given a server with a session holding one running agent-kind task
+    let (server, _tmp) = test_server(None);
+    let created = server
+        .call_method("session.create", json!({ "title": "t" }))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+    let session = server
+        .session_manager()
+        .get_session(&mirri_core::SessionId::new(&session_id))
+        .await
+        .expect("the created session is live");
+    let agent_id = "agent-3f2b".to_string();
+    let task_id = session.tasks().register(
+        TaskKind::Agent {
+            agent_id: Some(agent_id.clone()),
+            subagent_type: Some("explore".to_string()),
+            parent_tool_call_id: Some("call-1".to_string()),
+            swarm_index: Some(0),
+            model: None,
+        },
+        "agent: explore".to_string(),
+        session_id.clone(),
+    );
+
+    // When the panel's stop sends the agent id (the row key the WS stream uses)
+    server
+        .call_method(
+            "task.cancel",
+            json!({ "sessionId": session_id, "taskId": agent_id }),
+        )
+        .await
+        .unwrap();
+
+    // Then the tracked task is stopped (the signal attached at registration
+    // is what aborts the child; the status is its observable trace)
+    let stopped = session
+        .tasks()
+        .get(&task_id)
+        .expect("the task stays tracked after a stop");
+    assert_eq!(stopped.status, mirri_core::task::TaskStatus::Stopped);
+}
+
+#[tokio::test]
+async fn should_return_the_task_when_task_stop_is_given_the_agent_id() {
+    // Given a session with one running agent-kind task
+    let (server, _tmp) = test_server(None);
+    let created = server
+        .call_method("session.create", json!({ "title": "t" }))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+    let session = server
+        .session_manager()
+        .get_session(&mirri_core::SessionId::new(&session_id))
+        .await
+        .expect("the created session is live");
+    let agent_id = "agent-9c07".to_string();
+    let task_id = session.tasks().register(
+        TaskKind::Agent {
+            agent_id: Some(agent_id.clone()),
+            subagent_type: None,
+            parent_tool_call_id: None,
+            swarm_index: None,
+            model: None,
+        },
+        "agent: worker".to_string(),
+        session_id.clone(),
+    );
+
+    // When task.stop is given the agent id
+    let stopped = server
+        .call_method(
+            "task.stop",
+            json!({ "sessionId": session_id, "taskId": agent_id }),
+        )
+        .await
+        .unwrap();
+
+    // Then the stopped task serialization answers under its task id
+    assert_eq!(stopped["id"], json!(task_id));
+    assert_eq!(stopped["status"], json!({ "status": "stopped" }));
+}
+
+#[tokio::test]
 async fn should_rename_and_update_metadata_when_session_metadata_methods_called() {
     // Given a server with a created session
     let (server, _tmp) = test_server(None);

@@ -4493,13 +4493,21 @@ impl EmbeddedServer {
             .resolve_session(&params.session_id)
             .await
             .map_err(|_| not_found(format!("session not found: {}", params.session_id)))?;
-        if session.tasks().get(&params.task_id).is_none() {
+        // The web/desktop subagent rows are keyed by AGENT id, while the task
+        // store is keyed by `task-<uuid>`: a panel stop arrives as `agent-…`
+        // for every foreground swarm member (no started event to learn the
+        // task id from) and for any row rebuilt from the snapshot roster.
+        // Resolve that id before the existence check so the stop reaches the
+        // tracked task (and its attached cancel signal) instead of answering
+        // "task not found".
+        let Some(task_id) = session.tasks().resolve_agent_task_id(&params.task_id) else {
             return Err(not_found(format!("task not found: {}", params.task_id)));
-        }
-        session.tasks().stop(&params.task_id);
+        };
+        session.tasks().stop(&task_id);
         if let Some(reason) = &params.reason {
             tracing::info!(
-                task_id = %params.task_id,
+                task_id = %task_id,
+                requested_id = %params.task_id,
                 reason = %reason,
                 "task stopped via task.cancel"
             );
@@ -4531,18 +4539,19 @@ impl EmbeddedServer {
             .resolve_session(&params.session_id)
             .await
             .map_err(|_| not_found(format!("session not found: {}", params.session_id)))?;
-        if session.tasks().get(&params.task_id).is_none() {
+        let Some(task_id) = session.tasks().resolve_agent_task_id(&params.task_id) else {
             return Err(not_found(format!("task not found: {}", params.task_id)));
-        }
-        session.tasks().stop(&params.task_id);
+        };
+        session.tasks().stop(&task_id);
         if let Some(reason) = &params.reason {
             tracing::info!(
-                task_id = %params.task_id,
+                task_id = %task_id,
+                requested_id = %params.task_id,
                 reason = %reason,
                 "task stopped via task.stop"
             );
         }
-        let stopped = session.tasks().get(&params.task_id);
+        let stopped = session.tasks().get(&task_id);
         serde_json::to_value(stopped).map_err(|e| EngineError::Internal(e.to_string()))
     }
 
