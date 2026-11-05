@@ -3400,9 +3400,46 @@ fn initialize_result(params: &Value) -> Value {
 mod tests {
     use super::*;
 
+    /// A test engine wired exactly like [`AcpHandler::new`] but rooted at
+    /// an isolated Mirri home. The `TempDir` is returned alongside so the
+    /// caller keeps the home alive for the engine's lifetime.
+    fn isolated_engine() -> (Arc<mirri_embedded::EmbeddedServer>, tempfile::TempDir) {
+        let home = tempfile::tempdir().expect("isolated home tempdir");
+        let workspace_root =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let engine = Arc::new(mirri_embedded::EmbeddedServer::for_workspace_root(
+            mirri_core::WorkspaceId::new("embedded"),
+            workspace_root,
+            Some(home.path().to_path_buf()),
+            Vec::new(),
+        ));
+        (engine, home)
+    }
+
+    /// A handler on an isolated Mirri home — the test-suite replacement
+    /// for [`AcpHandler::new`], which would open the ambient
+    /// `~/.mirri-code/session-index.db`.
+    fn new_with_isolated_home() -> (AcpHandler, tempfile::TempDir) {
+        let (engine, home) = isolated_engine();
+        (AcpHandler::with_engine(engine), home)
+    }
+
+    /// Given the tests' engine constructor, When an engine is built, Then
+    /// it is rooted at the isolated temp home and its session index is
+    /// created there — never in the developer's real home directory.
+    #[test]
+    fn should_root_the_test_engine_and_its_session_index_in_an_isolated_home() {
+        let (engine, home) = isolated_engine();
+        assert_eq!(engine.home_dir(), Some(home.path()));
+        assert!(
+            home.path().join("session-index.db").exists(),
+            "the session index must be created inside the isolated home"
+        );
+    }
+
     #[tokio::test]
     async fn should_negotiate_protocol_version_1_when_client_sends_higher_version() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let result = handler
             .handle("initialize", json!({"protocolVersion": 99}))
             .await
@@ -3412,7 +3449,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_respond_with_supported_capabilities_on_initialize() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let result = handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -3443,14 +3480,14 @@ mod tests {
 
     #[tokio::test]
     async fn should_default_to_protocol_version_1_when_client_omits_version() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let result = handler.handle("initialize", json!({})).await.unwrap();
         assert_eq!(result["protocolVersion"], 1);
     }
 
     #[tokio::test]
     async fn should_reject_session_new_when_called_before_initialize() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let (code, message) = handler.handle("session/new", json!({})).await.unwrap_err();
         assert_eq!(code, ERROR_NOT_INITIALIZED);
         assert!(!message.is_empty());
@@ -3458,7 +3495,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_accept_session_prompt_when_initialize_was_negotiated() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -3476,7 +3513,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_reject_session_prompt_when_session_id_is_missing() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -3490,7 +3527,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_return_method_not_found_for_unknown_methods() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let (code, message) = handler
             .handle("unknown/method", json!({}))
             .await
@@ -3989,7 +4026,7 @@ mod tests {
     async fn should_answer_method_not_found_when_authenticate_is_called_after_the_login_removal() {
         // Given an initialized handler (the ACP authenticate method left
         // with the managed-login surface)
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -4008,7 +4045,7 @@ mod tests {
     #[tokio::test]
     async fn should_answer_method_not_found_when_logout_is_called_after_the_login_removal() {
         // Given an initialized handler
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -4571,7 +4608,7 @@ mod tests {
     #[tokio::test]
     async fn should_reject_set_mode_when_mode_id_is_unknown() {
         // Given an initialized handler
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -4594,7 +4631,7 @@ mod tests {
     #[tokio::test]
     async fn should_reject_set_mode_when_the_pre_v1_mode_param_is_used() {
         // Given an initialized handler
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -4621,7 +4658,7 @@ mod tests {
     #[tokio::test]
     async fn should_reject_set_mode_when_session_id_is_missing() {
         // Given an initialized handler
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -4640,7 +4677,7 @@ mod tests {
     #[tokio::test]
     async fn should_reject_set_config_option_when_config_id_is_unknown() {
         // Given an initialized handler
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -4663,7 +4700,7 @@ mod tests {
     #[tokio::test]
     async fn should_reject_set_config_option_when_the_pre_v1_name_param_is_used() {
         // Given an initialized handler
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -4690,7 +4727,7 @@ mod tests {
     #[tokio::test]
     async fn should_reject_set_config_option_when_model_value_is_not_a_string() {
         // Given an initialized handler
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -4712,7 +4749,7 @@ mod tests {
     #[tokio::test]
     async fn should_reject_session_close_when_called_before_initialize() {
         // Given a fresh, uninitialized handler
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
 
         // When a session method is called before initialize
         let (code, _) = handler
@@ -4934,7 +4971,7 @@ mod tests {
     /// long streaming turns before any chunk is lost.
     #[test]
     fn should_buffer_the_production_update_capacity_before_reporting_a_lag() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let notification = |seq: i64| JsonRpcNotification {
             method: "session/update".to_string(),
             params: json!({"seq": seq}),
@@ -4990,11 +5027,8 @@ mod tests {
     /// exercises the lag path without pushing a thousand notifications.
     #[test]
     fn should_report_a_lag_at_the_injected_update_capacity() {
-        let handler = AcpHandler::with_engine_pool_and_updates(
-            Arc::new(mirri_embedded::EmbeddedServer::for_cwd()),
-            None,
-            4,
-        );
+        let (engine, _home) = isolated_engine();
+        let handler = AcpHandler::with_engine_pool_and_updates(engine, None, 4);
         let mut updates = handler.subscribe_updates();
         let notification = |seq: i64| JsonRpcNotification {
             method: "session/update".to_string(),
@@ -5318,7 +5352,7 @@ mod tests {
     /// must tolerate cancels that lose the race with the response).
     #[tokio::test]
     async fn should_treat_dollar_cancel_request_for_an_unknown_id_as_a_no_op() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let result = handler
             .handle("$/cancel_request", json!({"requestId": 999}))
             .await
@@ -5332,7 +5366,7 @@ mod tests {
     /// no-op as integer ids — never an invalid-params rejection.
     #[tokio::test]
     async fn should_treat_dollar_cancel_request_for_a_string_request_id_as_a_no_op() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let result = handler
             .handle(
                 "$/cancel_request",
@@ -5386,7 +5420,7 @@ mod tests {
     /// notification form never carries a response either way).
     #[tokio::test]
     async fn should_reject_dollar_cancel_request_when_the_request_id_is_missing() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let (code, _) = handler
             .handle("$/cancel_request", json!({}))
             .await
