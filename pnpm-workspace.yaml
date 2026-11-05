@@ -16,5 +16,7 @@ overrides:
 # Allow Electron's postinstall to extract its prebuilt binary (needed by
 # apps/mirri-desktop). Other native deps stay unbuilt and rely on their own
 # prebuilds, matching the prior default.
-onlyBuiltDependencies:
-  - electron
+allowBuilds:
+  electron-winstaller: true
+  esbuild: true
+  simple-git-hooks: true
