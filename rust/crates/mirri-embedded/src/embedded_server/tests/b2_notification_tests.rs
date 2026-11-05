@@ -377,7 +377,7 @@ async fn should_not_deliver_a_duplicate_notification_on_later_ticks() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     // And six more ticks (300ms) deliver nothing new
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server, &session_id, 6).await;
     let all = recorded_all(&mock).to_string();
     let occurrences = all.split(&format!("source_id=\\\"{task_id}\\\"")).count() - 1;
     assert_eq!(occurrences, 1, "exactly one delivery: {all}");
@@ -450,7 +450,7 @@ async fn should_fold_the_notification_into_the_running_turn_when_busy() {
     // so the busy-path park is deterministic (releasing immediately would
     // race the turn's end against the tick — the fold only happens when the
     // park precedes the flush).
-    tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_parked_notification(&server, &session_id, &task_id).await;
     release.send(()).expect("the gate receiver is still alive");
 
     // Then the turn continues past the first reply (the notification steer
@@ -583,7 +583,7 @@ async fn should_deliver_the_parked_notification_as_its_own_turn_when_the_turn_st
     // deterministic (the notification parks in the steer buffer while the
     // turn's final-summary step is still streaming — after every before_step
     // flush, so the only path that could fold it is the stop boundary).
-    tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_parked_notification(&server, &session_id, &_task_id).await;
 
     // When the final summary completes the turn with a natural stop
     release.send(()).expect("the gate receiver is still alive");
@@ -750,12 +750,16 @@ async fn should_exit_the_driver_when_the_session_disappears() {
     let session_id = created["id"].as_str().unwrap().to_string();
     converse_once(&server, &session_id).await;
 
-    // When the session closes and several ticks pass
+    // When the session closes, the driver observes the disappearance on its
+    // next pass and exits. The exit counter is the signal (not a tick
+    // window): the loop stops counting passes once it breaks, so a tick
+    // count cannot express this.
+    let exits_before = server.task_driver_exit_count();
     server
         .call_method("session.close", json!({ "session_id": &session_id }))
         .await
         .expect("close");
-    tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_task_driver_exit(&server, exits_before).await;
 
     // Then the driver exits silently: no panic, and the LLM saw only the
     // user turn (no notification turn ever ran for the closed session).
@@ -809,7 +813,7 @@ async fn should_not_notify_when_the_task_was_stopped_by_taskstop() {
 
     // Then across six ticks no LLM input ever contained a notification,
     // and the persisted record shows the suppression.
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server, &session_id, 6).await;
     assert!(
         !notification_reached_model(&mock),
         "a TaskStop-stopped task must never notify"
@@ -895,7 +899,7 @@ async fn should_suppress_notifications_for_tasks_killed_at_session_close() {
     // A resumed-session turn runs (the resumed conversation's next step) —
     // enough ticks pass for any erroneously due notification to fire.
     converse_once(&server_b, &session_id).await;
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server_b, &session_id, 6).await;
 
     // Then the task reads stopped, suppressed, and never notified.
     let session = server_b
@@ -1007,7 +1011,7 @@ async fn should_suppress_notifications_when_print_mode_drains() {
     assert_eq!(decision["decision"], "finish", "a settled drain finishes");
 
     // Then several ticks pass with no notification turn.
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server, &session_id, 6).await;
     assert!(
         !notification_reached_model(&mock),
         "a drained print-session task must not notify"
@@ -1138,7 +1142,7 @@ async fn should_silently_reappend_undelivered_notifications_on_resume() {
 
     // Then the undelivered task's notification sits silently in context —
     // no turn ran for it (the mock saw no LLM call at all).
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server_b, &session_id, 6).await;
     assert_eq!(
         mock.chat_call_count(),
         0,
@@ -1292,7 +1296,7 @@ async fn should_redeliver_the_notification_after_the_turn_is_undone() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     // And a settling window keeps it at exactly one re-delivery.
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server, &session_id, 6).await;
     let all = recorded_all(&mock).to_string();
     let sightings = all.split(&format!("source_id=\\\"{task_id}\\\"")).count() - 1;
     assert_eq!(sightings, 2, "original + exactly one re-delivery: {all}");
@@ -1387,7 +1391,7 @@ async fn should_keep_the_notification_delivered_when_nothing_is_undone() {
     }
 
     // Then six more ticks deliver nothing new.
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server, &session_id, 6).await;
     let all = recorded_all(&mock).to_string();
     let sightings = all.split(&format!("source_id=\\\"{task_id}\\\"")).count() - 1;
     assert_eq!(sightings, 1, "exactly one delivery, no re-delivery: {all}");
@@ -1437,7 +1441,7 @@ async fn should_not_redeliver_a_notification_when_compaction_drops_it_from_conte
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_turn_idle(&server, &session_id).await;
     assert_eq!(
         mock.chat_call_count(),
         2,
@@ -1530,7 +1534,7 @@ async fn should_not_redeliver_a_notification_when_compaction_drops_it_from_conte
         calls_after_compaction, 4,
         "one user turn + one notification turn + two continuation turns"
     );
-    tokio::time::sleep(Duration::from_millis(600)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server, &session_id, 12).await;
     assert_eq!(
         mock.chat_call_count(),
         calls_after_compaction,
@@ -1659,7 +1663,7 @@ async fn should_not_create_an_llm_on_ticks_after_the_delivery_settles() {
 
     // Then six more ticks create no further LLM (the empty-due guard
     // retires the tick before the gate).
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server, &session_id, 6).await;
     let creations_total = seen.lock().unwrap_or_else(|e| e.into_inner()).len();
     assert_eq!(
         creations_total, creations_after_delivery,
@@ -1725,7 +1729,7 @@ async fn should_hold_the_cron_fire_until_idle_and_inject_it_enveloped() {
 
     // Then across several driver ticks while the gate holds, the fire is
     // held: no cron turn ran (the call count stays at the busy turn's).
-    tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_held_fire(&server, &session_id, "cron-b2").await;
     assert_eq!(
         mock.chat_call_count(),
         1,
@@ -1843,7 +1847,7 @@ async fn should_not_inject_a_held_fire_when_a_recurring_task_is_deleted_mid_turn
     );
 
     // Then across several ticks while the gate holds, the fire is held
-    tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_held_fire(&server, &session_id, &task_id).await;
     assert_eq!(
         mock.chat_call_count(),
         1,
@@ -1863,7 +1867,7 @@ async fn should_not_inject_a_held_fire_when_a_recurring_task_is_deleted_mid_turn
 
     // Then after several idle ticks the held fire was purged: the prompt
     // never reaches the model and no further turn runs.
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_held_fires_cleared(&server, &session_id).await;
     let all = recorded_all(&mock).to_string();
     assert!(
         !all.contains("<cron-fire "),
@@ -1929,7 +1933,7 @@ async fn should_not_inject_a_held_one_shot_fire_when_its_task_is_deleted_after_f
     );
 
     // Then across several ticks while the gate holds, the fire is held
-    tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_held_fire(&server, &session_id, &task_id).await;
     assert_eq!(
         mock.chat_call_count(),
         1,
@@ -1950,7 +1954,7 @@ async fn should_not_inject_a_held_one_shot_fire_when_its_task_is_deleted_after_f
 
     // Then after several idle ticks the held fire was purged: the prompt
     // never reaches the model and no further turn runs.
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_held_fires_cleared(&server, &session_id).await;
     let all = recorded_all(&mock).to_string();
     assert!(
         !all.contains("<cron-fire "),
@@ -2027,7 +2031,7 @@ async fn should_leave_a_mixed_buffer_untouched_until_the_next_turn() {
     }
 
     // When several driver ticks pass while idle
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server, &session_id, 6).await;
 
     // Then the wakeup skipped: no notification turn ran (the parked key
     // covers the task's notification, so nothing was due either)…
@@ -2095,7 +2099,7 @@ async fn should_leave_a_mixed_buffer_untouched_until_the_next_turn() {
     }
     // And it stays empty: the wakeup path must not have re-parked a
     // notification the turn already consumed.
-    tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server, &session_id, 2).await;
     assert!(
         buffer.lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
         "the flush emptied the buffer and nothing re-parked it"
@@ -2347,7 +2351,7 @@ async fn should_deliver_a_notification_to_the_owning_agent_when_a_nested_subagen
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    tokio::time::sleep(Duration::from_millis(150)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_agent_turn_idle(&server, &session_id, child_id).await;
     assert_eq!(
         mock.chat_call_count(),
         2,
@@ -2454,7 +2458,7 @@ async fn should_deliver_a_process_notification_to_the_subagent_that_dispatched_i
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    tokio::time::sleep(Duration::from_millis(150)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_agent_turn_idle(&server, &session_id, "agent-bash-owner").await;
     assert_eq!(
         mock.chat_call_count(),
         2,
@@ -2600,7 +2604,7 @@ async fn should_not_redeliver_a_subagent_notification_after_the_session_is_resum
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    tokio::time::sleep(Duration::from_millis(150)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_agent_turn_idle(&server_a, &session_id, child_id).await;
     let calls_after_delivery = mock.chat_call_count();
     server_a
         .call_method("session.close", json!({ "session_id": &session_id }))
@@ -2638,7 +2642,7 @@ async fn should_not_redeliver_a_subagent_notification_after_the_session_is_resum
 
     // Then no fresh notification turn runs — the rehydrated owner's
     // context already holds the delivered message.
-    tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server_b, &session_id, 6).await;
     assert_eq!(
         mock.chat_call_count(),
         calls_after_delivery,
@@ -2696,7 +2700,7 @@ async fn should_not_redeliver_a_subagent_notification_after_the_session_is_resum
         .expect("resume");
 
     // Then it is still silent — the multi-restart lock holds.
-    tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server_c, &session_id, 6).await;
     assert_eq!(
         mock.chat_call_count(),
         calls_after_delivery,
@@ -2890,7 +2894,7 @@ async fn should_re_park_a_pending_subagent_notification_steer_on_resume() {
     // only once the message actually reaches context (the delivery turn
     // or the restore re-append). Let the tick settle, then assert the
     // task is still unmarked while the steer sits parked.
-    tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server_a, &session_id, 2).await;
     assert!(
         tasks
             .get(&task_id)
@@ -2947,7 +2951,7 @@ async fn should_re_park_a_pending_subagent_notification_steer_on_resume() {
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    tokio::time::sleep(Duration::from_millis(150)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_agent_turn_idle(&server_b, &session_id, &child_id).await;
     assert_eq!(
         mock.chat_call_count(),
         3,
@@ -3177,7 +3181,7 @@ async fn should_not_re_park_a_pre_fix_subagent_notification_steer_into_main_on_r
         .call_method("session.resume", json!({ "sessionId": &session_id }))
         .await
         .expect("resume");
-    tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server_b, &session_id, 6).await;
     let session_b = server_b
         .session_manager()
         .get_session(&SessionId::new(&session_id))
@@ -3408,7 +3412,7 @@ async fn should_silently_reappend_a_notification_whose_steer_was_flushed_but_nev
         .call_method("session.resume", json!({ "sessionId": &session_id }))
         .await
         .expect("resume");
-    tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server_b, &session_id, 6).await;
     let session_b = server_b
         .session_manager()
         .get_session(&SessionId::new(&session_id))
@@ -3627,7 +3631,7 @@ async fn should_silently_reappend_undelivered_subagent_notifications_on_resume()
     // Then the subagent's notification is re-appended silently into its
     // rebuilt context — no turn ran for it (the mock saw no LLM call at
     // all).
-    tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server_b, &session_id, 6).await;
     assert_eq!(
         mock.chat_call_count(),
         0,
@@ -3828,7 +3832,7 @@ async fn should_hold_the_notification_delivery_while_the_goal_is_paused() {
     let _task_id = completed_background_task(&session, &session_id);
 
     // Several ticks pass while paused — no notification turn runs.
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server, &session_id, 6).await;
     assert!(
         !notification_reached_model(&mock),
         "no notification turn may run while the goal is paused"
@@ -3922,7 +3926,7 @@ async fn should_hold_the_stranded_notification_flush_while_the_goal_is_paused() 
 
     // When several ticks pass while paused — no wakeup turn flushes the
     // stranded steer.
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server, &session_id, 6).await;
     assert!(
         !notification_reached_model(&mock),
         "no notification turn may run while the goal is paused"
@@ -4160,7 +4164,7 @@ async fn should_pause_the_goal_when_message_abort_cancels_the_notification_turn(
     // And across several driver ticks a second stranded notification does
     // NOT restart the loop — no new turn runs while the goal is parked.
     let _second_task = completed_background_task(&session, &session_id);
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    drive_notification_ticks(&server, &session_id, 6).await;
     while let Ok(notification) = events.try_recv() {
         assert_ne!(
             notification.method, "event.turn.started",
@@ -4399,7 +4403,7 @@ async fn should_use_pinned_model_for_notification_turn_addressed_to_subagent() {
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    tokio::time::sleep(Duration::from_millis(150)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_agent_turn_idle(&server, &session_id, child_id).await;
     assert_eq!(
         mock.chat_call_count(),
         2,
@@ -4745,7 +4749,7 @@ async fn should_hold_a_manual_trigger_while_the_session_is_busy_and_deliver_on_i
     assert_eq!(triggered["triggered"], true, "the trigger is accepted");
 
     // Then while the gate holds, no second turn runs (C.3)
-    tokio::time::sleep(Duration::from_millis(250)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_held_fire(&server, &session_id, "cron-gate").await;
     assert_eq!(
         mock.chat_call_count(),
         1,
@@ -4849,7 +4853,7 @@ async fn should_redeliver_a_held_fire_when_the_session_closes_and_reopens() {
     drop(session);
     // Let the scheduler tick: the fire is detected and held (never
     // injected while the gate holds).
-    tokio::time::sleep(Duration::from_millis(250)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_held_fire(&server, &session_id, "cron-held").await;
     assert_eq!(
         mock.chat_call_count(),
         1,
@@ -4865,7 +4869,13 @@ async fn should_redeliver_a_held_fire_when_the_session_closes_and_reopens() {
         .expect("close");
     // Release the gated turn so nothing dangles.
     release.send(()).expect("the gate receiver is alive");
-    tokio::time::sleep(Duration::from_millis(150)).await; // hygiene-allow: negative window (proving absence)
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || (!server.session_is_busy(&session_id)).then_some(()),
+    )
+    .await
+    .expect("the released turn must settle");
 
     // And the session is RESUMED
     server
@@ -4980,7 +4990,11 @@ async fn should_cascade_clear_held_fires_when_the_session_is_deleted() {
 
     // And across several scheduler ticks, NO injection happens (the only
     // LLM call ever made was the materializing turn).
-    tokio::time::sleep(Duration::from_millis(400)).await; // hygiene-allow: negative window (proving absence)
+    // Two SESSION-scoped cron passes. The session was deleted, so each pass
+    // returns early at the session resolve — which is exactly what this
+    // pins: a deleted session no longer reaches the due check.
+    drive_session_cron_pass(&server, &session_id).await;
+    drive_session_cron_pass(&server, &session_id).await;
     assert_eq!(
         mock.chat_call_count(),
         1,
@@ -5037,7 +5051,7 @@ async fn should_merge_a_new_due_fire_into_the_held_one_while_busy() {
         .set_next_fire_at("cron-merge", Some(chrono::Utc::now()));
     drop(session);
     // The first due pass holds the fire (still busy).
-    tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence)
+    wait_for_held_fire(&server, &session_id, "cron-merge").await;
     assert_eq!(
         mock.chat_call_count(),
         1,
@@ -5160,7 +5174,11 @@ async fn should_clear_the_held_fire_when_the_llm_provider_cannot_be_created() {
     // And the hold STAYS cleared across further ticks (the one-shot task
     // itself is gone — check_via_due removed it when it fired — so no new
     // fire can re-enter the queue either).
-    tokio::time::sleep(Duration::from_millis(250)).await; // hygiene-allow: negative window (proving absence)
+    // Two more session cron passes: the cleared hold must not rebuild (the
+    // one-shot task left the table when it fired, so no new fire can enter
+    // the queue either).
+    drive_session_cron_pass(&server, &session_id).await;
+    drive_session_cron_pass(&server, &session_id).await;
     assert!(
         session.cron().held_fires().is_empty(),
         "the held queue must not rebuild from a permanent failure"
@@ -5262,7 +5280,13 @@ async fn should_report_held_true_when_a_manual_trigger_queues_behind_a_busy_turn
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    tokio::time::sleep(Duration::from_millis(250)).await; // hygiene-allow: negative window (proving absence)
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || (!server.session_is_busy(&session_id)).then_some(()),
+    )
+    .await
+    .expect("the released turn must settle");
     mock.push_text("second direct fire reply");
     let triggered_again = server
         .call_method(
