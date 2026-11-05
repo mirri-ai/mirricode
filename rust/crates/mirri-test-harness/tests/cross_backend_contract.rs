@@ -280,11 +280,31 @@ async fn boot_server_at(
         workspace_root.to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::with_persistence_dir(
-        workspace_scope,
-        home.join(".mirri-code").join("sessions"),
-        std::sync::Arc::new(mirri_os::LocalFs::new()),
-    ));
+    // The home-level metadata index, wired the way production wires it
+    // (ADR-006's "唯一事实源"): every runtime's manager writes its rows
+    // through this one SQLite file, so a COLD RESTART of the backend reads
+    // them back. Without it the fixture gets `with_persistence_dir`'s
+    // in-process `InMemoryMetadataStore`, whose rows die with the process —
+    // the restored backend then has no row for the session and falls back
+    // to `state.json`, which pnpm-era sessions no longer write.
+    let metadata_store = match mirri_session_index::SessionIndex::open_with_check(
+        &home.join(".mirri-code").join("session-index.db"),
+    )
+    .expect("open the test session index")
+    {
+        mirri_session_index::OpenOutcome::Ok(index) => {
+            Arc::new(mirri_session_index::SessionIndexPort(index))
+        }
+        other => panic!("the test session index did not open cleanly: {other:?}"),
+    };
+    let manager = Arc::new(
+        SessionManager::with_persistence_dir(
+            workspace_scope,
+            home.join(".mirri-code").join("sessions"),
+            std::sync::Arc::new(mirri_os::LocalFs::new()),
+        )
+        .with_metadata_store(metadata_store),
+    );
     let mock = Arc::new(MockLlm::new());
     let factory = Arc::new(MockLlmFactory::new(Arc::clone(&mock)));
     let profile_manager = Arc::new(ProfileManager::new());
