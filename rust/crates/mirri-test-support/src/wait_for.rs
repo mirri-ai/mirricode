@@ -30,9 +30,10 @@ impl std::error::Error for WaitTimeout {}
 /// Poll `f` every `step` until it returns `Some`, or until `timeout` elapses.
 ///
 /// Returns the value produced by `f` on success, or a [`WaitTimeout`] error
-/// carrying the elapsed time. Synchronous by design — this helper targets
-/// non-paused tests, so a `Future`-returning variant would drag in a tokio
-/// dependency for no current consumer.
+/// carrying the elapsed time. Synchronous — for tests whose progress does
+/// not depend on the current thread being released (pure state, other
+/// threads, subprocesses). Async tests that observe runtime-driven work
+/// should use [`wait_for_async`] instead.
 pub fn wait_for<F, T>(timeout: Duration, step: Duration, mut f: F) -> Result<T, WaitTimeout>
 where
     F: FnMut() -> Option<T>,
@@ -48,6 +49,48 @@ where
             });
         }
         thread::sleep(step);
+    }
+}
+
+/// Async sibling of [`wait_for`]: same check-first / step-later contract,
+/// but the step is `tokio::time::sleep`, so the runtime can drive the
+/// background work this poll is waiting on. For async tests that observe
+/// runtime-driven state — the sync [`wait_for`] would block the thread
+/// that must make progress.
+pub async fn wait_for_async<F, T>(
+    timeout: Duration,
+    step: Duration,
+    mut f: F,
+) -> Result<T, WaitTimeout>
+where
+    F: FnMut() -> Option<T>,
+{
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(value) = f() {
+            return Ok(value);
+        }
+        if started.elapsed() >= timeout {
+            return Err(WaitTimeout {
+                elapsed: started.elapsed(),
+            });
+        }
+        tokio::time::sleep(step).await;
+    }
+}
+
+/// Assert that nothing arrives on `rx` for `window` — the negative-window
+/// form ("prove absence of further events") that otherwise needs a bare
+/// sleep at every call site. The window is real elapsed time by design:
+/// absence can only be proven by observing it.
+pub async fn assert_no_event_for<T>(window: Duration, rx: &mut tokio::sync::mpsc::Receiver<T>)
+where
+    T: fmt::Debug,
+{
+    match tokio::time::timeout(window, rx.recv()).await {
+        Err(_) => {}
+        Ok(Some(event)) => panic!("unexpected event during the negative window: {event:?}"),
+        Ok(None) => panic!("channel closed during the negative window"),
     }
 }
 
@@ -72,5 +115,54 @@ mod tests {
         let result: Result<(), WaitTimeout> = wait_for(timeout, Duration::from_millis(1), || None);
         let err = result.expect_err("condition never holds");
         assert!(err.elapsed >= timeout, "elapsed should cover the deadline");
+    }
+
+    #[tokio::test]
+    async fn should_return_immediately_when_the_async_condition_holds() {
+        let started = std::time::Instant::now();
+        let result = wait_for_async(Duration::from_secs(10), Duration::from_millis(1), || Some(7))
+            .await
+            .expect("condition holds");
+        assert_eq!(result, 7);
+        assert!(started.elapsed() < Duration::from_secs(5), "must not wait");
+    }
+
+    #[tokio::test]
+    async fn should_yield_to_the_runtime_between_async_polls() {
+        // Given a condition that becomes true only after a spawned task runs
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let setter = std::sync::Arc::clone(&flag);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            setter.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        // When polled through wait_for_async, the sleep yields let the
+        // setter task run — the condition resolves instead of deadlocking
+        let result = wait_for_async(Duration::from_secs(2), Duration::from_millis(5), || {
+            flag.load(std::sync::atomic::Ordering::SeqCst).then_some(())
+        })
+        .await;
+        assert!(result.is_ok(), "the yield between polls must let tasks run");
+    }
+
+    #[tokio::test]
+    async fn should_fail_the_async_poll_when_the_condition_never_holds() {
+        let result: Result<(), WaitTimeout> =
+            wait_for_async(Duration::from_millis(10), Duration::from_millis(1), || None).await;
+        assert!(result.expect_err("condition never holds").elapsed >= Duration::from_millis(10));
+    }
+
+    #[tokio::test]
+    async fn should_pass_when_no_event_arrives_within_the_window() {
+        let (_tx, mut rx) = tokio::sync::mpsc::channel::<u32>(1);
+        assert_no_event_for(Duration::from_millis(20), &mut rx).await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "unexpected event")]
+    async fn should_panic_when_an_event_arrives_within_the_window() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<u32>(1);
+        tx.send(9).await.unwrap();
+        assert_no_event_for(Duration::from_millis(500), &mut rx).await;
     }
 }
