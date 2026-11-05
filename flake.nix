@@ -127,13 +127,19 @@
             hash = pnpmExeHashes.${system};
           };
 
-          # The binary is prebuilt for the host platform; there is nothing to
-          # compile, and Nix's fixup passes must not try to strip it.
+          # The binary is prebuilt for the host platform, so there is nothing
+          # to compile. It is dynamically linked against the host's glibc,
+          # though, and its PT_INTERP is the distro path
+          # (/lib64/ld-linux-x86-64.so.2) that no Nix sandbox has — so
+          # autoPatchelf has to rewrite the interpreter and the library
+          # search path.
           dontConfigure = true;
           dontBuild = true;
-          dontStrip = true;
-          dontPatchELF = true;
-          dontPatchShebangs = true;
+
+          # autoPatchelfHook is Linux-only; the darwin binaries already
+          # carry a valid install name and need no rewriting.
+          nativeBuildInputs = pkgs.lib.optional pkgs.stdenv.isLinux pkgs.autoPatchelfHook;
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.stdenv.cc.cc.lib ];
 
           installPhase = ''
             runHook preInstall
