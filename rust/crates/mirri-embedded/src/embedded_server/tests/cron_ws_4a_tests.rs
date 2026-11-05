@@ -911,7 +911,7 @@ async fn should_not_reimport_the_workspace_local_archive_on_a_later_boot() {
     // The reboot's import settles (the persisted flag makes it a no-op —
     // the deleted task never resurfaces).
     let _ = server2.call_method("cron.listAll", json!({})).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence)
     let listed = server2
         .call_method("cron.listAll", json!({}))
         .await

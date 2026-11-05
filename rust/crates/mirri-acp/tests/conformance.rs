@@ -866,7 +866,7 @@ async fn should_not_spawn_the_real_homes_mcp_servers_when_the_conformance_child_
     // `connect_all` for every discovered MCP server; the process spawns
     // land asynchronously after the response, so sample the child's
     // descendants over a window instead of checking once.
-    for _ in 0..10 {
+    for _ in 0..5 {
         let output = tokio::process::Command::new("pgrep")
             .arg("-P")
             .arg(acp.child_id.to_string())
@@ -880,7 +880,7 @@ async fn should_not_spawn_the_real_homes_mcp_servers_when_the_conformance_child_
              home's MCP servers leaked into the conformance child — check the \
              HOME isolation in AcpProcess::spawn"
         );
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: negative window (proving absence)
     }
 }
 

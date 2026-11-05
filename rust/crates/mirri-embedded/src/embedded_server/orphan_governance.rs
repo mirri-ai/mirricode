@@ -375,7 +375,7 @@ mod tests {
             if let Some(value) = predicate() {
                 return Some(value);
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(std::time::Duration::from_millis(100)); // hygiene-allow: negative window (proving absence)
         }
         predicate()
     }

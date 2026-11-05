@@ -160,7 +160,7 @@ async fn should_follow_foreign_writes_when_another_server_records_ops_on_shared_
 
     // And: three more follow ticks pass with no duplicate (idempotence —
     // the anchor advanced past the foreign bytes, Fresh on re-probe).
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence)
     while let Ok(notification) = events.try_recv() {
         if notification.method == "event.message.received"
             && notification.params["sessionId"] == session_id
@@ -677,7 +677,7 @@ async fn should_not_absorb_while_own_turn_is_in_flight() {
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: negative window (proving absence)
     assert_eq!(
         marker_message_count(&server_b, &session_id, "foreign while B is mid-turn").await,
         0,
@@ -692,7 +692,7 @@ async fn should_not_absorb_while_own_turn_is_in_flight() {
     // anchor = offset). The driver stays healthy: no error, no exit.
     release.send(()).expect("the gated reply is released");
     let _ = send.await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
     assert_eq!(
         marker_message_count(&server_b, &session_id, "foreign while B is mid-turn").await,
         0,

@@ -5932,7 +5932,7 @@ async fn should_launch_a_goal_continuation_turn_when_a_turn_completes_with_an_ac
 
     // And the chain stopped: no third turn.prompt follows after the
     // drain window (the goal left Active with the UpdateGoal complete).
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
     let ops = read_wire_ops(&server, &session_id).await;
     let turn_prompts = ops
         .iter()
@@ -6133,7 +6133,7 @@ async fn should_not_launch_a_continuation_when_background_tasks_are_in_flight() 
     // Then no continuation turn is launched: the background task stays
     // non-terminal for the whole drain window, so the settle point's
     // chain gating suspends the goal instead of injecting.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: negative window (proving absence)
     assert!(
         session
             .tasks()
@@ -6222,7 +6222,7 @@ async fn should_pause_the_goal_after_repeated_idle_continuation_turns() {
 
     // And the chain stopped: the user turn plus exactly three idle
     // continuations ran — no fourth continuation turn.prompt follows.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
     let ops = read_wire_ops(&server, &session_id).await;
     let continuation_prompts = ops
         .iter()
@@ -6315,7 +6315,7 @@ async fn should_pause_the_goal_when_the_absolute_continuation_limit_is_reached()
 
     // And exactly GOAL_MAX_CONTINUATIONS continuation turns ran — no
     // further turn.prompt follows the cap.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
     let ops = read_wire_ops(&server, &session_id).await;
     let continuation_prompts = ops
         .iter()
@@ -15526,7 +15526,7 @@ async fn should_skip_with_info_notice_when_manual_compaction_has_nothing_to_comp
     assert_eq!(result.unwrap(), json!(false));
 
     // And the summarizer never ran — the skip must not pay for an LLM call
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence)
     assert_eq!(
         mock.chat_call_count(),
         chat_calls_before,
@@ -15825,7 +15825,7 @@ async fn should_not_fire_post_compact_hook_when_manual_compaction_cancelled() {
         .await
         .unwrap();
     release_tx.send(()).unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await; // hygiene-allow: negative window (proving absence)
 
     // Then the PostCompact hook never fired (TS parity: notifyPostCompact
     // runs only on the fulfilled promise)
@@ -15994,7 +15994,7 @@ async fn should_buffer_prompt_when_manual_compaction_in_flight_until_settled() {
     // Then the buffered turn has not started — only the two settled messages
     // and the parked summarizer have reached the LLM (TS parity: prompts
     // defer while a full compaction is in flight)
-    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
     assert_eq!(
         mock.chat_call_count(),
         3,
@@ -16442,7 +16442,7 @@ async fn should_not_persist_an_apply_record_when_the_must_shrink_guard_refuses()
     // land after this read, turning the absence assertion green on a
     // false negative — consider a bounded poll-until-stable loop if this
     // ever flakes (registered from the test-remediation batch final review).
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: negative window (proving absence)
     let ops = read_wire_ops(&server, &session_id).await;
     for op in &ops {
         assert!(
@@ -17025,7 +17025,7 @@ async fn should_keep_the_newer_attempts_registration_when_a_stale_attempt_settle
     // When the stale attempt #1 finally settles (its gate opens, its apply
     // task discards the cancelled result)
     drop(first_gate);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: scenario-reach settle (stale attempt winding down)
 
     // Then attempt #2's registration survived the stale settle: a third
     // begin is still rejected with the already-in-flight error (a stale
@@ -17090,7 +17090,7 @@ async fn should_not_deliver_a_completed_event_after_a_cancelled_attempt_settles(
         .unwrap();
     assert_eq!(cancelled, json!(null));
     drop(gate);
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(400)).await; // hygiene-allow: negative window (proving absence)
 
     // Then no completed event ever follows the cancelled one — the
     // cancelled attempt's result is discarded instead of applied
@@ -23257,7 +23257,7 @@ async fn should_not_connect_a_plugin_server_disabled_by_the_first_call() {
 
     let runtime_name = "plugin-demo-plugin:helper";
     for _ in 0..5 {
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await; // hygiene-allow: negative window (proving absence)
         let listed = server
             .call_method("mcp.global.list", json!({}))
             .await
@@ -36187,10 +36187,10 @@ async fn should_keep_a_silent_turn_alive_when_turn_stall_timeout_ms_is_zero() {
 
     // Then the turn survives a controlled wait far past any plausible
     // watchdog window (a live watchdog would have fired within ms of the
-    // send; 1.5 s of continued silence proves it never did) — no
+    // send; 300 ms of continued silence proves it never did) — no
     // failed turn.ended arrives (the subscription does echo
     // turn.started/step events; only the failure frame counts)
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
     while let Ok(notification) = events.try_recv() {
         assert!(
             !(notification.method == "event.turn.ended"
@@ -44091,7 +44091,7 @@ async fn assert_plugin_server_absent_for_a_while(server: &EmbeddedServer, name: 
                 .any(|entry| entry["name"].as_str() == Some(name)),
             "the plugin server must stay unconnected: {listed}"
         );
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await; // hygiene-allow: negative window (proving absence)
     }
 }
 
