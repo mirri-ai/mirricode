@@ -206,8 +206,27 @@ async fn should_skip_the_next_fire_while_the_previous_run_is_running() {
         )
         .await
         .expect("cron.trigger");
-    // The skip record lands (the executor's concurrency check).
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The skip record lands (the executor's concurrency check) — its
+    // appearance in the run list is the completion signal, not a fixed
+    // settle.
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+        || {
+            cron.runs(&task_id)
+                .iter()
+                .any(|run| {
+                    run.status == mirri_core::cron::RunStatus::Skipped
+                        && run
+                            .skip_reason
+                            .as_deref()
+                            .is_some_and(|reason| reason.contains("上次运行中"))
+                })
+                .then_some(())
+        },
+    )
+    .await
+    .expect("the skip record must land (the executor's concurrency check)");
     let runs = cron.runs(&task_id);
     assert!(
         runs.iter()
@@ -604,7 +623,7 @@ async fn should_drop_an_unopened_execution_session_after_seven_days() {
     .await;
     // The sweep runs on the scheduler's workspace pass — the tick fires
     // it; give it one tick's worth of time.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence after the sweep pass)
     // The run record survives (the audit trail).
     let runs = cron.runs(&task_id);
     assert!(
@@ -784,7 +803,7 @@ async fn should_run_the_full_create_to_rejection_chain_through_the_real_tool() {
         .await
         .expect("approval.decide");
     // Give the denied call's turn time to settle, then: zero residue.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: negative window (proving absence after the denied turn settles)
     let cron = ws_cron(&server);
     assert!(cron.list().is_empty(), "a denial creates no task");
     let after = server

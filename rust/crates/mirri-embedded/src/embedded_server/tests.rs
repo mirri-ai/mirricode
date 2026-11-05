@@ -45,9 +45,10 @@ fn hold_probe(
     Arc::new(move |asked| asked != segment || released.load(std::sync::atomic::Ordering::SeqCst))
 }
 
-/// Dispatch `route` on `server` under `probe`, flip the hold after a fixed
-/// 150 ms window and answer whether the call had already completed when the
-/// hold lifted. The answer distinguishes "answered without waiting" from
+/// Dispatch `route` on `server` under `probe`, flip the hold after a 150 ms
+/// sampling window (the wait exits early the moment the dispatch finishes)
+/// and answer whether the call had already completed when the hold lifted.
+/// The answer distinguishes "answered without waiting" from
 /// "answered only because the hold was released".
 ///
 /// The dispatch runs on its own thread with its own runtime, like a host
@@ -86,10 +87,18 @@ async fn answered_before_release(
             out
         })
     };
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     // The probe is still held here: a dispatch that finished anyway did not
-    // wait (the whitelist), one still running is parked on the gate.
-    let early = dispatch.is_finished();
+    // wait (the whitelist), one still running is parked on the gate. The
+    // poll exits early the moment the dispatch finishes and keeps the 150 ms
+    // sampling window for the parked case — the semantics the fixed sleep
+    // approximated.
+    let early = mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_millis(150),
+        std::time::Duration::from_millis(10),
+        || dispatch.is_finished().then_some(()),
+    )
+    .await
+    .is_ok();
     // Unblock a waiting dispatch so the assertion below reports the real
     // answer rather than a join error.
     server.set_settlement_probe(None);
@@ -233,7 +242,7 @@ async fn should_wait_for_census_and_recovery_before_cron_first_tick() {
     // Then the dispatch is parked at its gates — and the scheduler's first
     // tick behind them — so no task of this instance has been registered
     // yet; the held census is what both wait on
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // hygiene-allow: negative window (scheduler tick behind gates)
     assert!(
         !first_dispatch.is_finished(),
         "the first dispatch is parked on the held census gate"
@@ -15462,8 +15471,16 @@ async fn should_start_and_complete_manual_compaction_when_begin_compaction_calle
     // engine-service `begin(): boolean` contract (no {ok, started} envelope)
     assert_eq!(result, json!(true));
 
-    // Give the background compaction task time to complete
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // The background compaction task completes once the mock has taken
+    // its third call (messages + compaction) — wait for that condition
+    // instead of a fixed settle.
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+        || (mock.chat_call_count() >= 3).then_some(()),
+    )
+    .await
+    .expect("the background compaction task must complete");
 
     // The mock should have been called at least three times (messages +
     // compaction)
@@ -15675,7 +15692,22 @@ async fn should_fire_pre_and_post_compact_hooks_when_manual_compaction_runs() {
         .await
         .unwrap();
     assert_eq!(result, json!(true));
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    // The background compaction fires PreCompact before the summarizer and
+    // PostCompact after the apply — both hook records landing in the log is
+    // the completion signal, not a fixed settle.
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+        || {
+            let log = parse_hook_log(&log_path);
+            let has_pre = log.iter().any(|(prefix, _)| prefix == "PRECOMPACT");
+            let has_post = log.iter().any(|(prefix, _)| prefix == "POSTCOMPACT");
+            (has_pre && has_post).then_some(())
+        },
+    )
+    .await
+    .expect("the PreCompact and PostCompact hook records must land");
 
     // Then the PreCompact hook fired with the manual trigger and the
     // pre-compaction token count
@@ -15778,7 +15810,16 @@ async fn should_not_fire_post_compact_hook_when_manual_compaction_cancelled() {
         .await
         .unwrap();
     assert_eq!(result, json!(true));
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // The summarizer's round consuming the gated response is the in-flight
+    // signal (the mock counts a call when its queued response is taken) —
+    // cancel only once the round is deterministically in flight.
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+        || (mock.chat_call_count() >= 3).then_some(()),
+    )
+    .await
+    .expect("the compaction summarizer must be in flight before the cancel");
     server
         .call_method("cancelCompaction", json!({ "sessionId": &session_id }))
         .await
@@ -15842,12 +15883,39 @@ async fn should_refresh_system_prompt_after_manual_compaction_completes() {
     // When AGENTS.md changes while the agent exists and a manual compaction
     // runs to completion
     std::fs::write(tmp.path().join("AGENTS.md"), "AGENTS_MD_V2").unwrap();
+    let agent = server
+        .resolve_agent(&AgentRefParams {
+            session_id: session_id.clone(),
+            agent_id: None,
+        })
+        .await
+        .unwrap();
     let result = server
         .call_method("beginCompaction", json!({ "sessionId": &session_id }))
         .await
         .unwrap();
     assert_eq!(result, json!(true));
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // The apply task rebuilds the system prompt as its final step — the
+    // fresh AGENTS.md content landing in the prompt state is the
+    // completion signal, not a fixed settle.
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+        || {
+            let prompt = agent
+                .config()
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .system_prompt
+                .clone();
+            prompt
+                .as_deref()
+                .is_some_and(|prompt| prompt.contains("AGENTS_MD_V2"))
+                .then_some(())
+        },
+    )
+    .await
+    .expect("the manual compaction must complete and refresh the system prompt");
 
     // Then the agent's system prompt was rebuilt from current workspace
     // state: fresh AGENTS.md content, base prompt intact, stale snapshot gone
@@ -15983,7 +16051,7 @@ async fn should_replay_compaction_summary_when_compacted_session_resumes() {
     mock.push_text(&format!("Another scripted reply: {}", "b".repeat(8_000)));
     mock.push_text("COMPACTION_SUMMARY_MARKER of the conversation.");
     mock.push_text("Second turn reply");
-    let (server, _tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let (server, tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
     // A titled session — the scripted queue is position-sensitive, and an
     // untitled session's settle would spawn the side title call too.
     let created = server
@@ -16012,7 +16080,29 @@ async fn should_replay_compaction_summary_when_compacted_session_resumes() {
         .await
         .unwrap();
     assert_eq!(result, json!(true));
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // The persisted `context.apply_compaction` op is the completion signal
+    // the resume replay depends on — the later message must append after
+    // it, so wait for the op to land in the wire log instead of a fixed
+    // settle.
+    let wire_log = tmp
+        .path()
+        .join(".mirri")
+        .join("v3_sessions")
+        .join(mirri_core::encode_work_dir_key(tmp.path()))
+        .join(&session_id)
+        .join("wire.jsonl");
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+        || {
+            std::fs::read_to_string(&wire_log)
+                .map(|raw| raw.contains("context.apply_compaction"))
+                .unwrap_or(false)
+                .then_some(())
+        },
+    )
+    .await
+    .expect("the manual compaction apply must persist before the later message lands");
     server
         .call_method(
             "message.send",
@@ -16602,7 +16692,7 @@ async fn should_deliver_the_compaction_cancelled_event_when_an_in_flight_compact
     // attempt settles: release the gate, let the round wind down, then a
     // fresh begin is not rejected with "already in flight"
     drop(gate);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: teardown settle (destructive-only probe)
     mock.push_text("A second summary.");
     let re_begun = server
         .call_method("beginCompaction", json!({ "sessionId": &session_id }))
@@ -16662,7 +16752,7 @@ async fn should_reject_a_second_manual_compaction_while_one_is_in_flight() {
     drop(gate);
     // Give the still-running first attempt time to settle so the test's
     // server teardown is not racing its apply task
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: teardown settle (destructive-only probe)
 }
 
 /// Given a session whose turn is still running (its LLM call parked behind
@@ -16829,7 +16919,7 @@ async fn should_refuse_manual_compaction_when_a_turn_is_active() {
     assert_eq!(begun, json!(true));
     // Give the background compaction task time to settle so the test's
     // server teardown is not racing its apply task
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: teardown settle (destructive-only probe)
 }
 
 #[tokio::test]
@@ -16952,7 +17042,7 @@ async fn should_keep_the_newer_attempts_registration_when_a_stale_attempt_settle
     // Cleanup: let attempt #2 run to completion so teardown does not race
     // its apply task
     drop(second_gate);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: teardown settle (destructive-only probe)
 }
 
 #[tokio::test]

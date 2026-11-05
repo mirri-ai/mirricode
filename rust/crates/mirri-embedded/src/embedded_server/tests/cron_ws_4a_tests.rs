@@ -174,7 +174,16 @@ async fn should_fire_a_workspace_task_with_all_sessions_closed() {
         &task_id,
         Some(chrono::Utc::now() - chrono::Duration::seconds(5)),
     );
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The workspace arm detects the due fire and records the run — the run
+    // record landing is the completion signal (the cursor advanced in the
+    // same scheduler pass, before the spawner recorded), not a fixed settle.
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+        || (!cron.runs(&task_id).is_empty()).then_some(()),
+    )
+    .await
+    .expect("the workspace arm must record the run for the due fire");
     let task = cron.get(&task_id).expect("the task survives");
     assert!(
         task.last_fired.is_some(),

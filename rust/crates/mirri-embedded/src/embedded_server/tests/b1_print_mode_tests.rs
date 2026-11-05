@@ -107,7 +107,8 @@ printWaitCeilingS = 1
     let settle_tasks = tasks.clone();
     let settle_id = task_id.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300))
+            .await; // hygiene-allow: scenario pacing (the task's simulated 300ms work — the drain timing under the 1s ceiling is the point)
         settle_tasks.complete(&settle_id, 0);
     });
 

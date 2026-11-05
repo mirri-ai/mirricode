@@ -4844,7 +4844,7 @@ mod tests {
             (&mut completion).await
         });
         // Let the turn start and park (poll the spawned task briefly).
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await; // hygiene-allow: observation window (park-or-finish sampling)
         assert!(
             !task.is_finished(),
             "the child turn should still be parked on the LLM"
@@ -4853,7 +4853,16 @@ mod tests {
         // When the completion future is dropped mid-turn (the parent
         // aborted) — the turn cancels at its await point.
         task.abort();
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // The abort drops the completion future (the turn cancels at its
+        // await point) — the cancelled task settling is the completion
+        // signal, not a fixed pause before the resume.
+        mirri_test_support::wait_for::wait_for_async(
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(10),
+            || task.is_finished().then_some(()),
+        )
+        .await
+        .expect("the aborted completion task must settle before the resume");
 
         // Then a resume on the same agent id runs cleanly to completion
         // (the mode now completes) — same TurnFlow reused (G14).

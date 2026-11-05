@@ -2305,6 +2305,7 @@ dependencies = [
  "mirri-proto",
  "mirri-session-index",
  "mirri-test-harness",
+ "mirri-test-support",
  "mirri-transport",
  "reqwest 0.13.5",
  "rust-embed",
