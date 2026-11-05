@@ -79,10 +79,10 @@ jobs:
           save-if: false
 
       - name: Cross-engine agent profile parity tests
-        run: cargo test -p mirri-core --test agent_md_cross_engine_tests
+        run: cargo test -p mirri-core --test tools_scope_group agent_md_cross_engine_
 
       - name: Cross-engine agent profile list-projection parity tests
-        run: cargo test -p mirri-core --test agent_list_cross_engine_tests
+        run: cargo test -p mirri-core --test tools_scope_group agent_list_cross_engine_
 
   # The native Rust engine is the shipped core: every crate's unit and
   # integration tests must pass, not just the cross-engine parity fixtures
