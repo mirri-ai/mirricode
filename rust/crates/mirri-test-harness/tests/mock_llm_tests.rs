@@ -126,7 +126,7 @@ async fn should_stop_streaming_early_when_cancel_token_fires() {
     let drain = tokio::spawn(drain_stream(stream));
 
     // When the caller cancels while deltas are still flowing
-    tokio::time::sleep(Duration::from_millis(30)).await;
+    tokio::time::sleep(Duration::from_millis(30)).await; // hygiene-allow: negative window (proving absence)
     assert!(
         mock.delta_yield_count() >= 2,
         "deltas started flowing before the cancellation"

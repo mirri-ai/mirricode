@@ -1024,7 +1024,7 @@ async fn should_park_a_queue_posture_fire_in_the_single_backlog_slot_while_runni
             .await
             .expect("cron.trigger");
     }
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
     let runs = cron.runs(&task_id);
     let queued: Vec<&mirri_core::cron::RunRecord> = runs
         .iter()
@@ -1368,7 +1368,7 @@ async fn should_not_create_rows_for_cron_execution_sessions_until_explicitly_ope
         .call_method("cron.run.open", json!({ "sessionId": session_id }))
         .await
         .expect("cron.run.open");
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence)
     assert!(
         index.get_session(&session_id).is_some(),
         "the explicit open materializes the row"
