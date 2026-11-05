@@ -138,6 +138,10 @@ impl EmbeddedServer {
         let provider_auth_failures = Arc::clone(&self.provider_auth_failures);
         let sid = session_id.to_string();
         let tick = self.task_sweep_tick;
+        // The exit counter's cell (absent in production builds): the loop is
+        // the only place that observes the session disappearing.
+        #[cfg(test)]
+        let exit_counter = Arc::clone(&self.task_driver_exits);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tick);
             // The first tick completes immediately; an expired task
@@ -153,6 +157,8 @@ impl EmbeddedServer {
                 interval.tick().await;
                 let Ok(session) = resolve_session_via(&registry, &sid).await else {
                     // The session closed or was archived — stop sweeping.
+                    #[cfg(test)]
+                    exit_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     break;
                 };
                 let tasks = session.tasks();
@@ -218,7 +224,7 @@ impl EmbeddedServer {
 /// delivered turns. Serialized inside the driver loop (no new tasks are
 /// spawned — the delivery is naturally mutex-exclusive with the sweep).
 #[allow(clippy::too_many_arguments)]
-async fn deliver_due_notifications(
+pub(super) async fn deliver_due_notifications(
     index: Option<Arc<SessionIndex>>,
     registry: &Arc<WorkspaceRegistry>,
     turn_flows: &TurnFlowMap,

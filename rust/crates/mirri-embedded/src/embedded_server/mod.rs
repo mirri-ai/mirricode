@@ -1635,6 +1635,20 @@ pub struct EmbeddedServer {
     /// a gated route waits for). `None` in production — no probe, no hold.
     #[cfg(test)]
     settlement_hold: std::sync::Mutex<Option<SettlementProbe>>,
+    /// Test observation seam: manual-compaction apply tasks that have
+    /// FINISHED (every arm — applied, cancelled, failed, panicked). The
+    /// apply task's tail is where the cancel/settle/persist decisions land,
+    /// so "the attempt wound down" is a counter wait, never a settle sleep.
+    /// A counter (not a direct call) because the task is spawned inside
+    /// `dispatch_begin_compaction` and its handle is not reachable here.
+    #[cfg(test)]
+    manual_compaction_applies: Arc<std::sync::atomic::AtomicU64>,
+    /// Test observation seam: drivers that exited because their session
+    /// disappeared. The exit test waits on this instead of sleeping past "a
+    /// few ticks": the driver's loop is the only place that can observe the
+    /// disappearance.
+    #[cfg(test)]
+    task_driver_exits: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// The test probe of the settlement gates — a predicate over the segment
@@ -1772,6 +1786,16 @@ impl McpStartupTiming {
         if self.outstanding == 0 {
             self.finished = Some(std::time::Instant::now());
         }
+    }
+
+    /// Whether this engine's startup connect set has FINISHED. Both halves
+    /// are required: `outstanding == 0` is also the pristine initial state
+    /// (a set that never spawned would read "settled" before anything ran),
+    /// while `finished` is stamped only when the last outstanding task
+    /// landed.
+    #[cfg(test)]
+    fn is_settled(&self) -> bool {
+        self.started.is_some() && self.outstanding == 0
     }
 
     /// The measured span: start-to-finished once settled, elapsed-so-far
@@ -1946,6 +1970,10 @@ impl EmbeddedServer {
             recovery_pre_backfill: std::sync::Mutex::new(None),
             #[cfg(test)]
             settlement_hold: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            manual_compaction_applies: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            #[cfg(test)]
+            task_driver_exits: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -3538,6 +3566,30 @@ impl EmbeddedServer {
             .map(|a| a.activity_shadow.snapshot_value().busy)
             .unwrap_or(false);
         in_flight || shadow_busy
+    }
+
+    /// Finished manual-compaction apply tasks (see the field's doc).
+    #[cfg(test)]
+    pub(crate) fn manual_compaction_apply_count(&self) -> u64 {
+        self.manual_compaction_applies
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Task drivers that have exited on this server (session gone).
+    #[cfg(test)]
+    pub(crate) fn task_driver_exit_count(&self) -> u64 {
+        self.task_driver_exits
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Whether this engine's startup MCP connect set (connect plus the
+    /// plugin disable reconcile) has settled.
+    #[cfg(test)]
+    pub(crate) fn mcp_startup_settled(&self) -> bool {
+        self.mcp_startup
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_settled()
     }
 
     /// Mark a session as active in an explicit workspace — the fork /

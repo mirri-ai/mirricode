@@ -120,7 +120,7 @@ type OrphanSweepLatch = std::sync::Arc<std::sync::atomic::AtomicBool>;
 /// `spawn_blocking` — the file lock is a `create_new` + 50 ms polling
 /// loop, which must never spin on the async runtime's worker thread.
 #[allow(clippy::too_many_arguments)]
-async fn schedule_workspace_cron_pass(
+pub(super) async fn schedule_workspace_cron_pass(
     registry: Arc<WorkspaceRegistry>,
     executor: Arc<dyn WorkspaceFireExecutor>,
     _steer_buffers: SteerBufferMap,
@@ -738,7 +738,7 @@ impl EmbeddedServer {
 /// every dependency arrives as a cloned field Arc, the same captures the
 /// scheduler task itself holds.
 #[allow(clippy::too_many_arguments)]
-async fn schedule_session_cron_pass(
+pub(super) async fn schedule_session_cron_pass(
     registry: Arc<WorkspaceRegistry>,
     turn_flows: TurnFlowMap,
     activity_trackers: ActivityTrackerMap,

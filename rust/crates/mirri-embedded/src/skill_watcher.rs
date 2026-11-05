@@ -70,6 +70,20 @@ pub struct SkillDirectoryWatcher {
     /// handle drops; the watcher task's select loop observes the close
     /// and exits.
     _shutdown: tokio::sync::oneshot::Sender<()>,
+    /// Test observation: set by the task on its way out, so a test can wait
+    /// for the exit instead of sleeping past it. Absent in production (the
+    /// exit is not part of the watcher's public contract).
+    #[cfg(test)]
+    exited: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl SkillDirectoryWatcher {
+    /// Whether the watcher task has observed the shutdown and exited.
+    #[cfg(test)]
+    #[allow(dead_code)] // consumed by the determinization plan's Task 6
+    pub(crate) fn has_exited(&self) -> bool {
+        self.exited.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 impl Drop for SkillDirectoryWatcher {
@@ -375,6 +389,10 @@ pub async fn spawn_skill_watcher(
     );
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    #[cfg(test)]
+    let exited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    #[cfg(test)]
+    let exit_flag = std::sync::Arc::clone(&exited);
     let runtime = Arc::clone(runtime);
     let orchestrator = Arc::clone(orchestrator);
     let debounce = QUIET_PERIOD;
@@ -473,6 +491,8 @@ pub async fn spawn_skill_watcher(
                 }
             }
         }
+        #[cfg(test)]
+        exit_flag.store(true, std::sync::atomic::Ordering::SeqCst);
         tracing::debug!(
             workspace = %runtime.workspace_id,
             "skill directory watcher task exited"
@@ -481,6 +501,8 @@ pub async fn spawn_skill_watcher(
 
     Some(SkillDirectoryWatcher {
         _shutdown: shutdown_tx,
+        #[cfg(test)]
+        exited,
     })
 }
 
