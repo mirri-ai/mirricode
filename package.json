@@ -95,10 +95,15 @@
       "ignoreCves": [
         "CVE-2026-56876"
       ]
-    }
+    },
+    "onlyBuiltDependencies": [
+      "electron",
+      "electron-winstaller",
+      "esbuild",
+      "simple-git-hooks"
+    ]
   },
   "engines": {
     "node": ">=24.22.2"
-  },
-  "packageManager": "pnpm@10.33.0"
+  }
 }
