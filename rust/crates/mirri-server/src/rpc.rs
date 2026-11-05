@@ -6110,8 +6110,27 @@ mod tests {
             args: json!({ "prompt": "Implement F6 closing batch" }),
             started_at_ms: 1_730_000_000_000,
         });
-        // Let the shadow's fold task consume the published frames.
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        // Let the shadow's fold task consume the published frames — the
+        // running tool landing in the in-flight state is the completion
+        // signal, not a fixed settle.
+        mirri_test_support::wait_for::wait_for_async(
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(10),
+            || {
+                let in_flight = artifacts.in_flight_shadow.snapshot_value();
+                in_flight
+                    .as_ref()
+                    .is_some_and(|turn| {
+                        turn["turn_id"] == json!("turn-<uuid-2>")
+                            && turn["running_tools"].as_array().is_some_and(|tools| {
+                                tools.iter().any(|tool| tool["tool_call_id"] == json!("call-2"))
+                            })
+                    })
+                    .then_some(())
+            },
+        )
+        .await
+        .expect("the shadow must fold the mid-turn frames");
 
         let handler = SnapshotSessionHandler::new(
             manager,
@@ -6908,8 +6927,20 @@ mod tests {
                 duration_ms: None,
                 ended_at_ms: None,
             });
-        // Let the shadow's fold task consume both frames.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Let the shadow's fold task consume both frames — the completed
+        // outcome landing in the folded state is the completion signal, not
+        // a fixed settle.
+        mirri_test_support::wait_for::wait_for_async(
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(10),
+            || {
+                let state = artifacts.activity_shadow.snapshot_value();
+                (state.last_turn_reason == Some(mirri_core::SessionTurnOutcome::Completed))
+                    .then_some(())
+            },
+        )
+        .await
+        .expect("the shadow must fold the completed turn");
         drop(session);
 
         let event_channels = Arc::new(SessionEventChannelRegistry::new(256));
@@ -6951,7 +6982,19 @@ mod tests {
                 tool_name: "Bash".to_string(),
                 request_id: uuid::Uuid::new_v4(),
             });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // The pending approval landing in the folded state is the
+        // completion signal, not a fixed settle.
+        mirri_test_support::wait_for::wait_for_async(
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(10),
+            || {
+                let state = artifacts.activity_shadow.snapshot_value();
+                (state.pending_interaction == mirri_core::SessionPendingInteraction::Approval)
+                    .then_some(())
+            },
+        )
+        .await
+        .expect("the shadow must fold the pending approval");
         drop(session);
 
         let event_channels = Arc::new(SessionEventChannelRegistry::new(256));

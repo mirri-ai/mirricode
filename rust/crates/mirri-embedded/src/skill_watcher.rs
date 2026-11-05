@@ -990,7 +990,7 @@ mod tests {
         // When the handle drops (the registry-remove path)
         drop(watcher);
         // Give the task time to observe the shutdown signal and exit.
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: settle (watcher exit has no sync probe — no join handle/exit flag)
 
         // Then a later write does NOT reload — the task is gone, not
         // merely quiet (the whole point of the explicit shutdown channel:

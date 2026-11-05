@@ -1588,7 +1588,19 @@ async fn should_fold_interrupted_stop_reason_into_interrupted_outcome() {
         duration_ms: None,
         ended_at_ms: None,
     });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // The shadow's fold task consumes the two published frames — the
+    // interrupted outcome landing in the folded state is the completion
+    // signal, not a fixed settle.
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+        || {
+            let state = shadow.snapshot_value();
+            (!state.main_turn_active && state.last_turn_reason.is_some()).then_some(())
+        },
+    )
+    .await
+    .expect("the shadow must fold the replayed interrupted closure");
 
     let state = shadow.snapshot_value();
     assert!(

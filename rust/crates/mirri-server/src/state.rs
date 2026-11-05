@@ -1044,9 +1044,17 @@ mod tests {
             let state = state.clone();
             async move { state.dispatch("session.create", json!({})).await }
         });
-        // Yield once so the engine call actually starts before the tracker
-        // closes (the close only blocks NEW tracked tasks).
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // The engine call must actually start (register on the tracker)
+        // before the tracker closes (the close only blocks NEW tracked
+        // tasks) — the in-flight registration is the signal, not a fixed
+        // yield.
+        mirri_test_support::wait_for::wait_for_async(
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(10),
+            || (!state.engine_call_tracker.is_empty()).then_some(()),
+        )
+        .await
+        .expect("the engine call must register on the tracker before the drain closes it");
         state.drain_engine_calls(Duration::from_secs(5)).await;
 
         // Then the in-flight call completes with its real result, not an
@@ -1096,7 +1104,16 @@ mod tests {
             let state = state.clone();
             async move { state.dispatch("session.create", json!({})).await }
         });
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // The call must be in flight (registered on the tracker) before the
+        // drain — the in-flight registration is the signal, not a fixed
+        // yield.
+        mirri_test_support::wait_for::wait_for_async(
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(10),
+            || (!state.engine_call_tracker.is_empty()).then_some(()),
+        )
+        .await
+        .expect("the engine must be in flight before the drain runs");
         let started = std::time::Instant::now();
         state.drain_engine_calls(Duration::from_millis(200)).await;
 
