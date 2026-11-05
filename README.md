@@ -100,7 +100,7 @@ Then open a new conversation in Zed's Agent panel. See [Using in IDEs](https://m
 
 ## Develop
 
-Requirements: Node.js ≥ 24.22.2, pnpm 10.33.0.
+Requirements: Node.js ≥ 24.22.2, pnpm 12.16.1.
 
 ```sh
 git clone https://github.com/mirri-ai/mirricode.git

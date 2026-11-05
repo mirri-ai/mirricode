@@ -32,7 +32,7 @@ Before designing ANY change that touches engine/core behavior, answer FIRST: "wh
 ## Environment Requirements
 
 - **Node.js**: `>=24.22.2` (from the root `package.json` `engines`; `.nvmrc` is `24.22.2`, used by nvm / fnm / mise to pick the minimum recommended version).
-- **pnpm**: `10.33.0` (from the root `package.json` `packageManager`).
+- **pnpm**: `12.16.1` (from the root `package.json` `packageManager`).
 - `pnpm install` will fail when the Node version is not satisfied, because `.npmrc` sets `engine-strict=true`.
 
 ## Monorepo Workspace Maintenance
