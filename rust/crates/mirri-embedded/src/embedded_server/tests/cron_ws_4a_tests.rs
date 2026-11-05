@@ -908,10 +908,13 @@ async fn should_not_reimport_the_workspace_local_archive_on_a_later_boot() {
         Some(home.path().to_path_buf()),
         Vec::new(),
     );
-    // The reboot's import settles (the persisted flag makes it a no-op —
-    // the deleted task never resurfaces).
+    // The reboot's import settles through the census gate. Waiting for the
+    // housekeeping is the signal — and it does not cover the cron import,
+    // which the census body spawns, so drive one cron pass afterwards: the
+    // import must have landed before that pass reads the store.
     let _ = server2.call_method("cron.listAll", json!({})).await;
-    tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence)
+    server2.await_housekeeping_settled().await;
+    drive_cron_pass(&server2).await;
     let listed = server2
         .call_method("cron.listAll", json!({}))
         .await

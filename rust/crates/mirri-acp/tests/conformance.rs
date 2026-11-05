@@ -880,7 +880,7 @@ async fn should_not_spawn_the_real_homes_mcp_servers_when_the_conformance_child_
              home's MCP servers leaked into the conformance child — check the \
              HOME isolation in AcpProcess::spawn"
         );
-        tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: negative window (proving absence)
+        tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: real-io absence sample (pgrep over a spawned child's descendants — no in-process observable exists)
     }
 }
 

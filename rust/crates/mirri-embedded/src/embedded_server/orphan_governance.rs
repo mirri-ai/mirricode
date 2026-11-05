@@ -369,15 +369,15 @@ mod tests {
         }
     }
 
-    /// Poll until `predicate` holds or ~5 s elapse.
-    fn eventually<T>(mut predicate: impl FnMut() -> Option<T>) -> Option<T> {
-        for _ in 0..50 {
-            if let Some(value) = predicate() {
-                return Some(value);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100)); // hygiene-allow: negative window (proving absence)
-        }
-        predicate()
+    /// Poll until `predicate` holds or ~5 s elapse (the sanctioned
+    /// deadline-bounded poll form, not a fixed window).
+    fn eventually<T>(predicate: impl FnMut() -> Option<T>) -> Option<T> {
+        mirri_test_support::wait_for::wait_for(
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(100),
+            predicate,
+        )
+        .ok()
     }
 
     fn probe_fingerprint(pid: i32, pgid: i32) -> mirri_os::ProcessFingerprint {

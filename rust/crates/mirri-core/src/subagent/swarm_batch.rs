@@ -1456,7 +1456,7 @@ mod tests {
                             // in-flight when member 0's rate limit settles,
                             // so the requeue branch (not the only-unfinished
                             // verdict) runs.
-                            tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: negative window (proving absence)
+                            tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: scenario pacing (virtual clock — keeps this member observably in-flight when member 0's rate limit settles, so the requeue branch runs)
                             Ok(SubagentCompletion::from_text("ok"))
                         }
                     }),
@@ -1713,7 +1713,7 @@ mod tests {
                     // The failure settles after the cancellation but does
                     // not watch the token — the exact race shape.
                     Box::pin(async move {
-                        tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: negative window (proving absence)
+                        tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: scenario pacing (virtual clock — the failure settles AFTER the cancellation: the exact race shape under test)
                         Err(SubagentError::RateLimited(
                             "HTTP 429: too many requests".into(),
                         ))
@@ -1809,7 +1809,7 @@ mod tests {
                     request.profile_name,
                     request.model,
                     Box::pin(async move {
-                        tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: negative window (proving absence)
+                        tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: scenario pacing (virtual clock — member work time the concurrency shrink measures against)
                         active.fetch_sub(1, Ordering::SeqCst);
                         if entered.load(Ordering::SeqCst) {
                             peak_after.fetch_max(0, Ordering::SeqCst);
@@ -1839,7 +1839,7 @@ mod tests {
                     "coder".into(),
                     None,
                     Box::pin(async move {
-                        tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: negative window (proving absence)
+                        tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: scenario pacing (virtual clock — member work time the concurrency shrink measures against)
                         active.fetch_sub(1, Ordering::SeqCst);
                         if entered.load(Ordering::SeqCst) {
                             peak_after.fetch_max(0, Ordering::SeqCst);
@@ -2410,7 +2410,7 @@ mod tests {
                     // Member 0's first attempt: 1s of real budget consumed,
                     // then the rate limit.
                     Box::pin(async move {
-                        tokio::time::sleep(Duration::from_secs(1)).await; // hygiene-allow: negative window (proving absence)
+                        tokio::time::sleep(Duration::from_secs(1)).await; // hygiene-allow: scenario pacing (virtual clock — member 0's 1s of consumed budget before the rate limit)
                         Err(SubagentError::RateLimited(
                             "HTTP 429: too many requests".into(),
                         ))
@@ -2703,7 +2703,7 @@ mod tests {
                                 _ = cancel.cancelled() => {
                                     return Err(SubagentError::Cancelled);
                                 }
-                                _ = tokio::time::sleep(Duration::from_millis(50)) => { // hygiene-allow: negative window (proving absence)
+                                _ = tokio::time::sleep(Duration::from_millis(50)) => { // hygiene-allow: scenario pacing (virtual clock — silent-member work ticks; only advancing members feed the watchdog)
                                     if release.load(Ordering::SeqCst) {
                                         return Ok(SubagentCompletion::from_text("done"));
                                     }

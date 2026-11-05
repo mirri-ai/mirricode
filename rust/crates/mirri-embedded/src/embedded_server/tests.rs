@@ -16436,11 +16436,22 @@ async fn should_buffer_prompt_when_manual_compaction_in_flight_until_settled() {
         "turn must not reach the LLM while the manual compaction is in flight"
     );
     // The parked state must hold, not just coincide: a send that slipped
-    // past the settle wait would pop the fourth scripted reply.
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await; // hygiene-allow: poll step (stability re-check of the parked send)
+    // past the settle wait would pop the fourth scripted reply. Give it a
+    // bounded window to do so and confirm it did not.
     assert!(
-        !send_task.is_finished() && mock.chat_call_count() == 3,
+        mirri_test_support::wait_for::wait_for_async(
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(5),
+            || send_task.is_finished().then_some(()),
+        )
+        .await
+        .is_err(),
         "the buffered message must stay parked until the compaction settles"
+    );
+    assert_eq!(
+        mock.chat_call_count(),
+        3,
+        "the buffered message must not have reached the LLM"
     );
 
     // And when the summarizer completes, the compaction applies and the

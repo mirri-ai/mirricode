@@ -621,9 +621,12 @@ async fn should_drop_an_unopened_execution_session_after_seven_days() {
         },
     )
     .await;
-    // The sweep runs on the scheduler's workspace pass — the tick fires
-    // it; give it one tick's worth of time.
-    tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence after the sweep pass)
+    // Two workspace passes: the first may have been in flight when the run
+    // record landed (its sweep would have read the store before the write),
+    // the second is guaranteed to observe it. The record's survival is then
+    // a fact about a completed sweep, not about 200 ms of silence.
+    drive_cron_pass(&server).await;
+    drive_cron_pass(&server).await;
     // The run record survives (the audit trail).
     let runs = cron.runs(&task_id);
     assert!(
@@ -802,8 +805,12 @@ async fn should_run_the_full_create_to_rejection_chain_through_the_real_tool() {
         )
         .await
         .expect("approval.decide");
-    // Give the denied call's turn time to settle, then: zero residue.
-    tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: negative window (proving absence after the denied turn settles)
+    // Wait for the denied call's turn to settle (agent.activity), then the
+    // residue assertions are final.
+    poll_agent_activity(&server, &session_id, |state| {
+        state["turn"].is_null() && state["lastTurn"].is_object()
+    })
+    .await;
     let cron = ws_cron(&server);
     assert!(cron.list().is_empty(), "a denial creates no task");
     let after = server
@@ -1024,7 +1031,27 @@ async fn should_park_a_queue_posture_fire_in_the_single_backlog_slot_while_runni
             .await
             .expect("cron.trigger");
     }
-    tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: negative window (proving absence)
+    // The queued slot is written under the runs mutex and merges one-deep,
+    // so waiting for its appearance is enough: a second trigger can only
+    // replace the same slot, never append a second record.
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || {
+            cron.runs(&task_id)
+                .iter()
+                .any(|run| {
+                    run.status == mirri_core::cron::RunStatus::Skipped
+                        && run
+                            .skip_reason
+                            .as_deref()
+                            .is_some_and(|reason| reason.contains("单槽排队"))
+                })
+                .then_some(())
+        },
+    )
+    .await
+    .expect("the fire must park in the single backlog slot");
     let runs = cron.runs(&task_id);
     let queued: Vec<&mirri_core::cron::RunRecord> = runs
         .iter()
@@ -1368,10 +1395,12 @@ async fn should_not_create_rows_for_cron_execution_sessions_until_explicitly_ope
         .call_method("cron.run.open", json!({ "sessionId": session_id }))
         .await
         .expect("cron.run.open");
-    tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: negative window (proving absence)
-    assert!(
-        index.get_session(&session_id).is_some(),
-        "the explicit open materializes the row"
-    );
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(10),
+        || index.get_session(&session_id).is_some().then_some(()),
+    )
+    .await
+    .expect("the explicit open materializes the index row");
     let _ = tmp;
 }

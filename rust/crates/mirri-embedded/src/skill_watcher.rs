@@ -1010,9 +1010,16 @@ mod tests {
         );
 
         // When the handle drops (the registry-remove path)
+        let watcher_exited = Arc::clone(&watcher.exited);
         drop(watcher);
-        // Give the task time to observe the shutdown signal and exit.
-        tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: settle (watcher exit has no sync probe — no join handle/exit flag)
+        // Wait for the task's OWN exit flag — not a grace period.
+        assert!(
+            wait_until(Duration::from_secs(5), || {
+                watcher_exited.load(std::sync::atomic::Ordering::SeqCst)
+            })
+            .await,
+            "the watcher task must exit once its handle drops"
+        );
 
         // Then a later write does NOT reload — the task is gone, not
         // merely quiet (the whole point of the explicit shutdown channel:
