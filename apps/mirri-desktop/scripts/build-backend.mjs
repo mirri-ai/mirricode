@@ -27,6 +27,13 @@
 // there when pnpm was installed standalone. We probe PATH and pick the first
 // usable launcher.
 //
+// POSIX note: pnpm's own `pnpm` file is deliberately shebang-less and runs as an
+// `sh` script until its install script replaces it with the native binary. The
+// kernel answers ENOEXEC for such a file; glibc's execvp and most shells retry
+// it under `sh`, Apple's libc does not. So a pnpm installed with build scripts
+// skipped fails here with ENOEXEC even though it works from the terminal —
+// run() retries through the shell in that case.
+//
 // Usage:
 //   node apps/mirri-desktop/scripts/build-backend.mjs
 //   pnpm -C apps/mirri-desktop run build:backend
@@ -100,11 +107,19 @@ const pnpm = resolvePnpm();
 function run(command, args, label, shell = false) {
   const pretty = `${command} ${args.join(' ')}`;
   console.log(`[build-backend] $ ${pretty}${shell ? '   (via shell)' : ''}`);
-  const result = spawnSync(command, args, {
-    stdio: 'inherit',
-    cwd: repoDir,
-    shell,
-  });
+  const options = { stdio: 'inherit', cwd: repoDir, shell };
+  let result = spawnSync(command, args, options);
+  // See the POSIX note in the header: a shebang-less pnpm shim is only runnable
+  // through `sh`. `$0` carries the command and `$@` the untouched argument
+  // tokens, so the shell supplies just the missing ENOEXEC fallback and never
+  // re-quotes anything (unlike spawnSync's own `shell: true`).
+  if (!shell && !isWindows && result.error?.code === 'ENOEXEC') {
+    console.log(`[build-backend] ${command} is not directly executable (ENOEXEC); retrying via sh`);
+    result = spawnSync('/bin/sh', ['-c', 'exec "$0" "$@"', command, ...args], {
+      ...options,
+      shell: false,
+    });
+  }
   if (result.error !== undefined) {
     fail(`${label}: failed to run \`${command}\` (${result.error.message})`);
   }
