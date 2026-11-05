@@ -317,3 +317,101 @@ describe.skipIf(skipRust)('Web UI projector: real rust engine subagent events', 
     }
   }, 120_000);
 });
+
+// ---------------------------------------------------------------------------
+// Panel stop: the web subagent rows are keyed by AGENT id, while the task
+// store is keyed by `task-<uuid>`. A foreground Agent member never publishes
+// a background.task.started event, so the client has no task id to translate
+// to — the panel's stop used to send the raw agent id and the engine answered
+// "task not found". This suite pins the fixed contract end-to-end against the
+// REAL engine: `task.cancel` given an agent id must reach the tracked task.
+// ---------------------------------------------------------------------------
+describe.skipIf(skipRust)('task.cancel accepts the agent id the panel rows are keyed by', () => {
+  let fakeProvider: FakeProviderServer | undefined;
+  let rust: { child: ChildProcess } | undefined;
+  let base = '';
+  let homeDir = '';
+  let workDir = '';
+
+  beforeAll(async () => {
+    fakeProvider = await createFakeProviderServer();
+    // The main agent delegates to a FOREGROUND member. The response delay keeps
+    // the member's own turn in flight long enough to stop it mid-run — the
+    // "running" precondition this contract is about.
+    fakeProvider.setStreamDelay(10_000);
+    fakeProvider.nextToolCall('Agent', {
+      prompt: 'Do a long piece of work',
+      description: 'Foreground member',
+    });
+    fakeProvider.nextText('working on it');
+
+    const dir = await mkdtemp(join(tmpdir(), 'mirri-panel-stop-'));
+    homeDir = join(dir, 'mirri-home');
+    workDir = join(dir, 'workspace');
+    await mkdir(workDir, { recursive: true });
+
+    const port = await getFreePort();
+    base = `http://127.0.0.1:${port}`;
+    rust = await spawnRustServer({ port, homeDir, workDir, fakeBaseUrl: fakeProvider.baseUrl });
+  }, 120_000);
+
+  afterAll(async () => {
+    if (rust !== undefined) {
+      await stopRustServer(rust, base);
+      rust = undefined;
+    }
+    if (fakeProvider !== undefined) {
+      await Promise.race([
+        fakeProvider.close(),
+        new Promise<void>((r) => setTimeout(r, 5000)),
+      ]);
+      fakeProvider = undefined;
+    }
+    if (homeDir !== '') {
+      await rm(join(homeDir, '..'), { recursive: true, force: true });
+      homeDir = '';
+    }
+  }, 60_000);
+
+  it('should stop the running member when the panel sends its agent id', async () => {
+    const api = new WsRpcApi(buildRpcWsUrl(base), base, undefined);
+    await api.connectTransport();
+    try {
+      const session = await api.createSession({ title: 'panel-stop', model: 'test/model' });
+      await api.submitPrompt(session.id, {
+        content: [{ type: 'text', text: 'Delegate a long task to a subagent' }],
+        model: 'test/model',
+      });
+
+      // Wait until the member row exists and carries an agent id — the row key
+      // the panel's stop button sends.
+      const agentId = await (async () => {
+        const deadline = Date.now() + 60_000;
+        while (Date.now() < deadline) {
+          const rows = await api.listTasks(session.id);
+          const member = rows.find((row) => row.kind === 'subagent' && row.agentId !== undefined);
+          if (member?.agentId !== undefined) return member.agentId;
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        throw new Error('the subagent row never appeared with an agent id');
+      })();
+
+      // When the panel stops the member by its row key (the agent id) — before
+      // the fix this rejected with "task not found: agent-…".
+      await api.cancelTask(session.id, agentId);
+
+      // Then the engine resolved it onto the tracked task and stopped it.
+      const deadline = Date.now() + 30_000;
+      let status: string | undefined;
+      while (Date.now() < deadline) {
+        const rows = await api.listTasks(session.id);
+        status = rows.find((row) => row.agentId === agentId)?.status;
+        if (status === 'cancelled') break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      expect(status).toBe('cancelled');
+    } finally {
+      api.close();
+    }
+  }, 150_000);
+});
