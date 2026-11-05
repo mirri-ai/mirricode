@@ -95,11 +95,12 @@ Prefer `should ... when ...` phrasing. Avoid mentioning variable names, function
 
 The CI pipeline has checks that are NOT covered by the local `build.sh` quality gate. When your changes touch the areas below, you MUST verify them before pushing:
 
-- **Nix build** (`nix build .#mirri-code`): Required when modifying:
+- **Nix build** (`nix build .#mirri-code`): **Not a PR gate.** The `Nix Build` workflow runs on `workflow_dispatch` and a weekly schedule only; a flake mistake therefore surfaces in the canary run, not on your PR. Run it locally (if Nix is installed) when modifying:
   - `flake.nix` (fileset, workspace lists, build logic). The package builds the **rust** `mirri` binary (`mirri-cli` with the SPA embedded via rust-embed) and imports `rust/Cargo.lock` with `importCargoLock`, so no vendor hash is maintained by hand; the JS toolchain only builds `apps/mirri-web`'s SPA.
   - `rust/scripts/release-package.mjs` (resolves `yazl` from the root `package.json`)
   - Any package that appears in `flake.nix`'s `workspaceNames`
-  - Nix is **not** a prerequisite; a `pnpm-lock.yaml` / workspace-list change also needs the `pnpmDeps` hash refreshed — see the `nix-pnpm-deps-hash` skill.
+  - Nix is **not** a prerequisite; a `pnpm-lock.yaml` / workspace-list change also needs the `pnpmDeps` hash refreshed — see the `nix-pnpm-deps-hash` skill. The weekly run reports the correct `got:` hash for you.
+  - The PR-time equivalent of what this build proved lives in `ci.yml`'s `build` job (stage the SPA, build `mirri-cli`, serve `/` and require the SPA shell).
 
 - **PR title check**: PR titles must follow Conventional Commit style. The `pr-title-checker` workflow validates this on every PR.
 

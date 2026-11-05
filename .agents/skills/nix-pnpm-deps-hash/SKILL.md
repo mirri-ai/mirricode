@@ -1,6 +1,6 @@
 ---
 name: nix-pnpm-deps-hash
-description: Use when a change touches pnpm-lock.yaml or flake.nix's workspace lists and the Nix Build job reports a `fetchPnpmDeps` hash mismatch, or before pushing such a change to avoid that failure. Covers refreshing the fixed-output hash locally (if Nix happens to be installed) or via the value CI already posts, plus the Nix-free static checks.
+description: Use when a change touches pnpm-lock.yaml or flake.nix's workspace lists and the Nix Build workflow (a weekly canary and manual dispatch, not a PR gate) reports a `fetchPnpmDeps` hash mismatch. Covers refreshing the fixed-output hash locally when Nix is installed, letting the canary report it when it is not, and the Nix-free static checks.
 ---
 
 # Refresh the `pnpmDeps` Hash
@@ -62,15 +62,22 @@ proxy/mirror configuration — that step is the only networked part.
 
 ## Path B — Nix is not installed
 
-Do **not** install Nix just to compute this value. CI computes it for you:
+Do **not** install Nix just to compute this value.
 
-1. Push the change.
-2. Open the PR. The `Nix Build` workflow's "Extract error log" step greps
-   `specified` / `got` out of the build log and posts (or updates) a
-   `<!-- nix-build-bot -->` PR comment containing exactly that table.
-3. Copy the **got** value into `flake.nix`'s `hash`, commit, push.
+The `Nix Build` workflow is **not a PR gate** (it runs on `workflow_dispatch`
+and a weekly cron), so nothing posts the hash to your PR any more. You have
+two options:
 
-That is one CI round trip, not trial and error.
+1. **Keep Nix only for this one derivation.** Copy the placeholder into
+   `flake.nix`, then run Path A on a machine that has Nix — it builds nothing
+   but `webDist.pnpmDeps`, so it is about a minute.
+2. **Let the canary tell you.** Merge the lockfile change without touching the
+   hash; the next weekly `Nix Build` run fails with
+   `specified: <stale>` / `got: <correct>` in its log, and
+   `gh run view --log-failed` on that run hands you the value. This is slower
+   but needs nothing installed and never blocks the PR.
+
+Either way, the PR itself is unaffected: `ci.yml` does not depend on the flake.
 
 ## Verify without Nix
 

@@ -26,11 +26,76 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-      # The rust binaries are the shipped product; this job keeps the frozen
-      # TypeScript packages bundling (the `typecheck` job covers types only —
-      # a tsdown config or a raw-import failure is invisible there). The
-      # TypeScript CLI bundle is not a product, so nothing smoke-tests it.
+      # Two products build here: the frozen TypeScript packages (the
+      # `typecheck` job covers types only, so a tsdown config or a raw-import
+      # failure is invisible there) and the rust `mirri` binary in the shape
+      # it actually ships, SPA included.
       - run: pnpm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          # `rust-test` is the writer (it compiles the superset); this job only
+          # restores, so a PR never spends its time saving a cache it did not
+          # improve.
+          shared-key: rust-workspace
+          save-if: false
+
+      # The shipped shape is not "the SPA builds" or "the engine compiles" —
+      # it is the SPA staged into `web-dist/`, embedded in the `mirri`
+      # binary and served at `/`. `rust-test` compiles the API-only variant
+      # (a bare `.gitkeep` in `web-dist/`), and `stage-web.mjs` is consumed
+      # only by the release pipeline, so before this step a broken staging
+      # path — a changed Vite `outDir`, a renamed entry — stayed green on
+      # every PR and only surfaced at release time.
+      - name: Stage the SPA and build the distributable binary
+        run: |
+          node rust/scripts/stage-web.mjs
+          cargo build --manifest-path rust/Cargo.toml -p mirri-cli --locked
+
+      # Build does not imply serve: `flake.nix` builds the same binary with
+      # `doCheck = false` and never runs it. Ask the binary for `/` and
+      # require the SPA shell, which is exactly what a user gets.
+      #
+      # Scope: a dev-profile `rust-embed` reads `web-dist/` from disk at
+      # runtime, so this proves the staging → serve contract, not
+      # compile-time embedding. Embedding in the shipped artifact is
+      # `rust-native-build`'s release build. Auth is bypassed so the check
+      # does not depend on where the SPA fallback sits relative to the auth
+      # layer.
+      - name: Smoke test the served web UI
+        run: |
+          set -euo pipefail
+          export MIRRICODE_HOME="$(mktemp -d)"
+          PORT=18765
+          LOG="$RUNNER_TEMP/mirri-web-smoke.log"
+          ./rust/target/debug/mirri web --dangerous-bypass-auth --no-open \
+            --port "$PORT" --workspace "$PWD" > "$LOG" 2>&1 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+
+          ok=false
+          for _ in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:$PORT/" -o "$RUNNER_TEMP/mirri-index.html" 2>/dev/null; then
+              ok=true
+              break
+            fi
+            sleep 0.5
+          done
+          if [ "$ok" != true ]; then
+            echo "::error::the server did not serve GET / within 30s"
+            cat "$LOG" >&2
+            exit 1
+          fi
+          if ! grep -q '<div id="app">' "$RUNNER_TEMP/mirri-index.html"; then
+            echo "::error::GET / did not return the staged SPA shell"
+            head -40 "$RUNNER_TEMP/mirri-index.html" >&2
+            cat "$LOG" >&2
+            exit 1
+          fi
+          echo "SPA served at /"
 
   test:
     runs-on: ubuntu-latest
