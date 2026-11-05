@@ -266,6 +266,19 @@ pub(super) async fn await_chat_calls(mock: &ScriptedLlm, calls: u64) {
     }
 }
 
+/// Wait until ANY recorded chat call's messages contain `needle` — for
+/// assertions about content whose carrying call is not fixed (a concurrent
+/// side call reshuffles the order, so an index-based read is a race).
+pub(super) async fn await_chat_message(mock: &ScriptedLlm, needle: &str) {
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(15),
+        std::time::Duration::from_millis(25),
+        || mock.all_messages().to_string().contains(needle).then_some(()),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("no chat call carried {needle:?}: {}", mock.all_messages()));
+}
+
 /// Given a server configured with `[task] maxRunningTasks = 1` and a first
 /// background agent that never settles, When the main agent dispatches a
 /// second background Agent call, Then the second tool result carries the TS
@@ -338,23 +351,7 @@ async fn should_reject_the_second_background_agent_when_max_running_tasks_is_1()
     // fixed: the in-turn side title call takes one of the main mock's turns
     // and races the continuation under load, so pin the CONTENT, not the
     // position.
-    await_chat_calls(&main_llm, 3).await;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    let rejection = loop {
-        let all = main_llm.all_messages().to_string();
-        if all.contains("Too many background tasks are already running.") {
-            break all;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the capacity rejection must reach the model: {all}"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    };
-    assert!(
-        rejection.contains("Too many background tasks are already running."),
-        "the capacity rejection must reach the model"
-    );
+    await_chat_message(&main_llm, "Too many background tasks are already running.").await;
 
     // The task list holds exactly the one running background task.
     let session = server
