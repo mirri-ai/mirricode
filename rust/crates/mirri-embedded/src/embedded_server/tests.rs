@@ -8032,14 +8032,17 @@ async fn should_return_full_context_history_when_get_history_is_called() {
         name: "Bash".to_string(),
         args: json!({ "command": "true" }),
     }]);
-    // The in-turn side title call — fires after the first step lands
-    // (SDR-016) and consumes one scripted reply before the turn's final
-    // text step.
-    mock.push_text("run true");
     mock.push_text("Command ran fine");
     let (server, _tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    // The session is created titled so the in-turn side title call never
+    // starts: it shares this factory's single scripted queue with the main
+    // loop, and both consume the front of it once the first step lands
+    // (SDR-016) — a race that under full-suite load let the main loop take
+    // the side call's reply and answer "run true". Naming is not this
+    // test's subject, and a titled session records nothing, so the history
+    // under assertion is unchanged.
     let created = server
-        .call_method("session.create", json!({}))
+        .call_method("session.create", json!({ "title": "history read face" }))
         .await
         .unwrap();
     let session_id = created["id"].as_str().unwrap().to_string();
@@ -8091,9 +8094,9 @@ async fn should_return_full_context_history_when_get_history_is_called() {
     // same history again — the resume's context-memory reconstruction is
     // the read source (what an ACP `session/load` would replay). The
     // turn's four messages are all the durable `context.append_message`
-    // ops there are: naming is a side call that records nothing (the
-    // title reminder injector is retired), so the resumed history is
-    // identical to the live one — same four entries, no extras.
+    // ops there are (the title reminder injector is retired), so the
+    // resumed history is identical to the live one — same four entries,
+    // no extras.
     server
         .call_method("session.close", json!({ "session_id": &session_id }))
         .await
