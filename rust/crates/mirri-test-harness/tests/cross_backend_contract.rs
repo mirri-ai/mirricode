@@ -2481,19 +2481,20 @@ async fn should_pin_the_w8_workspace_trust_wire_faces_on_a_two_workspace_server(
     assert!(store.is_trusted(&second_id));
 
     // And the project layer connected on the workspace's own pool
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !second_pool
-        .list_connections()
-        .await
-        .iter()
-        .any(|(name, _)| name == "projsrv")
-    {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the trusted workspace's project server never connected"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    mirri_test_support::wait_for::wait_for_async_result(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(20),
+        || async {
+            second_pool
+                .list_connections()
+                .await
+                .iter()
+                .any(|(name, _)| name == "projsrv")
+                .then_some(())
+        },
+    )
+    .await
+    .expect("the trusted workspace's project server never connected");
 
     // And when trust is revoked
     let revoked = EngineAdapter::call_method(
@@ -2508,14 +2509,13 @@ async fn should_pin_the_w8_workspace_trust_wire_faces_on_a_two_workspace_server(
     // (the immediate disconnect — no restart, no rebuild), and the listing
     // reports untrusted again
     assert_eq!(revoked, json!({ "trusted": false }));
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !second_pool.list_connections().await.is_empty() {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the untrusted workspace's project server never disconnected"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    mirri_test_support::wait_for::wait_for_async_result(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(20),
+        || async { second_pool.list_connections().await.is_empty().then_some(()) },
+    )
+    .await
+    .expect("the untrusted workspace's project server never disconnected");
     let untrusted_listing = EngineAdapter::call_method(&*engine, "workspace.list", json!({}))
         .await
         .expect("workspace.list resolves");
@@ -2553,8 +2553,9 @@ async fn should_pin_the_w8_workspace_trust_wire_faces_on_a_two_workspace_server(
 /// read face: row ids (the ADR-007 entry-seq anchors), roles, `agentId`,
 /// the TS-protocol content parts (including the projected `tool_use` /
 /// `tool_result` shapes), and the derived `createdAt` (base = the session's
-/// creation time, restored from the persisted `state.json` so the base is
-/// identical on both sides).
+/// creation time — the scope's stamp on the live side, the metadata row's
+/// `created_at` on the restored side, which the create path seeds from that
+/// same stamp so both sides agree).
 #[tokio::test]
 async fn should_yield_an_identical_snapshot_when_a_session_is_restored_from_disk() {
     // Given an engine-backed server backend whose scripted mock LLM drives a
@@ -2767,32 +2768,30 @@ async fn should_keep_skill_activation_origin_payload_when_session_is_restored_fr
         "activation acked: {activated}"
     );
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while live.mock.chat_call_count() < 1 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the skill turn's model call never ran"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(20),
+        || (live.mock.chat_call_count() >= 1).then_some(()),
+    )
+    .await
+    .expect("the skill turn's model call never ran");
     let turn_recorded = |rows: &Value| {
         rows["messages"]
             .as_array()
             .is_some_and(|messages| messages.len() >= 2)
     };
-    loop {
-        let rows = call_server(&live, "message.list", json!({ "sessionId": session_id }))
-            .await
-            .expect("the live message.list succeeds");
-        if turn_recorded(&rows) {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the skill turn never completed (no assistant reply landed)"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    mirri_test_support::wait_for::wait_for_async_result(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(20),
+        || async {
+            let rows = call_server(&live, "message.list", json!({ "sessionId": session_id }))
+                .await
+                .expect("the live message.list succeeds");
+            turn_recorded(&rows).then_some(())
+        },
+    )
+    .await
+    .expect("the skill turn never completed (no assistant reply landed)");
 
     // When the session is closed to disk and a fresh backend cold-restores it
     // purely from the persisted wire log

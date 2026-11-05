@@ -43190,12 +43190,10 @@ async fn should_inject_the_refreshed_listing_on_the_next_turn_when_a_skill_file_
         !session.take_pending_skill_reminder(),
         "the no-change mount reload parks no pending (the diff gate)"
     );
-    // The mount itself runs on the blocking pool (spawn_blocking — the
-    // RPC path must not pay for the recursive FS watches); `watching`
-    // reflects the live handle, not the mount's completion. Settle before
-    // writing: a write that lands pre-mount is invisible (FSEvents
-    // streams from watch registration).
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // No settle needed: `skill.reload` awaits the outstanding mounts before
+    // it answers (`await_skill_watcher_mounts` — "when this resolves, the
+    // watchers are live", no spawn-to-mount registration race), so the write
+    // below cannot land before the FSEvents stream is registered.
 
     // When a new skill lands under the watched project root (while the
     // session is idle — no turn is running)
@@ -43302,9 +43300,8 @@ async fn should_not_inject_the_listing_when_the_tool_face_lacks_the_skill_tool()
 
     // The watcher mounts (the no-diff gate means no pending from this).
     server.call_method("skill.reload", json!({})).await.unwrap();
-    // Settle the spawn_blocking mount before writing (see the positive
+    // No settle needed — `skill.reload` awaited the mount (see the positive
     // chain test's note).
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     // When the new skill lands and the chain parks the pending
     mock.push_text("another reply");
@@ -43378,9 +43375,8 @@ async fn should_replay_the_listing_reminder_on_resume_without_producing_activati
 
     // The watcher mounts; the new skill lands; the chain parks the pending.
     server.call_method("skill.reload", json!({})).await.unwrap();
-    // Settle the spawn_blocking mount before writing (see the positive
+    // No settle needed — `skill.reload` awaited the mount (see the positive
     // chain test's note).
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     mock.push_text("second reply");
     write_skill_md(workspace.path(), "replayed-skill");
     assert!(

@@ -116,6 +116,16 @@ pub struct MetadataPatch {
     pub pre_compressed_size: Option<Option<u64>>,
     /// When the session was last modified.
     pub updated_at: Option<DateTime<Utc>>,
+    /// The session's creation stamp, honoured **only** by the inserting
+    /// `apply` — the one that creates the row. Without it the row's stamp is
+    /// the store's own `Utc::now()`, which is a second clock reading taken
+    /// after the scope already fixed its `created_at`; the two differ by the
+    /// creation path's duration (hundreds of microseconds), so a live read
+    /// face and a cold-restored one would derive different message
+    /// `createdAt` bases from the same session. Passing the scope's stamp
+    /// makes the row agree with what the session actually recorded; every
+    /// later patch still cannot move it.
+    pub created_at: Option<DateTime<Utc>>,
     /// When the session was last *used* (SDR-004's recency key — bumped only by
     /// a user send or an explicit touch, never by a turn settle;
     /// `Some(None)` = fall back to `updated_at`).
@@ -316,10 +326,12 @@ impl MetadataStorePort for InMemoryMetadataStore {
         touched: MetadataPatch,
     ) -> Result<(), MetadataStoreError> {
         let mut rows = self.lock(&self.rows);
+        let created_at = touched.created_at;
         let (_, record) = rows
             .entry(session_id.as_str().to_string())
             .or_insert_with(|| {
                 let now = Utc::now();
+                let now = created_at.unwrap_or(now);
                 (
                     workspace_id.to_string(),
                     SessionMetadataRecord {
@@ -648,6 +660,7 @@ mod tests {
                     compressed_at: Some(Some(stamp)),
                     pre_compressed_size: Some(Some(4096)),
                     updated_at: Some(stamp),
+                    created_at: Some(stamp),
                     last_used_at: Some(Some(stamp)),
                     last_prompt: Some(Some("hello".to_string())),
                     cwd: Some(Some("/Users/dev/project".to_string())),
@@ -762,6 +775,7 @@ mod tests {
                     compressed_at: Some(Some(stamp)),
                     pre_compressed_size: Some(Some(4096)),
                     updated_at: Some(stamp),
+                    created_at: Some(stamp),
                     last_used_at: Some(Some(stamp)),
                     last_prompt: Some(Some("hello".to_string())),
                     cwd: Some(Some("/Users/dev/project".to_string())),

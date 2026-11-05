@@ -248,6 +248,9 @@ fn compile_patch(patch: &MetadataPatch) -> PatchSql {
     if let Some(updated_at) = patch.updated_at {
         touched.push(("updated_at", PatchValue::Set(encode_timestamp(&updated_at))));
     }
+    if let Some(created_at) = patch.created_at {
+        touched.push(("created_at", PatchValue::Set(encode_timestamp(&created_at))));
+    }
     if let Some(last_used_at) = patch.last_used_at {
         touched.push((
             "last_used_at",
@@ -310,7 +313,19 @@ fn compile_patch(patch: &MetadataPatch) -> PatchSql {
         sql.push_str(&format!("?{}", index + 1));
         match *column {
             "id" | "workspace_id" => params.push(Some(String::new())), // the caller fills these
-            "created_at" => params.push(Some(now.clone())),
+            // The insert honours a caller-supplied creation stamp (the create
+            // path passes the session's own `created_at`, so the row and the
+            // scope agree); an absent one falls back to the wall clock. The
+            // ON CONFLICT branch never SETs this column, so a later patch
+            // still cannot move it.
+            "created_at" => params.push(Some(
+                touched
+                    .iter()
+                    .find(|(touched_column, _)| *touched_column == "created_at")
+                    .map(|(_, value)| value.clone())
+                    .and_then(|value| value.into_param())
+                    .unwrap_or_else(|| now.clone()),
+            )),
             // `updated_at` honors a caller-supplied stamp (the migration
             // replays historical timestamps); only an absent one falls back
             // to the wall clock.
@@ -347,9 +362,20 @@ fn compile_patch(patch: &MetadataPatch) -> PatchSql {
         sql.push_str(" ON CONFLICT(id) DO UPDATE SET ");
         let sets: Vec<String> = touched
             .iter()
+            // `created_at` is insert-only: the caller may seed it so the row
+            // agrees with the session that recorded it, but no later write
+            // may move a session's creation time.
+            .filter(|(column, _)| *column != "created_at")
             .map(|(column, _)| format!("{column} = excluded.{column}"))
             .collect();
-        sql.push_str(&sets.join(", "));
+        if !sets.is_empty() {
+            sql.push_str(&sets.join(", "));
+        } else {
+            // Only `created_at` was touched (a re-apply of a creation
+            // patch): the row already exists and the column is insert-only,
+            // so there is nothing to update — keep the statement valid.
+            sql.push_str("id = sessions.id");
+        }
     }
     PatchSql { sql, params }
 }

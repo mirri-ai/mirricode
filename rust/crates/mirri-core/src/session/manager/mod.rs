@@ -333,6 +333,23 @@ pub fn full_metadata_patch(metadata: &SessionMetadata) -> MetadataPatch {
     }
 }
 
+/// The creation patch: [`full_metadata_patch`] plus the session's own
+/// `created_at`.
+///
+/// Only creation uses this. The store stamps `created_at` itself on the
+/// inserting `apply`, and that reading is taken after the scope has already
+/// fixed the session's creation time — by the duration of the creation path
+/// (hundreds of microseconds). Live read faces derive message `createdAt`
+/// from the scope's stamp while a cold-restored one derives it from the row,
+/// so the two would drift. Seeding the row with the scope's stamp keeps them
+/// identical; later patches never move it (the column is insert-only).
+pub fn creation_metadata_patch(metadata: &SessionMetadata) -> MetadataPatch {
+    MetadataPatch {
+        created_at: Some(metadata.created_at),
+        ..full_metadata_patch(metadata)
+    }
+}
+
 /// Build the [`SessionScopeConfig`] a server assembly derives from a
 /// [`ServerConfig`] (B1 T4 — the embedded `session.create` /
 /// `session.resume` assembly entry).
@@ -968,7 +985,7 @@ impl SessionManager {
                     .apply(
                         &session_id,
                         &self.metadata_workspace_id(),
-                        full_metadata_patch(&metadata),
+                        creation_metadata_patch(&metadata),
                     )
                     .await
                 {
@@ -988,7 +1005,7 @@ impl SessionManager {
                 .apply(
                     &session_id,
                     &self.metadata_workspace_id(),
-                    full_metadata_patch(&metadata),
+                    creation_metadata_patch(&metadata),
                 )
                 .await
             {
