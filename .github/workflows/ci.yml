@@ -17,6 +17,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v6
+        with:
+          version: 12.16.1
 
       - uses: actions/setup-node@v6
         with:
@@ -37,6 +39,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v6
+        with:
+          version: 12.16.1
 
       - uses: actions/setup-node@v6
         with:
@@ -198,6 +202,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v6
+        with:
+          version: 12.16.1
 
       - uses: actions/setup-node@v6
         with:
@@ -222,6 +228,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v6
+        with:
+          version: 12.16.1
 
       - uses: actions/setup-node@v6
         with:
