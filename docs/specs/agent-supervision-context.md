@@ -79,7 +79,7 @@
 |---|---|---|
 | 观测（实时） | 事件流、agentId 路由、单成员面板深挖、蜂群行内总览（位置错误） | 成员选择器、四分类、diff 链接、稳定色、虚拟滚动、结构化事件（现为字符串） |
 | 观测（回看） | 主转录的工具卡 + 结果；成员 journal 落盘完整 | 名册与过程读面（G3/G10）、面板刷新后为空 |
-| 可控 | 停止（TaskStop，任务坞/任务视图工具可达）、审批门、蜂群启动前审批（collaboration US8.3）、swarm 成员经 TaskManager 注册可被 `task.cancel` 单独停止（引擎已接线，验收 e2e 覆盖） | 暂停/恢复（引擎无能力）；运行中定向指令 |
+| 可控 | 停止（TaskStop，任务坞/任务视图工具可达）、审批门、蜂群启动前审批（collaboration US8.3）、swarm 成员经 TaskManager 注册可被 `task.cancel` 单独停止；面板/任务坞的停止按钮按行键（agent id）发起，引擎侧 `resolve_agent_task_id` 把它解析到 `task-<uuid>`（前台蜂群成员无 started 事件、快照名册重建的行都不带该链接，故解析必须放在引擎） | 暂停/恢复（引擎无能力）；运行中定向指令 |
 | 干预 | 事后续作（`resume(agent_id)`，引擎已具备）、BTW 侧聊（SideChatPanel，UI 先例） | 运行中定向指令（in-flight steering，引擎无能力）、面板指令落位 |
 
 协作模式伏笔：wire 协议已预留 `collaboration_mode` 字段（`apps/mirri-web/src/api/daemon/wire.ts:248` 一带；`agent.status.updated` 透传 `collaborationMode` 开关，`agentEventProjector.ts:966-968`）；rust 侧 7 个 `Collaboration*` 工具注册但默认隐藏（collaboration SDR-003）。S7 升格的协议前提已铺。
@@ -120,7 +120,7 @@
 
 - **等待审批无状态信号**：引擎侧成员挂起语义只有限流退避一种（`rust/crates/mirri-core/src/subagent/swarm_batch.rs:56` 的 `RATE_LIMIT_SUSPENDED_REASON`；`subagent/mod.rs:627` 注释自述仅限流语境）；审批等待发生在 turn 执行前的权限钩子内（`rust/crates/mirri-core/src/turn_flow/hooks.rs:929-986` 的反向 RPC/gate 竞速），期间不发任何生命周期事件。web 侧成员阶段词汇与投影（`apps/mirri-web/src/api/daemon/agentEventProjector.ts:1131-1139` 的 `subagent.suspended` → suspended）均只有限流语义；`approvalsBySession` 虽已携带成员身份（supervision B1 落地），但成员行/卡片/选择区均不做关联渲染——等待审批的成员对外恒呈"运行中"。
 - **等待时间计入时长预算**：成员 attempt 的时长闸门为挂钟计时（`swarm_batch.rs:577-591` `wrap_attempt`；缺省 2 小时，`mirri-core/src/config/mod.rs:744` `resolve_subagent_timeout`），审批等待期间不停表——长审批必然演变为 "Subagent timed out" 假失败（`registry.tasks.fail` → web `taskCompleted(status:'failed')` → 成员行显示失败，而用户视角是"还在工作/等我审批"）。
-- **状态双行分叉**：rust 引擎把蜂群成员注册进任务管理面（`swarm_batch.rs:135-139` `SwarmTaskRegistry`，US5.1——"task.list 可观测"），REST 任务行以任务 id 为键；web 实时行以 agent id 为键，fold 依赖 `backgroundTaskId`（`apps/mirri-web/src/lib/taskMerge.ts:8-20`），而前台蜂群成员无该字段——该处注释"REST /tasks 永不返回前台 swarm 成员"是 TS 引擎时代假设，rust 引擎下已过时。`phaseForTask`（`apps/mirri-web/src/composables/swarmGroups.ts:27-35`）令 REST 行的 failed/cancelled 权威覆盖 `subagentPhase` 且终态粘滞、cancelled 混入 failed 档。
+- **状态双行分叉**：rust 引擎把蜂群成员注册进任务管理面（`swarm_batch.rs:135-139` `SwarmTaskRegistry`，US5.1——"task.list 可观测"），REST 任务行以任务 id 为键；web 实时行以 agent id 为键，fold 依赖 `backgroundTaskId`（`apps/mirri-web/src/lib/taskMerge.ts:8-20`），而前台蜂群成员无该字段——该处注释"REST /tasks 永不返回前台 swarm 成员"是 TS 引擎时代假设，rust 引擎下已过时。`phaseForTask`（`apps/mirri-web/src/composables/swarmGroups.ts:27-35`）令 REST 行的 failed/cancelled 权威覆盖 `subagentPhase` 且终态粘滞、cancelled 混入 failed 档。**停止路径已不再依赖该链接**（2026-11-05）：面板/任务坞按行键（agent id）发起 `task.cancel` / `task.stop`，引擎侧 `TaskManager::resolve_agent_task_id` 把它解析到 `task-<uuid>`，故前台成员与名册重建行同样可停；`mergeSnapshotSubagents` 同时保留 live 行的 `backgroundTaskId`。残余缺口只剩**终态输出回填**（`useTaskPoller` 仍以 agent id 调 `task.output` 并吞掉 404）与折合键本身。
 - **审批通道与连接耦合**：WS 断开时 pending 反向 RPC 被清空（`rust/crates/mirri-server/src/ws_rpc.rs:1819`），审批请求按"用户已取消"收尾（`hooks.rs:1029-1064`：投递失败 → gate withdraw + `Timeout` → "cancelled by user" 否决工具调用）——用户从未表态，审批卡随断连消失（subagent 域 ADR-009 修订记录登记的后续项 Q3）。
 
 ## 10. 成员状态双字段分叉与幽灵行（2026-10-23 快照）
