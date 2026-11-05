@@ -332,8 +332,27 @@ impl SessionIndex {
         // a multi-MB WAL on the first query. A busy database skips it and
         // performs normally.
         let _ = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)", []);
-        conn.execute_batch(SCHEMA)?;
-        Self::migrate(&conn)?;
+        // The schema + migration chain runs inside ONE IMMEDIATE
+        // transaction: the write lock is taken at BEGIN, so a second opener
+        // (another process sharing the home, or parallel tests in one
+        // process) waits on `busy_timeout`, then reads the already-migrated
+        // `user_version` and early-returns — instead of racing the
+        // check-then-ALTER column guards and failing with
+        // "duplicate column name". SQLite DDL and the `user_version` stamps
+        // are transactional, so a crash mid-migration rolls the whole chain
+        // back and the next open re-runs it.
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let migrated = (|| -> Result<()> {
+            conn.execute_batch(SCHEMA)?;
+            Self::migrate(&conn)
+        })();
+        match migrated {
+            Ok(()) => conn.execute_batch("COMMIT")?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
         let registry_path = path
             .parent()
             .map(|parent| parent.join(registry::WORKSPACE_REGISTRY_FILENAME));
@@ -349,7 +368,9 @@ impl SessionIndex {
     /// chain (see [`SCHEMA_VERSION`]'s history). Runs on every open and is
     /// a no-op on an already-current database (re-opening never re-runs a
     /// step). Every step is **expand-only**: it adds tables and columns, and
-    /// never rewrites or drops an existing row.
+    /// never rewrites or drops an existing row. Runs inside the open's
+    /// `BEGIN IMMEDIATE` transaction, so concurrent openers serialize on
+    /// the write lock.
     ///
     /// Each step guards on the version the database had when `open` started,
     /// not on the version the previous step just stamped, so one open walks
@@ -2041,6 +2062,81 @@ mod tests {
         assert_eq!(
             reopened
                 .get_session("sess-pinned")
+                .unwrap()
+                .pin_color
+                .as_deref(),
+            Some("red"),
+            "the migrated table stores the pin columns"
+        );
+    }
+
+    /// Given a v2-era database (no `pinned` column yet), When sixteen
+    /// threads open it concurrently, Then every open succeeds — the schema
+    /// and migration chain run inside one IMMEDIATE transaction, so openers
+    /// serialize instead of racing the check-then-ALTER column guards
+    /// ("duplicate column name: pinned").
+    #[test]
+    fn should_migrate_successfully_when_parallel_opens_race_on_a_v2_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("session-index.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sessions (
+                    id          TEXT PRIMARY KEY NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    cwd         TEXT,
+                    title       TEXT,
+                    created_at  TEXT NOT NULL,
+                    updated_at  TEXT NOT NULL,
+                    archived    INTEGER NOT NULL DEFAULT 0,
+                    tags        TEXT,
+                    custom      TEXT,
+                    state_mtime INTEGER,
+                    last_prompt TEXT,
+                    archived_at  TEXT,
+                    compressed   INTEGER,
+                    compressed_at TEXT
+                );",
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 2).unwrap();
+        }
+
+        let barrier = std::sync::Barrier::new(16);
+        let results: Vec<Result<SessionIndex>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..16)
+                .map(|_| {
+                    let db_path = &db_path;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        SessionIndex::open(db_path)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect()
+        });
+        for (slot, result) in results.into_iter().enumerate() {
+            if let Err(error) = result {
+                panic!("open {slot} must succeed against the shared v2 database: {error}");
+            }
+        }
+
+        // And the migration landed: the winner's schema writes pin columns.
+        let index = SessionIndex::open(&db_path).unwrap();
+        let now = Utc::now();
+        let mut row = session_row("sess-after-race", now);
+        row.pinned = true;
+        row.pinned_at = Some(now);
+        row.pin_color = Some("red".to_string());
+        index.upsert_session(&row).unwrap();
+        assert_eq!(
+            index
+                .get_session("sess-after-race")
                 .unwrap()
                 .pin_color
                 .as_deref(),
