@@ -4834,12 +4834,21 @@ async fn should_stop_event_stream_when_disposed() {
     // When the server is disposed
     server.dispose().await.unwrap();
 
-    // Then the event channel closes
-    let notification = tokio::time::timeout(Duration::from_secs(5), events.recv()).await;
-    assert!(
-        notification.is_err() || matches!(notification, Ok(None)),
-        "event channel must close after dispose"
-    );
+    // Then the event channel closes. Frames a relay had already queued
+    // before the abort are drained first — the assertion is on CLOSURE, not
+    // on "the next recv timed out": a queued frame made the old
+    // `timeout(5s)` form fail (and it passed only when nothing was queued,
+    // which is why it flaked under load).
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || match events.try_recv() {
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Some(()),
+            Ok(_) | Err(tokio::sync::mpsc::error::TryRecvError::Empty) => None,
+        },
+    )
+    .await
+    .expect("event channel must close after dispose");
 }
 
 #[tokio::test]

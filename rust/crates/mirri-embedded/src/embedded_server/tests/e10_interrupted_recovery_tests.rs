@@ -1054,8 +1054,31 @@ async fn should_not_fold_interrupted_into_failed_on_live_row() {
         .await
         .expect("the foreign absorb pass folds the appended closure");
 
-    // Then the live row's lastTurnReason stays `interrupted` — the fold
-    // must not collapse the fifth value into the failed family
+    // Then the live row's lastTurnReason is `interrupted` — the fold must
+    // not collapse the fifth value into the failed family.
+    //
+    // The fold is asynchronous: `absorb_session_foreign_updates` returns
+    // after publishing, and the activity shadow consumes the event on its
+    // own task. Poll the row (an async read) until the fold LANDS —
+    // `lastTurnReason` becomes set exactly once (the replay never seeds
+    // it) — then assert which value landed: a fold into `failed` resolves
+    // the wait just as fast and still fails the assert below, so the
+    // verdict still belongs to this assertion.
+    //
+    // The predicate is async (the row read), so this uses the async-predicate
+    // helper rather than a hand-rolled deadline loop or a nested `block_on`
+    // (the latter panics inside a Tokio worker).
+    mirri_test_support::wait_for::wait_for_async_result(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(5),
+        || async {
+            session_list_row(&server, session_id).await["lastTurnReason"]
+                .is_string()
+                .then_some(())
+        },
+    )
+    .await
+    .expect("the foreign absorb must fold the interrupted closure into the live row");
     let row = session_list_row(&server, session_id).await;
     assert_eq!(
         row["lastTurnReason"], "interrupted",
