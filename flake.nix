@@ -95,17 +95,17 @@
         (pkgs.callPackage "${pkgs.path}/pkgs/development/tools/pnpm/generic.nix" {
           version = "12.16.1";
           hash = "sha256-yjYqFvLhw8+oHUBvMkJEYXmg5K6kV7o+nmw55kdqumU=";
-        }).override { nodejs = nodejsFor pkgs; }
+          nodejs = nodejsFor pkgs;
+        }).overrideAttrs (old: {
           # generic.nix strips pnpm's bundled native binaries
           # (`rm -r dist/reflink.*node dist/vendor`) because 8/9/10 ship
-          # them. pnpm 12 ships neither, so the removal aborts the build;
-          # drop it and let the fixup phase prune what is actually there.
-          .overrideAttrs (old: {
-            preConfigure = pkgs.lib.replaceStrings
-              [ "rm -r dist/reflink.*node dist/vendor" ]
-              [ "rm -rf dist/reflink.*node dist/vendor || true" ]
-              old.preConfigure;
-          });
+          # them. pnpm 12 ships neither, so the unconditional removal
+          # aborts the build; make it tolerant instead.
+          preConfigure = pkgs.lib.replaceStrings
+            [ "rm -r dist/reflink.*node dist/vendor" ]
+            [ "rm -rf dist/reflink.*node dist/vendor || true" ]
+            old.preConfigure;
+        });
 
       # -------------------------------------------------------------------
       # Workspace members (kept in sync with pnpm-workspace.yaml).
