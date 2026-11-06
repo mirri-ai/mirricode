@@ -1240,27 +1240,27 @@
       "type": "real-env",
       "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
     },
-    "crates/mirri-mcp/tests/mcp_group.rs:3202": {
+    "crates/mirri-mcp/tests/mcp_group.rs:3213": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-mcp/tests/mcp_group.rs:3665": {
+    "crates/mirri-mcp/tests/mcp_group.rs:3676": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-mcp/tests/mcp_group.rs:3739": {
+    "crates/mirri-mcp/tests/mcp_group.rs:3750": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-mcp/tests/mcp_group.rs:3747": {
+    "crates/mirri-mcp/tests/mcp_group.rs:3758": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-mcp/tests/mcp_group.rs:3784": {
+    "crates/mirri-mcp/tests/mcp_group.rs:3795": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-mcp/tests/mcp_group.rs:3931": {
+    "crates/mirri-mcp/tests/mcp_group.rs:3942": {
       "type": "real-env",
       "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
     },
