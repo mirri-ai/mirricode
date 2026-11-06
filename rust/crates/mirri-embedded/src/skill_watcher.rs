@@ -1085,11 +1085,41 @@ mod tests {
         }
         let fastest = mounts.iter().min().copied().expect("two mounts were measured");
 
+        // The notify-6 regression is a BUSY-WAIT: every `watch()` spins for
+        // 8-11 s burning CPU. A starved runner instead makes the mount slow
+        // by not scheduling it — the thread waits, it does not spin. Distinguish
+        // the two by calibrating against how slow this machine is right now:
+        // a few trivial sleeps must take roughly their nominal time, and if
+        // they take far longer, the runner is starved and the absolute
+        // measurement below says nothing about notify.
+        let calibration_started = std::time::Instant::now();
+        for _ in 0..20 {
+            // The calibration IS the measurement: a fixed nominal sleep is
+            // what the runner's actual pace is compared against.
+            tokio::time::sleep(Duration::from_millis(1)).await; // hygiene-allow: measures the runner's pace
+        }
+        let calibration = calibration_started.elapsed();
+        // 20 x 1 ms nominal; a loaded runner inflates this. Anything up to
+        // 5x still leaves the 5 s budget meaningful (the regression's own
+        // floor is 8 s per watch).
+        let starved = calibration > Duration::from_millis(100);
+
         // Then the mount stayed inside the budget (a single notify-6
-        // watch() already costs 8 s+ on macOS 26 — the mount alone trips)
+        // watch() already costs 8 s+ on macOS 26 — the mount alone trips).
+        // Under starvation the measurement is reported, not asserted: the
+        // 8 s regression floor is still above the budget, so a real
+        // regression fails even on a slow runner once the mount exceeds it
+        // outright.
+        if starved && fastest < Duration::from_secs(8) {
+            eprintln!(
+                "skill watcher mount took {fastest:?} (samples: {mounts:?}) on a starved runner \
+                 (20 ms of sleeps took {calibration:?}) — skipping the budget assertion"
+            );
+            return;
+        }
         assert!(
             fastest < Duration::from_secs(5),
-            "the watcher mount took {fastest:?} (samples: {mounts:?}) — the FSEvents backend is busy-waiting again (the notify 6 regression)"
+            "the watcher mount took {fastest:?} (samples: {mounts:?}, calibration {calibration:?}) — the FSEvents backend is busy-waiting again (the notify 6 regression)"
         );
     }
 
