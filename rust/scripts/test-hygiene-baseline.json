@@ -20,23 +20,11 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-cli/src/main.rs:954": {
+    "crates/mirri-cli/src/main.rs:1153": {
       "type": "set_var",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-cli/src/main.rs:962": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-cli/src/main.rs:963": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-cli/src/main.rs:1119": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-cli/src/main.rs:1141": {
+    "crates/mirri-cli/src/main.rs:1175": {
       "type": "set_var",
       "reason": "legacy: pending R2/R4 migration"
     },
