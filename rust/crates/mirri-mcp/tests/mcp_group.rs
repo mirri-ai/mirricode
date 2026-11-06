@@ -3211,6 +3211,7 @@ fn is_connected(state: &McpConnectionState) -> bool {
     matches!(state, McpConnectionState::Connected { .. })
 }
 
+
 fn is_failed(state: &McpConnectionState) -> bool {
     matches!(state, McpConnectionState::Failed { .. })
 }
@@ -3610,6 +3611,25 @@ fn http_config(url: &str) -> McpServerConfig {
     serde_json::from_value(raw).expect("the config should parse")
 }
 
+
+/// Wait until the auto-reconnect loop for `name` has exited (`false` on
+/// timeout). The loop clears its own generation bookkeeping as it returns,
+/// so this observes the loop's end rather than guessing a delay.
+async fn wait_for_loop_exit(
+    manager: &McpConnectionManager,
+    name: &str,
+    timeout: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while manager.is_auto_reconnect_active(name) {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    true
+}
+
 /// A fast backoff profile so the loops settle within test time.
 fn fast_backoff(max_attempts: u32) -> ReconnectBackoff {
     ReconnectBackoff {
@@ -3766,16 +3786,28 @@ async fn should_exit_the_loop_when_the_server_is_removed_mid_retry() {
     // The removal (a reconcile's Disconnect{unregister:true}).
     manager.remove("srv").await.expect("removal succeeds");
 
-    let count_at_remove = mock.count();
     assert!(
-        count_at_remove > count_after_initial,
+        mock.count() > count_after_initial,
         "the loop must have attempted before the removal"
     );
+
+    // Wait for the LOOP ITSELF to exit, not for a fixed delay: an attempt
+    // that was already in flight when `remove` landed still reaches the
+    // server (nothing can un-send it), so a fixed sleep would sometimes
+    // sample the count before that request landed and sometimes after.
+    // Once the loop has exited, no NEW attempt can start, which is exactly
+    // what this test proves.
+    let exited = wait_for_loop_exit(&manager, "srv", Duration::from_secs(10)).await;
+    assert!(
+        exited,
+        "the auto-reconnect loop must exit once the server is removed"
+    );
+    let count_at_exit = mock.count();
     tokio::time::sleep(Duration::from_millis(1200)).await;
     assert_eq!(
         mock.count(),
-        count_at_remove,
-        "the loop must stop after the removal instead of retrying a dead registration"
+        count_at_exit,
+        "no attempt may start after the loop exited (a dead registration kept retrying)"
     );
 }
 

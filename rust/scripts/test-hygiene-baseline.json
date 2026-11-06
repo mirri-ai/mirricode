@@ -1196,23 +1196,19 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-mcp/tests/mcp_group.rs:3645": {
+    "crates/mirri-mcp/tests/mcp_group.rs:3665": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-mcp/tests/mcp_group.rs:3719": {
+    "crates/mirri-mcp/tests/mcp_group.rs:3739": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-mcp/tests/mcp_group.rs:3727": {
+    "crates/mirri-mcp/tests/mcp_group.rs:3747": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-mcp/tests/mcp_group.rs:3764": {
-      "type": "sleep",
-      "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-mcp/tests/mcp_group.rs:3774": {
+    "crates/mirri-mcp/tests/mcp_group.rs:3784": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },

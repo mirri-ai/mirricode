@@ -1206,6 +1206,19 @@ impl McpConnectionManager {
         });
     }
 
+    /// Whether an auto-reconnect loop is still registered for `name`.
+    ///
+    /// A loop removes its own bookkeeping the moment it returns, so this is
+    /// the observable "the loop has exited" signal — what a test needs when
+    /// it must distinguish "no further attempts after this point" from "an
+    /// attempt that was already in flight when the server went away".
+    pub fn is_auto_reconnect_active(&self, name: &str) -> bool {
+        self.auto_reconnect_gens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(name)
+    }
+
     /// Remove this loop's generation bookkeeping when it owns the entry.
     fn clear_auto_reconnect(&self, name: &str, generation: u32) {
         let mut gens = self
