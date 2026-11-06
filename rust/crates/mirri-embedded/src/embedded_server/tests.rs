@@ -718,6 +718,17 @@ enum ScriptedResponse {
 pub(super) struct ScriptedLlm {
     calls: AtomicU64,
     responses: Mutex<VecDeque<ScriptedResponse>>,
+    /// Replies reserved for the out-of-band session-title call, which the
+    /// side call claims by marking its request
+    /// (`request_log_fields.purpose == "session-title"`). The shared
+    /// [`Self::responses`] queue serves both the main loop and the side
+    /// call, and a mid-turn side call genuinely races the main loop's next
+    /// step — whichever reaches `chat()` first pops the front. A test that
+    /// scripts the title into the shared queue therefore asserts a pop
+    /// order nothing enforces. Replies pushed here can only be taken by a
+    /// title call, which makes that ordering explicit instead of
+    /// luck-of-the-scheduler.
+    title_responses: Mutex<VecDeque<ScriptedResponse>>,
     /// Every chat call's serialized messages, in call order — lets tests
     /// assert on what the engine loop fed back (e.g. tool results).
     recorded_messages: Mutex<Vec<serde_json::Value>>,
@@ -777,6 +788,16 @@ impl ScriptedLlm {
 
     pub(super) fn push_text(&self, text: &str) {
         self.responses
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(ScriptedResponse::Text(text.to_string()));
+    }
+
+    /// Queue a reply reserved for the out-of-band session-title call (see
+    /// [`Self::title_responses`]). Only a title call can claim it, so the
+    /// main loop's concurrent steps can never steal the scripted title.
+    fn push_title(&self, text: &str) {
+        self.title_responses
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push_back(ScriptedResponse::Text(text.to_string()));
@@ -909,14 +930,34 @@ impl Llm for ScriptedLlm {
         // every un-scripted turn (side calls, notification turns, extra
         // turns the test didn't plan) into a step-retry storm. Tests that
         // genuinely want an empty response must script `push_text("")`.
-        let response = self
-            .responses
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pop_front()
-            .unwrap_or(ScriptedResponse::Text(
-                "(no more scripted replies)".to_string(),
-            ));
+        // A title call claims its own reserved queue first (and falls back
+        // to the shared one, so every test that scripts the title among the
+        // turn's replies keeps working unchanged).
+        let is_title_call = params
+            .request_log_fields
+            .as_ref()
+            .and_then(|fields| fields.get("purpose"))
+            .and_then(serde_json::Value::as_str)
+            == Some("session-title");
+        let reserved = if is_title_call {
+            self.title_responses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pop_front()
+        } else {
+            None
+        };
+        let response = match reserved {
+            Some(response) => response,
+            None => self
+                .responses
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pop_front()
+                .unwrap_or(ScriptedResponse::Text(
+                    "(no more scripted replies)".to_string(),
+                )),
+        };
         // Counted after the pop: `chat_call_count` then means "responses
         // consumed", so a caller waiting for N calls knows the N-th
         // queued response has actually been taken by its round (the

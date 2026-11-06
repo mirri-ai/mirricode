@@ -128,8 +128,16 @@ async fn should_title_via_side_llm_call_when_the_first_response_lands_mid_turn()
         name: "Read".to_string(),
         args: json!({ "path": "/tmp/some/long/running/task.txt" }),
     }]);
-    mock.push_text("Refactor the auth module");
-    mock.push_text("Done.");
+    // The title is reserved for the side call: once the gate opens, the
+    // main loop's second step and the in-turn side call both reach
+    // `chat()`, and only the reservation decides which one gets the
+    // scripted title.
+    mock.push_title("Refactor the auth module");
+    // The main loop's second step parks on its own gate instead of
+    // answering: that keeps the turn genuinely in flight while the title
+    // lands, and stops the second step from racing the side call for the
+    // title text in the first place.
+    let release_final = mock.push_gated("Done.");
     let (server, tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
     let created = server
         .call_method("session.create", json!({}))
@@ -189,8 +197,10 @@ async fn should_title_via_side_llm_call_when_the_first_response_lands_mid_turn()
     .expect("the metadata row must carry the side call's title");
     let _ = &tmp;
 
-    // Cleanup: let the parked turn finish so the test ends with no
-    // dangling turn task.
+    // Cleanup: release the main loop's parked second step. The turn cannot
+    // end before this point, so the title asserted above is necessarily a
+    // mid-turn title, not a settle-time one.
+    release_final.send(()).unwrap();
     next_event_where(&mut events, |n| n.method == "event.turn.ended", |_| {}).await;
 }
 
