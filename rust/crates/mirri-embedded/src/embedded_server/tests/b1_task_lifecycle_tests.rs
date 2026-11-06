@@ -298,9 +298,6 @@ async fn should_reject_the_second_background_agent_when_max_running_tasks_is_1()
             "run_in_background": true
         }),
     }]);
-    // 1b. The in-turn side title call — fires after the first step lands
-    // (SDR-016) and consumes one scripted reply.
-    main_llm.push_text("background agents");
     // 2. Main agent → second background Agent dispatch (rejected).
     main_llm.push_tool_use(vec![LlmToolCall {
         id: "call_2".to_string(),
@@ -329,8 +326,18 @@ async fn should_reject_the_second_background_agent_when_max_running_tasks_is_1()
         "[task]\nmaxRunningTasks = 1\n",
         std::time::Duration::from_millis(50),
     );
+    // Titled at creation: an untitled session fires the in-turn side title
+    // call (SDR-016), which reads the FRONT of the same `ScriptedLlm` queue
+    // as the main loop — whichever gets there first takes the next scripted
+    // reply, so the main loop's second Agent dispatch could be answered with
+    // the title text instead. Naming the session keeps the side call from
+    // starting at all (the same fix the surrounding tests use); the title is
+    // not what this test is about.
     let created = server
-        .call_method("session.create", json!({ "permissionMode": "yolo" }))
+        .call_method(
+            "session.create",
+            json!({ "permissionMode": "yolo", "title": "capacity rejection" }),
+        )
         .await
         .expect("create");
     let session_id = created["id"].as_str().unwrap().to_string();
@@ -347,10 +354,9 @@ async fn should_reject_the_second_background_agent_when_max_running_tasks_is_1()
         .expect("send");
 
     // The main agent's continuation carries the second Agent call's tool
-    // result — the capacity rejection. Which call index that lands on is not
-    // fixed: the in-turn side title call takes one of the main mock's turns
-    // and races the continuation under load, so pin the CONTENT, not the
-    // position.
+    // result — the capacity rejection. The assertion pins the CONTENT rather
+    // than a call index: the continuation's position in the mock's recorded
+    // calls is an artefact of scheduling, not of what the test proves.
     await_chat_message(&main_llm, "Too many background tasks are already running.").await;
 
     // The task list holds exactly the one running background task.

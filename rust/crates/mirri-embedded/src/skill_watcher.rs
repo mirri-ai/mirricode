@@ -1064,17 +1064,32 @@ mod tests {
 
         // When the watcher mounts (the awaited spawn — the watch
         // registrations are included in the measured window)
-        let mount_started = std::time::Instant::now();
-        let _watcher = spawn_skill_watcher(&runtime, &orchestrator, inputs(&home))
-            .await
-            .expect("watcher spawn");
-        let mount_elapsed = mount_started.elapsed();
+        //
+        // Mounted twice and the FASTER of the two is judged. Mounting is a
+        // one-off cost this assertion wants to characterise, but it runs on
+        // the blocking pool, so under a full-suite run the first mount can
+        // sit in the queue behind other tests' blocking work and report that
+        // wait as if it were watch() cost. Taking the minimum removes the
+        // queueing term without weakening what is measured: the notify-6
+        // regression is per-`watch()` and hits EVERY mount (8-11 s each), so
+        // a regression cannot produce a fast sample, while a starved runner
+        // cannot produce a slow one twice in a row.
+        let mut mounts = Vec::with_capacity(2);
+        for _ in 0..2 {
+            let mount_started = std::time::Instant::now();
+            let watcher = spawn_skill_watcher(&runtime, &orchestrator, inputs(&home))
+                .await
+                .expect("watcher spawn");
+            mounts.push(mount_started.elapsed());
+            drop(watcher);
+        }
+        let fastest = mounts.iter().min().copied().expect("two mounts were measured");
 
         // Then the mount stayed inside the budget (a single notify-6
         // watch() already costs 8 s+ on macOS 26 — the mount alone trips)
         assert!(
-            mount_elapsed < Duration::from_secs(5),
-            "the watcher mount took {mount_elapsed:?} — the FSEvents backend is busy-waiting again (the notify 6 regression)"
+            fastest < Duration::from_secs(5),
+            "the watcher mount took {fastest:?} (samples: {mounts:?}) — the FSEvents backend is busy-waiting again (the notify 6 regression)"
         );
     }
 

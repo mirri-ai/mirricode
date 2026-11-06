@@ -43109,6 +43109,28 @@ where
     predicate().await
 }
 
+/// Wait until every built workspace reports its skill watcher as live.
+///
+/// `skill.reload` refreshes the mounts and then awaits them, but that await
+/// is bounded (`MOUNT_AWAIT_TIMEOUT`): a mount over an unreachable home must
+/// not hang the RPC, so on a fully loaded runner the blocking-pool mount can
+/// outlive the bound and the reload answers with it still in flight. Tests
+/// that then write a skill file need the watcher live first — otherwise the
+/// write races the FSEvents registration and is never seen.
+async fn wait_for_skill_watcher(server: &EmbeddedServer) {
+    let settled = e2e_wait_until(std::time::Duration::from_secs(60), || async {
+        let reload = server
+            .call_method("skill.reload", json!({}))
+            .await
+            .expect("skill.reload resolves");
+        reload["workspaces"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty() && rows.iter().all(|row| row["watching"] == true))
+    })
+    .await;
+    assert!(settled, "the skill watcher never mounted");
+}
+
 /// Whether the server's live catalog serves the named skill (the read
 /// face — `skill.list` over the swapped table).
 async fn catalog_serves(server: &EmbeddedServer, skill: &str) -> bool {
@@ -43186,6 +43208,13 @@ async fn should_inject_the_refreshed_listing_on_the_next_turn_when_a_skill_file_
         rows.first().is_some_and(|row| row["watching"] == true),
         "the watcher must be mounted for the e2e chain: {reload}"
     );
+    // The mount can also land late: `skill.reload` bounds its wait
+    // (`MOUNT_AWAIT_TIMEOUT`) so an unreachable home cannot hang the RPC, and
+    // on a fully loaded runner the blocking-pool mount can exceed that bound
+    // — the reload then answers with the mount still in flight. Wait for it:
+    // what this test needs is the watcher being live before it writes, not
+    // the first RPC having absorbed the whole mount.
+    wait_for_skill_watcher(&server).await;
     assert!(
         !session.take_pending_skill_reminder(),
         "the no-change mount reload parks no pending (the diff gate)"
@@ -43300,8 +43329,10 @@ async fn should_not_inject_the_listing_when_the_tool_face_lacks_the_skill_tool()
 
     // The watcher mounts (the no-diff gate means no pending from this).
     server.call_method("skill.reload", json!({})).await.unwrap();
-    // No settle needed — `skill.reload` awaited the mount (see the positive
-    // chain test's note).
+    // The mount may land after `skill.reload` answered (its await is bounded
+    // — see the positive chain test's note), so wait for the watcher to be
+    // live before writing.
+    wait_for_skill_watcher(&server).await;
 
     // When the new skill lands and the chain parks the pending
     mock.push_text("another reply");
@@ -43375,8 +43406,10 @@ async fn should_replay_the_listing_reminder_on_resume_without_producing_activati
 
     // The watcher mounts; the new skill lands; the chain parks the pending.
     server.call_method("skill.reload", json!({})).await.unwrap();
-    // No settle needed — `skill.reload` awaited the mount (see the positive
-    // chain test's note).
+    // The mount may land after `skill.reload` answered (its await is bounded
+    // — see the positive chain test's note), so wait for the watcher to be
+    // live before writing.
+    wait_for_skill_watcher(&server).await;
     mock.push_text("second reply");
     write_skill_md(workspace.path(), "replayed-skill");
     assert!(
