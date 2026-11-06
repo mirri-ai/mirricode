@@ -1,0 +1,65 @@
+# R 层 nightly 必过运行（设计文档
+# docs/superpowers/specs/2026-11-06-rust-test-execution-optimization-design.md §6）：
+# 非阻塞是把"发现回归"和"卡 PR"解耦，不是不管——nightly 失败即红并通知；
+# 同一测试连续 3 次红升级为必修工单。
+# 与 ci.yml 的 rust-real-env 唯一语义差别：这里没有 continue-on-error（必过）。
+# 结构上也省掉 ci.yml 的 selection-check list 步骤（nextest 默认 --no-tests=fail，
+# 过滤器命不中任何测试时本 job 直接红，不会静默绿）。
+name: nightly-rust-real-env
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-real-env:
+    runs-on: ubuntu-latest
+    # 与 ci.yml 同口径：单测试挂起 2min×3 超时 + 1 次重试 ≈ 12min，加上编译，
+    # 30min 足够兜住并给出明确失败；多个测试同时挂起由 job 超时兜底。
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: rust
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          shared-key: rust-workspace
+          save-if: false
+
+      - uses: taiki-e/install-action@nextest
+
+      # --no-fail-fast: a red run must list ALL failing R-layer tests, not stop
+      # at the first — that list is the nightly/owner attribution input.
+      # 2>&1: nextest's reporter (status lines + Summary) goes to stderr, so a
+      # stdout-only capture would leave the summary log empty on a healthy run.
+      - name: R-layer tests (real profile)
+        run: |
+          set -o pipefail
+          cargo nextest run --workspace --locked --run-ignored only \
+            --no-fail-fast \
+            -E 'not (binary(e2e_real_llm) or test(should_handle_create_rpc_independently) or test(should_handle_plugins_rpc_independently))' --profile real 2>&1 | tee /tmp/nextest-real.log
+
+      - name: Publish failure summary
+        if: always()
+        run: |
+          {
+            echo "## nightly rust-real-env（R 层，必过）"
+            echo '```'
+            if grep -qE 'Summary' /tmp/nextest-real.log 2>/dev/null; then
+              grep -E 'FAIL|RETRY|TIMEOUT|Summary' /tmp/nextest-real.log
+            else
+              echo 'no nextest summary captured — the run did not execute; see the run step log'
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
