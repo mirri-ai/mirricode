@@ -1,0 +1,120 @@
+# D 层执行器 A/B 测量（设计文档
+# docs/superpowers/specs/2026-11-06-rust-test-execution-optimization-design.md §5.2）：
+# 一次性手动触发，只在需要判定"nextest 能否接替 ci.yml 的 rust-test 执行器"时跑。
+# 采纳门槛：B ≤ 1.1× A 才切换 rust-test 的执行器；不达标记录结论后维持 cargo test。
+# A = cargo test --workspace（当前 rust-test 的执行段）；B = nextest run + cargo test --doc
+# （nextest 不支持 doc-test，任何采纳路径都得单独保留 --doc）。
+# 为什么不在本地判定：本机 macOS 实测 nextest 慢 14×–80×（§5.1），那是逐 exec 安全
+# 检查对进程-per-test 模型的惩罚，Linux CI 没有这笔税——所以只能在 CI 上量。
+# 注意 nextest 的已知反模式（issue #1316）：昂贵进程级初始化逐测试重复执行，
+# Report 里有 B 臂的慢测试 top 20（nextest 默认标 >60s 为 slow），若单测试
+# 出现数量级异常按不达标处理。
+name: rust-nextest-ab
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ab:
+    runs-on: ubuntu-latest
+    # 本机热缓存整套 workspace 测试约 7min，两臂各跑一遍再留足余量；
+    # 60min 是"两臂都跑完并给出数字"的上限，不是常态耗时。
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        working-directory: rust
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          # 与 rust-test 共用一份缓存，且只读：本 job 不改代码，
+          # 没有需要回写的新编译产物。
+          shared-key: rust-workspace
+          save-if: false
+
+      - uses: taiki-e/install-action@nextest
+
+      # 与 rust-test 同口径：mirri-core 的 grep 测试真的 spawn `rg`，
+      # 缺了它 A 臂会在测试体内红掉，而不是给出一个耗时数字。
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      # 两臂都从同一份已编译产物起跑：编译时间由 --no-run 前置吃掉，
+      # 计时只覆盖执行段（§5.1 的测量口径）。
+      - name: Warm build (exclude compile time from both arms)
+        run: cargo test --workspace --locked --no-run
+
+      - name: 'A: cargo test --workspace (current rust-test shape)'
+        run: |
+          start=$(date +%s)
+          cargo test --workspace --locked
+          echo "A_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+
+      - name: 'B: nextest run + cargo test --doc (candidate shape)'
+        run: |
+          set -o pipefail
+          start=$(date +%s)
+          # tee: nextest 的 reporter（状态行 + Summary + SLOW 列表）走 stderr，
+          # 留一份到文件，Report 才贴得出慢测试清单。
+          cargo nextest run --workspace --locked 2>&1 | tee /tmp/nextest-ab.log
+          cargo test --workspace --locked --doc
+          echo "B_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+
+      # always(): 一臂红掉也要留下另一臂的数字和失败原因，否则一次性测量
+      # 白跑一趟——失败本身就是"不达标"的证据。
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## D 层执行器 A/B"
+            if [ -n "${A_SECONDS:-}" ] && [ -n "${B_SECONDS:-}" ]; then
+              echo "- A（cargo test --workspace）: ${A_SECONDS}s"
+              echo "- B（nextest + --doc）: ${B_SECONDS}s"
+              ratio=$(awk "BEGIN { printf \"%.2f\", ${B_SECONDS} / ${A_SECONDS} }")
+              # 门槛线以秒给出：ratio 只保留两位小数，边界附近（如 441/400=1.1025）
+              # 会显示成 1.10 却判 KEEP，写清绝对秒数才不至于看着自相矛盾。
+              limit=$(awk "BEGIN { printf \"%.1f\", ${A_SECONDS} * 1.1 }")
+              echo "- B/A: ${ratio}（门槛线 A×1.1 = ${limit}s）"
+              echo "- 采纳门槛 ≤ 1.10 → $([ "$(awk "BEGIN { print (${B_SECONDS} <= ${A_SECONDS} * 1.1) }")" = 1 ] && echo 'SWITCH（切换 rust-test 执行器并删除本 workflow）' || echo 'KEEP cargo test（记录结论，nextest 仅 R 层）')"
+            else
+              echo "- 测量未完成：A_SECONDS=${A_SECONDS:-<unset>} B_SECONDS=${B_SECONDS:-<unset>}"
+              echo "- 有一臂在跑出耗时前就失败了（见失败步骤日志）——按不达标处理：KEEP cargo test"
+            fi
+            # 放在 if 之外：B 臂红掉时 timing 拿不到，但慢测试清单恰恰是
+            # 判断"是不是 issue #1316 反模式"的证据，这时候更需要它。
+            echo
+            echo "### B 臂慢测试 top 20（issue #1316 核对：单测试数量级异常即不达标）"
+            echo '```'
+            # 运行中的测试每过一个 60s 周期就再打一行 SLOW，所以按测试名去重只留
+            # 最长的那行，再按耗时降序——失控的单个测试不会把列表撑满，
+            # 最该看的那个总在第一条。
+            grep -E '^[[:space:]]+SLOW \[' /tmp/nextest-ab.log 2>/dev/null | awk '
+              {
+                dur = 0
+                if (match($0, /\[[> ]*[0-9.]+s\]/)) {
+                  t = substr($0, RSTART, RLENGTH); gsub(/[^0-9.]/, "", t); dur = t + 0
+                }
+                name = $NF
+                if (!(name in best) || dur > best[name]) { best[name] = dur; text[name] = $0 }
+              }
+              END {
+                for (name in best) a[++n] = best[name] "\t" text[name]
+                for (i = 2; i <= n; i++) {
+                  v = a[i]; j = i - 1
+                  while (j > 0 && a[j] + 0 < v + 0) { a[j + 1] = a[j]; j-- }
+                  a[j + 1] = v
+                }
+                for (i = 1; i <= n && i <= 20; i++) { sub(/^[0-9.]*\t/, "", a[i]); print a[i] }
+              }
+            ' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

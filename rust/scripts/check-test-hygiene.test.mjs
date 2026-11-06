@@ -216,3 +216,155 @@ test('should write the baseline under the --root tree only (never the real repo 
   const real = JSON.parse(readFile(join(import.meta.dirname, 'test-hygiene-baseline.json'), 'utf-8'));
   assert.equal(real.violations['crates/demo/tests/integration.rs:4'], undefined);
 });
+
+// --- 规则 R：real-env 归因 ------------------------------------------------------
+
+/** 一个 tests/ 二进制 fixture：layer 标签 + 给定 fn 体。 */
+function testBinary(body) {
+  return ['// layer: T2', ...body, ''].join('\n');
+}
+
+test('should flag a raw subprocess spawn in a test fn without #[ignore]', () => {
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    '#[test]',
+    'fn spawns_a_child() {',
+    '    let _c = std::process::Command::new("echo");',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 1);
+  assert.deepEqual(violationLines(stderr, file), [4]);
+});
+
+test('should not flag a raw subprocess spawn in an #[ignore]d test fn', () => {
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    '#[test]',
+    '#[ignore]',
+    'fn spawns_a_child() {',
+    '    let _c = std::process::Command::new("echo");',
+    '}',
+  ]);
+  const { status } = runGate({ [file]: content });
+  assert.equal(status, 0);
+});
+
+test('should attribute a spawn hit by fn body rather than by line window', () => {
+  // fn a 带 #[ignore] 且只有一个短 fn 头；fn b 不带 ignore，命中行距离
+  // fn a 的 #[ignore] 不足 15 行——旧的行窗口守卫会误放行，fn 归因必须拦下。
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    '#[test]',
+    '#[ignore]',
+    'fn a() {',
+    '    let _c = 1;',
+    '}',
+    '#[test]',
+    'fn b() {',
+    '    let _c = tokio::process::Command::new("echo");',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 1);
+  assert.deepEqual(violationLines(stderr, file), [9]);
+});
+
+test('should flag a real-time window in a test fn without #[ignore]', () => {
+  const file = 'crates/demo/tests/window.rs';
+  const content = testBinary([
+    '#[test]',
+    'fn samples_a_window() {',
+    '    let _s = 0; // hygiene-allow: real-time: simulated work under test',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 1);
+  assert.deepEqual(violationLines(stderr, file), [4]);
+});
+
+test('should not flag a virtual-clock pacing window', () => {
+  const file = 'crates/demo/tests/window.rs';
+  const content = testBinary([
+    '#[test]',
+    'fn paces_a_scenario() {',
+    '    let _s = 0; // hygiene-allow: scenario pacing (virtual clock — member work time)',
+    '}',
+  ]);
+  const { status } = runGate({ [file]: content });
+  assert.equal(status, 0);
+});
+
+test('should accept an #[ignore] with a reason string as R-layer attribution', () => {
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    '#[test]',
+    '#[ignore = "needs a real child process"]',
+    'fn spawns_a_child() {',
+    '    let _c = std::process::Command::new("echo");',
+    '}',
+  ]);
+  const { status } = runGate({ [file]: content });
+  assert.equal(status, 0);
+});
+
+test('should not treat doc-comment prose mentioning #[ignore] as attribution', () => {
+  // 属性区间的判定只看代码（注释/字符串已被 mask）：文档注释里"提到"
+  // #[ignore] 不算归因，否则一段说明文字就能悄悄放过裸 spawn。
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    '/// Not `#[ignore]`d yet: the child is hermetic.',
+    '#[test]',
+    'fn spawns_a_child() {',
+    '    let _c = std::process::Command::new("echo");',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 1);
+  assert.deepEqual(violationLines(stderr, file), [5]);
+});
+
+test('should accept a line-level hygiene-allow on a spawn in a plain test fn', () => {
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    '#[test]',
+    'fn spawns_a_hermetic_child() {',
+    '    let _c = Command::new("echo"); // hygiene-allow: D: hermetic child',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 0, stderr);
+});
+
+test('should flag a spawn in a helper fn without a line-level hygiene-allow', () => {
+  // helper 不能合法携带 #[ignore]，所以它没有归因能力：spawn 必须留在
+  // 违规面上（或行级豁免并写明理由），由 caller 测试归因。
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    'fn helper_spawns_a_child() {',
+    '    let _c = std::process::Command::new("echo");',
+    '}',
+    '#[test]',
+    '#[ignore]',
+    'fn spawns_a_child() {',
+    '    helper_spawns_a_child();',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 1);
+  assert.deepEqual(violationLines(stderr, file), [3]);
+});
+
+test('should not let an #[ignore] on a non-test fn exempt a spawn', () => {
+  // 非 test fn 上的 #[ignore] 是惰性的（编译期无效果），不构成归因。
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    '#[ignore]',
+    'fn helper_spawns_a_child() {',
+    '    let _c = std::process::Command::new("echo");',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 1);
+  assert.deepEqual(violationLines(stderr, file), [4]);
+});

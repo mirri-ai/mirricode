@@ -1248,14 +1248,16 @@ async fn converse_once(server: &EmbeddedServer, session_id: &str) {
 
 #[test]
 fn should_attach_engine_providers_when_server_is_built_for_a_workspace_root() {
-    // Given a throwaway workspace root
+    // Given a throwaway workspace root and an injected throwaway Mirri home
+    // (an env-resolved home would write the real `~/.mirri-code`)
     let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    let home = tempfile::tempdir().expect("home tempdir");
 
     // When the fully-wired server is constructed for it
     let server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("wired-ws"),
         tmp.path().to_path_buf(),
-        None,
+        Some(home.path().to_path_buf()),
         Vec::new(),
     );
 
@@ -19270,7 +19272,12 @@ async fn should_return_empty_command_list_when_no_plugin_manager_configured() {
 
 /// A server with an installed plugin contributing one md command and one
 /// inline spec — the B9/N4 wire-shape fixture.
-async fn plugin_commands_server() -> (EmbeddedServer, tempfile::TempDir, tempfile::TempDir) {
+async fn plugin_commands_server() -> (
+    EmbeddedServer,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+) {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     let source_dir = tempfile::tempdir().expect("plugin source dir");
     std::fs::write(
@@ -19299,14 +19306,15 @@ async fn plugin_commands_server() -> (EmbeddedServer, tempfile::TempDir, tempfil
         .await
         .expect("plugin install");
 
+    let home = tempfile::tempdir().expect("home tempdir");
     let server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("cmd-plugin-ws"),
         workspace.path().to_path_buf(),
-        None,
+        Some(home.path().to_path_buf()),
         Vec::new(),
     )
     .with_plugin_manager(std::sync::Arc::new(manager));
-    (server, workspace, plugins_dir)
+    (server, workspace, plugins_dir, home)
 }
 
 /// Given an installed plugin contributing an md command and an inline spec,
@@ -19316,7 +19324,7 @@ async fn plugin_commands_server() -> (EmbeddedServer, tempfile::TempDir, tempfil
 /// the inline entry maps onto the same shape with `path: ""`.
 #[tokio::test]
 async fn should_return_md_and_inline_command_defs_when_plugin_commands_is_called() {
-    let (server, _workspace, _plugins_dir) = plugin_commands_server().await;
+    let (server, _workspace, _plugins_dir, _home) = plugin_commands_server().await;
 
     let result = server
         .call_method("plugin.commands", json!({}))
@@ -19349,7 +19357,7 @@ async fn should_return_md_and_inline_command_defs_when_plugin_commands_is_called
 /// renders its template.
 #[tokio::test]
 async fn should_activate_md_and_inline_commands_when_called() {
-    let (server, _workspace, _plugins_dir) = plugin_commands_server().await;
+    let (server, _workspace, _plugins_dir, _home) = plugin_commands_server().await;
 
     let result = server
         .call_method(
@@ -19377,7 +19385,12 @@ async fn should_activate_md_and_inline_commands_when_called() {
 /// A server with an installed plugin contributing the full surface: display
 /// name, skills, two MCP servers (one disabled in-manifest), hooks, and an
 /// md command — the N1/N2/N3 wire-shape fixture.
-async fn plugin_summary_server() -> (EmbeddedServer, tempfile::TempDir, tempfile::TempDir) {
+async fn plugin_summary_server() -> (
+    EmbeddedServer,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+) {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     let source_dir = tempfile::tempdir().expect("plugin source dir");
     std::fs::write(
@@ -19422,14 +19435,15 @@ async fn plugin_summary_server() -> (EmbeddedServer, tempfile::TempDir, tempfile
         .await
         .expect("plugin install");
 
+    let home = tempfile::tempdir().expect("home tempdir");
     let server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("plugin-summary-ws"),
         workspace.path().to_path_buf(),
-        None,
+        Some(home.path().to_path_buf()),
         Vec::new(),
     )
     .with_plugin_manager(std::sync::Arc::new(manager));
-    (server, workspace, plugins_dir)
+    (server, workspace, plugins_dir, home)
 }
 
 /// Given an installed plugin with skills, MCP servers, hooks and commands,
@@ -19439,7 +19453,7 @@ async fn plugin_summary_server() -> (EmbeddedServer, tempfile::TempDir, tempfile
 /// health flags.
 #[tokio::test]
 async fn should_return_plugin_summary_rows_when_plugin_list_is_called() {
-    let (server, _workspace, _plugins_dir) = plugin_summary_server().await;
+    let (server, _workspace, _plugins_dir, _home) = plugin_summary_server().await;
 
     let result = server
         .call_method("plugin.list", json!({}))
@@ -19498,10 +19512,11 @@ async fn should_sort_plugin_list_rows_and_filter_by_status_when_called() {
     manager.install(&alpha_source).await.expect("install alpha");
     manager.disable("alpha-plugin").expect("disable alpha");
 
+    let home = tempfile::tempdir().expect("home tempdir");
     let server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("plugin-sort-ws"),
         workspace.path().to_path_buf(),
-        None,
+        Some(home.path().to_path_buf()),
         Vec::new(),
     )
     .with_plugin_manager(std::sync::Arc::new(manager));
@@ -20099,10 +20114,11 @@ async fn should_return_plugin_summary_when_plugin_install_is_called() {
 
     let plugins_dir = tempfile::tempdir().expect("plugins dir");
     let manager = mirri_plugin_host::PluginManager::new(plugins_dir.path().to_path_buf());
+    let home = tempfile::tempdir().expect("home tempdir");
     let server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("plugin-install-ws"),
         workspace.path().to_path_buf(),
-        None,
+        Some(home.path().to_path_buf()),
         Vec::new(),
     )
     .with_plugin_manager(std::sync::Arc::new(manager));
@@ -20138,7 +20154,7 @@ async fn should_return_plugin_summary_when_plugin_install_is_called() {
 /// per-server info, and diagnostics (N3/L).
 #[tokio::test]
 async fn should_return_plugin_info_when_plugin_info_is_called() {
-    let (server, _workspace, _plugins_dir) = plugin_summary_server().await;
+    let (server, _workspace, _plugins_dir, _home) = plugin_summary_server().await;
 
     let result = server
         .call_method("plugin.info", json!({ "id": "demo-plugin" }))
@@ -20255,10 +20271,11 @@ async fn should_keep_error_state_plugin_in_list_and_info_when_manifest_is_broken
     manager
         .load_all()
         .expect("load_all keeps error-state plugins");
+    let home = tempfile::tempdir().expect("home tempdir");
     let server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("plugin-error-ws"),
         workspace.path().to_path_buf(),
-        None,
+        Some(home.path().to_path_buf()),
         Vec::new(),
     )
     .with_plugin_manager(std::sync::Arc::new(manager));
@@ -39832,12 +39849,15 @@ async fn test_server_with_two_models() -> (
     EmbeddedServer,
     wiremock::MockServer,
     tempfile::TempDir,
+    tempfile::TempDir,
     String,
 ) {
     let mock = wiremock::MockServer::start().await;
     mount_one_completion(&mock).await;
     let seed = two_models_seed_toml(&format!("{}/v1", mock.uri()));
-    let (server, tmp, _config_path) = test_server_with_config_aware_factory(&seed);
+    // The home is handed back with the server: dropping it here would delete
+    // the dir out from under the server the caller keeps using.
+    let (server, tmp, home, _config_path) = test_server_with_config_aware_factory(&seed);
 
     let created = server
         .call_method(
@@ -39848,7 +39868,7 @@ async fn test_server_with_two_models() -> (
         .expect("session created on first-model");
     let session_id = created["id"].as_str().expect("session id").to_string();
     converse_once(&server, &session_id).await;
-    (server, mock, tmp, session_id)
+    (server, mock, tmp, home, session_id)
 }
 
 /// Find the model-switched marker among the wire ops — the durable
@@ -39867,7 +39887,7 @@ fn find_model_switch_marker(ops: &[mirri_proto::WireOp]) -> Option<Value> {
 #[tokio::test]
 async fn should_write_a_model_switch_marker_and_event_when_agent_set_model_changes_the_model() {
     // Given a session whose agent runs on "first-model"
-    let (server, _mock, _tmp, session_id) = test_server_with_two_models().await;
+    let (server, _mock, _tmp, _home, session_id) = test_server_with_two_models().await;
     // And a subscriber listens for the live announcement
     let mut events = server.subscribe_events().await.unwrap();
 
@@ -39908,7 +39928,7 @@ async fn should_write_a_model_switch_marker_and_event_when_agent_set_model_chang
 #[tokio::test]
 async fn should_skip_the_marker_when_agent_set_model_is_a_no_op() {
     // Given a session on "first-model"
-    let (server, _mock, _tmp, session_id) = test_server_with_two_models().await;
+    let (server, _mock, _tmp, _home, session_id) = test_server_with_two_models().await;
 
     // When setModel is called with the same model
     server
@@ -39941,7 +39961,7 @@ async fn should_skip_the_marker_when_agent_set_model_is_a_no_op() {
 #[tokio::test]
 async fn should_write_the_same_marker_when_update_meta_switches_the_model() {
     // Given a session whose agent runs on "first-model"
-    let (server, _mock, _tmp, session_id) = test_server_with_two_models().await;
+    let (server, _mock, _tmp, _home, session_id) = test_server_with_two_models().await;
 
     // When updateMeta carries the model switch (the web's other entry point)
     server
@@ -39964,7 +39984,7 @@ async fn should_write_the_same_marker_when_update_meta_switches_the_model() {
 #[tokio::test]
 async fn should_persist_a_model_change_to_the_wire_log_when_agent_set_model_is_called() {
     // Given a session whose agent runs on "first-model"
-    let (server, _mock, _tmp, session_id) = test_server_with_two_models().await;
+    let (server, _mock, _tmp, _home, session_id) = test_server_with_two_models().await;
     server
         .call_method(
             "agent.setModel",
@@ -39998,7 +40018,7 @@ async fn should_restore_the_session_model_when_a_session_is_resumed_from_its_wir
     // Given a session created on "first-model", switched to "second-model",
     // then closed (files kept — the fixture's returned workspace tempdir
     // keeps the wire log alive on disk)
-    let (server, _mock, _tmp, session_id) = test_server_with_two_models().await;
+    let (server, _mock, _tmp, _home, session_id) = test_server_with_two_models().await;
     server
         .call_method(
             "agent.setModel",
@@ -40344,7 +40364,7 @@ async fn e2e_subagent_inherits_parent_custom_model_without_explicit_model() {
 #[tokio::test]
 async fn should_reject_set_model_on_subagent_with_pinning_explanation() {
     // Given a session on "first-model" with a registered subagent
-    let (server, _mock, _tmp, session_id) = test_server_with_two_models().await;
+    let (server, _mock, _tmp, _home, session_id) = test_server_with_two_models().await;
     server
         .call_method(
             "session.registerAgent",
@@ -40400,7 +40420,7 @@ async fn should_reject_set_model_on_subagent_with_pinning_explanation() {
 #[tokio::test]
 async fn should_reject_message_send_model_param_when_addressing_a_subagent() {
     // Given a session on "first-model" with a registered subagent
-    let (server, _mock, _tmp, session_id) = test_server_with_two_models().await;
+    let (server, _mock, _tmp, _home, session_id) = test_server_with_two_models().await;
     server
         .call_method(
             "session.registerAgent",
@@ -40460,7 +40480,7 @@ async fn should_reject_message_send_model_param_when_addressing_a_subagent() {
 async fn should_keep_model_and_marker_after_undo() {
     // Given a session on "first-model" switched to "second-model", then one
     // more user turn recorded after the switch
-    let (server, _mock, _tmp, session_id) = test_server_with_two_models().await;
+    let (server, _mock, _tmp, _home, session_id) = test_server_with_two_models().await;
     server
         .call_method(
             "agent.setModel",
@@ -41593,8 +41613,17 @@ max_context_size = 128000
 /// the same config snapshot `config.get` reads).
 fn test_server_with_config_aware_factory(
     toml_contents: &str,
-) -> (EmbeddedServer, tempfile::TempDir, std::path::PathBuf) {
+) -> (
+    EmbeddedServer,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    std::path::PathBuf,
+) {
     let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    // A separate home keeps the factory's credential store (and any other
+    // home-scoped state) out of both the workspace and the real
+    // `~/.mirri-code` — `new(.., None)` would resolve the ambient home.
+    let home = tempfile::tempdir().expect("home tempdir");
     let config_path = tmp.path().join("config.toml");
     std::fs::write(&config_path, toml_contents).expect("config.toml write should succeed");
     let workspace = Arc::new(WorkspaceScope::new(
@@ -41608,7 +41637,7 @@ fn test_server_with_config_aware_factory(
     ));
     let factory = Arc::new(crate::providers::ConfigAwareLlmFactory::new(
         Arc::clone(&config),
-        None,
+        Some(home.path().to_path_buf()),
     ));
     let server = EmbeddedServer::with_providers(
         manager,
@@ -41619,7 +41648,7 @@ fn test_server_with_config_aware_factory(
         config,
         Some(config_path.clone()),
     );
-    (server, tmp, config_path)
+    (server, tmp, home, config_path)
 }
 
 /// Poll the mock upstream until at least `count` requests arrived — the
@@ -41660,7 +41689,7 @@ async fn should_run_the_configured_provider_when_session_create_names_a_composit
         )
         .mount(&mock)
         .await;
-    let (server, _tmp, _path) = test_server_with_config_aware_factory(
+    let (server, _tmp, _home, _path) = test_server_with_config_aware_factory(
         &composite_resolution_seed_toml(&format!("{}/v1", mock.uri())),
     );
 
@@ -41703,7 +41732,7 @@ async fn should_answer_a_clear_not_configured_error_when_a_session_names_an_unre
     // Given a config whose aliases name no rakuten Ghost model (the
     // composite resolves through no provider + model pair, and the error
     // fires before any environment fallback could answer)
-    let (server, _tmp, _path) = test_server_with_config_aware_factory(
+    let (server, _tmp, _home, _path) = test_server_with_config_aware_factory(
         &composite_resolution_seed_toml("https://never-contacted.example.test"),
     );
 
@@ -41735,7 +41764,7 @@ async fn should_answer_a_clear_not_configured_error_when_a_session_names_an_unre
 #[tokio::test]
 async fn should_store_the_canonical_alias_key_when_set_default_model_names_a_composite() {
     // Given a config whose `fast` alias names rakuten's DeepSeek-V4-Flash
-    let (server, _tmp, _path) = test_server_with_config_aware_factory(
+    let (server, _tmp, _home, _path) = test_server_with_config_aware_factory(
         &composite_resolution_seed_toml("https://never-contacted.example.test"),
     );
 
@@ -41913,7 +41942,7 @@ max_context_size = 128000
 "#,
         base_url = seed_base
     );
-    let (server, _tmp, _path) = test_server_with_config_aware_factory(&seed);
+    let (server, _tmp, _home, _path) = test_server_with_config_aware_factory(&seed);
     let created = server
         .call_method("session.create", json!({ "modelId": "model-a" }))
         .await
@@ -44658,7 +44687,7 @@ async fn assert_plugin_server_absent_for_a_while(server: &EmbeddedServer, name: 
                 .any(|entry| entry["name"].as_str() == Some(name)),
             "the plugin server must stay unconnected: {listed}"
         );
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await; // hygiene-allow: absence sample (plugin.install never touches McpStartupTiming; an async connect regression needs a real window)
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await; // hygiene-allow: real-time: absence sample (plugin.install never touches McpStartupTiming; an async connect regression needs a real window)
     }
 }
 
@@ -44668,6 +44697,7 @@ async fn assert_plugin_server_absent_for_a_while(server: &EmbeddedServer, name: 
 /// writes and reload, never after install (item D2, the TS mutation set) —
 /// and `plugin.reload` afterwards reconciles it into the live set.
 #[tokio::test]
+#[ignore] // R-layer: absence sampling over a real window after plugin.install (design §3)
 async fn should_not_connect_plugin_mcp_servers_when_installed_until_reload() {
     let home = tempfile::tempdir().expect("home tempdir");
     let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -46003,10 +46033,13 @@ async fn should_latch_the_spawn_guard_even_when_retention_is_disabled() {
 #[test]
 fn should_have_tool_result_truncator_wired_when_turn_flow_created() {
     let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    // An injected throwaway home keeps the boot footprint (session-index.db,
+    // credentials/) out of the real `~/.mirri-code`.
+    let home = tempfile::tempdir().expect("home tempdir");
     let server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("truncator-wired"),
         tmp.path().to_path_buf(),
-        None,
+        Some(home.path().to_path_buf()),
         Vec::new(),
     );
     let flow = server.get_or_create_turn_flow("s1", "main", "test-model");

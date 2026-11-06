@@ -1564,9 +1564,20 @@ fn python3_available() -> bool {
         .is_ok()
 }
 
+/// Write the mock server script to a temp file and return the path.
+///
+/// Each call gets its own file: sibling tests share this process (and thus
+/// the PID), and one test deleting its script at teardown must not race
+/// another test's spawn of the same path.
 fn write_mock_server() -> std::path::PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut path = std::env::temp_dir();
-    path.push(format!("mirri_mcp_conn_test_{}.py", std::process::id()));
+    path.push(format!(
+        "mirri_mcp_conn_test_{}_{}.py",
+        std::process::id(),
+        unique
+    ));
     std::fs::write(&path, MOCK_SERVER_SCRIPT).unwrap();
     path
 }

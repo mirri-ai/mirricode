@@ -857,6 +857,7 @@ async fn should_create_sessions_without_a_credential_when_the_login_gate_is_remo
 /// a real `mirri-acp` user *should* get MCP servers from their home.
 #[cfg(unix)]
 #[tokio::test]
+#[ignore] // R-layer: pgrep absence sampling over real child descendants (design §3)
 async fn should_not_spawn_the_real_homes_mcp_servers_when_the_conformance_child_creates_a_session()
 {
     let mut acp = AcpProcess::spawn().await;
