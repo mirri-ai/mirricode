@@ -1,6 +1,6 @@
 # R 层（真实环境层）执行 profile —— 设计文档 §5.2（2026-11-06）。
 # nextest 仅用于 R 层：本地默认执行器保持 cargo test（macOS 逐 exec 税
-# 实测 14×–80×，设计 §5.1）；D 层采纳需过 A/B 门槛（≤1.1×）。
+# 实测 14×–80×+，设计 §5.1）；D 层采纳需过 A/B 门槛（≤1.1×）。
 # D 层不使用 nextest，故不配置 profile.default。
 [profile.real]
 # R 层残余 flake 是已知属性：重试 1 次，RETRY 报告即 flake 率量化来源

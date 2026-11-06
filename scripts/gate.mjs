@@ -2,7 +2,7 @@
 // Unified quality gate entrypoint — fast-fail, lightest first.
 //
 // Usage:
-//   node scripts/gate.mjs            # fast gates only (no compile, no tests)  ~10s
+//   node scripts/gate.mjs            # fast gates only (no compile, no tests)  ~3s
 //   node scripts/gate.mjs --full     # fast gates + typecheck + lint + clippy + ALL tests
 //   node scripts/gate.mjs --rust     # fast gates + clippy (no TS, no tests)
 //   node scripts/gate.mjs --real     # fast gates + R-layer #[ignore]d real-env tests
@@ -96,7 +96,7 @@ const FULL_STAGES = [
 
 // R-layer stages, opt-in with --real: #[ignore]d real-env tests (design §3).
 // Local executor is cargo test by design (§5.2): nextest pays a per-exec
-// security tax on macOS (14x–80x measured), CI's Linux job uses nextest.
+// security tax on macOS (14x–80x+ measured), CI's Linux job uses nextest.
 const REAL_STAGES = [
   {
     name: 'rust-real-tests',

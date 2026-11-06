@@ -7,7 +7,7 @@ rust 引擎还在开发中，很多功能可能还不成熟甚至是错误的。
 
 一切本地质量检查**先走 `pnpm gate`**（`node scripts/gate.mjs`），不要自己拼各门禁命令——顺序、已知失败记账、fast-fail 都在入口里统一维护：
 
-- `pnpm gate` — 快速面（~10 秒，无编译无测试）：service-naming → sherif → rust-zero-io → rust-spawn → rust-test-hygiene，轻→重 fail-fast。
+- `pnpm gate` — 快速面（约 3 秒，无编译无测试）：service-naming → sherif → rust-zero-io → rust-spawn → rust-test-hygiene，轻→重 fail-fast。
 - `pnpm gate:rust` — 快速面 + clippy（分钟级）。
 - `pnpm gate:full` — 全套：typecheck → lint → clippy → **rust 全量测试（最重，永远最后）** → TS 测试。
 - `pnpm gate:real` — 快速面 + R 层（真实环境层）`#[ignore]` 测试（本地 opt-in，不进默认门禁；R 层语义见「测试铁律」规则 R）。
@@ -77,7 +77,7 @@ rust 引擎还在开发中，很多功能可能还不成熟甚至是错误的。
   - **`// hygiene-allow: real-...` 语义窗口**：必须写在 `#[ignore]` 的测试 fn 内；helper 里的窗口 gate 不报（不检查 caller）——审计时按 caller 归因。此分支不接受 `hygiene-allow` 当逃生门——reason 前缀本身就是 R 信号。
   - 包装 spawn（mirri_os 族）不被覆盖，由审计台账逐处判定。
   - **R 层套件**（CI 口径）：`#[ignore]` 测试集 **减** `e2e_real_llm`（需真实 LLM 凭证，手动触发）**减** G-30 占位 stub（`should_handle_create_rpc_independently` / `should_handle_plugins_rpc_independently`，故意 panic 的 TODO 桩，按测试名排除）。
-  - **本地入口**：`pnpm gate:real` = `cargo test -- --ignored` 减两个 stub（libtest `--skip`）。`gate:real` 不按名排除 `e2e_real_llm`——无凭证时它自带自跳过；但本地若导出了 `OPENAI_API_KEY`，`gate:real` 会真的打真实 LLM（成本/挂起风险，跑前注意 `unset`）。本地跑 R 层不碰 nextest——macOS 逐 exec 税实测 14×–80×+（"80×+" 是 ">18min 未跑完" 换算出的下界，不是天花板）。
+  - **本地入口**：`pnpm gate:real` = `cargo test -- --ignored` 减两个 stub（libtest `--skip`）。`gate:real` 不按名排除 `e2e_real_llm`——无凭证时它自行跳过；但本地若导出了 `OPENAI_API_KEY`，`gate:real` 会真的打真实 LLM（成本/挂起风险，跑前记得 `unset OPENAI_API_KEY`）。本地跑 R 层不碰 nextest——macOS 逐 exec 税实测 14×–80×+（"80×+" 是 ">18min 未跑完" 换算出的下界，不是天花板）。
   - **CI 选择**：`rust-real-env`（非阻塞）+ nightly（必过）跑 `cargo nextest run --workspace --locked --run-ignored only --no-fail-fast -E 'not (binary(e2e_real_llm) or test(should_handle_create_rpc_independently) or test(should_handle_plugins_rpc_independently))' --profile real`（`--no-fail-fast` 承重：一次红要列全所有失败测试，那是归因输入）；profile 在 `rust/.config/nextest.toml`（retries 1、slow-timeout 2m×3、`test-threads = 2`）。
   - **并发例外**：`test-threads = 2` 是**有意硬编码**——R 层对真实子进程/端口争抢敏感，不跟 nproc 走；这是 D 层「不硬编码并发、按 nproc/实测降并发」策略的明确例外（设计 §6；该节写的 `max-threads` 是笔误，nextest 的真实键名是 `test-threads`，不要照着改配置）。
   - **执行器采纳**：nextest 仅限 R 层；D 层采纳需过 A/B 门槛（≤1.1×，`.github/workflows/rust-nextest-ab.yml`）。
