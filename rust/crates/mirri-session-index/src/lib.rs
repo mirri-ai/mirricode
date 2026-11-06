@@ -70,6 +70,32 @@ pub use port_impl::{OpenOutcome, SessionIndexPort};
 /// failing (the TS `BUSY_TIMEOUT_MS`).
 const BUSY_TIMEOUT_MS: u64 = 5_000;
 
+/// Retries for the `journal_mode = WAL` switch. SQLite returns SQLITE_BUSY
+/// for that pragma instead of consulting the busy handler, so an opener that
+/// loses the race to a concurrent one has to retry itself. The window is
+/// short (the winner only holds the lock through its PRAGMA), and the wait
+/// is a few milliseconds per attempt.
+const WAL_SWITCH_ATTEMPTS: u32 = 40;
+
+/// Retries for the whole open attempt (see [`SessionIndex::open`]).
+const OPEN_ATTEMPTS: u32 = 40;
+
+/// Whether an `anyhow` error wraps SQLite's "another connection holds the
+/// lock".
+fn is_locked_anyhow(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<rusqlite::Error>()
+        .is_some_and(is_locked_error)
+}
+
+/// Whether a failure is SQLite's "another connection holds the lock".
+fn is_locked_error(error: &rusqlite::Error) -> bool {
+    matches!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy) | Some(rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
+
 /// The fixed-width RFC 3339 timestamp encoding stored in every timestamp
 /// column — always nanosecond precision so the text both round-trips the
 /// wire's exact bytes and sorts lexically.
@@ -317,16 +343,52 @@ impl SessionIndex {
     /// when one exists (an upsert that never clobbers an existing row's
     /// `sort_order`).
     pub fn open(path: &Path) -> Result<Self> {
+        // Concurrent opens (a second process on the same home, or parallel
+        // tests in one process) contend for the same write lock at several
+        // points: the WAL switch, the startup checkpoint, the migration's
+        // BEGIN IMMEDIATE and the registry seeding. `busy_timeout` covers
+        // most of them, but SQLite does not route EVERY busy result through
+        // the handler, so the whole attempt is retried while the failure is
+        // a lock contention. Each retry reopens the connection: a connection
+        // that observed a busy result has no transaction to resume.
+        let mut attempts_left = OPEN_ATTEMPTS;
+        loop {
+            match Self::open_once(path) {
+                Ok(index) => return Ok(index),
+                Err(error) if is_locked_anyhow(&error) && attempts_left > 1 => {
+                    attempts_left -= 1;
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// One open attempt — see [`Self::open`] for the retry wrapper.
+    fn open_once(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path)?;
-        conn.execute_batch(&format!(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA busy_timeout = {BUSY_TIMEOUT_MS};"
-        ))?;
+        conn.busy_timeout(std::time::Duration::from_millis(BUSY_TIMEOUT_MS))?;
+        // Switching to WAL is a write, and SQLite states it does NOT route
+        // its lock contention through the busy handler — it returns
+        // SQLITE_BUSY immediately. Concurrent openers on one database (a
+        // second process on the same home, or parallel tests in one process)
+        // therefore retry here rather than relying on `busy_timeout`.
+        let mut attempts_left = WAL_SWITCH_ATTEMPTS;
+        loop {
+            match conn.execute_batch("PRAGMA journal_mode = WAL;") {
+                Ok(()) => break,
+                Err(error) if is_locked_error(&error) && attempts_left > 1 => {
+                    attempts_left -= 1;
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
         // Best-effort startup checkpoint: fold the previous process's
         // leftover WAL into the main database so a cold read does not replay
         // a multi-MB WAL on the first query. A busy database skips it and
