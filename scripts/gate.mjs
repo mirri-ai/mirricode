@@ -101,8 +101,13 @@ const REAL_STAGES = [
   {
     name: 'rust-real-tests',
     desc: 'R-layer: #[ignore] real-env tests (local default is opt-in)',
-    cmd: ['cargo', 'test', '--manifest-path', 'rust/Cargo.toml', '--workspace', '--locked', '--', '--ignored'],
-    note: 'real subprocess/time-semantic tests; run with --real only',
+    cmd: [
+      'cargo', 'test', '--manifest-path', 'rust/Cargo.toml', '--workspace', '--locked', '--', '--ignored',
+      // G-30 panic! placeholder stubs — never runnable, excluded by name (CI job matches).
+      '--skip', 'should_handle_create_rpc_independently',
+      '--skip', 'should_handle_plugins_rpc_independently',
+    ],
+    note: 'excludes the G-30 placeholder stubs; e2e_real_llm self-skips without credentials',
   },
 ];
 

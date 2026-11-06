@@ -202,6 +202,55 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+  # R 层（真实环境层，设计文档 docs/superpowers/specs/2026-11-06-rust-test-execution-optimization-design.md §3/§6）：
+  # 失败判定依赖真实环境的测试（真实时间语义窗口、真实子进程抽样、性能探针）
+  # 带 #[ignore]，在此独立 job 运行。PR 上非阻塞（continue-on-error +
+  # summary 归因"真实环境层红"），nightly 必过（nightly-rust-real-env.yml）。
+  # e2e_real_llm（需真实 LLM 凭证）维持手动触发；should_handle_*_rpc_independently
+  # 是 G-30 的 panic! 占位桩（永不可运行），按测试名排除。
+  # timeout-minutes 按最坏情况估算：单测试挂起 2min×3 超时 + 1 次重试 ≈ 12min，
+  # 加上编译与 list，30min 足够兜住并给出明确失败。
+  rust-real-env:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: rust
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          shared-key: rust-workspace
+          save-if: false
+
+      - uses: taiki-e/install-action@nextest
+
+      - name: List R-layer suite (selection check)
+        run: cargo nextest list --workspace --locked --run-ignored only -E 'not (binary(e2e_real_llm) or test(should_handle_create_rpc_independently) or test(should_handle_plugins_rpc_independently))' --profile real
+
+      - name: R-layer tests (real profile)
+        run: |
+          set -o pipefail
+          cargo nextest run --workspace --locked --run-ignored only \
+            -E 'not (binary(e2e_real_llm) or test(should_handle_create_rpc_independently) or test(should_handle_plugins_rpc_independently))' --profile real | tee /tmp/nextest-real.log
+
+      - name: Publish failure summary
+        if: always()
+        run: |
+          {
+            echo "## rust-real-env（R 层，非阻塞）"
+            echo '```'
+            grep -E 'FAIL|RETRY|TIMEOUT|Summary' /tmp/nextest-real.log || echo 'all passed'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # The mirri-core zero-IO contract (rust/AGENTS.md 契约 6): core production
   # code must not perform direct fs/process IO — it goes through injected
   # mirri-os traits. The gate script self-tests its stripper, scans core src
