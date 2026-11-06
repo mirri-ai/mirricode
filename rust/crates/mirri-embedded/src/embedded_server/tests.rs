@@ -43198,22 +43198,11 @@ async fn should_inject_the_refreshed_listing_on_the_next_turn_when_a_skill_file_
     let session = live_session(&server, &session_id).await;
 
     // And the watcher is mounted (the manual reload's mount refresh covers every
-    // built workspace's watcher).
-    let reload = server
-        .call_method("skill.reload", json!({}))
-        .await
-        .expect("watcher-mounting reload");
-    let rows = reload["workspaces"].as_array().expect("workspaces");
-    assert!(
-        rows.first().is_some_and(|row| row["watching"] == true),
-        "the watcher must be mounted for the e2e chain: {reload}"
-    );
-    // The mount can also land late: `skill.reload` bounds its wait
-    // (`MOUNT_AWAIT_TIMEOUT`) so an unreachable home cannot hang the RPC, and
-    // on a fully loaded runner the blocking-pool mount can exceed that bound
-    // — the reload then answers with the mount still in flight. Wait for it:
-    // what this test needs is the watcher being live before it writes, not
-    // the first RPC having absorbed the whole mount.
+    // built workspace's watcher). `skill.reload` bounds its wait
+    // (`MOUNT_AWAIT_TIMEOUT`) so an unreachable home cannot hang the RPC, so
+    // on a loaded runner the mount can still be in flight when the reload
+    // answers — wait for the watcher to be live rather than requiring the
+    // first RPC to have absorbed the whole mount.
     wait_for_skill_watcher(&server).await;
     assert!(
         !session.take_pending_skill_reminder(),
