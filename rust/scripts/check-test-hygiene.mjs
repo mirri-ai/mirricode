@@ -7,6 +7,14 @@
 //   (b) test code (whole `tests/` files + `#[cfg(test)]` module bodies in
 //       `src/`) must not call bare `std::env::set_var` / `remove_var`;
 //   (c) test code must not call bare `thread::sleep`.
+//   (d) test code must not spawn a real subprocess (`std::process::Command` /
+//       `tokio::process::Command` / `Command::new`) or declare a `real-*`
+//       semantic window (`// hygiene-allow: real-…`) unless the enclosing
+//       test fn carries `#[ignore]` (R-layer attribution, design §3); a spawn
+//       may instead carry a line-level `// hygiene-allow: <reason>`. Known
+//       limits: wrapper-mediated spawns (mirri_os::new_command & friends) are
+//       invisible here, and helper fns cannot carry `#[ignore]` — their
+//       caller tests are the attribution target.
 //
 // "Bare" = the call line is not covered by a guard context and carries no
 // `// hygiene-allow:` exemption. Guard context for env mutation: one of the
@@ -279,6 +287,24 @@ const ENV_GUARD_MARKERS = [
 // Guard markers for sleep: the sanctioned polling helper family.
 const SLEEP_GUARD_MARKERS = ['wait_for'];
 
+// --- rule R: real-env attribution --------------------------------------------
+// Coarse ratchet, same philosophy as the guard markers: raw real-subprocess
+// spawns and `real-*` semantic windows in test code must be attributed to
+// the real-environment tier — an `#[ignore]`d test fn (R-layer, design §3)
+// or, for spawns only, a line-level `// hygiene-allow: <reason>`. Known
+// limits (documented, adjudicated by the per-site audit, not this gate):
+// wrapper-mediated spawns (mirri_os::new_command & friends) are invisible
+// here, and helper fns cannot carry #[ignore] — their CALLER tests are the
+// attribution target.
+const REAL_ENV_PATTERNS = [
+  { name: 'real-env', re: /\bstd::process::Command\b/ },
+  { name: 'real-env', re: /\btokio::process::Command\b/ },
+  { name: 'real-env', re: /\bCommand::new\b/ },
+];
+const REAL_HYGIENE_ALLOW_RE = /\/\/\s*hygiene-allow:\s*real-/;
+const IGNORE_ATTR_RE = /#\[\s*ignore\b/;
+const TEST_ATTR_RE = /#\[\s*(?:tokio::)?test\b/;
+
 function hasGuardContext(rawLines, lineIdx, markers) {
   const windowStart = Math.max(0, lineIdx - 15);
   for (let i = windowStart; i <= lineIdx; i++) {
@@ -293,6 +319,56 @@ function hasGuardContext(rawLines, lineIdx, markers) {
 }
 
 /**
+ * Spans of `fn NAME … { … }` bodies in masked text, each with its attribute
+ * region (text from the previous fn's body end up to the `fn` keyword, so
+ * doc comments and #[...] attrs belong to the following fn). Nested fns
+ * fold into the outer span (fnRe.lastIndex skips past the body); trait
+ * method signatures without bodies (`fn f();`) are skipped.
+ */
+function collectFnSpans(masked) {
+  const spans = [];
+  const fnRe = /\bfn\s+\w+/g;
+  let m;
+  while ((m = fnRe.exec(masked)) !== null) {
+    const after = masked.slice(m.index);
+    const semi = after.indexOf(';');
+    const braceOffset = after.search(/\{/);
+    if (braceOffset < 0 || (semi >= 0 && semi < braceOffset)) continue;
+    const bodyStart = m.index + braceOffset;
+    const bodyEnd = findBodyEnd(masked, bodyStart);
+    spans.push({
+      attrStart: spans.at(-1)?.bodyEnd ?? 0,
+      attrEnd: m.index,
+      bodyStart,
+      bodyEnd,
+    });
+    fnRe.lastIndex = bodyEnd;
+  }
+  return spans;
+}
+
+/**
+ * Attribution for a hit at char `offset`: is it inside a test fn
+ * (`#[test]` / `#[tokio::test]` in the fn's attribute region) and does that
+ * fn carry `#[ignore]` (plain or `#[ignore = "reason"]`)? The attribute
+ * region is read from the *masked* text, so doc-comment prose that merely
+ * mentions `#[ignore]` cannot exempt a spawn. Hits outside any fn body
+ * report { isTest: false, hasIgnore: false }.
+ */
+function fnAttribution(masked, offset, spans) {
+  for (const s of spans) {
+    if (offset >= s.bodyStart && offset < s.bodyEnd) {
+      const attrs = masked.slice(s.attrStart, s.attrEnd);
+      return {
+        isTest: TEST_ATTR_RE.test(attrs),
+        hasIgnore: IGNORE_ATTR_RE.test(attrs),
+      };
+    }
+  }
+  return { isTest: false, hasIgnore: false };
+}
+
+/**
  * Scan one test-code region (either a whole `tests/` file or an extracted
  * `#[cfg(test)]` segment) for violations. `offsetLines` maps region line 1
  * to the file's real line number.
@@ -300,16 +376,44 @@ function hasGuardContext(rawLines, lineIdx, markers) {
 function scanRegion(text, offsetLines, path) {
   const violations = [];
   const rawLines = text.split('\n');
-  const maskedLines = maskCommentsAndStrings(text).split('\n');
+  const maskedText = maskCommentsAndStrings(text);
+  const maskedLines = maskedText.split('\n');
+  const fnSpans = collectFnSpans(maskedText);
+  const lineOffsets = [];
+  let acc = 0;
+  for (const line of rawLines) {
+    lineOffsets.push(acc);
+    acc += line.length + 1;
+  }
   for (let i = 0; i < rawLines.length; i++) {
-    // Per-line dedupe: thread::sleep + tokio::time::sleep on the same line
-    // must report once (baseline key is file:line, one entry per line).
+    // Per-line dedupe: multiple patterns on the same line report once
+    // (baseline key is file:line, one entry per line).
     let seenSleep = false;
+    let seenRealEnv = false;
     const fileLine = offsetLines + i;
     const raw = rawLines[i] ?? '';
+    const maskedLine = maskedLines[i] ?? '';
+    const attr = () => fnAttribution(maskedText, lineOffsets[i], fnSpans);
+    // Rule R(b): a `real-*` semantic window must sit in an #[ignore]d TEST
+    // fn. Helpers are exempt (their caller tests are the attribution
+    // target); the reason prefix itself is the signal, so hygiene-allow
+    // cannot double as an escape here.
+    if (REAL_HYGIENE_ALLOW_RE.test(raw)) {
+      const a = attr();
+      if (a.isTest && !a.hasIgnore && !seenRealEnv) {
+        seenRealEnv = true;
+        violations.push({
+          file: path,
+          line: fileLine,
+          type: 'real-env',
+          kind: 'real-time window without #[ignore]',
+          text: raw.trim(),
+        });
+      }
+    }
     if (HYGIENE_ALLOW_RE.test(raw)) continue;
     for (const { name, re } of ENV_CALL_PATTERNS) {
-      if (re.test(maskedLines[i] ?? '')) {
+      if (re.test(maskedLine)) {
         if (!hasGuardContext(rawLines, i, ENV_GUARD_MARKERS)) {
           violations.push({
             file: path,
@@ -322,7 +426,7 @@ function scanRegion(text, offsetLines, path) {
       }
     }
     for (const { re } of SLEEP_PATTERNS) {
-      if (re.test(maskedLines[i] ?? '') && !seenSleep) {
+      if (re.test(maskedLine) && !seenSleep) {
         seenSleep = true;
         if (!hasGuardContext(rawLines, i, SLEEP_GUARD_MARKERS)) {
           violations.push({
@@ -334,6 +438,25 @@ function scanRegion(text, offsetLines, path) {
           });
         }
       }
+    }
+    // Rule R(a): raw real-subprocess spawn must be #[ignore]d (any fn) or
+    // carry a line-level hygiene-allow (which the `continue` above already
+    // granted — reaching here means no hygiene-allow on this line).
+    for (const { re } of REAL_ENV_PATTERNS) {
+      if (!re.test(maskedLine)) continue;
+      if (!seenRealEnv) {
+        seenRealEnv = true;
+        if (!attr().hasIgnore) {
+          violations.push({
+            file: path,
+            line: fileLine,
+            type: 'real-env',
+            kind: 'real subprocess spawn without #[ignore]',
+            text: raw.trim(),
+          });
+        }
+      }
+      break;
     }
   }
   return violations;
@@ -573,7 +696,9 @@ if (writeBaselineMode) {
       type: v.type,
       reason: priorForFile
         ? priorForFile[1].reason
-        : 'legacy: pending R2/R4 migration',
+        : v.type === 'real-env'
+          ? 'real-env: pending audit adjudication (see 2026-11-06 design §4)'
+          : 'legacy: pending R2/R4 migration',
     };
   }
   baseline = next;
@@ -584,14 +709,14 @@ if (writeBaselineMode) {
 
 // --- output ---------------------------------------------------------------------
 
-const typeCounts = { layer: 0, set_var: 0, sleep: 0 };
+const typeCounts = { layer: 0, set_var: 0, sleep: 0, 'real-env': 0 };
 for (const v of violations) typeCounts[v.type]++;
 
 if (reportMode) {
   console.log(
     `test-hygiene report — ${scannedTestBinaries} tests/ binary(ies), ${scannedTestHelperFiles} helper/mod-tree file(s), ${scannedSrcTestSegments} src test segment(s) scanned`,
   );
-  console.log(`violations: ${violations.length} (layer: ${typeCounts.layer}, set_var: ${typeCounts.set_var}, sleep: ${typeCounts.sleep})`);
+  console.log(`violations: ${violations.length} (layer: ${typeCounts.layer}, set_var: ${typeCounts.set_var}, sleep: ${typeCounts.sleep}, real-env: ${typeCounts['real-env']})`);
   console.log(`guarded (exempt) calls: env ${guardedEnvCalls}, sleep ${guardedSleeps}`);
   const inBaseline = violations.filter((v) => baseline[key(v)]).length;
   console.log(`baseline-covered: ${inBaseline}, new (would fail): ${violations.length - inBaseline}`);
