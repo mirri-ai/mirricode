@@ -63,40 +63,6 @@
       "oxlint --type-aware --quiet"
     ]
   },
-  "pnpm": {
-    "overrides": {
-      "protobufjs": "^7.6.5",
-      "@protobufjs/utf8": "^1.1.1",
-      "qs": "^6.15.2",
-      "body-parser": "^2.3.0",
-      "ip-address": "^10.5.0",
-      "linkify-it": "^6.1.0",
-      "shell-quote": "^1.9.0",
-      "dompurify": "^3.4.17",
-      "fast-uri": "^3.1.9",
-      "postcss": "^8.5.23",
-      "nanoid": "^3.3.18",
-      "js-yaml@^3": "3.15.2",
-      "js-yaml@^4": "4.3.2",
-      "minimatch@<11": "^11.0.1",
-      "brace-expansion@<5": "^5.0.12",
-      "source-map-js@<1.2.2": "1.2.2",
-      "fflate@<0.8.3": "0.8.3",
-      "katex@<0.19.1": "0.19.1",
-      "markdown-it@<14.3.3": "14.3.3",
-      "tsx>esbuild": "^0.28.2",
-      "vite@^8.0.0": "^8.2.4",
-      "vitepress>vite": "^6.4.3",
-      "fastify>find-my-way": "^9.8.0",
-      "@vitejs/plugin-react>@babel/core": "^7.29.6",
-      "prosemirror-view": "1.42.6"
-    },
-    "auditConfig": {
-      "ignoreCves": [
-        "CVE-2026-56876"
-      ]
-    }
-  },
   "engines": {
     "node": ">=24.22.2"
   },

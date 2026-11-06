@@ -70,6 +70,14 @@ jobs:
           title: "ci: release packages"
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          # The action commits with plain `git commit`, so the repository's
+          # pre-commit hook (`pnpm gate`) runs here. That hook is a
+          # contributor convenience that assumes a locally installed
+          # workspace; in this bookkeeping job it duplicates the checks CI
+          # runs on the Release PR the moment the action pushes it, and when
+          # it fails it turns the release pipeline red for a reason that has
+          # nothing to do with the release. Keep it off the machine commit.
+          SKIP_SIMPLE_GIT_HOOKS: "1"
 
       # Publish trigger: pure version comparison in resolve-release.mjs
       # (anchor version must be semver-gt the latest v tag; cold start with

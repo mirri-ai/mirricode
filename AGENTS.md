@@ -34,6 +34,7 @@ Before designing ANY change that touches engine/core behavior, answer FIRST: "wh
 - **Node.js**: `>=24.22.2` (from the root `package.json` `engines`; `.nvmrc` is `24.22.2`, used by nvm / fnm / mise to pick the minimum recommended version).
 - **pnpm**: `12.16.1`, pinned by every `pnpm/action-setup` step's `version:` input. The root `package.json` deliberately carries **no** `packageManager` field: pnpm 11+ honours it by writing `packageManagerDependencies` into the lockfile, turning `pnpm-lock.yaml` into a two-document YAML file that other tooling reads incorrectly. Bump the workflow pins together when upgrading. The cost is that `corepack enable` no longer provisions pnpm for a fresh clone — install `pnpm@12.16.1` yourself. `package.json`'s `sherif.ignoreRule` suppresses the `root-package-manager-field` rule for that same reason; do not re-add the field to satisfy it.
 - `pnpm install` will fail when the Node version is not satisfied, because `.npmrc` sets `engine-strict=true`.
+- **All pnpm settings live in `pnpm-workspace.yaml`**, never in a `pnpm` field in a `package.json`: pnpm 12 stopped reading that field, so it only emits a warning and the settings are silently ignored — a dependency pin parked there is dropped from `pnpm-lock.yaml` the next time anything regenerates it, with no failure to show for it. Put overrides, `auditConfig`, `onlyBuiltDependencies` and `allowBuilds` in the workspace file.
 
 ## Monorepo Workspace Maintenance
 
