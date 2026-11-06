@@ -3,7 +3,7 @@
 # 非阻塞是把"发现回归"和"卡 PR"解耦，不是不管——nightly 失败即红并通知；
 # 同一测试连续 3 次红升级为必修工单。
 # 与 ci.yml 的 rust-real-env 唯一语义差别：这里没有 continue-on-error（必过）。
-# 结构上也省掉 ci.yml 的 selection-check list 步骤（nextest 默认 --no-tests=fail，
+# 结构上也省掉 ci.yml 的 selection-check list 步骤（run 时显式 --no-tests=fail，
 # 过滤器命不中任何测试时本 job 直接红，不会静默绿）。
 name: nightly-rust-real-env
 
@@ -41,6 +41,8 @@ jobs:
 
       # --no-fail-fast: a red run must list ALL failing R-layer tests, not stop
       # at the first — that list is the nightly/owner attribution input.
+      # --no-tests=fail: pinned explicitly (nextest's `auto` currently fails, but
+      # that default is not a contract; a filter matching nothing must never pass).
       # 2>&1: nextest's reporter (status lines + Summary) goes to stderr, so a
       # stdout-only capture would leave the summary log empty on a healthy run.
       - name: R-layer tests (real profile)
@@ -48,6 +50,7 @@ jobs:
           set -o pipefail
           cargo nextest run --workspace --locked --run-ignored only \
             --no-fail-fast \
+            --no-tests=fail \
             -E 'not (binary(e2e_real_llm) or test(should_handle_create_rpc_independently) or test(should_handle_plugins_rpc_independently))' --profile real 2>&1 | tee /tmp/nextest-real.log
 
       - name: Publish failure summary

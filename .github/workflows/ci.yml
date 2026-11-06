@@ -238,6 +238,8 @@ jobs:
 
       # --no-fail-fast: a red run must list ALL failing R-layer tests, not stop
       # at the first — that list is the nightly/owner attribution input.
+      # --no-tests=fail: pinned explicitly (nextest's `auto` currently fails, but
+      # that default is not a contract; a filter matching nothing must never pass).
       # 2>&1: nextest's reporter (status lines + Summary) goes to stderr, so a
       # stdout-only capture would leave the summary log empty on a healthy run.
       - name: R-layer tests (real profile)
@@ -245,6 +247,7 @@ jobs:
           set -o pipefail
           cargo nextest run --workspace --locked --run-ignored only \
             --no-fail-fast \
+            --no-tests=fail \
             -E 'not (binary(e2e_real_llm) or test(should_handle_create_rpc_independently) or test(should_handle_plugins_rpc_independently))' --profile real 2>&1 | tee /tmp/nextest-real.log
 
       - name: Publish failure summary
