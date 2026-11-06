@@ -480,7 +480,6 @@ mod tests {
         assert_eq!(registry.probe(), TurnWaitState::Advancing);
 
         // When the task's heartbeat advances between probes
-        std::thread::sleep(std::time::Duration::from_millis(5));
         tasks.heartbeat(&task_id);
 
         // Then the probe reports Advancing

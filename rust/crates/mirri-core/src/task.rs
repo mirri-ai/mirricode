@@ -3774,8 +3774,9 @@ mod tests {
                 |_task_id| {
                     Box::pin(async {
                         // A pending question that never answers within the
-                        // test's horizon.
-                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        // test's horizon — `pending()` parks it forever
+                        // without registering a 30s timer on the wheel.
+                        std::future::pending::<()>().await;
                         Ok((0, "answered".to_string(), String::new()))
                     })
                 },
@@ -4756,9 +4757,9 @@ mod tests {
             count.load(std::sync::atomic::Ordering::SeqCst)
         );
 
-        // Cleanup: cancel and settle so the spawned wrapper exits cleanly
+        // Cleanup: cancel and settle so the spawned wrapper exits cleanly.
+        // `driver.await` alone is enough — the wrapper converges once stopped.
         manager.stop(&task_id);
-        tokio::time::sleep(Duration::from_millis(50)).await;
         let _ = driver.await;
     }
 }

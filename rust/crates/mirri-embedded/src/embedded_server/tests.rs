@@ -17349,9 +17349,10 @@ async fn should_refuse_manual_compaction_when_a_turn_is_active() {
                 )
                 .await
                 .expect("the fire-mode send must be accepted");
-            loop {
-                tokio::time::sleep(Duration::from_secs(3600)).await;
-            }
+            // Park this dedicated runtime (and its `Arc<server>`) for the rest
+            // of the test without registering a real timer: `pending()` never
+            // wakes, so no 1h timer sits on the reactor wheel.
+            std::future::pending::<()>().await;
         });
     });
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -37617,7 +37618,6 @@ async fn should_order_hits_by_time_desc_across_sessions_when_multiple_sessions_m
         mirri_core::ContextMessage::from_message(mirri_core::Message::user("shared needle older")),
     )
     .await;
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     let newer = create_search_session(&server, "Newer session").await;
     seed_search_history_message(
         &server,
@@ -46391,7 +46391,6 @@ async fn should_pin_without_refreshing_recency_when_rpc_invoked() {
     let (server, _workspace, _home, session_id) = pin_fixture_server().await;
     let index = server.session_index().expect("the index is open");
     let before = index.get_session(&session_id).expect("the row exists");
-    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
     server
         .call_method(

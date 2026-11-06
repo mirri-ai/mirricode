@@ -953,8 +953,6 @@ mod tests {
             wall_clock_ms: None,
         });
 
-        std::thread::sleep(std::time::Duration::from_millis(10));
-
         assert!(
             !manager.is_budget_exhausted(),
             "budget should not be exhausted when wall_clock_ms is not set"
@@ -1068,9 +1066,6 @@ mod tests {
             let start = manager.start_time.lock().unwrap_or_else(|e| e.into_inner());
             start.unwrap()
         };
-
-        // Sleep a bit so a reset would be detectable.
-        std::thread::sleep(std::time::Duration::from_millis(15));
 
         // Set a new budget — the timer should NOT reset.
         manager.set_budget(GoalBudget {

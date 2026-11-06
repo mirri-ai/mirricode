@@ -892,8 +892,8 @@ mod tests {
 
         // When an unrelated file churns at the workspace root (not under
         // any watched skill root; the `.tmp` naming also matches the
-        // skill-loader's own ignore rule)
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // skill-loader's own ignore rule). `spawn_skill_watcher` already
+        // awaits mount completion, so no settle sleep is needed here.
         std::fs::write(workspace_root.path().join("notes.tmp.tmp"), "scratch")
             .expect("scratch write");
         std::fs::write(workspace_root.path().join("more-scratch.txt"), "scratch")

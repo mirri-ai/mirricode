@@ -3463,12 +3463,13 @@ mod tests {
             forwarder.abort();
         }
         engine.emit(json!({ "server": { "name": "mock", "status": "pending" } }));
-        tokio::time::sleep(Duration::from_millis(100)).await;
 
         // Then no frame escapes: the aborted forwarder delivers nothing
-        // onto the still-open outbox
+        // onto the still-open outbox — a sanctioned negative window.
         assert!(
-            outbox_rx.try_recv().is_err(),
+            tokio::time::timeout(Duration::from_millis(100), outbox_rx.recv())
+                .await
+                .is_err(),
             "an aborted forwarder must not relay events"
         );
     }

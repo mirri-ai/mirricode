@@ -1257,7 +1257,6 @@ mod tests {
             .expect("spawn group leader");
         let pgid = child.id() as i32;
         let _ = child.wait();
-        std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(super::terminate_group(pgid).is_ok());
     }
 }

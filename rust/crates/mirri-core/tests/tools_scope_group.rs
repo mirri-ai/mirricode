@@ -8130,8 +8130,9 @@ impl DynChildProcess for ScriptedHookChild {
     fn wait(&mut self) -> DynProcessFuture<'_, anyhow::Result<i32>> {
         let code = self.exit_code;
         Box::pin(async move {
-            // A tiny delay so the runner's concurrent IO tasks get scheduled.
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            // Yield once so the runner's concurrent IO tasks get a turn
+            // without burning wall-clock time.
+            tokio::task::yield_now().await;
             Ok(code)
         })
     }
