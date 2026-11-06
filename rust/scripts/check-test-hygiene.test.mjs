@@ -323,3 +323,48 @@ test('should not treat doc-comment prose mentioning #[ignore] as attribution', (
   assert.equal(status, 1);
   assert.deepEqual(violationLines(stderr, file), [5]);
 });
+
+test('should accept a line-level hygiene-allow on a spawn in a plain test fn', () => {
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    '#[test]',
+    'fn spawns_a_hermetic_child() {',
+    '    let _c = Command::new("echo"); // hygiene-allow: D: hermetic child',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 0, stderr);
+});
+
+test('should flag a spawn in a helper fn without a line-level hygiene-allow', () => {
+  // helper 不能合法携带 #[ignore]，所以它没有归因能力：spawn 必须留在
+  // 违规面上（或行级豁免并写明理由），由 caller 测试归因。
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    'fn helper_spawns_a_child() {',
+    '    let _c = std::process::Command::new("echo");',
+    '}',
+    '#[test]',
+    '#[ignore]',
+    'fn spawns_a_child() {',
+    '    helper_spawns_a_child();',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 1);
+  assert.deepEqual(violationLines(stderr, file), [3]);
+});
+
+test('should not let an #[ignore] on a non-test fn exempt a spawn', () => {
+  // 非 test fn 上的 #[ignore] 是惰性的（编译期无效果），不构成归因。
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    '#[ignore]',
+    'fn helper_spawns_a_child() {',
+    '    let _c = std::process::Command::new("echo");',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 1);
+  assert.deepEqual(violationLines(stderr, file), [4]);
+});

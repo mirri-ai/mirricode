@@ -439,14 +439,20 @@ function scanRegion(text, offsetLines, path) {
         }
       }
     }
-    // Rule R(a): raw real-subprocess spawn must be #[ignore]d (any fn) or
-    // carry a line-level hygiene-allow (which the `continue` above already
-    // granted — reaching here means no hygiene-allow on this line).
+    // Rule R(a): a raw real-subprocess spawn must be attributed to the
+    // real-environment tier — the enclosing TEST fn carries #[ignore] (helpers
+    // cannot legally carry it, so their caller tests are the attribution
+    // target and their spawns stay visible) — or the line carries a
+    // line-level hygiene-allow, which the `continue` above already granted
+    // (reaching here means no hygiene-allow on this line).
     for (const { re } of REAL_ENV_PATTERNS) {
       if (!re.test(maskedLine)) continue;
       if (!seenRealEnv) {
         seenRealEnv = true;
-        if (!attr().hasIgnore) {
+        const a = attr();
+        // An inert #[ignore] on a non-test fn is not attribution: it has no
+        // effect at compile time and only hides a site the audit must see.
+        if (!(a.isTest && a.hasIgnore)) {
           violations.push({
             file: path,
             line: fileLine,
@@ -673,8 +679,8 @@ if (writeBaselineMode) {
   const next = {};
   for (const v of violations) {
     // Preserve hand-curated reasons across re-anchoring (e.g. the R4
-    // poll-step / negative-wait classification): match by file + type,
-    // not by line number.
+    // poll-step / negative-wait classification, the R-layer real-env audit
+    // verdicts): match by file + type, not by line number.
     // Known limitation: when one file+type group holds several DIFFERENT
     // curated reasons, the first one wins for the whole group. Safe today
     // because every group is reason-homogeneous; the content-anchored key
@@ -688,7 +694,8 @@ if (writeBaselineMode) {
           kFile === vFile &&
           (b.reason?.startsWith('poll-step') ||
             b.reason?.startsWith('negative-wait') ||
-            b.reason?.startsWith('real-io'))
+            b.reason?.startsWith('real-io') ||
+            b.reason?.startsWith('real-env'))
         );
       },
     );
