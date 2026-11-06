@@ -44687,7 +44687,7 @@ async fn assert_plugin_server_absent_for_a_while(server: &EmbeddedServer, name: 
                 .any(|entry| entry["name"].as_str() == Some(name)),
             "the plugin server must stay unconnected: {listed}"
         );
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await; // hygiene-allow: absence sample (plugin.install never touches McpStartupTiming; an async connect regression needs a real window)
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await; // hygiene-allow: real-time: absence sample (plugin.install never touches McpStartupTiming; an async connect regression needs a real window)
     }
 }
 
@@ -44697,6 +44697,7 @@ async fn assert_plugin_server_absent_for_a_while(server: &EmbeddedServer, name: 
 /// writes and reload, never after install (item D2, the TS mutation set) —
 /// and `plugin.reload` afterwards reconciles it into the live set.
 #[tokio::test]
+#[ignore] // R-layer: absence sampling over a real window after plugin.install (design §3)
 async fn should_not_connect_plugin_mcp_servers_when_installed_until_reload() {
     let home = tempfile::tempdir().expect("home tempdir");
     let workspace = tempfile::tempdir().expect("workspace tempdir");

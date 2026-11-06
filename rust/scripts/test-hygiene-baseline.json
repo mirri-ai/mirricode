@@ -4,27 +4,19 @@
       "type": "real-env",
       "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
     },
-    "crates/mirri-acp/tests/conformance.rs:870": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-acp/tests/conformance.rs:883": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-acp/tests/conformance.rs:1724": {
+    "crates/mirri-acp/tests/conformance.rs:1725": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-acp/tests/conformance.rs:2154": {
+    "crates/mirri-acp/tests/conformance.rs:2155": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-acp/tests/conformance.rs:2180": {
+    "crates/mirri-acp/tests/conformance.rs:2181": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-acp/tests/conformance.rs:3743": {
+    "crates/mirri-acp/tests/conformance.rs:3744": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
@@ -768,27 +760,27 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:46119": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:46120": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:46179": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:46180": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:46252": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:46253": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:46393": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:46394": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b1_print_mode_tests.rs:110": {
+    "crates/mirri-embedded/src/embedded_server/tests/b1_print_mode_tests.rs:111": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b1_print_mode_tests.rs:216": {
+    "crates/mirri-embedded/src/embedded_server/tests/b1_print_mode_tests.rs:217": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },

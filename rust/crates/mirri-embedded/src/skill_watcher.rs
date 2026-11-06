@@ -1048,6 +1048,7 @@ mod tests {
     /// the regression's per-watch cost (one regression watch alone
     /// exceeds it).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore] // R-layer: mount-time performance probe — a starved runner silently skips the budget assertion, so notify-6 regressions surface at nightly rather than at the merge gate (design §3)
     async fn should_mount_the_watcher_within_a_fixed_time_budget() {
         let workspace_root = tempfile::tempdir().expect("workspace tempdir");
         let home = tempfile::tempdir().expect("home tempdir");
@@ -1096,7 +1097,7 @@ mod tests {
         for _ in 0..20 {
             // The calibration IS the measurement: a fixed nominal sleep is
             // what the runner's actual pace is compared against.
-            tokio::time::sleep(Duration::from_millis(1)).await; // hygiene-allow: measures the runner's pace
+            tokio::time::sleep(Duration::from_millis(1)).await; // hygiene-allow: real-time: pace calibration for the mount-time performance probe
         }
         let calibration = calibration_started.elapsed();
         // 20 x 1 ms nominal; a loaded runner inflates this. Anything up to

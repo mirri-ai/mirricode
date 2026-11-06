@@ -85,6 +85,7 @@ printBackgroundMode = "exit"
 /// the task settles (under the ceiling) and the subsequent decision is
 /// finish.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore] // R-layer: simulated 300ms task work measured against a real 1s ceiling (design §3)
 async fn should_wait_for_tasks_to_settle_when_print_background_mode_is_drain() {
     let (server, _tmp) = b1_print_server(
         r#"
@@ -108,7 +109,7 @@ printWaitCeilingS = 1
     let settle_id = task_id.clone();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(300))
-            .await; // hygiene-allow: scenario pacing (the task's simulated 300ms work — the drain timing under the 1s ceiling is the point)
+            .await; // hygiene-allow: real-time: the task's simulated 300ms work — drain timing under the 1s ceiling is the assertion
         settle_tasks.complete(&settle_id, 0);
     });
 
