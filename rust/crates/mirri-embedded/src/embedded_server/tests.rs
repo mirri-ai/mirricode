@@ -1248,14 +1248,16 @@ async fn converse_once(server: &EmbeddedServer, session_id: &str) {
 
 #[test]
 fn should_attach_engine_providers_when_server_is_built_for_a_workspace_root() {
-    // Given a throwaway workspace root
+    // Given a throwaway workspace root and an injected throwaway Mirri home
+    // (an env-resolved home would write the real `~/.mirri-code`)
     let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    let home = tempfile::tempdir().expect("home tempdir");
 
     // When the fully-wired server is constructed for it
     let server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("wired-ws"),
         tmp.path().to_path_buf(),
-        None,
+        Some(home.path().to_path_buf()),
         Vec::new(),
     );
 
@@ -19270,7 +19272,12 @@ async fn should_return_empty_command_list_when_no_plugin_manager_configured() {
 
 /// A server with an installed plugin contributing one md command and one
 /// inline spec — the B9/N4 wire-shape fixture.
-async fn plugin_commands_server() -> (EmbeddedServer, tempfile::TempDir, tempfile::TempDir) {
+async fn plugin_commands_server() -> (
+    EmbeddedServer,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+) {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     let source_dir = tempfile::tempdir().expect("plugin source dir");
     std::fs::write(
@@ -19299,14 +19306,15 @@ async fn plugin_commands_server() -> (EmbeddedServer, tempfile::TempDir, tempfil
         .await
         .expect("plugin install");
 
+    let home = tempfile::tempdir().expect("home tempdir");
     let server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("cmd-plugin-ws"),
         workspace.path().to_path_buf(),
-        None,
+        Some(home.path().to_path_buf()),
         Vec::new(),
     )
     .with_plugin_manager(std::sync::Arc::new(manager));
-    (server, workspace, plugins_dir)
+    (server, workspace, plugins_dir, home)
 }
 
 /// Given an installed plugin contributing an md command and an inline spec,
@@ -19316,7 +19324,7 @@ async fn plugin_commands_server() -> (EmbeddedServer, tempfile::TempDir, tempfil
 /// the inline entry maps onto the same shape with `path: ""`.
 #[tokio::test]
 async fn should_return_md_and_inline_command_defs_when_plugin_commands_is_called() {
-    let (server, _workspace, _plugins_dir) = plugin_commands_server().await;
+    let (server, _workspace, _plugins_dir, _home) = plugin_commands_server().await;
 
     let result = server
         .call_method("plugin.commands", json!({}))
@@ -19349,7 +19357,7 @@ async fn should_return_md_and_inline_command_defs_when_plugin_commands_is_called
 /// renders its template.
 #[tokio::test]
 async fn should_activate_md_and_inline_commands_when_called() {
-    let (server, _workspace, _plugins_dir) = plugin_commands_server().await;
+    let (server, _workspace, _plugins_dir, _home) = plugin_commands_server().await;
 
     let result = server
         .call_method(
@@ -19377,7 +19385,12 @@ async fn should_activate_md_and_inline_commands_when_called() {
 /// A server with an installed plugin contributing the full surface: display
 /// name, skills, two MCP servers (one disabled in-manifest), hooks, and an
 /// md command — the N1/N2/N3 wire-shape fixture.
-async fn plugin_summary_server() -> (EmbeddedServer, tempfile::TempDir, tempfile::TempDir) {
+async fn plugin_summary_server() -> (
+    EmbeddedServer,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+) {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     let source_dir = tempfile::tempdir().expect("plugin source dir");
     std::fs::write(
@@ -19422,14 +19435,15 @@ async fn plugin_summary_server() -> (EmbeddedServer, tempfile::TempDir, tempfile
         .await
         .expect("plugin install");
 
+    let home = tempfile::tempdir().expect("home tempdir");
     let server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("plugin-summary-ws"),
         workspace.path().to_path_buf(),
-        None,
+        Some(home.path().to_path_buf()),
         Vec::new(),
     )
     .with_plugin_manager(std::sync::Arc::new(manager));
-    (server, workspace, plugins_dir)
+    (server, workspace, plugins_dir, home)
 }
 
 /// Given an installed plugin with skills, MCP servers, hooks and commands,
@@ -19439,7 +19453,7 @@ async fn plugin_summary_server() -> (EmbeddedServer, tempfile::TempDir, tempfile
 /// health flags.
 #[tokio::test]
 async fn should_return_plugin_summary_rows_when_plugin_list_is_called() {
-    let (server, _workspace, _plugins_dir) = plugin_summary_server().await;
+    let (server, _workspace, _plugins_dir, _home) = plugin_summary_server().await;
 
     let result = server
         .call_method("plugin.list", json!({}))
@@ -19498,10 +19512,11 @@ async fn should_sort_plugin_list_rows_and_filter_by_status_when_called() {
     manager.install(&alpha_source).await.expect("install alpha");
     manager.disable("alpha-plugin").expect("disable alpha");
 
+    let home = tempfile::tempdir().expect("home tempdir");
     let server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("plugin-sort-ws"),
         workspace.path().to_path_buf(),
-        None,
+        Some(home.path().to_path_buf()),
         Vec::new(),
     )
     .with_plugin_manager(std::sync::Arc::new(manager));
@@ -20099,10 +20114,11 @@ async fn should_return_plugin_summary_when_plugin_install_is_called() {
 
     let plugins_dir = tempfile::tempdir().expect("plugins dir");
     let manager = mirri_plugin_host::PluginManager::new(plugins_dir.path().to_path_buf());
+    let home = tempfile::tempdir().expect("home tempdir");
     let server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("plugin-install-ws"),
         workspace.path().to_path_buf(),
-        None,
+        Some(home.path().to_path_buf()),
         Vec::new(),
     )
     .with_plugin_manager(std::sync::Arc::new(manager));
@@ -20138,7 +20154,7 @@ async fn should_return_plugin_summary_when_plugin_install_is_called() {
 /// per-server info, and diagnostics (N3/L).
 #[tokio::test]
 async fn should_return_plugin_info_when_plugin_info_is_called() {
-    let (server, _workspace, _plugins_dir) = plugin_summary_server().await;
+    let (server, _workspace, _plugins_dir, _home) = plugin_summary_server().await;
 
     let result = server
         .call_method("plugin.info", json!({ "id": "demo-plugin" }))
@@ -20255,10 +20271,11 @@ async fn should_keep_error_state_plugin_in_list_and_info_when_manifest_is_broken
     manager
         .load_all()
         .expect("load_all keeps error-state plugins");
+    let home = tempfile::tempdir().expect("home tempdir");
     let server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("plugin-error-ws"),
         workspace.path().to_path_buf(),
-        None,
+        Some(home.path().to_path_buf()),
         Vec::new(),
     )
     .with_plugin_manager(std::sync::Arc::new(manager));
@@ -46003,10 +46020,13 @@ async fn should_latch_the_spawn_guard_even_when_retention_is_disabled() {
 #[test]
 fn should_have_tool_result_truncator_wired_when_turn_flow_created() {
     let tmp = tempfile::tempdir().expect("tempdir must be creatable");
+    // An injected throwaway home keeps the boot footprint (session-index.db,
+    // credentials/) out of the real `~/.mirri-code`.
+    let home = tempfile::tempdir().expect("home tempdir");
     let server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("truncator-wired"),
         tmp.path().to_path_buf(),
-        None,
+        Some(home.path().to_path_buf()),
         Vec::new(),
     );
     let flow = server.get_or_create_turn_flow("s1", "main", "test-model");
