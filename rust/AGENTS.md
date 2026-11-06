@@ -7,7 +7,7 @@ rust 引擎还在开发中，很多功能可能还不成熟甚至是错误的。
 
 一切本地质量检查**先走 `pnpm gate`**（`node scripts/gate.mjs`），不要自己拼各门禁命令——顺序、已知失败记账、fast-fail 都在入口里统一维护：
 
-- `pnpm gate` — 快速面（~3 秒，无编译无测试）：service-naming → nix-workspace → sherif → zero-io → spawn → test-hygiene，轻→重 fail-fast。
+- `pnpm gate` — 快速面（~10 秒，无编译无测试）：service-naming → sherif → rust-zero-io → rust-spawn → rust-test-hygiene，轻→重 fail-fast。
 - `pnpm gate:rust` — 快速面 + clippy（分钟级）。
 - `pnpm gate:full` — 全套：typecheck → lint → clippy → **rust 全量测试（最重，永远最后）** → TS 测试。
 - `pnpm gate:real` — 快速面 + R 层（真实环境层）`#[ignore]` 测试（本地 opt-in，不进默认门禁；R 层语义见「测试铁律」规则 R）。
@@ -74,14 +74,14 @@ rust 引擎还在开发中，很多功能可能还不成熟甚至是错误的。
 - **主门禁**：`node rust/scripts/check-test-hygiene.mjs`（挂 `pnpm gate:rust-test-hygiene`，与 zero-io 守卫同级别）——扫 test cfg 内裸 `std::env::set_var`/`remove_var`、裸 `thread::sleep`、`tests/` 文件缺 `// layer:` 标签、规则 R 的 real-env 信号（见下条）；行内 `// hygiene-allow: <reason>` 豁免（规则 R 的 `real-` 窗口分支除外）。clippy `disallowed-methods` 因全局作用域无法限定 test cfg（会误伤生产合法 `set_var`），仅作为 ROADMAP 增量项（SDR-016.3）。
 - **规则 R（real-env 归因棘轮）**：测试代码里有两类信号，必须归因到 R 层，由 test-hygiene 机械执行：
   - **裸真实子进程 spawn**（`std::process::Command` / `tokio::process::Command` / `Command::new`）：所在行必须在 `#[ignore]` 的测试 fn 内，或带行级 `// hygiene-allow: <reason>`。helper fn 挂不了 `#[ignore]`，所以它的 spawn 行**默认保持可见**——只能靠行级 `// hygiene-allow` 豁免；caller 测试上的 `#[ignore]` **不为 helper 的 spawn 背书**。
-  - **`// hygiene-allow: real-...` 语义窗口**：必须写在 `#[ignore]` 的测试 fn 内；helper 里的窗口由 caller 归因（helper 不能挂 `#[ignore]`）。此分支不接受 `hygiene-allow` 当逃生门——reason 前缀本身就是 R 信号。
+  - **`// hygiene-allow: real-...` 语义窗口**：必须写在 `#[ignore]` 的测试 fn 内；helper 里的窗口 gate 不报（不检查 caller）——审计时按 caller 归因。此分支不接受 `hygiene-allow` 当逃生门——reason 前缀本身就是 R 信号。
   - 包装 spawn（mirri_os 族）不被覆盖，由审计台账逐处判定。
   - **R 层套件**（CI 口径）：`#[ignore]` 测试集 **减** `e2e_real_llm`（需真实 LLM 凭证，手动触发）**减** G-30 占位 stub（`should_handle_create_rpc_independently` / `should_handle_plugins_rpc_independently`，故意 panic 的 TODO 桩，按测试名排除）。
-  - **本地入口**：`pnpm gate:real` = `cargo test -- --ignored` 减两个 stub（libtest `--skip`）；`e2e_real_llm` 不按名排除——它自带无凭证自跳过逻辑，排不排都跑不到真实 LLM。本地跑 R 层不碰 nextest——macOS 逐 exec 税实测 14×–80×+（"80×+" 是 ">18min 未跑完" 换算出的下界，不是天花板）。
-  - **CI 选择**：`rust-real-env`（非阻塞）+ nightly（必过）跑 `cargo nextest run --profile real --run-ignored only -E 'not (binary(e2e_real_llm) or test(should_handle_create_rpc_independently) or test(should_handle_plugins_rpc_independently))'`；profile 在 `rust/.config/nextest.toml`（retries 1、slow-timeout 2m×3、`test-threads = 2`）。
-  - **并发例外**：`test-threads = 2` 是**有意硬编码**——R 层对真实子进程/端口争抢敏感，不跟 nproc 走；这是 D 层「不硬编码并发、按 nproc/实测降并发」策略的明确例外（设计 §6）。
+  - **本地入口**：`pnpm gate:real` = `cargo test -- --ignored` 减两个 stub（libtest `--skip`）。`gate:real` 不按名排除 `e2e_real_llm`——无凭证时它自带自跳过；但本地若导出了 `OPENAI_API_KEY`，`gate:real` 会真的打真实 LLM（成本/挂起风险，跑前注意 `unset`）。本地跑 R 层不碰 nextest——macOS 逐 exec 税实测 14×–80×+（"80×+" 是 ">18min 未跑完" 换算出的下界，不是天花板）。
+  - **CI 选择**：`rust-real-env`（非阻塞）+ nightly（必过）跑 `cargo nextest run --workspace --locked --run-ignored only --no-fail-fast -E 'not (binary(e2e_real_llm) or test(should_handle_create_rpc_independently) or test(should_handle_plugins_rpc_independently))' --profile real`（`--no-fail-fast` 承重：一次红要列全所有失败测试，那是归因输入）；profile 在 `rust/.config/nextest.toml`（retries 1、slow-timeout 2m×3、`test-threads = 2`）。
+  - **并发例外**：`test-threads = 2` 是**有意硬编码**——R 层对真实子进程/端口争抢敏感，不跟 nproc 走；这是 D 层「不硬编码并发、按 nproc/实测降并发」策略的明确例外（设计 §6；该节写的 `max-threads` 是笔误，nextest 的真实键名是 `test-threads`，不要照着改配置）。
   - **执行器采纳**：nextest 仅限 R 层；D 层采纳需过 A/B 门槛（≤1.1×，`.github/workflows/rust-nextest-ab.yml`）。
-  - **`#[ignore]` 风格**：R 层测试用裸 `#[ignore]` + 紧邻注释 `// R-layer: <理由> (design §3)`（先例：本批 4 处；`e2e_real_llm.rs` 是裸 `#[ignore]` + 模块头说明理由）；`#[ignore = "reason"]` 形式也接受，但非必需。
+  - **`#[ignore]` 风格**：R 层测试用裸 `#[ignore]` + 紧邻注释 `// R-layer: <理由> (design §3)`。先例（都是这个形态）：`mirri-acp/tests/conformance.rs` 的 `should_not_spawn_the_real_homes_mcp_servers_when_the_conformance_child_creates_a_session`（pgrep 缺失抽样）、`mirri-embedded/src/embedded_server/tests.rs` 的 `should_not_connect_plugin_mcp_servers_when_installed_until_reload`（plugin 缺失抽样）、`mirri-embedded/src/embedded_server/tests/b1_print_mode_tests.rs` 的 `should_wait_for_tasks_to_settle_when_print_background_mode_is_drain`（drain 工时）、`mirri-embedded/src/skill_watcher.rs` 的 `should_mount_the_watcher_within_a_fixed_time_budget`（mount 探针）。`e2e_real_llm.rs` 用裸 `#[ignore]` + 模块头说明理由。`#[ignore = "reason"]` 形式也接受，但非必需。
   - **已知约束**：`#[ignore]` 当前一词两义（R 层 vs TODO 桩）。新 TODO 桩必须二选一：按同名约定加进 R 层排除列表，或先实现再落地（不留永不可运行的桩）。
   - **配置陷阱**：nextest 对未知配置键只警告不报错（exit 0）——改 `rust/.config/nextest.toml` 后必须核对 stderr 无 `ignoring unknown configuration key` 警告，否则写错键名的 profile 会静默失效。
 - 速度预算：单测试 ≤5s（T0/T1）/ ≤30s（T2）；全量 workspace ≤7min（热缓存口径）。超预算的测试须拆分或降层（改用假件）。
