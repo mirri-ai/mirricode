@@ -5,6 +5,7 @@
 //   node scripts/gate.mjs            # fast gates only (no compile, no tests)  ~10s
 //   node scripts/gate.mjs --full     # fast gates + typecheck + lint + clippy + ALL tests
 //   node scripts/gate.mjs --rust     # fast gates + clippy (no TS, no tests)
+//   node scripts/gate.mjs --real     # fast gates + R-layer #[ignore]d real-env tests
 //   node scripts/gate.mjs --list     # list gate definitions and exit
 //
 // Design (docs/specs/rust-core-design/16-test-execution-strategy.md follow-up):
@@ -93,17 +94,38 @@ const FULL_STAGES = [
   },
 ];
 
+// R-layer stages, opt-in with --real: #[ignore]d real-env tests (design §3).
+// Local executor is cargo test by design (§5.2): nextest pays a per-exec
+// security tax on macOS (14x–80x measured), CI's Linux job uses nextest.
+const REAL_STAGES = [
+  {
+    name: 'rust-real-tests',
+    desc: 'R-layer: #[ignore] real-env tests (local default is opt-in)',
+    cmd: ['cargo', 'test', '--manifest-path', 'rust/Cargo.toml', '--workspace', '--locked', '--', '--ignored'],
+    note: 'real subprocess/time-semantic tests; run with --real only',
+  },
+];
+
 // --- arg parsing ----------------------------------------------------------------
 const args = new Set(process.argv.slice(2));
 if (args.has('--list') || args.has('-l')) {
   console.log('gate stages (execution order, fast-fail):');
-  for (const s of [...STAGES, { name: '— rust-only:', cmd: [] }, ...RUST_STAGES, { name: '— full-only:', cmd: [] }, ...FULL_STAGES]) {
+  const listed = [
+    ...STAGES,
+    { name: '— rust-only:', cmd: [] },
+    ...RUST_STAGES,
+    { name: '— full-only:', cmd: [] },
+    ...FULL_STAGES,
+    { name: '— real-only:', cmd: [] },
+    ...REAL_STAGES,
+  ];
+  for (const s of listed) {
     if (s.desc === undefined && s.note === undefined) { console.log(`\n${s.name}`); continue; }
     console.log(`  ${s.name.padEnd(20)} ${s.desc}${s.note ? `  (${s.note})` : ''}${s.knownFailure ? `  [KNOWN-FAILURE: ${s.knownFailure}]` : ''}`);
   }
   process.exit(0);
 }
-const MODE = args.has('--full') ? 'full' : args.has('--rust') ? 'rust' : 'fast';
+const MODE = args.has('--full') ? 'full' : args.has('--rust') ? 'rust' : args.has('--real') ? 'real' : 'fast';
 
 // --- runner ----------------------------------------------------------------------
 function pnpmBin() {
@@ -123,9 +145,13 @@ function runStage(stage) {
 
 const failures = [];
 const known = [];
-const queue = MODE === 'fast' ? STAGES : MODE === 'rust' ? [...STAGES, ...RUST_STAGES] : [...STAGES, ...FULL_STAGES];
+const queue =
+  MODE === 'full' ? [...STAGES, ...FULL_STAGES]
+  : MODE === 'rust' ? [...STAGES, ...RUST_STAGES]
+  : MODE === 'real' ? [...STAGES, ...REAL_STAGES]
+  : STAGES;
 
-console.log(`gate: ${queue.length} stage(s), mode=${MODE} (fast < rust < full; tests run last)\n`);
+console.log(`gate: ${queue.length} stage(s), mode=${MODE} (fast < rust < full; real = fast + R-layer)\n`);
 
 for (const stage of queue) {
   process.stdout.write(`▸ ${stage.name.padEnd(20)} ${stage.desc} ... `);
