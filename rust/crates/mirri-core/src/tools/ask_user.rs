@@ -2005,7 +2005,7 @@ mod tests {
                 // the paused runtime interleaves the spawned ask and its
                 // keepalive ticker at every virtual wakeup.
                 let ask = tokio::task::spawn(async move { execute(ctx).await });
-                tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(600)).await; // hygiene-allow: D: paused clock 虚拟推进，用作调度让出点
                 assert!(
                     !ask.is_finished(),
                     "the ask must still be waiting (no answer arrived)"

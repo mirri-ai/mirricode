@@ -37,7 +37,7 @@ fn should_overwrite_in_place_keeping_id_and_created_when_set_twice() {
     let home = tempfile::tempdir().unwrap();
     let store = CredentialStore::open(home.path()).unwrap();
     let first = store.set("openai", key("sk-1")).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::thread::sleep(std::time::Duration::from_millis(10)); // hygiene-allow: D: 毫秒时间戳 tick 守卫
     let second = store.set("openai", key("sk-2")).unwrap();
     assert_eq!(second.id, first.id);
     assert_eq!(second.time_created, first.time_created);

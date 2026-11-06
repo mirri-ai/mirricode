@@ -1556,7 +1556,7 @@ for line in sys.stdin:
 "#;
 
 fn python3_available() -> bool {
-    std::process::Command::new("python3")
+    std::process::Command::new("python3") // hygiene-allow: D: python3 能力探测
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -3939,7 +3939,7 @@ for line in sys.stdin:
 
 /// Check if Python 3 is available.
 fn python3_available() -> bool {
-    std::process::Command::new("python3")
+    std::process::Command::new("python3") // hygiene-allow: D: python3 能力探测
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

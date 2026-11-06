@@ -108,8 +108,9 @@ printWaitCeilingS = 1
     let settle_tasks = tasks.clone();
     let settle_id = task_id.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_millis(300))
-            .await; // hygiene-allow: real-time: the task's simulated 300ms work — drain timing under the 1s ceiling is the assertion
+        // The task's simulated 300ms work: drain timing under the 1s ceiling
+        // is the assertion (judged D3, batch 5 pauses the clock).
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await; // hygiene-allow: D: 模拟 300ms 工时，1s 天花板下的 drain 时序即断言
         settle_tasks.complete(&settle_id, 0);
     });
 

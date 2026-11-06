@@ -1,9 +1,5 @@
 {
   "violations": {
-    "crates/mirri-acp/tests/conformance.rs:121": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
     "crates/mirri-acp/tests/conformance.rs:1725": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
@@ -23,14 +19,6 @@
     "crates/mirri-acp/tests/desktop_share_e2e.rs:557": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-acp/src/desktop_probe.rs:305": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-acp/src/desktop_probe.rs:310": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
     },
     "crates/mirri-cli/src/main.rs:954": {
       "type": "set_var",
@@ -252,22 +240,6 @@
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-core/src/goal.rs:938": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/goal.rs:1040": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/loop_engine/shared.rs:445": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/loop_engine/shared.rs:503": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
     "crates/mirri-core/src/orphan_sweep.rs:996": {
       "type": "real-env",
       "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
@@ -364,10 +336,6 @@
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-core/src/tools/ask_user.rs:2008": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
     "crates/mirri-core/src/tools/ask_user.rs:2073": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
@@ -420,14 +388,6 @@
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-core/src/tools/glob.rs:456": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-core/src/tools/grep.rs:1364": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
     "crates/mirri-core/src/tools/task_output.rs:434": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
@@ -440,31 +400,11 @@
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-core/src/turn_flow/activity.rs:508": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/turn_flow/activity.rs:517": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/turn_flow/activity.rs:539": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/turn_flow/activity.rs:541": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
     "crates/mirri-core/src/turn_flow/hooks.rs:2979": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
     "crates/mirri-core/src/turn_flow/hooks.rs:3209": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-credentials/src/store_tests.rs:40": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
@@ -736,11 +676,7 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b1_print_mode_tests.rs:111": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/b1_print_mode_tests.rs:217": {
+    "crates/mirri-embedded/src/embedded_server/tests/b1_print_mode_tests.rs:218": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
@@ -1192,10 +1128,6 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-mcp/tests/mcp_group.rs:1559": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
     "crates/mirri-mcp/tests/mcp_group.rs:3213": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
@@ -1215,10 +1147,6 @@
     "crates/mirri-mcp/tests/mcp_group.rs:3795": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-mcp/tests/mcp_group.rs:3942": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
     },
     "crates/mirri-mcp/src/config.rs:1153": {
       "type": "set_var",
@@ -1248,18 +1176,6 @@
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-os/tests/all_group.rs:594": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-os/tests/all_group.rs:603": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-os/tests/all_group.rs:1268": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
     "crates/mirri-os/tests/all_group.rs:1658": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
@@ -1268,10 +1184,6 @@
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-os/src/process.rs:1085": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
     "crates/mirri-os/src/process.rs:1102": {
       "type": "real-env",
       "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
@@ -1279,10 +1191,6 @@
     "crates/mirri-os/src/process.rs:1124": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/src/process.rs:1254": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
     },
     "crates/mirri-os/src/search.rs:1317": {
       "type": "set_var",
@@ -1307,22 +1215,6 @@
     "crates/mirri-os/src/search.rs:1351": {
       "type": "set_var",
       "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-persistence/src/dir_lock.rs:168": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-persistence/src/dir_lock.rs:189": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-persistence/src/dir_lock.rs:233": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-persistence/src/dir_lock.rs:248": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
     },
     "crates/mirri-remote/tests/remote_adapter_tests.rs:805": {
       "type": "sleep",
@@ -1411,18 +1303,6 @@
     "crates/mirri-server/src/rpc.rs:8064": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/rpc.rs:8438": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-server/src/rpc.rs:8563": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-server/src/rpc.rs:8571": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
     },
     "crates/mirri-server/src/state.rs:998": {
       "type": "sleep",

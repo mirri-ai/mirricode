@@ -1082,7 +1082,7 @@ mod tests {
     #[test]
     fn should_report_a_dead_pid_as_not_alive_when_probed() {
         // spawn a short-lived child, wait it out, then probe its pid slot
-        let mut child = std::process::Command::new("true")
+        let mut child = std::process::Command::new("true") // hygiene-allow: D: spawn+wait 后探活，无时间依赖
             .spawn()
             .expect("spawn true");
         let pid = child.id() as i32;
@@ -1251,7 +1251,7 @@ mod tests {
     #[cfg(unix)]
     fn should_terminate_an_empty_or_dead_group_when_terminating() {
         // A group whose leader exited and has no members: ESRCH path → Ok.
-        let mut child = std::process::Command::new("true")
+        let mut child = std::process::Command::new("true") // hygiene-allow: D: spawn+wait，ESRCH 路径确定性
             .process_group(0) // std::os::unix::process::CommandExt
             .spawn()
             .expect("spawn group leader");

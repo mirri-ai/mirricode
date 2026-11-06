@@ -591,7 +591,7 @@ use tempfile::TempDir;
 
 /// Return `true` if the `rg` (ripgrep) binary is available on `PATH`.
 fn ripgrep_available() -> bool {
-    std::process::Command::new("rg")
+    std::process::Command::new("rg") // hygiene-allow: D: 能力探测
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -600,7 +600,7 @@ fn ripgrep_available() -> bool {
 
 /// Initialize an empty git repository in `dir`.
 fn init_git_repo(dir: &Path) {
-    std::process::Command::new("git")
+    std::process::Command::new("git") // hygiene-allow: D: git init fixture，外部工具确定性
         .arg("init")
         .current_dir(dir)
         .output()
@@ -1265,7 +1265,7 @@ use tempfile::TempDir;
 
 /// Return `true` if the `rg` binary is available on PATH.
 fn rg_available() -> bool {
-    std::process::Command::new("rg")
+    std::process::Command::new("rg") // hygiene-allow: D: 能力探测
         .arg("--version")
         .output()
         .is_ok()
