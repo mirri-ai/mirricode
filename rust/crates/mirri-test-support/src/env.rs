@@ -189,6 +189,12 @@ mod tests {
             guard.set(TEST_KEY, "temporarily-set");
             assert_eq!(std::env::var(TEST_KEY).as_deref(), Ok("temporarily-set"));
         }
+        // Re-take the lock before observing the drop's effect: the guard
+        // released it on drop, and another test in this binary may set the
+        // same key the instant it becomes free — reading the variable outside
+        // the lock would then race that writer and report a spurious
+        // "still set".
+        let _lock = lock();
         assert!(std::env::var(TEST_KEY).is_err());
     }
 
