@@ -20,14 +20,6 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-cli/src/main.rs:1153": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-cli/src/main.rs:1175": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
     "crates/mirri-cli/src/watcher.rs:1217": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
@@ -1128,18 +1120,6 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-mcp/src/config.rs:1153": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-mcp/src/config.rs:1160": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-mcp/src/config.rs:1177": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
     "crates/mirri-node/src/engine_bridge.rs:519": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
@@ -1170,30 +1150,6 @@
     },
     "crates/mirri-os/src/process.rs:1124": {
       "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/src/search.rs:1317": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/src/search.rs:1325": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/src/search.rs:1326": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/src/search.rs:1342": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/src/search.rs:1350": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/src/search.rs:1351": {
-      "type": "set_var",
       "reason": "legacy: pending R2/R4 migration"
     },
     "crates/mirri-remote/tests/remote_adapter_tests.rs:805": {
@@ -1284,20 +1240,12 @@
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-server/src/state.rs:998": {
+    "crates/mirri-server/src/state.rs:1020": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-server/src/state.rs:1010": {
+    "crates/mirri-server/src/state.rs:1032": {
       "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/state.rs:1295": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/state.rs:1364": {
-      "type": "set_var",
       "reason": "legacy: pending R2/R4 migration"
     },
     "crates/mirri-server/src/ws_rpc.rs:3341": {
@@ -1310,10 +1258,6 @@
     },
     "crates/mirri-session-index/src/backup.rs:526": {
       "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-test-support/src/env.rs:170": {
-      "type": "set_var",
       "reason": "legacy: pending R2/R4 migration"
     }
   }

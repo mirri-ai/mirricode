@@ -698,67 +698,30 @@ fn normalize_server_entry(entry: &mut serde_json::Value) {
 // Environment variable expansion
 // ---------------------------------------------------------------------------
 
-/// Expand `${VAR}` and `${env:VAR}` references in a string.
+/// Expand `${VAR}` and `${env:VAR}` references in a string against the
+/// process environment.
 ///
 /// Unknown variables are replaced with an empty string (matching the
-/// behavior of most shell expansion in config tools). String-level
-/// helper for individual string fields only — configs never round-trip
-/// through it: the config surface expands at the value level via
+/// behavior of most shell expansion in config tools). String-level helper
+/// for individual string fields only — configs never round-trip through
+/// it: the config surface expands at the value level via
 /// [`expand_server_config_values`] / [`expand_server_config_values_with_env`],
 /// so object keys holding `${...}` stay verbatim.
-fn expand_env_vars(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let mut chars = input.char_indices().peekable();
-
-    while let Some((_, ch)) = chars.next() {
-        if ch == '$' && chars.peek().map(|(_, c)| *c) == Some('{') {
-            // Consume the '{'.
-            chars.next();
-
-            // Collect until closing '}'.
-            let mut var_name = String::new();
-            let mut found_close = false;
-            for (_, inner_ch) in chars.by_ref() {
-                if inner_ch == '}' {
-                    found_close = true;
-                    break;
-                }
-                var_name.push(inner_ch);
-            }
-
-            if !found_close {
-                // No closing brace — emit literally.
-                result.push_str("${");
-                result.push_str(&var_name);
-                continue;
-            }
-
-            // Strip the `env:` prefix if present.
-            let var_name = if let Some(rest) = var_name.strip_prefix("env:") {
-                rest.to_string()
-            } else {
-                var_name
-            };
-
-            let value = std::env::var(&var_name).unwrap_or_default();
-            result.push_str(&value);
-        } else {
-            result.push(ch);
-        }
-    }
-
-    result
+pub fn expand_env_string(input: &str) -> String {
+    expand_env_string_from(input, |name| std::env::var(name).ok())
 }
 
-/// Expand env vars in a single string value (public for testing).
-pub fn expand_env_string(input: &str) -> String {
-    expand_env_vars(input)
+/// [`expand_env_string`] against an injected env lookup: the testable core
+/// (the `resolve_*_from` contract), so expansion is exercised without
+/// mutating the process environment.
+fn expand_env_string_from(input: &str, get_env: impl Fn(&str) -> Option<String>) -> String {
+    expand_env_vars_collecting_with(input, &get_env, &mut Vec::new())
 }
 
 /// Expand `${VAR}` / `${env:VAR}` in a string against the injected env
 /// lookup, collecting the names of variables that were undefined (expanded
 /// to the empty string) so callers can attach them to diagnostics. The
-/// testable core of the value-level expansion.
+/// shared core behind [`expand_env_string`] and the value-level expansion.
 fn expand_env_vars_collecting_with(
     input: &str,
     lookup: &dyn Fn(&str) -> Option<String>,
@@ -1149,16 +1112,24 @@ mod tests {
 
     #[test]
     fn should_expand_variable_when_var_syntax_is_used() {
-        // SAFETY: This is a test — setting an env var is safe in practice.
-        unsafe { std::env::set_var("MCP_TEST_VAR", "hello") };
-        assert_eq!(expand_env_string("${MCP_TEST_VAR}"), "hello");
+        // Given an env lookup that resolves the referenced name
+        let resolved = expand_env_string_from("${MCP_TEST_VAR}", |name| {
+            (name == "MCP_TEST_VAR").then(|| "hello".to_string())
+        });
+
+        // Then the variable is expanded to its value
+        assert_eq!(resolved, "hello");
     }
 
     #[test]
     fn should_expand_variable_when_env_prefix_syntax_is_used() {
-        // SAFETY: Test-only env var.
-        unsafe { std::env::set_var("MCP_TEST_VAR2", "world") };
-        assert_eq!(expand_env_string("${env:MCP_TEST_VAR2}"), "world");
+        // Given an env lookup behind the `env:` prefix form
+        let resolved = expand_env_string_from("${env:MCP_TEST_VAR2}", |name| {
+            (name == "MCP_TEST_VAR2").then(|| "world".to_string())
+        });
+
+        // Then the prefixed variable is expanded to its value
+        assert_eq!(resolved, "world");
     }
 
     #[test]
@@ -1173,12 +1144,13 @@ mod tests {
 
     #[test]
     fn should_expand_variables_when_mixed_with_plain_text() {
-        // SAFETY: Test-only env var.
-        unsafe { std::env::set_var("MCP_TEST_VAR3", "value") };
-        assert_eq!(
-            expand_env_string("prefix-${MCP_TEST_VAR3}-suffix"),
-            "prefix-value-suffix"
-        );
+        // Given an env lookup that resolves only one of the references
+        let resolved = expand_env_string_from("prefix-${MCP_TEST_VAR3}-suffix", |name| {
+            (name == "MCP_TEST_VAR3").then(|| "value".to_string())
+        });
+
+        // Then the variable expands in place and the plain text survives
+        assert_eq!(resolved, "prefix-value-suffix");
     }
 
     #[test]

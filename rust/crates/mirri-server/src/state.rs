@@ -101,6 +101,12 @@ pub struct ServerState {
     /// uploaded file is immediately attachable to a prompt. `None` falls
     /// back to the ambient Mirri home's `files/` subdir at request time.
     pub files_dir: Option<PathBuf>,
+    /// The Mirri home this state treats as its own (the injected override
+    /// for the graceful-shutdown library backup and the files-store
+    /// fallback). `None` (the default, production) resolves the ambient
+    /// `MIRRICODE_HOME`/OS home at use time; tests inject a tempdir
+    /// instead of mutating the process environment.
+    home_dir: Option<PathBuf>,
     /// The app-level MCP pool event broadcast (M7, F-9): `event.mcp.server
     /// .status` notifications fanned out to every connection that called
     /// `mcp.subscribe`. Fed by a single forwarder task (spawned lazily on
@@ -227,6 +233,7 @@ impl ServerState {
             config,
             config_path: None,
             files_dir: None,
+            home_dir: None,
             file_index,
             mcp_event_tx: broadcast::channel(MCP_EVENT_CHANNEL_CAPACITY).0,
             mcp_event_forwarder: Arc::new(std::sync::OnceLock::new()),
@@ -436,13 +443,25 @@ impl ServerState {
         self
     }
 
+    /// Override the Mirri home this state resolves its own paths from (the
+    /// shutdown library backup's `<home>/session-index.db`, the files
+    /// store's `files/` subdir). Production leaves it unset and resolves
+    /// the ambient home at use time; tests inject a tempdir here instead
+    /// of mutating the process environment.
+    pub fn with_home_dir(mut self, home_dir: PathBuf) -> Self {
+        self.home_dir = Some(home_dir);
+        self
+    }
+
     /// The files-store root of this server (the injected override, or the
-    /// ambient Mirri home's `files/` subdir).
+    /// Mirri home's `files/` subdir — injected or ambient).
     pub(crate) fn file_store(&self) -> mirri_persistence::FileStore {
         let root = self.files_dir.clone().unwrap_or_else(|| {
-            mirri_core::config::mirri_home_dir()
+            self.home_dir
+                .clone()
+                .or_else(|| mirri_core::config::mirri_home_dir().ok())
                 .map(|home| home.join("files"))
-                .unwrap_or_else(|_| PathBuf::from(".mirri-code-files"))
+                .unwrap_or_else(|| PathBuf::from(".mirri-code-files"))
         });
         mirri_persistence::FileStore::new(root)
     }
@@ -547,7 +566,10 @@ impl ServerState {
         if !self
             .shutdown_backup_done
             .swap(true, std::sync::atomic::Ordering::SeqCst)
-            && let Ok(home) = mirri_core::config::mirri_home_dir()
+            && let Some(home) = self
+                .home_dir
+                .clone()
+                .or_else(|| mirri_core::config::mirri_home_dir().ok())
             && home.join("session-index.db").exists()
             && let Err(error) =
                 mirri_session_index::backup::backup_library(&home.join("session-index.db"))
@@ -1291,8 +1313,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn should_snapshot_the_library_once_across_concurrent_shutdown_signals() {
         let home = tempfile::tempdir().expect("home tempdir");
-        // SAFETY: test-only, single-threaded setup before any parallel test reads it.
-        unsafe { std::env::set_var("MIRRICODE_HOME", home.path()) };
         let db_path = home.path().join("session-index.db");
         let index = mirri_session_index::SessionIndex::open(&db_path).unwrap();
         let now = chrono::Utc::now();
@@ -1350,7 +1370,9 @@ mod tests {
                 Ok(())
             }
         }
-        let state = test_state(std::sync::Arc::new(ShutdownEngine));
+        // Given the home injected into the state (the shutdown backup
+        // snapshots this state's home, so no process env is involved)
+        let state = test_state(std::sync::Arc::new(ShutdownEngine)).with_home_dir(home.path().to_path_buf());
         state.request_shutdown().await;
         state.request_shutdown().await;
 
@@ -1359,8 +1381,5 @@ mod tests {
             newest.exists(),
             "the shutdown snapshot's newest generation exists"
         );
-
-        // SAFETY: test-only teardown.
-        unsafe { std::env::remove_var("MIRRICODE_HOME") };
     }
 }

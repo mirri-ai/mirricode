@@ -1148,9 +1148,10 @@ mod tests {
     #[test]
     fn should_delegate_provider_construction_to_the_shared_core_factory() {
         // Given an agent configured for the Google provider with no API key
-        // in the environment
-        let previous = std::env::var("GOOGLE_API_KEY").ok();
-        unsafe { std::env::remove_var("GOOGLE_API_KEY") };
+        // in the environment (the guard holds the workspace env lock for the
+        // whole check and restores the key on drop)
+        let mut env = mirri_test_support::env::EnvGuard::new();
+        env.remove("GOOGLE_API_KEY");
         let config = AgentScopeConfig {
             provider_type: mirri_core::ProviderType::Google,
             ..AgentScopeConfig::default()
@@ -1171,8 +1172,5 @@ mod tests {
             panic!("google provider must not be constructible without a key");
         };
         assert!(error.contains("GOOGLE_API_KEY"), "got: {error}");
-        if let Some(previous) = previous {
-            unsafe { std::env::set_var("GOOGLE_API_KEY", previous) };
-        }
     }
 }
