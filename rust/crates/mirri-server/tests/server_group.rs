@@ -27,13 +27,15 @@ mod e2e_mock_test {
 //! completion is verified through the agent's context memory, which is
 //! exactly what the eventual `turn.ended` wire event will summarize.
 //!
-//! One of the four tests is `#[ignore]`d because it targets server
-//! behavior that is not practical to exercise yet:
+//! One of the four tests is `#[ignore]`d because it waits on real time
+//! the fast suite cannot afford:
 //!
-//! - `should_handle_turn_timeout_when_llm_never_responds` — the engine-turn
-//!   timeout (`ENGINE_TURN_TIMEOUT` in `rpc.rs`) is hardcoded to 300 s, so
-//!   the test would wait five minutes; enable it once the timeout is
-//!   configurable.
+//! - `should_handle_turn_timeout_when_llm_never_responds` — rides the
+//!   engine's turn-stall watchdog. The test shrinks the watchdog windows
+//!   to seconds through the `with_turn_stall_timeout` /
+//!   `with_turn_backstop_timeout` seams; the production defaults
+//!   (`ENGINE_TURN_STALL_TIMEOUT` 600 s, plus the ADR-006 backstop it
+//!   arms for a Degraded wait set) are far larger.
 
 
 use std::sync::Arc;
@@ -109,8 +111,7 @@ async fn collect_events(socket: &mut TestSocket, count: usize) -> Vec<Value> {
 }
 
 /// Like [`collect_events`], but each frame may take up to `frame_timeout` to
-/// arrive — needed by the (ignored) timeout test, where the interesting event
-/// only arrives after the server's 300 s engine-turn deadline.
+/// arrive.
 async fn collect_events_with_timeout(
     socket: &mut TestSocket,
     count: usize,
@@ -137,6 +138,48 @@ async fn collect_events_with_timeout(
 async fn next_event_with_method(socket: &mut TestSocket, method_prefix: &str) -> Value {
     loop {
         for frame in next_frames(socket).await {
+            if frame
+                .get("method")
+                .and_then(Value::as_str)
+                .is_some_and(|method| method.starts_with(method_prefix))
+            {
+                return frame;
+            }
+        }
+    }
+}
+
+/// Like [`next_event_with_method`], but bounded by an overall `budget`
+/// instead of the 5 s per-frame patience of [`next_frames`]: the
+/// stall-watchdog terminal event lands seconds after the previous frame,
+/// so a per-frame timeout shorter than the watchdog window would fire
+/// first. Panics with the budget in the message when it elapses.
+async fn next_event_with_method_within(
+    socket: &mut TestSocket,
+    method_prefix: &str,
+    budget: Duration,
+) -> Value {
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "no frame matching {method_prefix} within {budget:?}"
+        );
+        // The per-frame patience is the whole remaining budget: the
+        // interesting frame may be the ONLY one for seconds.
+        let message = tokio::time::timeout(remaining, socket.next())
+            .await
+            .unwrap_or_else(|_| panic!("no frame matching {method_prefix} within {budget:?}"))
+            .expect("stream stays open")
+            .expect("text message");
+        let value: Value = serde_json::from_str(message.to_text().expect("UTF-8 text message"))
+            .expect("message is valid JSON");
+        let frames = match value {
+            Value::Array(frames) => frames,
+            other => vec![other],
+        };
+        for frame in frames {
             if frame
                 .get("method")
                 .and_then(Value::as_str)
@@ -422,37 +465,55 @@ async fn should_receive_assistant_delta_events_when_llm_streams_tokens() {
 // Turn timeout (engine never hears back from the LLM)
 // ===========================================================================
 
-/// E2E: a mock that never responds drives the server's engine-turn timeout —
-/// the fire-mode turn must end with a `turn_failed` event instead of hanging
-/// the session forever.
+/// E2E: a mock that never responds drives the server's turn-stall
+/// watchdog — the fire-mode turn must end with a terminal
+/// `event.turn.ended` instead of hanging the session forever.
 ///
-/// Ignored: the server hardcodes `ENGINE_TURN_TIMEOUT = 300 s` in `rpc.rs`,
-/// so enabling this test waits the full five minutes. Enable it once the
-/// timeout is configurable (or lower); the flow itself is what the eventual
-/// configurable-timeout CI run will exercise.
-#[ignore = "rpc.rs hardcodes ENGINE_TURN_TIMEOUT = 300 s; the test would wait five minutes. Enable once the engine-turn timeout is configurable."]
+/// Ignored (R layer): even with the watchdog seams shrunk to seconds, the
+/// cascade waits out real time. The production defaults are far larger
+/// still (`ENGINE_TURN_STALL_TIMEOUT` 600 s in `mirri-embedded`, plus the
+/// ADR-006 backstop that a Degraded wait set arms behind it).
+#[ignore = "R layer: rides the turn-stall watchdog in real time (seconds-scale)"]
 #[tokio::test]
 async fn should_handle_turn_timeout_when_llm_never_responds() {
-    // Given a server whose mock never responds, and a subscribed client
+    // Given a server whose mock never responds, its stall watchdog and
+    // ADR-006 backstop shrunk to seconds, and a subscribed client
     let mock = Arc::new(MockLlm::new());
     mock.hang_forever();
     let factory = Arc::new(MockLlmFactory::new(Arc::clone(&mock)));
-    let server = TestServer::start_with_llm_factory(Some(factory)).await;
+    let server = TestServer::start_with_llm_factory_and_turn_stall_timeouts(
+        Some(factory),
+        Duration::from_secs(2),
+        Duration::from_secs(2),
+    )
+    .await;
     let mut socket = connected_socket(&server).await;
     let session_id = create_session_via_rpc(&mut socket, "Timeout", 2).await;
     subscribe(&mut socket, &session_id, 3).await;
 
-    // When a message is sent in fire mode against the never-responding LLM
+    // When a message is sent in fire mode against the never-responding
+    // LLM. The ack returns before the spawned turn reaches its first LLM
+    // call, so the consultation is polled for — never asserted inline.
     let response = send_fire(&mut socket, 4, &session_id, "Are you there?").await;
     assert_eq!(response["result"]["ok"], true);
-    assert_eq!(mock.chat_call_count(), 1, "the mock was consulted once");
+    poll_until(
+        tokio::time::Instant::now() + Duration::from_secs(10),
+        "the mock to be consulted",
+        || mock.chat_call_count() == 1,
+    )
+    .await;
 
-    // Then the server's engine-turn deadline fires and an event.turn.ended
-    // notification (reason "failed") tells subscribers the turn will never
-    // complete — the client must not wait for a successful turn end forever.
-    let events = collect_events_with_timeout(&mut socket, 1, Duration::from_secs(310)).await;
-    let event = &events[0];
-    assert_eq!(event["method"], "event.turn.ended");
+    // Then the stall watchdog ends the turn: a terminal event.turn.ended
+    // notification tells subscribers the turn will never complete — the
+    // client must not wait for a successful turn end forever. The hung
+    // stream never observes the watchdog's cooperative cancel (the engine
+    // checks cancellation only AFTER stream collection returns), so the
+    // grace window lapses into a hard drop and the fire arm publishes the
+    // stall failure vocabulary: reason "failed", code "internal", and a
+    // message that names the stall — not the pre-ADR-004 "timed out" text.
+    let event =
+        next_event_with_method_within(&mut socket, "event.turn.ended", Duration::from_secs(30))
+            .await;
     assert_eq!(event["params"]["sessionId"], session_id);
     assert_eq!(event["params"]["reason"], "failed");
     assert_eq!(event["params"]["error"]["code"], "internal");
@@ -460,8 +521,8 @@ async fn should_handle_turn_timeout_when_llm_never_responds() {
         .as_str()
         .expect("event.turn.ended carries the failure description");
     assert!(
-        error.contains("timed out"),
-        "the failure names the timeout: {error}"
+        error.contains("stalled"),
+        "the failure names the stall: {error}"
     );
 }
 
@@ -479,10 +540,11 @@ async fn should_handle_turn_timeout_when_llm_never_responds() {
 /// The engine turn itself runs on the blocking pool and cannot be unwound
 /// mid-LLM-call (documented limitation of `message.abort` in `rpc.rs`), so
 /// the mock's stream keeps being consumed and the full reply still lands in
-/// context memory — bounded by the streaming duration, not by the 300 s
-/// `ENGINE_TURN_TIMEOUT`. If the engine is later taught to propagate the
-/// abort into the LLM call, this test's final assertion flips (and the
-/// mock's `cancel_seen` becomes the signal to assert).
+/// context memory — bounded by the streaming duration, not by the
+/// turn-stall watchdog (`ENGINE_TURN_STALL_TIMEOUT`). If the engine is
+/// later taught to propagate the abort into the LLM call, this test's
+/// final assertion flips (and the mock's `cancel_seen` becomes the signal
+/// to assert).
 #[tokio::test]
 async fn should_allow_abort_when_turn_is_in_flight() {
     // Given a server whose mock streams a long reply (200 deltas × 25 ms ≈

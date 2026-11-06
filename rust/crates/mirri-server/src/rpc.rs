@@ -2977,8 +2977,9 @@ impl RpcHandler for ListMessagesHandler {
 ///
 /// Limitation: the engine turn itself runs on the blocking pool and cannot be
 /// unwound mid-LLM-call; the abort drops the client-visible task and its
-/// registration, while the blocking turn stays bounded by
-/// [`ENGINE_TURN_TIMEOUT`].
+/// registration, while the blocking turn stays bounded by the engine's
+/// turn-stall watchdog (`ENGINE_TURN_STALL_TIMEOUT` in `mirri-embedded`,
+/// 600 s by default).
 pub struct CatalogToolsHandler {
     manager: Arc<SessionManager>,
 }
