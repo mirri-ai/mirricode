@@ -816,6 +816,7 @@ mod tests {
     fn should_create_llm_from_the_configured_provider_when_model_id_is_a_known_alias() {
         // Given a config whose `ultra` alias resolves through a provider
         // with an apiKey and baseUrl
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("openai".to_string()),
@@ -823,7 +824,7 @@ mod tests {
                 base_url: Some("https://proxy.example.com".to_string()),
                 ..Default::default()
             }),
-            None,
+            Some(home.path().to_path_buf()),
         );
 
         // When an LLM is created for the alias
@@ -841,6 +842,7 @@ mod tests {
     fn should_inject_name_inferred_media_capability_when_the_alias_names_a_vision_model() {
         // Given a config whose `ultra` alias names a vision-capable upstream
         // model (the name-inference catalog) with no declared capabilities
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             alias_config_with_model(
                 ProviderEntry {
@@ -851,7 +853,7 @@ mod tests {
                 },
                 "gpt-4o",
             ),
-            None,
+            Some(home.path().to_path_buf()),
         );
 
         // When an LLM is created for the alias
@@ -870,6 +872,7 @@ mod tests {
         // provider for a model no source can resolve (the provider id
         // `kimi` is the Mirri first-party coding service, so its official
         // endpoint answers without an explicit base URL)
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             first_party_config_with_model(
                 "kimi",
@@ -880,7 +883,7 @@ mod tests {
                 },
                 "kimi-latest",
             ),
-            None,
+            Some(home.path().to_path_buf()),
         );
 
         // When an LLM is created for the alias
@@ -957,12 +960,13 @@ mod tests {
         // variable must NOT answer (#186: explicit credentials only)
         let _guard = mirri_test_support::env::lock();
         unsafe { std::env::set_var("ANTHROPIC_API_KEY", "env-key") };
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("anthropic".to_string()),
                 ..Default::default()
             }),
-            None,
+            Some(home.path().to_path_buf()),
         );
 
         // When an LLM is created for the alias
@@ -1037,13 +1041,14 @@ mod tests {
         // OpenAI endpoint — the #184 silent wrong-provider request face)
         let _guard = mirri_test_support::env::lock();
         unsafe { std::env::remove_var("OPENAI_BASE_URL") };
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("openai".to_string()),
                 env: Some(HashMap::from([("OPENAI_API_KEY".to_string(), "sk-test".to_string())])),
                 ..Default::default()
             }),
-            None,
+            Some(home.path().to_path_buf()),
         );
 
         // When an LLM is created for the alias
@@ -1071,13 +1076,14 @@ mod tests {
         // picking OpenAI without a URL is legitimate)
         let _guard = mirri_test_support::env::lock();
         unsafe { std::env::remove_var("OPENAI_BASE_URL") };
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             official_openai_config(ProviderEntry {
                 r#type: Some("openai".to_string()),
                 env: Some(HashMap::from([("OPENAI_API_KEY".to_string(), "sk-test".to_string())])),
                 ..Default::default()
             }),
-            None,
+            Some(home.path().to_path_buf()),
         );
 
         // When an LLM is created for the alias
@@ -1118,9 +1124,10 @@ mod tests {
                 )]));
             }
             let _ = base_env;
+            let home = tempfile::tempdir().expect("tempdir");
             let factory = ConfigAwareLlmFactory::new(
                 first_party_config(provider_id, provider),
-                None,
+                Some(home.path().to_path_buf()),
             );
 
             // When an LLM is created for the alias
@@ -1140,6 +1147,7 @@ mod tests {
         // explicit config tier must keep answering)
         let _guard = mirri_test_support::env::lock();
         unsafe { std::env::remove_var("OPENAI_BASE_URL") };
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("openai".to_string()),
@@ -1149,7 +1157,7 @@ mod tests {
                 ])),
                 ..Default::default()
             }),
-            None,
+            Some(home.path().to_path_buf()),
         );
 
         // When an LLM is created for the alias
@@ -1218,13 +1226,14 @@ mod tests {
         unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
         unsafe { std::env::remove_var("MIRRI_API_KEY") };
         unsafe { std::env::remove_var("GOOGLE_API_KEY") };
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("openai".to_string()),
                 base_url: Some("https://gw.example.test/v1".to_string()),
                 ..Default::default()
             }),
-            None,
+            Some(home.path().to_path_buf()),
         );
 
         // When an LLM is created for the alias
@@ -1252,6 +1261,7 @@ mod tests {
         // shell variable
         let server = MockServer::start().await;
         mount_kimi_chat(&server).await;
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("kimi".to_string()),
@@ -1262,7 +1272,7 @@ mod tests {
                 )])),
                 ..Default::default()
             }),
-            None,
+            Some(home.path().to_path_buf()),
         );
 
         // When an LLM is created for the alias and chats — the shell
@@ -1345,6 +1355,7 @@ mod tests {
         // answer (#186: explicit credentials only, so no request leaves)
         let server = MockServer::start().await;
         mount_kimi_chat(&server).await;
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("kimi".to_string()),
@@ -1355,7 +1366,7 @@ mod tests {
                 )])),
                 ..Default::default()
             }),
-            None,
+            Some(home.path().to_path_buf()),
         );
 
         // When an LLM is created for the alias — the shell variable is set
@@ -1398,6 +1409,7 @@ mod tests {
         mount_kimi_chat(&shell_server).await;
         let table_server = MockServer::start().await;
         mount_kimi_chat(&table_server).await;
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("kimi".to_string()),
@@ -1410,7 +1422,7 @@ mod tests {
                 ])),
                 ..Default::default()
             }),
-            None,
+            Some(home.path().to_path_buf()),
         );
 
         // When an LLM is created for the alias and chats — the shell
@@ -1452,6 +1464,7 @@ mod tests {
         mount_kimi_chat(&field_server).await;
         let table_server = MockServer::start().await;
         mount_kimi_chat(&table_server).await;
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("kimi".to_string()),
@@ -1465,7 +1478,7 @@ mod tests {
                 ])),
                 ..Default::default()
             }),
-            None,
+            Some(home.path().to_path_buf()),
         );
 
         // When an LLM is created for the alias and chats
@@ -1507,6 +1520,7 @@ mod tests {
         mount_kimi_chat(&shell_server).await;
         let table_server = MockServer::start().await;
         mount_kimi_chat(&table_server).await;
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             first_party_config(
                 "kimi",
@@ -1519,7 +1533,7 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            None,
+            Some(home.path().to_path_buf()),
         );
 
         // When an LLM is created for the alias — the shell variables are
@@ -1636,13 +1650,14 @@ mod tests {
         // agent addressing a bare model name that is no configured alias
         let _guard = mirri_test_support::env::lock();
         unsafe { std::env::set_var("ANTHROPIC_API_KEY", "env-key") };
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("openai".to_string()),
                 env: Some(HashMap::from([("OPENAI_API_KEY".to_string(), "sk-test".to_string())])),
                 ..Default::default()
             }),
-            None,
+            Some(home.path().to_path_buf()),
         );
         let agent_config = AgentScopeConfig {
             provider_type: ProviderType::Anthropic,
@@ -1678,6 +1693,7 @@ mod tests {
         // would answer a wrong-provider LLM for the composite id)
         let _guard = mirri_test_support::env::lock();
         unsafe { std::env::set_var("ANTHROPIC_API_KEY", "env-key") };
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("openai".to_string()),
@@ -1685,7 +1701,7 @@ mod tests {
                 base_url: Some("https://proxy.example.com".to_string()),
                 ..Default::default()
             }),
-            None,
+            Some(home.path().to_path_buf()),
         );
 
         // When an LLM is created for the canonical composite id (the C6
@@ -1710,6 +1726,7 @@ mod tests {
         // Given a config whose `ultra` alias names the rakuten provider's
         // GLM-5.3-Coding, with the credentials carried in the provider
         // record (so no environment variable is consulted)
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("openai".to_string()),
@@ -1717,7 +1734,7 @@ mod tests {
                 base_url: Some("https://proxy.example.com".to_string()),
                 ..Default::default()
             }),
-            None,
+            Some(home.path().to_path_buf()),
         );
 
         // When an LLM is created for the web picker's composite id
@@ -1742,13 +1759,14 @@ mod tests {
         let _guard = mirri_test_support::env::lock();
         unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
         unsafe { std::env::remove_var("OPENAI_API_KEY") };
+        let home = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
                 r#type: Some("openai".to_string()),
                 env: Some(HashMap::from([("OPENAI_API_KEY".to_string(), "sk-test".to_string())])),
                 ..Default::default()
             }),
-            None,
+            Some(home.path().to_path_buf()),
         );
         let mut agent_config = alias_agent_config();
         agent_config.model_id = "rakuten/Ghost-9".to_string();
@@ -2052,17 +2070,22 @@ mod tests {
     /// with no process-env mutation involved.
     #[test]
     fn should_apply_the_home_fallback_tiers_when_resolved_from_injected_env() {
-        let explicit = PathBuf::from("/explicit/home");
+        let explicit = tempfile::tempdir().expect("tempdir");
         let factory = ConfigAwareLlmFactory::new(
             Arc::new(std::sync::RwLock::new(ServerConfig::default())),
-            Some(explicit.clone()),
+            Some(explicit.path().to_path_buf()),
         );
-        assert_eq!(factory.mirri_home(), explicit);
+        assert_eq!(factory.mirri_home(), explicit.path());
 
-        let no_home_factory = ConfigAwareLlmFactory::new(
-            Arc::new(std::sync::RwLock::new(ServerConfig::default())),
-            None,
-        );
+        // The no-home arm is built as a literal on purpose: this test only
+        // exercises `mirri_home_from`, and `new(.., None)` would resolve the
+        // AMBIENT home to open its credential store — creating
+        // `<real home>/.mirri-code/credentials` on every run.
+        let no_home_factory = ConfigAwareLlmFactory {
+            config: Arc::new(std::sync::RwLock::new(ServerConfig::default())),
+            home: None,
+            credentials: None,
+        };
         // When `MIRRICODE_HOME` is set in the injected env (it outranks $HOME)
         assert_eq!(
             no_home_factory.mirri_home_from(|name| {
