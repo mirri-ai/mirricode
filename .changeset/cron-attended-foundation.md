@@ -1,5 +1,0 @@
----
-"@mirri-ai/release": minor
----
-
-Cron tasks gain attended-execution foundations: task origin (user/agent), optional fire budgets (`maxFires`) with an honest maxed-out finale, and unattended declarations. The `CronCreate` tool accepts `max_fires` (recurring only), `unattended`, and a display-only `reason`; model-created budgets above 3 fires (or uncapped recurring tasks) now ask for approval on answerable postures and are denied on auto/unattended ones with reroute guidance. Cron-fired turns (including swarm-delegated subagents) can no longer spawn recurring tasks — denied up front on the permission chain and again at the tool layer — and lineage one-shot self-timers are capped at 12 per session. Unattended cron turns reject approval-needing operations and `AskUserQuestion` calls with a reroute receipt instead of hanging, and the fired turn's lineage holds even when the fire lands behind a busy turn (the run-now face). The `cron.fired` event, `<cron-fire>` envelope, and the persisted turn origin now carry `maxedOut` and `unattended`.
