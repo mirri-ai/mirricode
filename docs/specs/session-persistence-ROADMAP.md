@@ -29,6 +29,7 @@
 | Phase 3 | SQLite 会话/工作区索引（S4；读模型 + 写通 + 对账；`workspaces.json` 镜像） | ✅ 已合入 | `c683a73b` |
 | 领域文档 | 需求/架构/context 三件套 + glossary 术语 S1–S4 | ✅ 本批 | — |
 | 标题批 | 标题自动派生（N10）：`is_custom_title` + `session/title.rs`（脱敏/截断，TS 对齐）+ send/rename/fork 集成 + `session.meta.updated` 广播；基线缺口补录（需求 US10） | ✅ 已合入 | `56d81ca5` |
+| ADR-006 批 | SQLite 升格为会话元数据唯一事实源：墓碑表 + 元数据存储端口（字段级三态 patch）+ 写序反转（行先 wire 后，`save_state` 退役）+ 一次性迁移（census 结算内种子 + 格式章 + 双层独占）+ 对账退役（`ResumeFamily`/converge/刷新驱动器删除，墓碑回收器接管存在性）+ 恢复金字塔（备份恢复→wire log 半重建）+ 优雅关机库快照 + cron 执行会话行豁免（ADR-008 对齐）。规格：`docs/specs/session-consistency-architecture.md` 的 ADR-006；`non-functional-architecture.md` §1.6 同批改写 | ✅ 已合入 | 本 worktree `feat(core): ADR-006…` |
 | Phase 4 | 置顶 + 拖拽排序（见下） | ⏳ 待启动 | — |
 
 ## Phase 4 前置：会话管理域立项（已完成 2026-09-09）

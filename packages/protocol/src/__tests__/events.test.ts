@@ -9,6 +9,7 @@ import {
   assistantDeltaEventSchema,
   eventSchema,
   toolCallStartedEventSchema,
+  turnEndedEventSchema,
 } from '../events';
 import type { Event } from '../events';
 import type { ToolInputDisplay } from '../display';
@@ -258,5 +259,24 @@ describe('events / display re-exports', () => {
         previous_status: 'idle',
       }).success,
     ).toBe(false);
+  });
+
+  it('should parse turn.ended with endedAtMs when present', () => {
+    const parsed = turnEndedEventSchema.parse({
+      type: 'turn.ended',
+      turnId: 7,
+      reason: 'completed',
+      durationMs: 1200,
+      endedAtMs: 1730000000000,
+    });
+
+    expect(parsed.endedAtMs).toBe(1730000000000);
+    expect(parsed.durationMs).toBe(1200);
+  });
+
+  it('should parse turn.ended without endedAtMs when reading older records', () => {
+    const parsed = turnEndedEventSchema.parse({ type: 'turn.ended', turnId: 7, reason: 'completed' });
+
+    expect(parsed.endedAtMs).toBeUndefined();
   });
 });

@@ -41,10 +41,14 @@ export default {
     'Note: Switching models or thinking effort invalidates the existing prompt cache. Start a new session to avoid extra token costs.',
   starredModels: 'Starred',
   moreModels: 'More models…',
-  // Session usage stats bar (usage-visibility Task 7)
+  // Session usage stats bar (usage-visibility Task 7; ADR-004 priced buckets)
+  usageTurnCount: '{n} turns',
   usageCacheHit: 'Cache hit {pct}%',
   usageAfterColdStart: 'After cold start {pct}%',
-  usageTokens: 'In {input} · Out {output}',
+  usageCacheRead: 'Cache read {n}',
+  usageInput: 'Uncached input {n}',
+  usageCacheWrite: 'Cache write {n}',
+  usageOutput: 'Out {n}',
   // Status panel
   statusPanelTitle: 'Session status',
   statusPanelClose: 'Close',

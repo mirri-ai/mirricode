@@ -39,18 +39,21 @@ pub fn live_event_to_session_event(
             tool_name,
             tool_call_id,
             args,
+            started_at,
         } => SessionEvent::ToolCallStarted {
             agent_id: agent_id.to_string(),
             session_id: session_id.to_string(),
             tool_name,
             tool_call_id,
             args,
+            started_at_ms: started_at,
         },
         LiveEvent::ToolCallCompleted {
             tool_call_id,
             tool_name,
             is_error,
             output,
+            duration_ms,
         } => SessionEvent::ToolCallCompleted {
             agent_id: agent_id.to_string(),
             session_id: session_id.to_string(),
@@ -58,6 +61,7 @@ pub fn live_event_to_session_event(
             tool_name,
             is_error,
             output,
+            duration_ms,
         },
         LiveEvent::ToolProgress {
             tool_call_id,
@@ -84,6 +88,9 @@ pub fn live_event_to_session_event(
             active_step,
             message,
         } => SessionEvent::TurnStepInterrupted {
+            // The agent identity the relay callback was built with — the
+            // same string vocabulary the step brackets publish under.
+            agent_id: agent_id.to_string(),
             // The wire turn id is supplied by the callback's caller (the
             // dispatch minted it); `None` only for callbacks built without
             // one — the projection then omits the field.
@@ -98,6 +105,7 @@ pub fn live_event_to_session_event(
             max_attempts,
             delay_ms,
         } => SessionEvent::TurnStepRetrying {
+            agent_id: agent_id.to_string(),
             turn_id: turn_id.map(str::to_string),
             // Step-level retries re-enqueue the current step — the live
             // channel carries no step number either, so the retried step is

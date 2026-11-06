@@ -106,11 +106,14 @@ pub fn should_compress(archived_at: Option<&str>, now: DateTime<Utc>, grace_days
 /// 1. `try_acquire(dir)` — the ADR-002 advisory lock. `None` means
 ///    another process holds the session: [`CompressOutcome::Skipped`] with
 ///    [`SkipReason::Locked`] (benign; the next round retries, US4.2).
-/// 2. **In-lock re-validation** — re-read `state.json`
-///    ([`SessionPersistence::read_persisted_info`]): only a session
-///    still `archived` AND still un-compressed (per the ADR-007 shape
-///    truth) proceeds; anything else is
-///    [`CompressOutcome::Skipped`] with [`SkipReason::Revalidated`].
+/// 2. **In-lock re-validation** (ADR-006 fix round 1 — row-first): the
+///    metadata ROW through the persistence's wired store is the archive
+///    flag's source of truth; the wire-log SHAPE (ADR-007) is the
+///    compression verdict. Only a session still `archived` in the row
+///    AND still un-compressed proceeds; anything else is
+///    [`CompressOutcome::Skipped`] with [`SkipReason::Revalidated`]. A
+///    row-less legacy session (no store row) falls back to the
+///    `state.json` re-validation — the pre-ADR-006 path.
 /// 3. `compress_wire_log(dir)` — the persistence primitive (streaming
 ///    gzip, temp file + atomic replacement). Returns the pre-compression
 ///    byte size.
@@ -141,18 +144,37 @@ pub async fn compress_session(
     };
 
     // Step 2 — in-lock re-validation (§2.1: the candidate check ran
-    // BEFORE the lock; restore/compress may have intervened).
-    let Some(info) = persistence.read_persisted_info(session_id).await else {
+    // BEFORE the lock; restore/compress may have intervened). The ROW
+    // first (ADR-006: the archive flag's source of truth — a row-only
+    // session has no state.json to read); the state.json re-validation is
+    // the row-less legacy fallback.
+    let archived = if let Some(store) = persistence.metadata_store() {
+        match store.get(session_id).await {
+            // The row is the archive flag's source of truth.
+            Some(record) => record.archived,
+            // A wired store with no row: the session never registered (or
+            // was deleted). A legacy state.json may still carry the flag —
+            // the disk re-validation is the fallback.
+            None => persistence
+                .read_persisted_info(session_id)
+                .await
+                .is_some_and(|info| info.metadata.archived),
+        }
+    } else {
+        let Some(info) = persistence.read_persisted_info(session_id).await else {
+            tracing::debug!(
+                session_id = %session_id,
+                directory = %dir.display(),
+                "retention compression skipped: no row and state.json unreadable at revalidation"
+            );
+            return Ok(CompressOutcome::Skipped(SkipReason::Revalidated));
+        };
+        info.metadata.archived
+    };
+    if !archived {
         tracing::debug!(
             session_id = %session_id,
             directory = %dir.display(),
-            "retention compression skipped: state.json unreadable at revalidation"
-        );
-        return Ok(CompressOutcome::Skipped(SkipReason::Revalidated));
-    };
-    if !info.metadata.archived {
-        tracing::debug!(
-            session_id = %session_id,
             "retention compression skipped: session was restored before the lock"
         );
         return Ok(CompressOutcome::Skipped(SkipReason::Revalidated));
@@ -161,9 +183,10 @@ pub async fn compress_session(
     // fallback) — a session already compressed (by this or another
     // process) must not be re-compressed: compress_wire_log fails on a
     // missing wire.jsonl source.
-    if shape_or_marker_compressed(dir, &info) {
+    if shape_or_marker_compressed_row(persistence, session_id, dir).await {
         tracing::debug!(
             session_id = %session_id,
+            directory = %dir.display(),
             "retention compression skipped: session already compressed"
         );
         return Ok(CompressOutcome::Skipped(SkipReason::Revalidated));
@@ -299,19 +322,38 @@ pub async fn restore_decompress(
 
     // The shape is plain now. Clear the compression cache batch (a stale
     // `compressed = true` from a crash between decompression and this
-    // write is the §7 "标记残留" row), then the archive batch.
-    persistence.clear_compressed(session_id).await?;
-    // set_archived(false) clears `archived_at` AND the whole compression
-    // batch (§3.1's restore semantics — running it after
-    // clear_compressed makes the pair idempotent in either repetition
-    // order).
-    persistence.set_archived(session_id, false).await?;
+    // write is the §7 "标记残留" row), then the archive batch. The
+    // retention-domain state.json writes are best-effort under ADR-006's
+    // transition: a row-only session (no state.json on disk — the normal
+    // shape of a post-ADR-006 session) has no marker document to clear,
+    // and the missing file is not an error; the callers that DO carry a
+    // document keep the exact explicit-write failure semantics.
+    if let Err(error) = persistence.clear_compressed(session_id).await {
+        if persistence.state_path(session_id).is_file() {
+            return Err(error);
+        }
+        tracing::debug!(
+            session_id = %session_id,
+            %error,
+            "restore_decompress: no state.json marker to clear (row-only session)"
+        );
+    }
+    if let Err(error) = persistence.set_archived(session_id, false).await {
+        if persistence.state_path(session_id).is_file() {
+            return Err(error);
+        }
+        tracing::debug!(
+            session_id = %session_id,
+            %error,
+            "restore_decompress: no state.json archive flag to clear (row-only session)"
+        );
+    }
     Ok(())
 }
 
-/// Converge the `state.json` compression marker against the on-disk shape
-/// (ADR-007: 形状优先并自愈补写 — the §7 crash-matrix rows "原子替换后、
-/// 标记写入前" and "`.gz` 已删、标记未清").
+/// Converge the compression marker against the on-disk shape (ADR-007:
+/// 形状优先并自愈补写 — the §7 crash-matrix rows "原子替换后、标记写入前"
+/// and "`.gz` 已删、标记未清").
 ///
 /// - Shape `Compressed`, marker `false` → `set_compressed` with a
 ///   best-available `pre_size`: the recorded one when present, else the
@@ -324,6 +366,11 @@ pub async fn restore_decompress(
 ///   fallback); nothing to heal.
 /// - Marker already agreeing with the shape → no-op.
 ///
+/// The marker source is the metadata ROW first (ADR-006 fix round 1 — a
+/// row-only session has no state.json), the state.json RAW read as the
+/// row-less legacy fallback. `set_compressed`/`clear_compressed` write
+/// whichever the persistence is wired to.
+///
 /// Called by the compression engine's scan pass (each candidate, before
 /// the verdict) and the restore path — the two flows the architecture
 /// names as the heal hosts (§7: "所有收敛都是既有检查流程的一部分").
@@ -332,15 +379,29 @@ pub async fn heal_compression_state(
     session_id: &SessionId,
     dir: &Path,
 ) -> SessionResult<()> {
-    // The RAW marker read (the heal's own input — NOT the reconciled
-    // `read_persisted_info`, whose M3 shape-first verdict would mask the
-    // exact marker/shape disagreement this function exists to fix).
-    let Some(info) = persistence.read_persisted_info_raw(session_id).await else {
-        return Ok(()); // no readable state.json — nothing to reconcile
+    // The marker triple (compressed, pre_compressed_size) — the ROW's when
+    // a wired store holds one, else the state.json RAW read (the pre-row
+    // legacy path). Neither source answers → nothing to reconcile.
+    let marker_pair = if let Some(store) = persistence.metadata_store() {
+        match store.get(session_id).await {
+            Some(record) => Some((record.compressed, record.pre_compressed_size)),
+            None => persistence
+                .read_persisted_info_raw(session_id)
+                .await
+                .map(|info| (info.compressed, info.pre_compressed_size)),
+        }
+    } else {
+        persistence
+            .read_persisted_info_raw(session_id)
+            .await
+            .map(|info| (info.compressed, info.pre_compressed_size))
+    };
+    let Some((marker, pre_recorded)) = marker_pair else {
+        return Ok(()); // no row and no readable state.json — nothing to reconcile
     };
     match probe_compressed(dir) {
         CompressedShape::Compressed => {
-            if info.compressed {
+            if marker {
                 return Ok(()); // cache fresh — nothing to heal
             }
             // Backfill pre_size: the recorded value wins; without one the
@@ -348,7 +409,7 @@ pub async fn heal_compression_state(
             // stand-in (the true pre-compression size died with the
             // removed wire.jsonl — an invented larger number would
             // fabricate savings).
-            let pre_size = info.pre_compressed_size.unwrap_or_else(|| {
+            let pre_size = pre_recorded.unwrap_or_else(|| {
                 let gz = dir.join(mirri_persistence::WIRE_LOG_GZ_FILE);
                 let gz_len = std::fs::metadata(&gz).map(|meta| meta.len()).unwrap_or(0); // zero-io-allow: retention heal — a stat of the persistence-owned .gz (same class as probe_compressed's is_file); no injected fs trait carries this sync site
                 gz_len
@@ -361,7 +422,7 @@ pub async fn heal_compression_state(
             );
         }
         CompressedShape::Plain => {
-            if !info.compressed {
+            if !marker {
                 return Ok(());
             }
             persistence.clear_compressed(session_id).await?;
@@ -377,13 +438,34 @@ pub async fn heal_compression_state(
     Ok(())
 }
 
-/// The ADR-007 effective-compression verdict over a [`super::persistence`
-/// `PersistedInfo`] — shape first, marker only for the Missing shape.
-fn shape_or_marker_compressed(dir: &Path, info: &super::persistence::PersistedInfo) -> bool {
+/// The row-first form of the ADR-007 effective-compression verdict
+/// (fix round 1): shape first, the ROW's `compressed` column only for the
+/// Missing shape, the state.json marker as the row-less legacy fallback.
+async fn shape_or_marker_compressed_row(
+    persistence: &SessionPersistence,
+    session_id: &SessionId,
+    dir: &Path,
+) -> bool {
+    // The marker: the ROW's `compressed` column when a wired store holds
+    // one, else the state.json RAW read (the pre-row legacy path).
+    let marker = if let Some(store) = persistence.metadata_store() {
+        match store.get(session_id).await {
+            Some(record) => record.compressed,
+            None => persistence
+                .read_persisted_info_raw(session_id)
+                .await
+                .is_some_and(|info| info.compressed),
+        }
+    } else {
+        persistence
+            .read_persisted_info_raw(session_id)
+            .await
+            .is_some_and(|info| info.compressed)
+    };
     match probe_compressed(dir) {
         CompressedShape::Compressed => true,
         CompressedShape::Plain => false,
-        CompressedShape::Missing => info.compressed,
+        CompressedShape::Missing => marker,
     }
 }
 
@@ -412,6 +494,7 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::scope::SessionMetadata;
+    use crate::session::metadata_port::MetadataStorePort as _;
 
     /// A wire-log line with enough repetitive padding that gzip shrinks it
     /// well below half (§3.3's "small fraction" gate).
@@ -449,6 +532,31 @@ mod tests {
                 dir,
                 _tmp: tmp,
             }
+        }
+
+        /// The ADR-006 production shape: the same fixture wired to an
+        /// in-memory metadata store (the manager's builder threads one
+        /// through, so the retention engine's revalidation reads the row).
+        fn with_row_store(self) -> (Self, std::sync::Arc<crate::session::metadata_port::InMemoryMetadataStore>) {
+            let store = std::sync::Arc::new(crate::session::metadata_port::InMemoryMetadataStore::new());
+            let persistence = self
+                .persistence
+                .clone()
+                .with_metadata_store(
+                    std::sync::Arc::clone(&store) as std::sync::Arc<
+                        dyn crate::session::metadata_port::MetadataStorePort,
+                    >,
+                    "ws-retention".to_string(),
+                );
+            (
+                Self {
+                    persistence,
+                    session_id: self.session_id,
+                    dir: self.dir,
+                    _tmp: self._tmp,
+                },
+                store,
+            )
         }
 
         /// Persist a plain wire log with `records` padded lines plus the
@@ -646,6 +754,129 @@ mod tests {
         // The .gz was not re-compressed (its content stands) — and the
         // size sanity anchors the non-action.
         assert!(gz_len < original_len);
+    }
+
+    // -------------------------------------------------------------------
+    // ADR-006 fix round 1 — row-first revalidation: a row-only session
+    // (post-ADR-006's normal archived shape: a row, a wire log, NO
+    // state.json) must compress.
+    // -------------------------------------------------------------------
+
+    /// Given a row-only archived session (the row carries the archive flag;
+    /// no state.json exists) over a store-wired persistence, when the
+    /// retention compression runs, then it compresses the wire log and the
+    /// compression column group lands in the ROW.
+    #[tokio::test]
+    async fn should_compress_a_row_only_archived_session_when_retention_runs() {
+        use crate::session::metadata_port::MetadataPatch;
+        // Given the fixture's wire log but NO state.json, and the archive
+        // flag carried by the metadata row alone
+        let (fixture, store) = Fixture::new("row-only-compress").await.seed(50).await.with_row_store();
+        std::fs::remove_file(fixture.persistence.state_path(&fixture.session_id))
+            .expect("the fixture's state.json is deletable");
+        store
+            .apply(
+                &fixture.session_id,
+                "ws-retention",
+                MetadataPatch {
+                    archived: Some(true),
+                    archived_at: Some(Some(Utc::now() - Days::new(40))),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            !fixture.persistence.state_path(&fixture.session_id).exists(),
+            "the session is row-only"
+        );
+
+        // When the retention compression runs
+        let outcome = compress_session(&fixture.persistence, &fixture.session_id, &fixture.dir)
+            .await
+            .unwrap();
+
+        // Then the wire log compressed (the .gz replaced the .jsonl) and
+        // the compression column group landed in the row
+        let CompressOutcome::Compressed { pre_size } = outcome else {
+            panic!("the row-only archived session must compress, got {outcome:?}");
+        };
+        assert!(pre_size > 0);
+        assert!(!fixture.dir.join(WIRE_LOG_FILE).exists());
+        assert!(fixture.dir.join(WIRE_LOG_GZ_FILE).is_file());
+        let record = store.get(&fixture.session_id).await.expect("the row exists");
+        assert!(record.compressed, "the row carries the compressed flag");
+        assert!(record.compressed_at.is_some());
+        assert_eq!(record.pre_compressed_size, Some(pre_size));
+    }
+
+    /// Given a row-only session whose ROW says restored (archived = false)
+    /// with no state.json, when the retention compression runs, then it
+    /// skips with Revalidated — the row is the archive truth.
+    #[tokio::test]
+    async fn should_skip_with_revalidated_when_a_row_only_session_was_restored_before_the_lock() {
+        use crate::session::metadata_port::MetadataPatch;
+        let (fixture, store) = Fixture::new("row-only-restored").await.seed(50).await.with_row_store();
+        std::fs::remove_file(fixture.persistence.state_path(&fixture.session_id)).unwrap();
+        store
+            .apply(
+                &fixture.session_id,
+                "ws-retention",
+                MetadataPatch {
+                    archived: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let outcome = compress_session(&fixture.persistence, &fixture.session_id, &fixture.dir)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, CompressOutcome::Skipped(SkipReason::Revalidated));
+        assert!(fixture.dir.join(WIRE_LOG_FILE).exists());
+    }
+
+    /// Given a row-only compressed session whose row marker is stale
+    /// (shape compressed, row's compressed false — the crash window), when
+    /// the heal runs over the store-wired persistence, then the row's
+    /// compression column group converges to the shape.
+    #[tokio::test]
+    async fn should_heal_the_row_marker_when_the_shape_is_compressed_for_a_row_only_session() {
+        use crate::session::metadata_port::MetadataPatch;
+        let (fixture, store) = Fixture::new("row-only-heal").await.seed(50).await.with_row_store();
+        std::fs::remove_file(fixture.persistence.state_path(&fixture.session_id)).unwrap();
+        // The row says not-compressed; the shape says compressed (a crash
+        // between the atomic replacement and the stamp).
+        compress_wire_log(&fixture.dir).unwrap();
+        let gz_len = tokio::fs::metadata(fixture.dir.join(WIRE_LOG_GZ_FILE))
+            .await
+            .unwrap()
+            .len();
+        store
+            .apply(
+                &fixture.session_id,
+                "ws-retention",
+                MetadataPatch {
+                    archived: Some(true),
+                    archived_at: Some(Some(Utc::now() - Days::new(40))),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        heal_compression_state(&fixture.persistence, &fixture.session_id, &fixture.dir)
+            .await
+            .unwrap();
+
+        let record = store.get(&fixture.session_id).await.expect("the row exists");
+        assert!(record.compressed, "the row's marker converged to the shape");
+        assert!(record.compressed_at.is_some());
+        // No recorded pre_size existed → the current .gz size (the
+        // conservative disk-available stand-in).
+        assert_eq!(record.pre_compressed_size, Some(gz_len));
     }
 
     // -------------------------------------------------------------------

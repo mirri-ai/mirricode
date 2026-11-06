@@ -6,7 +6,12 @@ mod b2_notification_tests;
 mod b3_swarm_scheduler_tests;
 mod b7_task_overview_tests;
 mod credential_store_tests;
+mod cron_b3_user_face_tests;
+mod cron_ws_4a_tests;
+mod cron_ws_4b_tests;
 mod e10_interrupted_recovery_tests;
+mod e11_metadata_migration_tests;
+mod e12_recovery_pyramid_tests;
 mod e9_file_reference_tests;
 mod t8_mcp_tests;
 mod t9_session_title_tests;
@@ -25,13 +30,646 @@ use mirri_core::ToolExecution;
 use mirri_core::hook_engine::{HookDef, HookEventType};
 use mirri_core::llm::{Llm, LlmChatParams, LlmEvent, LlmEventStream, LlmToolCall, ModelCapability};
 use mirri_persistence::{AppendLogStore, JsonlAppendLog};
+use mirri_test_support::env;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// A scripted response for [`ScriptedLlm`]: either a plain text end-turn
-/// reply or a tool-use response that keeps the loop running. (No `Clone`:
-/// the gated variant holds a one-shot receiver.)
+// ===========================================================================
+// Deterministic driver seams (negative-window determinization, scope B)
+//
+// The task/cron drivers are spawned loops whose bodies are plain functions,
+// so a test can drive one completed pass directly instead of sleeping
+// `N × tick` and hoping the timer fired. What this does NOT prove: that the
+// spawned loop calls the body on its interval — two b2 tests keep running
+// the real loop for that (`KEEP-LOOP` in
+// `docs/specs/rust-core-design/plans/2026-11-05-negative-window-audit.md`),
+// so the seam stays honest.
+//
+// These helpers are consumed by Tasks 4-6 of that plan; until then they have
+// no call sites.
+// ===========================================================================
+
+/// Drive ONE task-driver notification pass for `session_id` — the body the
+/// spawned driver runs after its sweep (due-notification adjudication and
+/// delivery).
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn drive_notification_tick(server: &EmbeddedServer, session_id: &str) {
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(session_id))
+        .await
+        .expect("session is live");
+    let resources = server.goal_chain_resources();
+    super::task_driver::deliver_due_notifications(
+        server.session_index(),
+        &server.registry,
+        &server.turn_flows,
+        &server.activity_trackers,
+        &server.steer_buffers,
+        &server.compaction_handles,
+        &server.usage_model_key_handles,
+        &server.llm_factory,
+        &server.config,
+        server.flag_registry(),
+        server.turn_stall_timeout,
+        server.turn_backstop_timeout,
+        &server.in_flight_turns,
+        &server.goal_chain_states,
+        &resources,
+        &server.provider_auth_failures,
+        server.home_dir().map(ToOwned::to_owned),
+        &session,
+        session_id,
+    )
+    .await;
+}
+
+/// Drive `ticks` notification passes in sequence — the literal form of
+/// "N driver ticks passed and nothing was delivered".
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn drive_notification_ticks(server: &EmbeddedServer, session_id: &str, ticks: usize) {
+    for _ in 0..ticks {
+        drive_notification_tick(server, session_id).await;
+    }
+}
+
+/// Drive ONE server-level cron pass for the default workspace. The orphan
+/// latch is pre-set (`true`) so a repeated call is a pure due-check + drain
+/// instead of re-running the stale-Running convergence.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn drive_cron_pass(server: &EmbeddedServer) {
+    let workspace_id = server
+        .workspace_registry()
+        .default_workspace_id()
+        .expect("the default workspace is set")
+        .to_string();
+    super::cron_driver::schedule_workspace_cron_pass(
+        Arc::clone(&server.registry),
+        Arc::new(server.workspace_run_spawner()),
+        Arc::clone(&server.steer_buffers),
+        workspace_id,
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .await;
+}
+
+/// Drive ONE SESSION-scoped cron pass (`check_due` → hold → purge → idle
+/// gate → drain) — the per-session half of the scheduler tick.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn drive_session_cron_pass(server: &EmbeddedServer, session_id: &str) {
+    super::cron_driver::schedule_session_cron_pass(
+        Arc::clone(&server.registry),
+        Arc::clone(&server.turn_flows),
+        Arc::clone(&server.activity_trackers),
+        Arc::clone(&server.steer_buffers),
+        Arc::clone(&server.compaction_handles),
+        Arc::clone(&server.usage_model_key_handles),
+        server.llm_factory.clone(),
+        Arc::clone(&server.in_flight_turns),
+        server.session_index(),
+        Arc::clone(server.flag_registry()),
+        Arc::clone(&server.goal_chain_states),
+        server.goal_chain_resources(),
+        Arc::clone(&server.provider_auth_failures),
+        Arc::clone(&server.config),
+        server.turn_stall_timeout,
+        server.turn_backstop_timeout,
+        server.home_dir().map(ToOwned::to_owned),
+        session_id.to_string(),
+        Arc::clone(&server.cron_pass_panic_session),
+    )
+    .await;
+}
+
+/// Drive `passes` completed follow-driver passes for one session. A pass
+/// that skips for the in-flight guard counts as completed — that skip IS
+/// what the in-flight test asserts.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn drive_follow_passes(server: &EmbeddedServer, session_id: &str, passes: usize) {
+    for _ in 0..passes {
+        // `tests` is `embedded_server::tests`, so its submodules need TWO
+        // `super`s to reach `embedded_server::follow_scheduler`.
+        let keep_going = crate::embedded_server::follow_scheduler::follow_pass(
+            &server.registry,
+            &server.in_flight_turns,
+            session_id,
+        )
+        .await;
+        assert!(keep_going, "the follow driver exited unexpectedly");
+    }
+}
+
+/// The session's cron manager (the live session's own handle).
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn session_cron(
+    server: &EmbeddedServer,
+    session_id: &str,
+) -> Arc<mirri_core::cron::CronManager> {
+    server
+        .session_manager()
+        .get_session(&SessionId::new(session_id))
+        .await
+        .expect("session is live")
+        .cron()
+}
+
+/// Wait until the scheduler has HELD `task_id`'s fire — the durable
+/// write-before-inject record. This is the positive signal the "several
+/// ticks while the gate holds" windows were proxying: the hold can only
+/// appear after a pass ran `check_due`, and while the fire is held and the
+/// turn is in flight the busy gate blocks every injection.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_held_fire(server: &EmbeddedServer, session_id: &str, task_id: &str) {
+    let cron = session_cron(server, session_id).await;
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || {
+            cron.held_fires()
+                .iter()
+                .any(|fire| fire.task_id == task_id)
+                .then_some(())
+        },
+    )
+    .await
+    .expect("the scheduler must hold the due fire");
+}
+
+/// Wait until the held queue is EMPTY — the purge/inject/clear effect.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_held_fires_cleared(server: &EmbeddedServer, session_id: &str) {
+    let cron = session_cron(server, session_id).await;
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || cron.held_fires().is_empty().then_some(()),
+    )
+    .await
+    .expect("the held queue must clear");
+}
+
+/// The session's live steer buffer (the same handle the driver's
+/// adjudication reads through `parked_keys`). `steer_buffer_for` is private
+/// to `embedded_server`; the `tests` subtree is a descendant, so it is
+/// reachable — if a refactor moves it, widen to `pub(super)` rather than
+/// duplicating the lookup.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn session_steer_buffer(
+    server: &EmbeddedServer,
+    session_id: &str,
+) -> Arc<std::sync::Mutex<mirri_core::SteerBuffer>> {
+    let model_id = server
+        .session_manager()
+        .get_session(&SessionId::new(session_id))
+        .await
+        .expect("session is live")
+        .get_agent(&mirri_core::AgentId::new("main"))
+        .await
+        .expect("main agent")
+        .config()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .model_id
+        .clone();
+    server.steer_buffer_for(session_id, "main", &model_id)
+}
+
+/// Wait until `task_id`'s notification is parked in the steer buffer — the
+/// busy-path park is the ordering signal ("the park precedes the flush").
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_parked_notification(
+    server: &EmbeddedServer,
+    session_id: &str,
+    task_id: &str,
+) {
+    let buffer = session_steer_buffer(server, session_id).await;
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || {
+            let parked = {
+                // The guard's scope ends at the block: never across an await.
+                let buf = buffer.lock().unwrap_or_else(|e| e.into_inner());
+                mirri_core::task_notification::parked_keys(&buf)
+            };
+            parked.iter().any(|key| key.task_id == task_id).then_some(())
+        },
+    )
+    .await
+    .expect("the driver must park the notification");
+}
+
+/// Wait until the session's MAIN turn has settled. `poll_agent_activity`
+/// hardcodes `agent_id: "main"`, so this is main-scoped by construction —
+/// for a subagent-addressed turn use [`wait_for_agent_turn_idle`].
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_turn_idle(server: &EmbeddedServer, session_id: &str) {
+    poll_agent_activity(server, session_id, |state| {
+        state["turn"].is_null() && state["lastTurn"].is_object()
+    })
+    .await;
+}
+
+/// Wait until a specific agent's turn settles (the addressee-scoped
+/// counterpart of [`wait_for_turn_idle`]).
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_agent_turn_idle(server: &EmbeddedServer, session_id: &str, agent_id: &str) {
+    poll_agent_activity_for(server, session_id, agent_id, |state| {
+        state["turn"].is_null()
+    })
+    .await;
+}
+
+/// Wait until the session's goal chain has stopped: the chain task clears
+/// `chain_running` as its last act. This — NOT `goal.status != Active` — is
+/// the "no further continuation can land" signal, because `UpdateGoal`
+/// writes the terminal status DURING the turn, long before the settle point
+/// runs the chain decision.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_goal_chain_stopped(server: &EmbeddedServer, session_id: &str) {
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || {
+            server
+                .goal_chain_states
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(session_id)
+                .is_none_or(|state| !state.chain_running)
+                .then_some(())
+        },
+    )
+    .await
+    .expect("the goal chain must stop");
+}
+
+/// Wait until `expected` manual-compaction apply tasks have finished.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_manual_compaction_apply(server: &EmbeddedServer, expected: u64) {
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || (server.manual_compaction_apply_count() >= expected).then_some(()),
+    )
+    .await
+    .expect("the manual compaction's apply task must finish");
+}
+
+/// Wait until the engine's startup MCP connect set has settled.
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_mcp_startup_settled(server: &EmbeddedServer) {
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || server.mcp_startup_settled().then_some(()),
+    )
+    .await
+    .expect("the startup MCP connect set must settle");
+}
+
+/// Wait until the spawned task driver has exited (its own counter).
+#[allow(dead_code)] // consumed by Tasks 4-6
+async fn wait_for_task_driver_exit(server: &EmbeddedServer, before: u64) {
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || (server.task_driver_exit_count() > before).then_some(()),
+    )
+    .await
+    .expect("the task driver must exit once its session disappears");
+}
+
+/// The settlement probe of one held segment: answers `false` for
+/// `segment` until the returned flag flips, `true` for every other
+/// segment (so a case can hold exactly the settlement it means to observe).
+fn hold_probe(
+    segment: &'static str,
+    released: Arc<std::sync::atomic::AtomicBool>,
+) -> SettlementProbe {
+    Arc::new(move |asked| asked != segment || released.load(std::sync::atomic::Ordering::SeqCst))
+}
+
+/// Dispatch `route` on `server` under `probe`, flip the hold after a 150 ms
+/// sampling window (the wait exits early the moment the dispatch finishes)
+/// and answer whether the call had already completed when the hold lifted.
+/// The answer distinguishes "answered without waiting" from
+/// "answered only because the hold was released".
+///
+/// The dispatch runs on its own thread with its own runtime, like a host
+/// drives the engine: a held gate parks a current-thread-free blocking poll
+/// (the test seam yields, so the dispatch would otherwise monopolise an
+/// in-test worker and starve the release).
+async fn answered_before_release(
+    server: &Arc<EmbeddedServer>,
+    route: &'static str,
+    probe: SettlementProbe,
+) -> bool {
+    server.set_settlement_probe(Some(probe));
+    let dispatch = {
+        let server = Arc::clone(server);
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("dispatch runtime must build");
+            let out = runtime.block_on(async move {
+                let params = if route == "core.echo" {
+                    json!({ "text": "ping" })
+                } else {
+                    json!({})
+                };
+                server.call_method(route, params).await
+            });
+            // The first dispatched RPC spawns the server's resident
+            // background loops (the orphan lifetime sweeper's interval
+            // among them) onto THIS throwaway runtime; dropping it would
+            // park the thread forever waiting for tasks that never exit.
+            // Forgetting the runtime leaks it for the process's remaining
+            // lifetime — exactly as long as the test binary lives, and the
+            // parked loop is never driven, so it costs nothing.
+            std::mem::forget(runtime);
+            out
+        })
+    };
+    // The probe is still held here: a dispatch that finished anyway did not
+    // wait (the whitelist), one still running is parked on the gate. The
+    // poll exits early the moment the dispatch finishes and keeps the 150 ms
+    // sampling window for the parked case — the semantics the fixed sleep
+    // approximated.
+    let early = mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_millis(150),
+        std::time::Duration::from_millis(10),
+        || dispatch.is_finished().then_some(()),
+    )
+    .await
+    .is_ok();
+    // Unblock a waiting dispatch so the assertion below reports the real
+    // answer rather than a join error.
+    server.set_settlement_probe(None);
+    let response = dispatch.join().expect("dispatch thread joins");
+    assert!(response.is_ok(), "{route} must succeed on the gated path");
+    early
+}
+
+/// should answer session.list before census settles
+///
+/// ADR-003 c read-face whitelist: `session.list` carries no task
+/// registration or session residency, so its class (`AwaitCensus`) is
+/// purely the census wait — no reconcile and no recovery check. The class
+/// table test pins the whitelist itself; here the gate's behaviour is
+/// exercised on its dismissing side: a whitelisted read answers while the
+/// recovery settlement is held, and then the settlement still runs once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn should_answer_session_list_before_census_settles() {
+    // Given a server whose recovery settlement is held
+    let (server, _tmp) = test_server(None);
+    let server = Arc::new(server);
+
+    // When session.list is dispatched under the hold
+    let early = answered_before_release(
+        &server,
+        "session.list",
+        hold_probe(
+            "recovery",
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        ),
+    )
+    .await;
+
+    // Then it answered while a write-face route's settlement was still
+    // pending — the listing does not ride the recovery check
+    assert!(
+        early,
+        "session.list is a read-face whitelist route and must not wait for the recovery check"
+    );
+
+    // And the recovery check itself ran for the write face: a create
+    // dispatched afterwards still answers (its gate is settled, not skipped)
+    let created = server
+        .call_method("session.create", json!({ "title": "after the gates" }))
+        .await
+        .expect("session.create");
+    assert_eq!(created["title"], "after the gates");
+    server.set_settlement_probe(None);
+}
+
+/// should wait for the recovery check before answering recovery.list
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn should_wait_for_recovery_check_before_answering_recovery_list() {
+    // Given a server whose recovery settlement is held
+    let (server, _tmp) = test_server(None);
+    let server = Arc::new(server);
+
+    // When recovery.list is dispatched under the hold
+    let early = answered_before_release(
+        &server,
+        "recovery.list",
+        hold_probe(
+            "recovery",
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        ),
+    )
+    .await;
+
+    // Then it answered only after the hold lifted — its rows must be the
+    // settled ones
+    assert!(
+        !early,
+        "recovery.list must wait for the recovery settlement"
+    );
+}
+
+/// should answer the read-face whitelist without waiting for the recovery
+/// check
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn should_skip_recovery_check_for_config_and_core_reads() {
+    // Given a server whose recovery settlement is held
+    let (server, _tmp) = test_server(None);
+    let server = Arc::new(server);
+
+    // When each whitelisted read is dispatched under the hold
+    for route in ["config.getAll", "workspace.list", "core.echo"] {
+        let early = answered_before_release(
+            &server,
+            route,
+            hold_probe(
+                "recovery",
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            ),
+        )
+        .await;
+
+        // Then it answered while the recovery segment was still held (the
+        // census — settled by the first call — is an unconditional wait,
+        // not a hold the probe can re-raise)
+        assert!(early, "{route} is a read-face whitelist route");
+    }
+}
+
+/// should keep the cron scheduler's first tick behind the census and the
+/// recovery check
+///
+/// A cron-injected turn is a write path OUTSIDE the RPC surface, so the
+/// route classes cannot hold it — the scheduler's own first-tick gate must
+/// await the same cells the dispatch gates settle, so the tick cannot
+/// register a task before the census (ADR-012 c) nor write into a recovery
+/// candidate before the interruption check.
+#[tokio::test]
+async fn should_wait_for_census_and_recovery_before_cron_first_tick() {
+    // Given a cron-ticking server and the cells its scheduler awaits
+    let (server, _tmp) = test_server(None);
+    let server = Arc::new(server.with_cron_tick(std::time::Duration::from_millis(10)));
+
+    // When the first dispatch runs with the census settlement held (on its
+    // own thread — a held gate blocks that call, not this test)
+    let census_released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // The probe also records that the gate was CONSULTED: that is what the
+    // deleted window observed (the scheduler reaching its first-tick gate),
+    // and it cannot be inferred from the cell still being empty.
+    let census_asked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let released = Arc::clone(&census_released);
+        let asked = Arc::clone(&census_asked);
+        server.set_settlement_probe(Some(Arc::new(move |segment: &'static str| {
+            if segment == "census" {
+                asked.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            segment != "census" || released.load(std::sync::atomic::Ordering::SeqCst)
+        })));
+    }
+    let first_dispatch = {
+        let server = Arc::clone(&server);
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("dispatch runtime must build");
+            let out = runtime.block_on(async move {
+                let settled = server.call_method("config.getAll", json!({})).await;
+                (server, settled)
+            });
+            // The first dispatched RPC spawns the server's resident
+            // background loops onto THIS throwaway runtime; dropping it
+            // would park the thread forever (see answered_before_release).
+            std::mem::forget(runtime);
+            out
+        })
+    };
+
+    // Then the scheduler's first tick reached the census gate (the probe
+    // records being consulted) and is held there, along with the parked
+    // dispatch — so nothing this instance owns has been registered yet.
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(5),
+        || census_asked.load(std::sync::atomic::Ordering::SeqCst).then_some(()),
+    )
+    .await
+    .expect("the scheduler's first tick must reach the census gate");
+    assert!(
+        !first_dispatch.is_finished(),
+        "the first dispatch is parked on the held census gate"
+    );
+
+    // And once the census lifts, the dispatch settles the REAL census (its
+    // body — a sweep report archived on disk, not a hollow cell) and the
+    // read answers. The scheduler's first-tick gate observed the same
+    // settlement without ever initializing a cell itself: a scheduler
+    // that had claimed the cells with an empty init would leave the
+    // census body unrun and no report archived.
+    census_released.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (server, answered) = first_dispatch.join().expect("the dispatch thread joins");
+    answered.expect("the whitelisted read answers");
+    let cells = server.housekeeping_settled();
+    assert!(cells.census.get().is_some(), "the census settled");
+    assert!(
+        cells.recovery.get().is_none(),
+        "a whitelisted read settles ONLY the census — the recovery cell stays \
+         empty until a gated route settles the real check (the scheduler's \
+         wait-only gate must not claim it)"
+    );
+    // The real census body ran: its report is archived under the sessions
+    // root (the empty home has no candidates, but the census always
+    // archives — an empty census is itself an answer).
+    let sweep_dir = _tmp.path().join(".mirri").join("v3_sessions").join("orphan-sweep");
+    let report_archived = std::fs::read_dir(&sweep_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .any(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        })
+        .unwrap_or(false);
+    assert!(
+        report_archived,
+        "the census BODY ran and archived its report (the cell was not \
+         hollowed out by an empty init)"
+    );
+    server.set_settlement_probe(None);
+}
+
+/// should keep the settlement gate table closed by default and the
+/// whitelist minimal
+#[test]
+fn should_keep_the_settlement_gate_table_closed_by_default() {
+    // Given the route table
+    // When each route's class is read
+    let whitelisted: Vec<&str> = routes::all_routes()
+        .filter(|route| route.settlement == SettlementClass::AwaitCensus)
+        .map(|route| route.method)
+        .collect();
+
+    // Then exactly the five audited read-face routes are exempt
+    assert_eq!(
+        whitelisted,
+        vec![
+            "session.list",
+            "session.get",
+            "core.echo",
+            "config.getAll",
+            "workspace.list",
+        ],
+        "the read-face whitelist is closed and audited (ADR-003 c; session.get joined in ADR-006)"
+    );
+
+    // And an unknown method — and every non-whitelist sample route — waits
+    // for the full housekeeping
+    assert_eq!(
+        EmbeddedServer::settlement_class_of("no.such.method"),
+        SettlementClass::FullHousekeeping
+    );
+    for route in ["message.send", "session.create", "task.list", "mcp.list"] {
+        assert_eq!(
+            EmbeddedServer::settlement_class_of(route),
+            SettlementClass::FullHousekeeping,
+            "{route} keeps the closed-by-default class"
+        );
+    }
+
+    // And the recovery list names its own gate
+    assert_eq!(
+        EmbeddedServer::settlement_class_of("recovery.list"),
+        SettlementClass::AwaitRecovery
+    );
+
+    // ADR-006: the resume family's reconcile gate is retired — the
+    // runtime-building routes keep the full housekeeping class and the
+    // pure read face joins the audited whitelist.
+    for route in ["session.resume", "session.reload", "session.restore"] {
+        assert_eq!(
+            EmbeddedServer::settlement_class_of(route),
+            SettlementClass::FullHousekeeping,
+            "{route} keeps the full housekeeping class (ADR-006)"
+        );
+    }
+    assert_eq!(
+        EmbeddedServer::settlement_class_of("session.get"),
+        SettlementClass::AwaitCensus,
+        "the pure read face joins the audited whitelist (ADR-006)"
+    );
+}
+
 #[derive(Debug)]
 enum ScriptedResponse {
     /// Plain text reply that ends the turn.
@@ -113,6 +751,18 @@ impl ScriptedLlm {
             cache_read_tokens: cache_read,
             cache_creation_tokens: cache_creation,
         });
+    }
+
+    /// Every recorded chat call's messages, serialized, oldest first — for
+    /// assertions that must not depend on WHICH call carried a message
+    /// (concurrent side calls reshuffle the order).
+    fn all_messages(&self) -> serde_json::Value {
+        serde_json::Value::Array(
+            self.recorded_messages
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+        )
     }
 
     /// The serialized messages of the n-th chat call (0-based).
@@ -483,8 +1133,34 @@ fn test_server_config() -> Arc<RwLock<ServerConfig>> {
     Arc::new(RwLock::new(config))
 }
 
+
+/// A `SessionManager` whose metadata store is a REAL SQLite port rooted at
+/// the given temp dir (ADR-006 test posture): the fixture mirrors the
+/// production wiring so restart-shaped tests exercise the same durability
+/// the bootstrap installs. A shared temp-rooted db path keeps multi-server
+/// fixtures (server A closes, server B resumes) on the same rows.
+fn test_manager_with_sqlite_store(
+    workspace: Arc<WorkspaceScope>,
+    db_dir: &std::path::Path,
+) -> SessionManager {
+    let db = db_dir.join("session-index.db");
+    match mirri_session_index::SessionIndex::open_with_check(&db) {
+        Ok(mirri_session_index::OpenOutcome::Ok(index)) => SessionManager::new(workspace)
+            .with_metadata_store(Arc::new(mirri_session_index::SessionIndexPort(index))),
+        Ok(mirri_session_index::OpenOutcome::Corrupt(diagnosis)) => {
+            panic!("test session index corrupt: {diagnosis}")
+        }
+        Ok(mirri_session_index::OpenOutcome::SchemaFloor { db_version }) => {
+            panic!("test session index floor: v{db_version}")
+        }
+        Err(error) => panic!("test session index open failed: {error}"),
+    }
+}
+
 /// A minimal `SessionMetadata` for hand-written persisted buckets (the
-/// field set `save_state` needs; no tags, no fork lineage).
+/// field set the legacy `save_state` seeding path needs; no tags, no fork
+/// lineage — the retention fixtures still seed pre-ADR-006 state.json
+/// sessions this way).
 fn empty_session_metadata(title: &str) -> mirri_core::SessionMetadata {
     mirri_core::SessionMetadata {
         title: title.to_string(),
@@ -501,7 +1177,7 @@ fn test_server(llm_factory: Option<Arc<dyn LlmFactory>>) -> (EmbeddedServer, tem
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     (
         EmbeddedServer::with_providers(
             manager,
@@ -629,7 +1305,10 @@ async fn should_isolate_session_persistence_under_the_injected_home_when_one_is_
 
     // And a newly created session persists under the injected home — not
     // under the workspace-local `.mirri` root — nested in the workspace
-    // bucket derived from the workspace cwd (the TS per-workspace layout)
+    // bucket derived from the workspace cwd (the TS per-workspace layout).
+    // ADR-006: the durable metadata record is the ROW in the home's
+    // session-index.db; the body (wire log) lands under the home's
+    // v3_sessions bucket.
     let created = server
         .call_method("session.create", json!({ "title": "isolated" }))
         .await
@@ -637,16 +1316,23 @@ async fn should_isolate_session_persistence_under_the_injected_home_when_one_is_
     let session_id = created["id"].as_str().expect("session id");
     converse_once(&server, session_id).await;
     let bucket = mirri_core::encode_work_dir_key(workspace.path());
-    let persisted_state = home
+    let persisted_body = home
         .path()
         .join("v3_sessions")
         .join(&bucket)
         .join(session_id)
-        .join("state.json");
+        .join("wire.jsonl");
     assert!(
-        persisted_state.exists(),
-        "the new session's state must live under the injected home (bucket {bucket})"
+        persisted_body.exists(),
+        "the new session's wire log must live under the injected home (bucket {bucket})"
     );
+    let row = server
+        .session_manager()
+        .metadata_store()
+        .get(&SessionId::new(session_id))
+        .await
+        .expect("the new session's row exists in the injected home's index");
+    assert_eq!(row.title, "isolated");
     assert!(
         !workspace
             .path()
@@ -655,6 +1341,103 @@ async fn should_isolate_session_persistence_under_the_injected_home_when_one_is_
             .join(session_id)
             .exists(),
         "the new session must not write into the workspace-local sessions root"
+    );
+}
+
+/// Given an engine assembled through the production bootstrap with an
+/// injected home, when a session is created and renamed, then the engine
+/// is dropped and re-assembled over the SAME home (the process-restart
+/// analogue), then the session's metadata ROW survives the restart with
+/// the rename retained — ADR-006's "唯一事实源" landing: the rows live in
+/// `<home>/session-index.db`, the home-level SQLite database the bootstrap
+/// wires into every runtime, not in any process-owned memory.
+#[tokio::test]
+async fn should_persist_metadata_rows_when_engine_restarts() {
+    // Given an assembled engine over a temp workspace + temp home (the
+    // config seed satisfies the create chain's resolvable-model gate)
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    seed_home_default_model(home.path());
+    let server = EmbeddedServer::for_workspace_root(
+        WorkspaceId::new("restart-persistence-ws"),
+        workspace.path().to_path_buf(),
+        Some(home.path().to_path_buf()),
+        Vec::new(),
+    );
+
+    // When a session is created, conversed (materialized — the rename
+    // write-through only fires for a materialized session, whose wire log
+    // exists), and renamed
+    let created = server
+        .call_method("session.create", json!({ "title": "before rename" }))
+        .await
+        .expect("session.create must succeed");
+    let session_id = created["id"].as_str().expect("session id").to_string();
+    converse_once(&server, &session_id).await;
+    server
+        .call_method(
+            "session.rename",
+            json!({ "session_id": &session_id, "title": "after rename" }),
+        )
+        .await
+        .expect("session.rename must succeed");
+
+    // Then the row lands in the home-level SQLite database (not in any
+    // process-owned memory the engine holds) — the rename's write-through
+    // is asynchronous (the SessionMetaUpdated task), so poll for it.
+    let _renamed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(record) = server
+                .session_manager()
+                .metadata_store()
+                .get(&SessionId::new(&session_id))
+                .await
+                && record.title == "after rename"
+            {
+                return record;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the rename must reach the row");
+    let db_path = home.path().join("session-index.db");
+    assert!(
+        db_path.is_file(),
+        "the metadata database must live under the injected home"
+    );
+
+    // When the engine is dropped and a fresh engine is assembled over the
+    // same home (the restart analogue: no process memory carries over)
+    drop(server);
+    let workspace_b = tempfile::tempdir().expect("workspace-b tempdir");
+    let server_b = EmbeddedServer::for_workspace_root(
+        WorkspaceId::new("restart-persistence-ws"),
+        workspace_b.path().to_path_buf(),
+        Some(home.path().to_path_buf()),
+        Vec::new(),
+    );
+
+    // Then the new engine's metadata store reads the SAME rows from the
+    // home-level database — the rename survived the restart, and no
+    // state.json was consulted (a post-ADR-006 session has none).
+    let record = server_b
+        .session_manager()
+        .metadata_store()
+        .get(&SessionId::new(&session_id))
+        .await
+        .expect("the row survives the engine restart");
+    assert_eq!(
+        record.title, "after rename",
+        "the rename must survive the restart (the row is the source of truth)"
+    );
+    assert!(
+        !server_b
+            .session_manager()
+            .persistence()
+            .state_path(&SessionId::new(&session_id))
+            .exists(),
+        "resume of a post-ADR-006 session reads no state.json"
     );
 }
 
@@ -686,11 +1469,14 @@ async fn should_migrate_a_legacy_flat_session_at_startup_when_one_is_in_the_home
     );
 
     // When the first RPC call is dispatched (the seam the one-time
-    // migration runs on — the same lazy pattern as the MCP connect)
-    let listed = server
+    // migration runs on — the same lazy pattern as the MCP connect); the
+    // reconcile now settles explicitly: session.list is a whitelisted
+    // read-face and no longer waits for it (ADR-003 c).
+    server
         .call_method("session.list", json!({}))
         .await
         .expect("session.list must succeed");
+    server.await_housekeeping_settled().await;
 
     // Then the legacy session was migrated into the workspace bucket (the
     // flat session carried no workDir, so the current workspace cwd is the
@@ -705,7 +1491,13 @@ async fn should_migrate_a_legacy_flat_session_at_startup_when_one_is_in_the_home
     assert!(moved.join("state.json").exists());
     assert!(moved.join("wire.jsonl").exists());
 
-    // And the listing still sees the migrated session
+    // And the listing still sees the migrated session (re-read AFTER the
+    // housekeeping settled — the first listing was taken before the
+    // migration converged, and a whitelisted read does not wait for it)
+    let listed = server
+        .call_method("session.list", json!({}))
+        .await
+        .expect("session.list must succeed");
     assert_eq!(
         listed["items"]
             .as_array()
@@ -867,9 +1659,13 @@ async fn should_filter_archived_sessions_out_of_index_backed_listings() {
     assert_eq!(opted_in["items"].as_array().unwrap().len(), 2);
 }
 
-/// Given an indexed session whose directory later disappears from disk,
-/// When a fresh engine on the same home lists sessions, Then the orphaned
-/// row is dropped by the startup reconcile and the listing is empty.
+/// Given an indexed session whose directory later disappears from disk
+/// (deleted out-of-band, NO tombstone), When a fresh engine on the same
+/// home lists sessions, Then the row survives — ADR-006 裁决 3: the row
+/// is the source of truth, an ownerless directory is the user's call, and
+/// only an explicit delete (row + tombstone in one transaction) removes
+/// the row. The half-alive row degrades to an empty session on resume
+/// (the recovery pyramid), never a silent listing drop.
 #[tokio::test]
 async fn should_drop_index_rows_when_the_session_directory_disappears() {
     // Given a server with an injected home, one closed session, and its
@@ -902,8 +1698,9 @@ async fn should_drop_index_rows_when_the_session_directory_disappears() {
         "the row exists before the directory is removed"
     );
 
-    // When the session directory disappears (deleted out-of-band) and a
-    // fresh engine on the same home runs its first RPC
+    // When the session directory disappears (deleted out-of-band — no
+    // tombstone, the row's own delete transaction never ran) and a fresh
+    // engine on the same home runs its first RPC
     let bucket = mirri_core::encode_work_dir_key(workspace.path());
     std::fs::remove_dir_all(
         home.path()
@@ -918,26 +1715,32 @@ async fn should_drop_index_rows_when_the_session_directory_disappears() {
         Some(home.path().to_path_buf()),
         Vec::new(),
     );
+    // The listing itself no longer waits for the reconcile (ADR-003 c), so
+    // the startup housekeeping settles explicitly first.
+    restart.await_housekeeping_settled().await;
     let listed = restart
         .call_method("session.list", json!({}))
         .await
         .expect("session.list must succeed");
 
-    // Then the orphan pass deleted the row and the listing is empty
+    // Then the row survives the boot (ADR-006 裁决 3: only the explicit
+    // delete's tombstone removes rows; the out-of-band directory loss is
+    // the user's affair) and the listing still resolves the row.
     assert!(
         restart
             .session_index()
             .expect("the index is open")
             .get_session(&session_id)
-            .is_none(),
-        "the orphaned row is deleted"
+            .is_some(),
+        "the row of an out-of-band-deleted directory survives (no tombstone)"
     );
     assert_eq!(
         listed["items"]
             .as_array()
             .expect("session.list returns an array")
             .len(),
-        0
+        1,
+        "the listing resolves the row-backed session"
     );
 }
 
@@ -956,11 +1759,14 @@ async fn should_register_the_bound_workspace_in_the_index_and_the_registry() {
         Vec::new(),
     );
 
-    // When the first RPC runs (the seam the one-time reconcile runs on)
+    // When the first RPC runs — the reconcile settles explicitly: the
+    // listing is a whitelisted read-face and no longer waits for it
+    // (ADR-003 c).
     server
         .call_method("workspace.list", json!({}))
         .await
         .expect("workspace.list must succeed");
+    server.await_housekeeping_settled().await;
 
     // Then the bound workspace's row is registered in the index under the
     // workdir key, with the root's basename as its name
@@ -1010,7 +1816,7 @@ fn test_server_with_profiles(
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let profile_manager = Arc::new(ProfileManager::new());
     profile_manager
         .register(AgentProfile {
@@ -1072,7 +1878,7 @@ fn test_server_with_config_toml(
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let config = Arc::new(RwLock::new(
         ServerConfig::load(&config_path, &mirri_os::LocalSyncFs).expect("seed config should load"),
     ));
@@ -1104,7 +1910,7 @@ fn test_server_with_config_toml_and_home(
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let config = Arc::new(RwLock::new(
         ServerConfig::load(&config_path, &mirri_os::LocalSyncFs).expect("seed config should load"),
     ));
@@ -1135,7 +1941,7 @@ fn test_server_with_config_toml_and_llm(
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let config = Arc::new(RwLock::new(
         ServerConfig::load(&config_path, &mirri_os::LocalSyncFs).expect("seed config should load"),
     ));
@@ -1191,7 +1997,7 @@ fn test_server_with_profile_catalog() -> (EmbeddedServer, tempfile::TempDir) {
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let config = Arc::new(RwLock::new(
         ServerConfig::load(&config_path, &mirri_os::LocalSyncFs).expect("seed config should load"),
     ));
@@ -1888,16 +2694,16 @@ async fn should_derive_title_from_first_prompt_when_title_is_still_default() {
     assert_eq!(session.metadata().await.title, "fix the login bug in auth");
 }
 
-/// Given a live session, when a message is sent, then the on-disk
-/// `state.json` carries the user text as the session's `last_prompt`
-/// (ADR-009: the send path stamps it into the scope-layer metadata, so
-/// the persistence write-through keeps it instead of erasing it).
+/// Given a live session, when a message is sent, then the metadata ROW
+/// carries the user text as the session's `last_prompt` (ADR-009: the
+/// send path stamps it into the scope-layer metadata; ADR-006: the row,
+/// not state.json, is the durable record the write-through targets).
 #[tokio::test]
 async fn should_persist_the_last_prompt_into_state_json_when_sending_a_message() {
     // Given a server with a scripted mock LLM and a created session
     let mock = Arc::new(ScriptedLlm::new());
     mock.push_text("ok");
-    let (server, tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let (server, _tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
     let created = server
         .call_method("session.create", json!({}))
         .await
@@ -1913,28 +2719,19 @@ async fn should_persist_the_last_prompt_into_state_json_when_sending_a_message()
         .await
         .unwrap();
 
-    // Then the on-disk state.json under the v3 storage root carries the
-    // user text as last_prompt (accepting the rust snake_case and the TS
-    // camelCase spelling of the key)
-    let bucket = mirri_core::encode_work_dir_key(tmp.path());
-    let state_path = tmp
-        .path()
-        .join(".mirri")
-        .join("v3_sessions")
-        .join(&bucket)
-        .join(&session_id)
-        .join("state.json");
-    let raw = std::fs::read_to_string(&state_path)
-        .expect("the send must have materialized state.json on disk");
-    let state: Value = serde_json::from_str(&raw).expect("state.json must be valid JSON");
-    let last_prompt = state
-        .get("last_prompt")
-        .or_else(|| state.get("lastPrompt"))
-        .and_then(Value::as_str);
+    // Then the metadata row under the v3 storage root carries the user
+    // text as last_prompt (the row is the write-through's target since
+    // ADR-006 — the send materialized it through the port).
+    let record = server
+        .session_manager()
+        .metadata_store()
+        .get(&SessionId::new(&session_id))
+        .await
+        .expect("the send must have written the metadata row");
     assert_eq!(
-        last_prompt,
+        record.last_prompt.as_deref(),
         Some("hello v3 audit"),
-        "state.json must keep the sent prompt, got: {raw}"
+        "the row must keep the sent prompt"
     );
 }
 
@@ -1950,7 +2747,7 @@ fn test_server_with_home_and_llm(
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let server = EmbeddedServer::with_providers(
         manager,
         llm_factory,
@@ -1965,27 +2762,18 @@ fn test_server_with_home_and_llm(
     (server, tmp)
 }
 
-/// The `updated_at` and `last_prompt` of a (rust-written) `state.json`,
-/// accepting both engines' key spellings.
-fn state_recency(path: &std::path::Path) -> (chrono::DateTime<chrono::Utc>, Option<String>) {
-    let raw = std::fs::read_to_string(path).expect("state.json was written on disk");
-    let state: Value = serde_json::from_str(&raw).expect("state.json must be valid JSON");
-    let updated = state
-        .get("updated_at")
-        .or_else(|| state.get("updatedAt"))
-        .and_then(Value::as_str)
-        .map(|stamp| {
-            chrono::DateTime::parse_from_rfc3339(stamp)
-                .expect("rust state.json timestamps are RFC 3339")
-                .with_timezone(&chrono::Utc)
-        })
-        .expect("state.json carries updated_at");
-    let last_prompt = state
-        .get("last_prompt")
-        .or_else(|| state.get("lastPrompt"))
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    (updated, last_prompt)
+/// The `updated_at` and `last_prompt` of a session's metadata ROW
+/// (ADR-006: the row is the durable record the write-throughs target).
+async fn row_recency(
+    manager: &mirri_core::SessionManager,
+    session_id: &str,
+) -> (chrono::DateTime<chrono::Utc>, Option<String>) {
+    let record = manager
+        .metadata_store()
+        .get(&SessionId::new(session_id))
+        .await
+        .expect("the row was written through");
+    (record.updated_at, record.last_prompt)
 }
 
 /// Given a live session, when a message send's turn completes, then the
@@ -2002,7 +2790,7 @@ async fn should_advance_updated_at_and_upsert_the_index_when_a_turn_completes() 
     // point to snapshot the pre-settle recency.
     let mock = Arc::new(ScriptedLlm::new());
     let release = mock.push_gated("settled reply");
-    let (server, tmp) =
+    let (server, _tmp) =
         test_server_with_home_and_llm(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
     let created = server
         .call_method("session.create", json!({}))
@@ -2026,15 +2814,7 @@ async fn should_advance_updated_at_and_upsert_the_index_when_a_turn_completes() 
         )
         .await
         .unwrap();
-    let bucket = mirri_core::encode_work_dir_key(tmp.path());
-    let state_path = tmp
-        .path()
-        .join(".mirri")
-        .join("v3_sessions")
-        .join(&bucket)
-        .join(&session_id)
-        .join("state.json");
-    let (state_at_send, _) = state_recency(&state_path);
+    let (state_at_send, _) = row_recency(server.session_manager().as_ref(), &session_id).await;
     let index = server
         .session_index()
         .expect("the home-rooted server opens the index");
@@ -2064,7 +2844,8 @@ async fn should_advance_updated_at_and_upsert_the_index_when_a_turn_completes() 
 
     // Then the on-disk state.json advanced past both the creation moment
     // and the send-time stamp, and kept the last_prompt.
-    let (state_settled, last_prompt) = state_recency(&state_path);
+    let (state_settled, last_prompt) =
+        row_recency(server.session_manager().as_ref(), &session_id).await;
     assert!(
         state_settled > state_at_send,
         "turn end must refresh state.json updated_at past the send-time stamp, got {state_at_send} -> {state_settled}"
@@ -2097,7 +2878,7 @@ async fn should_advance_updated_at_when_a_turn_is_aborted() {
     // fire-mode turn stays in flight until aborted.
     let mock = Arc::new(ScriptedLlm::new());
     let _release = mock.push_gated("never delivered");
-    let (server, tmp) =
+    let (server, _tmp) =
         test_server_with_home_and_llm(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
     let created = server
         .call_method("session.create", json!({}))
@@ -2122,15 +2903,7 @@ async fn should_advance_updated_at_when_a_turn_is_aborted() {
         )
         .await
         .unwrap();
-    let bucket = mirri_core::encode_work_dir_key(tmp.path());
-    let state_path = tmp
-        .path()
-        .join(".mirri")
-        .join("v3_sessions")
-        .join(&bucket)
-        .join(&session_id)
-        .join("state.json");
-    let (state_at_send, _) = state_recency(&state_path);
+    let (state_at_send, _) = row_recency(server.session_manager().as_ref(), &session_id).await;
     let index = server
         .session_index()
         .expect("the home-rooted server opens the index");
@@ -2163,7 +2936,8 @@ async fn should_advance_updated_at_when_a_turn_is_aborted() {
     })
     .await
     .expect("the abort settle must advance the index row's updated_at past the send-time stamp");
-    let (state_settled, last_prompt) = state_recency(&state_path);
+    let (state_settled, last_prompt) =
+        row_recency(server.session_manager().as_ref(), &session_id).await;
     assert!(
         state_settled > state_at_send,
         "the abort settle must refresh state.json updated_at past the send-time stamp, got {state_at_send} -> {state_settled}"
@@ -2193,7 +2967,7 @@ async fn should_advance_updated_at_when_a_cron_turn_completes() {
     let mock = Arc::new(ScriptedLlm::new());
     mock.push_text("cron settle reply");
     let release = mock.push_gated("held until released");
-    let (server, tmp) =
+    let (server, _tmp) =
         test_server_with_home_and_llm(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
     let created = server
         .call_method("session.create", json!({}))
@@ -2201,15 +2975,7 @@ async fn should_advance_updated_at_when_a_cron_turn_completes() {
         .unwrap();
     let session_id = created["id"].as_str().unwrap().to_string();
     converse_once(&server, &session_id).await;
-    let bucket = mirri_core::encode_work_dir_key(tmp.path());
-    let state_path = tmp
-        .path()
-        .join(".mirri")
-        .join("v3_sessions")
-        .join(&bucket)
-        .join(&session_id)
-        .join("state.json");
-    let (state_at_send, _) = state_recency(&state_path);
+    let (state_at_send, _) = row_recency(server.session_manager().as_ref(), &session_id).await;
     let index = server
         .session_index()
         .expect("the home-rooted server opens the index");
@@ -2217,15 +2983,10 @@ async fn should_advance_updated_at_when_a_cron_turn_completes() {
         .get_session(&session_id)
         .expect("the send path upserted the index row");
 
-    // And a cron task on the session
-    let tool = run_main_agent_tool(
-        &server,
-        &session_id,
-        "CronCreate",
-        json!({ "cron": "*/5 * * * *", "prompt": "tick", "recurring": true }),
-    )
-    .await;
-    assert!(!tool.is_error, "{tool:?}");
+    // And a cron task on the session (seeded through the manager — the
+    // retired CronCreate tool is gone; the session-domain behavior under
+    // test is the task's presence, not the tool path)
+    seed_session_cron_task(&server, &session_id, "*/5 * * * *", "tick", true).await;
     let listed = server
         .call_method("getCronTasks", json!({ "sessionId": &session_id }))
         .await
@@ -2265,7 +3026,8 @@ async fn should_advance_updated_at_when_a_cron_turn_completes() {
     .expect(
         "the cron turn settle must advance the index row's updated_at past the send-time stamp",
     );
-    let (state_settled, last_prompt) = state_recency(&state_path);
+    let (state_settled, last_prompt) =
+        row_recency(server.session_manager().as_ref(), &session_id).await;
     assert!(
         state_settled > state_at_send,
         "the cron turn end must refresh state.json updated_at past the send-time stamp, got {state_at_send} -> {state_settled}"
@@ -2280,6 +3042,386 @@ async fn should_advance_updated_at_when_a_cron_turn_completes() {
         Some("hello"),
         "the index upsert must preserve the row's last_prompt"
     );
+}
+
+// ---------------------------------------------------------------------------
+// cron-fired turn origin injection (stage-1 batch-1, S7 / ADR-001)
+// ---------------------------------------------------------------------------
+
+/// Given a session with a cron task, when it fires (run-now), then the
+/// flow the turn runs on carries the `Cron` origin — the injection
+/// happens before the turn starts, in the get-or-create critical
+/// section (S7).
+#[tokio::test]
+async fn should_set_the_cron_origin_on_the_flow_when_a_session_task_fires() {
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("cron fire reply");
+    let (server, _tmp) =
+        test_server_with_home_and_llm(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let created = server
+        .call_method("session.create", json!({}))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    // Seed the task directly on the session's cron manager (the manager
+    // API is the driver's real input).
+    let session = server
+        .session_manager()
+        .get_session(&mirri_core::scope::SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    session
+        .cron()
+        .add(
+            "*/5 * * * *".into(),
+            "tick".into(),
+            session_id.clone(),
+            true,
+            mirri_core::cron::CronCreateOptions::default(),
+        )
+        .await
+        .expect("seed unattended task");
+    let task_id = session.cron().list()[0].id.clone();
+    drop(session);
+
+    // When the task fires (run-now injects the turn immediately)
+    server
+        .call_method(
+            "cron.trigger",
+            json!({ "session_id": session_id, "task_id": task_id }),
+        )
+        .await
+        .unwrap();
+
+    // The injection runs on its own spawned task — wait for the flow to
+    // appear, then for the turn to settle (the flow lock frees when the
+    // turn ends, so try_lock succeeding means the turn is done).
+    let flow_arc = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let flow_arc = {
+                let flows = server
+                    .turn_flow_map()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                flows
+                    .keys()
+                    .find(|k| k.starts_with(&format!("{session_id}:")))
+                    .and_then(|k| flows.get(k))
+                    .cloned()
+            };
+            if let Some(flow_arc) = flow_arc
+                && flow_arc.try_lock().is_ok()
+            {
+                return flow_arc;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the fired turn creates and settles a flow");
+    let origin = {
+        let flow = flow_arc.try_lock().expect("the settled flow is unlocked");
+        // The origin slot was RESET at the top of the turn (S4 discipline)
+        // — the fire stamped the flow before the turn started, the turn
+        // consumed and reset it, so the settled slot reads Interactive.
+        // The DURING-turn state is covered by the S6 ask-deny tests.
+        flow.turn_origin()
+    };
+    assert_eq!(
+        origin,
+        mirri_core::permission::TurnOriginContext::Interactive,
+        "after the fired turn settles, the slot is reset (S4 discipline)"
+    );
+}
+
+/// A cron turn's flow is stamped `Cron` for the turn only — the slot is
+/// reset when the turn settles (S4 discipline), which is what remains
+/// observable post-turn.
+#[tokio::test]
+async fn should_reset_the_origin_slot_after_a_cron_turn_settles() {
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("cron fire reply");
+    let (server, _tmp) =
+        test_server_with_home_and_llm(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let created = server
+        .call_method("session.create", json!({}))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    let session = server
+        .session_manager()
+        .get_session(&mirri_core::scope::SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    session
+        .cron()
+        .add(
+            "*/5 * * * *".into(),
+            "tick".into(),
+            session_id.clone(),
+            true,
+            mirri_core::cron::CronCreateOptions::default(),
+        )
+        .await
+        .expect("seed attended task");
+    let task_id = session.cron().list()[0].id.clone();
+    drop(session);
+
+    server
+        .call_method(
+            "cron.trigger",
+            json!({ "session_id": session_id, "task_id": task_id }),
+        )
+        .await
+        .unwrap();
+
+    // The injection runs on its own spawned task — wait for the flow to
+    // appear, then for the turn to settle (the flow lock frees when the
+    // turn ends, so try_lock succeeding means the turn is done).
+    let flow_arc = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let flow_arc = {
+                let flows = server
+                    .turn_flow_map()
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                flows
+                    .keys()
+                    .find(|k| k.starts_with(&format!("{session_id}:")))
+                    .and_then(|k| flows.get(k))
+                    .cloned()
+            };
+            if let Some(flow_arc) = flow_arc
+                && flow_arc.try_lock().is_ok()
+            {
+                return flow_arc;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the fired turn creates and settles a flow");
+    let origin = {
+        let flow = flow_arc.try_lock().expect("the settled flow is unlocked");
+        flow.turn_origin()
+    };
+    assert_eq!(
+        origin,
+        mirri_core::permission::TurnOriginContext::Interactive,
+        "the attended fire also leaves a clean slot behind"
+    );
+}
+
+/// Given a BUSY interactive turn on the main agent, when an unattended cron
+/// task fires (run-now — the face with no idle gate), then the queued
+/// fire's turn runs and the `SetTimer` call inside it succeeds — the
+/// one-shot self-timing (the set-next-timer-at-fire pattern) is the
+/// model's own turf, available on a fired turn (C1: the retired
+/// recurring-creation lineage refusal is gone with the recurring arm
+/// itself; the execute-level lineage-marker ride is covered by the
+/// set_timer unit tests with a constructed Cron origin).
+#[tokio::test]
+async fn should_keep_the_cron_lineage_when_a_fire_lands_behind_a_busy_turn() {
+    // Given a scripted LLM: the first reply parks the interactive turn on
+    // a held gate; the side-title probe answer; the fired turn's first
+    // reply calls SetTimer (the set-next-timer-at-fire pattern); the
+    // follow-up reply closes the fired turn.
+    let mock = Arc::new(ScriptedLlm::new());
+    let busy_release = mock.push_gated("busy interactive reply");
+    mock.push_text("A Title");
+    let create_call = mock.push_gated_tool_use(vec![mirri_core::llm::LlmToolCall {
+        id: "call-timer-1".to_string(),
+        name: "SetTimer".to_string(),
+        args: json!({ "delay_minutes": 5, "message": "tick again" }),
+    }]);
+    mock.push_text("fired turn done");
+    let (server, _tmp) =
+        test_server_with_home_and_llm(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    // Batch-2 (C.3): a manual trigger on a busy session is held on the
+    // task side and redelivered by the server-level scheduler's idle
+    // drain — a small tick keeps that inside this test's wait window.
+    let server = server.with_cron_tick(Duration::from_millis(50));
+    let created = server
+        .call_method("session.create", json!({}))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    // And a running (busy) turn on the session's main agent — the flow
+    // mutex stays held for the turn's whole duration (fire mode: the RPC
+    // acks immediately, the turn runs in the background).
+    server
+        .call_method(
+            "message.send",
+            json!({
+                "session_id": session_id,
+                "text": "hold the turn",
+                "mode": "fire"
+            }),
+        )
+        .await
+        .unwrap();
+    // Wait until the interactive turn is actually parked (its chat call
+    // consumed the gated reply).
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if mock.chat_call_count() >= 1 {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the busy turn's first chat call parks on the gate");
+
+    // And an unattended cron task on the same session
+    let session = server
+        .session_manager()
+        .get_session(&mirri_core::scope::SessionId::new(&session_id))
+        .await
+        .expect("session is live");
+    session
+        .cron()
+        .add(
+            "*/5 * * * *".into(),
+            "tick".into(),
+            session_id.clone(),
+            true,
+            mirri_core::cron::CronCreateOptions::default(),
+        )
+        .await
+        .expect("seed unattended task");
+    let task_id = session.cron().list()[0].id.clone();
+    drop(session);
+
+    // When the task fires while the interactive turn is still busy —
+    // the fire queues behind the flow lock (no idle gate on run-now).
+    server
+        .call_method(
+            "cron.trigger",
+            json!({ "session_id": session_id, "task_id": task_id }),
+        )
+        .await
+        .unwrap();
+    // Release the busy turn so the queued fire's turn starts.
+    busy_release.send(()).unwrap();
+    // Release the fired turn's tool call so the creation executes.
+    create_call.send(()).unwrap();
+
+    // Then the fired turn's SetTimer created exactly one one-shot timer
+    // (the set-next-timer-at-fire pattern is available on a fired turn).
+    let saw_timer = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let session = server
+                .session_manager()
+                .get_session(&mirri_core::scope::SessionId::new(&session_id))
+                .await
+                .expect("session stays live");
+            let tasks = session.cron().list();
+            drop(session);
+            if tasks
+                .iter()
+                .any(|task| !task.recurring && task.prompt == "tick again")
+            {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(
+        saw_timer.unwrap_or(false),
+        "the fired turn's SetTimer created a one-shot timer"
+    );
+}
+
+/// Given a run-now fire that queues behind a busy turn, when that turn keeps
+/// the agent busy and the scheduler's tick is wait-gated (every test server:
+/// no tick), then the held fire is redelivered by its own watcher once the
+/// flow frees — never stranded behind a turn it no longer has to wait for.
+#[tokio::test]
+async fn should_redeliver_a_held_run_now_fire_without_a_scheduler_tick() {
+    // Given a scripted LLM: a gated first reply (the busy turn parks on
+    // it) and a second reply for the redelivered cron turn.
+    let mock = Arc::new(ScriptedLlm::new());
+    let busy_release = mock.push_gated("busy reply that parks");
+    mock.push_text("cron reply after the release");
+    let (server, _tmp) =
+        test_server_with_home_and_llm(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let created = server
+        .call_method("session.create", json!({}))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+
+    // And a fire-mode turn parked inside its LLM call (the busy window)
+    server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "long running work", "mode": "fire" }),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while mock.chat_call_count() < 1 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the busy turn reaches its LLM call");
+
+    // When the run-now fire lands while that turn is still running — the
+    // fire is held and the ack still reports the run as triggered
+    let task_id = seed_session_cron_task(&server, &session_id, "*/5 * * * *", "tick", true).await;
+    let acked = server
+        .call_method(
+            "cron.trigger",
+            json!({ "session_id": &session_id, "task_id": task_id }),
+        )
+        .await
+        .expect("run-now acks");
+    assert_eq!(acked["triggered"], true);
+    assert_eq!(acked["held"], true, "a busy target queues the fire");
+
+    // And the busy turn then closes its window (the flow frees) — with no
+    // scheduler tick anywhere, only the fire's watcher can act on it
+    busy_release.send(()).unwrap();
+
+    // Then the hold drains into a real cron turn and is cleared.
+    let fired = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let session = server
+                .session_manager()
+                .get_session(&mirri_core::scope::SessionId::new(&session_id))
+                .await
+                .expect("session stays live");
+            let held = session.cron().held_fires();
+            drop(session);
+            if held.is_empty() && mock.chat_call_count() >= 2 {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+    assert!(
+        fired.unwrap_or(false),
+        "the held run-now fire must be redelivered once the busy turn is gone"
+    );
+    // The redelivered fire opened a turn of its own (the busy turn's
+    // request plus the cron request — side title calls aside).
+    let cron_prompts = mock
+        .captured_params()
+        .iter()
+        .filter(|params| {
+            serde_json::to_string(&params.messages)
+                .unwrap_or_default()
+                .contains("tick")
+        })
+        .count();
+    assert_eq!(cron_prompts, 1, "the redelivered fire ran its own turn");
 }
 
 /// Given a session the user renamed, when the next prompt arrives, then the
@@ -2432,7 +3574,7 @@ async fn should_inherit_live_parent_model_through_production_host_when_main_swit
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let profile_manager = Arc::new(mirri_core::ProfileManager::new());
     profile_manager
         .register(mirri_core::AgentProfile {
@@ -2503,6 +3645,7 @@ async fn should_inherit_live_parent_model_through_production_host_when_main_swit
             swarm_index: None,
             swarm_item: None,
             suppress_rate_limit_failure_event: false,
+            turn_origin: Default::default(),
         })
         .expect("spawn resolves through the production host");
     let completion = tokio::time::timeout(Duration::from_secs(10), &mut handle.completion)
@@ -2645,6 +3788,30 @@ async fn should_emit_turn_started_and_ended_when_message_send_succeeds() {
                 assert_eq!(
                     notification.params["reason"], "completed",
                     "the scripted EndTurn maps to the wire reason 'completed'"
+                );
+                // The engine is the authority on when the turn ended: the
+                // frame carries a real wall-clock epoch-ms instant (after
+                // 2023-11-14), never an absent value or a 0 sentinel.
+                let live_ended_at = notification.params["endedAtMs"]
+                    .as_u64()
+                    .expect("event.turn.ended must carry endedAtMs");
+                assert!(
+                    live_ended_at > 1_700_000_000_000,
+                    "endedAtMs must be a wall-clock epoch-ms instant: {live_ended_at}"
+                );
+
+                // And the journal's opening of the same bracket carries the
+                // very same instant — the live frame and the durable record
+                // agree because both read one measurement.
+                let ops = read_wire_ops(&server, &session_id).await;
+                let journal_ended_at = ops.iter().find_map(|op| match op {
+                    WireOp::TurnEnded { ended_at, .. } => *ended_at,
+                    _ => None,
+                });
+                assert_eq!(
+                    journal_ended_at,
+                    Some(live_ended_at),
+                    "the journal turn.ended must stamp the frame's endedAtMs: {ops:?}"
                 );
                 return; // both events observed in order
             }
@@ -3299,6 +4466,7 @@ async fn should_stamp_durable_events_with_monotonic_seq_and_constant_epoch_when_
         stop_reason: "completed".to_string(),
         wire_turn_id: 1,
         duration_ms: None,
+        ended_at_ms: None,
     });
 
     // Then the relay forwards the turn bracket and the volatile delta in
@@ -3670,7 +4838,7 @@ async fn should_restart_the_durable_seq_with_a_new_epoch_when_a_second_server_in
             tmp.path().to_path_buf(),
             WorkspaceScopeConfig::default(),
         ));
-        let manager = Arc::new(SessionManager::new(workspace));
+        let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
         // The create chain requires a resolvable model (spec 11 R4 — no
         // built-in fallback), so this bare instance seeds the test default.
         EmbeddedServer::with_providers(manager, None, None, None, None, test_server_config(), None)
@@ -4003,12 +5171,21 @@ async fn should_stop_event_stream_when_disposed() {
     // When the server is disposed
     server.dispose().await.unwrap();
 
-    // Then the event channel closes
-    let notification = tokio::time::timeout(Duration::from_secs(5), events.recv()).await;
-    assert!(
-        notification.is_err() || matches!(notification, Ok(None)),
-        "event channel must close after dispose"
-    );
+    // Then the event channel closes. Frames a relay had already queued
+    // before the abort are drained first — the assertion is on CLOSURE, not
+    // on "the next recv timed out": a queued frame made the old
+    // `timeout(5s)` form fail (and it passed only when nothing was queued,
+    // which is why it flaked under load).
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(5),
+        || match events.try_recv() {
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => Some(()),
+            Ok(_) | Err(tokio::sync::mpsc::error::TryRecvError::Empty) => None,
+        },
+    )
+    .await
+    .expect("event channel must close after dispose");
 }
 
 #[tokio::test]
@@ -4257,23 +5434,38 @@ async fn run_main_agent_tool(
         tool_call_id: "test-call".to_string(),
         cancel: mirri_core::CancelToken::default(),
         progress: mirri_core::ToolProgressHandle::default(),
+        turn_origin: Default::default(),
     })
     .await
 }
 
-/// Extract the cron task id from a `CronCreate` tool result's text JSON
-/// (the tool answers with a JSON object carrying `id` — B6 tests reuse the
-/// production creation path to seed tasks).
-fn cron_task_id_from_tool_result(result: &mirri_core::ToolResult) -> String {
-    let text = match &result.output {
-        mirri_core::ToolOutput::Text(text) => text.clone(),
-        other => panic!("expected text output, got {other:?}"),
-    };
-    let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
-    payload["id"]
-        .as_str()
-        .expect("task id in result")
-        .to_string()
+/// Seed a cron task on a session through the SESSION'S OWN manager — the
+/// batch-1 migration face for tests that used the retired CronCreate tool
+/// as a seeding convenience (the behavior under test is the task's
+/// presence and the driver/resume semantics, not the tool path).
+async fn seed_session_cron_task(
+    server: &EmbeddedServer,
+    session_id: &str,
+    cron: &str,
+    prompt: &str,
+    recurring: bool,
+) -> String {
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(session_id))
+        .await
+        .expect("session stays live");
+    session
+        .cron()
+        .add(
+            cron.to_string(),
+            prompt.to_string(),
+            session_id.to_string(),
+            recurring,
+            mirri_core::cron::CronCreateOptions::default(),
+        )
+        .await
+        .expect("seed cron task")
 }
 
 /// Given a persisted session, when the goal RPC lifecycle runs
@@ -5084,9 +6276,11 @@ async fn should_launch_a_goal_continuation_turn_when_a_turn_completes_with_an_ac
         "the continuation prompt must open with the TS-parity text: {text}"
     );
 
-    // And the chain stopped: no third turn.prompt follows after the
-    // drain window (the goal left Active with the UpdateGoal complete).
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // And the chain stopped: the chain task clears `chain_running` as its
+    // last act. Neither `goal.status` nor the turn.prompt count proves this
+    // on its own — UpdateGoal writes the terminal status mid-turn, and the
+    // continuation's turn.prompt is recorded at that turn's START.
+    wait_for_goal_chain_stopped(&server, &session_id).await;
     let ops = read_wire_ops(&server, &session_id).await;
     let turn_prompts = ops
         .iter()
@@ -5285,9 +6479,10 @@ async fn should_not_launch_a_continuation_when_background_tasks_are_in_flight() 
         .unwrap();
 
     // Then no continuation turn is launched: the background task stays
-    // non-terminal for the whole drain window, so the settle point's
-    // chain gating suspends the goal instead of injecting.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // non-terminal, so the settle point's chain gating suspends the goal
+    // instead of injecting. `message.send` is wait-mode, and its settle
+    // point runs the chain decision before the ack — the verdict is already
+    // final when the call returns.
     assert!(
         session
             .tasks()
@@ -5376,7 +6571,8 @@ async fn should_pause_the_goal_after_repeated_idle_continuation_turns() {
 
     // And the chain stopped: the user turn plus exactly three idle
     // continuations ran — no fourth continuation turn.prompt follows.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // No drain window: the pause is written by the SAME decision that would
+    // otherwise launch the next turn, so observing Paused rules it out.
     let ops = read_wire_ops(&server, &session_id).await;
     let continuation_prompts = ops
         .iter()
@@ -5468,8 +6664,8 @@ async fn should_pause_the_goal_when_the_absolute_continuation_limit_is_reached()
     );
 
     // And exactly GOAL_MAX_CONTINUATIONS continuation turns ran — no
-    // further turn.prompt follows the cap.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // further turn.prompt follows the cap. Same reasoning as the idle-streak
+    // case: the cap's pause is written by the decision it blocks.
     let ops = read_wire_ops(&server, &session_id).await;
     let continuation_prompts = ops
         .iter()
@@ -6310,6 +7506,7 @@ async fn should_persist_session_approval_to_wire_log_when_user_approves_for_sess
         session_approvals: &approvals,
         cancel: &cancel,
         net_class: None,
+        turn_origin: Default::default(),
     };
     match pm.evaluate(&ctx) {
         mirri_core::PermissionPolicyResult::Approve { .. } => {}
@@ -6375,6 +7572,7 @@ async fn should_apply_config_permission_rules_to_new_sessions_when_config_declar
         session_approvals: &approvals,
         cancel: &cancel,
         net_class: None,
+        turn_origin: Default::default(),
     };
     assert!(matches!(
         pm.evaluate(&ctx),
@@ -6846,14 +8044,17 @@ async fn should_return_full_context_history_when_get_history_is_called() {
         name: "Bash".to_string(),
         args: json!({ "command": "true" }),
     }]);
-    // The in-turn side title call — fires after the first step lands
-    // (SDR-016) and consumes one scripted reply before the turn's final
-    // text step.
-    mock.push_text("run true");
     mock.push_text("Command ran fine");
     let (server, _tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    // The session is created titled so the in-turn side title call never
+    // starts: it shares this factory's single scripted queue with the main
+    // loop, and both consume the front of it once the first step lands
+    // (SDR-016) — a race that under full-suite load let the main loop take
+    // the side call's reply and answer "run true". Naming is not this
+    // test's subject, and a titled session records nothing, so the history
+    // under assertion is unchanged.
     let created = server
-        .call_method("session.create", json!({}))
+        .call_method("session.create", json!({ "title": "history read face" }))
         .await
         .unwrap();
     let session_id = created["id"].as_str().unwrap().to_string();
@@ -6905,9 +8106,9 @@ async fn should_return_full_context_history_when_get_history_is_called() {
     // same history again — the resume's context-memory reconstruction is
     // the read source (what an ACP `session/load` would replay). The
     // turn's four messages are all the durable `context.append_message`
-    // ops there are: naming is a side call that records nothing (the
-    // title reminder injector is retired), so the resumed history is
-    // identical to the live one — same four entries, no extras.
+    // ops there are (the title reminder injector is retired), so the
+    // resumed history is identical to the live one — same four entries,
+    // no extras.
     server
         .call_method("session.close", json!({ "session_id": &session_id }))
         .await
@@ -7468,9 +8669,10 @@ async fn visible_tool_names(server: &EmbeddedServer, session_id: &str) -> Vec<St
 
 // ── P2b: cron wire persistence ───────────────────────────────────────
 
-/// Given a persisted session, when the agent schedules a cron task through
-/// the CronCreate tool and deletes it through CronDelete, then the wire log
-/// records the `cron.add` and `cron.delete` ops with their full payloads.
+/// Given a persisted session, when a cron task is added and then removed
+/// (the manager mutations the retired CronCreate/CronDelete tools drove),
+/// then the wire log records the `cron.add` and `cron.delete` ops with
+/// their full payloads.
 #[tokio::test]
 async fn should_persist_cron_tool_mutations_to_wire_log_when_agent_schedules_and_deletes_tasks() {
     // Given a server with a created session
@@ -7482,38 +8684,17 @@ async fn should_persist_cron_tool_mutations_to_wire_log_when_agent_schedules_and
     let session_id = created["id"].as_str().unwrap().to_string();
     converse_once(&server, &session_id).await;
 
-    // When the agent creates a cron task and then deletes it
-    let result = run_main_agent_tool(
-        &server,
-        &session_id,
-        "CronCreate",
-        json!({
-            "cron": "0 9 * * *",
-            "prompt": "morning briefing",
-            "recurring": true
-        }),
-    )
-    .await;
-    assert!(!result.is_error, "{result:?}");
-    let created_id = {
-        let text = match &result.output {
-            mirri_core::ToolOutput::Text(text) => text.clone(),
-            other => panic!("expected text output, got {other:?}"),
-        };
-        let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
-        payload["id"]
-            .as_str()
-            .expect("task id in result")
-            .to_string()
-    };
-    let result = run_main_agent_tool(
-        &server,
-        &session_id,
-        "CronDelete",
-        json!({ "id": &created_id }),
-    )
-    .await;
-    assert!(!result.is_error, "{result:?}");
+    // When a cron task is created and then deleted (the wire ops ride the
+    // manager either way — the tool was only the driving face)
+    let created_id =
+        seed_session_cron_task(&server, &session_id, "0 9 * * *", "morning briefing", true).await;
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session stays live");
+    session.cron().remove(&created_id).await;
+    drop(session);
 
     // Then the wire log records cron.add → cron.delete with the full payloads
     let ops = read_wire_ops(&server, &session_id).await;
@@ -7553,14 +8734,7 @@ async fn should_restore_cron_tasks_when_session_with_active_tasks_is_resumed() {
     let session_id = created["id"].as_str().unwrap().to_string();
     converse_once(&server, &session_id).await;
     for cron in ["*/5 * * * *", "0 9 * * *"] {
-        let result = run_main_agent_tool(
-            &server,
-            &session_id,
-            "CronCreate",
-            json!({ "cron": cron, "prompt": "tick", "recurring": true }),
-        )
-        .await;
-        assert!(!result.is_error, "{result:?}");
+        seed_session_cron_task(&server, &session_id, cron, "tick", true).await;
     }
     let before_resume_ms = chrono::Utc::now().timestamp_millis();
 
@@ -7610,29 +8784,14 @@ async fn should_not_refire_a_fired_one_shot_task_when_session_is_resumed() {
         .unwrap();
     let session_id = created["id"].as_str().unwrap().to_string();
     converse_once(&server, &session_id).await;
-    let result = run_main_agent_tool(
+    let task_id = seed_session_cron_task(
         &server,
         &session_id,
-        "CronCreate",
-        json!({
-            "cron": "*/5 * * * *",
-            "prompt": "one-time reminder",
-            "recurring": false
-        }),
+        "*/5 * * * *",
+        "one-time reminder",
+        false,
     )
     .await;
-    assert!(!result.is_error, "{result:?}");
-    let task_id = {
-        let text = match &result.output {
-            mirri_core::ToolOutput::Text(text) => text.clone(),
-            other => panic!("expected text output, got {other:?}"),
-        };
-        let payload: serde_json::Value = serde_json::from_str(&text).unwrap();
-        payload["id"]
-            .as_str()
-            .expect("task id in result")
-            .to_string()
-    };
     // The process "crashes" after firing the task: the session is closed
     // and a cron.cursor op (recorded by the fire consumption point) is the
     // last line of the wire log.
@@ -7652,6 +8811,7 @@ async fn should_not_refire_a_fired_one_shot_task_when_session_is_resumed() {
         log.append(&WireOp::CronCursor {
             id: task_id.clone(),
             last_fired_at: fired_at_ms,
+            fire_count: None,
         })
         .await
         .unwrap();
@@ -9034,8 +10194,9 @@ async fn should_clear_archived_flag_when_session_restore_called() {
         .unwrap();
 
     // Then the session resumes AND the flag is cleared: the default listing
-    // shows the live session again (with archived false), and the persisted
-    // state.json no longer carries the flag
+    // shows the live session again (with archived false), and the metadata
+    // row no longer carries the flag (ADR-006: the row is the durable
+    // record; state.json no longer exists for a post-ADR-006 session)
     assert_eq!(restored["id"], session_id);
     let listed = server.call_method("listSessions", json!({})).await.unwrap();
     let sessions = listed["items"].as_array().unwrap();
@@ -9048,10 +10209,10 @@ async fn should_clear_archived_flag_when_session_restore_called() {
     assert!(
         !server
             .session_manager()
-            .persistence()
-            .load_state(&SessionId::new(&session_id))
+            .metadata_store()
+            .get(&SessionId::new(&session_id))
             .await
-            .unwrap()
+            .expect("the restored session's row exists")
             .archived
     );
 }
@@ -9484,6 +10645,92 @@ async fn should_stop_task_and_return_it_when_task_stop_called_with_reason() {
         matches!(&error, EngineError::Rpc { code, .. } if *code == -32001),
         "expected not found, got: {error}"
     );
+}
+
+#[tokio::test]
+async fn should_stop_the_task_when_task_cancel_is_given_the_agent_id() {
+    // Given a server with a session holding one running agent-kind task
+    let (server, _tmp) = test_server(None);
+    let created = server
+        .call_method("session.create", json!({ "title": "t" }))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+    let session = server
+        .session_manager()
+        .get_session(&mirri_core::SessionId::new(&session_id))
+        .await
+        .expect("the created session is live");
+    let agent_id = "agent-3f2b".to_string();
+    let task_id = session.tasks().register(
+        TaskKind::Agent {
+            agent_id: Some(agent_id.clone()),
+            subagent_type: Some("explore".to_string()),
+            parent_tool_call_id: Some("call-1".to_string()),
+            swarm_index: Some(0),
+            model: None,
+        },
+        "agent: explore".to_string(),
+        session_id.clone(),
+    );
+
+    // When the panel's stop sends the agent id (the row key the WS stream uses)
+    server
+        .call_method(
+            "task.cancel",
+            json!({ "sessionId": session_id, "taskId": agent_id }),
+        )
+        .await
+        .unwrap();
+
+    // Then the tracked task is stopped (the signal attached at registration
+    // is what aborts the child; the status is its observable trace)
+    let stopped = session
+        .tasks()
+        .get(&task_id)
+        .expect("the task stays tracked after a stop");
+    assert_eq!(stopped.status, mirri_core::task::TaskStatus::Stopped);
+}
+
+#[tokio::test]
+async fn should_return_the_task_when_task_stop_is_given_the_agent_id() {
+    // Given a session with one running agent-kind task
+    let (server, _tmp) = test_server(None);
+    let created = server
+        .call_method("session.create", json!({ "title": "t" }))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+    let session = server
+        .session_manager()
+        .get_session(&mirri_core::SessionId::new(&session_id))
+        .await
+        .expect("the created session is live");
+    let agent_id = "agent-9c07".to_string();
+    let task_id = session.tasks().register(
+        TaskKind::Agent {
+            agent_id: Some(agent_id.clone()),
+            subagent_type: None,
+            parent_tool_call_id: None,
+            swarm_index: None,
+            model: None,
+        },
+        "agent: worker".to_string(),
+        session_id.clone(),
+    );
+
+    // When task.stop is given the agent id
+    let stopped = server
+        .call_method(
+            "task.stop",
+            json!({ "sessionId": session_id, "taskId": agent_id }),
+        )
+        .await
+        .unwrap();
+
+    // Then the stopped task serialization answers under its task id
+    assert_eq!(stopped["id"], json!(task_id));
+    assert_eq!(stopped["status"], json!({ "status": "stopped" }));
 }
 
 #[tokio::test]
@@ -10191,7 +11438,7 @@ fn test_server_with_shell_timeout(timeout: Duration) -> (EmbeddedServer, tempfil
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     (
         EmbeddedServer::with_providers(manager, None, None, None, None, test_server_config(), None)
             .with_shell_foreground_timeout(timeout),
@@ -10756,7 +12003,7 @@ async fn should_keep_the_shell_command_detach_path_when_no_tool_call_id_is_given
 }
 
 #[tokio::test]
-// The crate-wide home lock is a std Mutex held across the awaits on
+// The workspace env lock is a std Mutex held across the awaits on
 // purpose: the pinned `$HOME` must survive the RPC that reads it, and
 // each `#[tokio::test]` runs on its own (current-thread) runtime thread,
 // so a waiter blocks its own thread while the holder — on another —
@@ -10773,10 +12020,10 @@ async fn should_export_session_to_zip_when_export_session_called() {
     let session_id = created["id"].as_str().unwrap().to_string();
     converse_once(&server, &session_id).await;
     let fake_home = tempfile::tempdir().expect("fake home must be creatable");
-    // The crate-wide home lock serializes this pin against the other
+    // The workspace env lock serializes this pin against the other
     // HOME-reading tests (the env is process-global; the harness runs the
     // binary's tests in parallel).
-    let _home_lock = crate::bootstrap::test_env::home_lock();
+    let _home_lock = env::lock();
     unsafe {
         std::env::set_var("HOME", fake_home.path());
     }
@@ -10915,15 +12162,18 @@ async fn should_return_core_info_and_config_when_core_info_methods_called() {
     // `flags.list()`); the client calls `.map` on it, so a wrapped object
     // crashes TUI startup. The composition root registers the engine's own
     // gate flags (hook-command-rewrite, session-consistency-follow, and
-    // skill-hot-reload — default ON since the ADR-010 notification surface
-    // landed, env-gated), so the array carries them.
+    // skillHotReload — default ON since ADR-013, env-gated), so the array
+    // carries them.
     let features = features.as_array().expect("bare array");
     assert_eq!(features.len(), 3);
     let ids: Vec<&str> = features.iter().filter_map(|f| f["id"].as_str()).collect();
     assert!(ids.contains(&"hook-command-rewrite"));
     assert!(ids.contains(&"session-consistency-follow"));
+    // The default values ride along: the two settle-stage flags stay off,
+    // skillHotReload is on by default (ADR-013 decision 1).
     for feature in features {
-        assert_eq!(feature["defaultEnabled"], false);
+        let expected_default = matches!(feature["id"].as_str(), Some("skillHotReload"));
+        assert_eq!(feature["defaultEnabled"], expected_default);
     }
     assert_eq!(diagnostics, json!({ "warnings": [] }));
 }
@@ -12439,8 +13689,9 @@ async fn should_list_cron_tasks_when_get_cron_tasks_called() {
         .await
         .unwrap();
 
-    // Then the expected empty `{ tasks: [] }` shape is returned
-    assert_eq!(result, json!({ "tasks": [] }));
+    // Then the expected `{ tasks: [], disabled: false }` shape is returned
+    // (`disabled` is always present — ADR-006 / E.4 honest-list layer)
+    assert_eq!(result, json!({ "tasks": [], "disabled": false }));
 }
 
 /// Given a session holding one cron task, when `cron.delete` names it, then
@@ -12457,15 +13708,7 @@ async fn should_delete_a_cron_task_when_cron_delete_names_a_registered_task() {
         .unwrap();
     let session_id = created["id"].as_str().unwrap().to_string();
     converse_once(&server, &session_id).await;
-    let result = run_main_agent_tool(
-        &server,
-        &session_id,
-        "CronCreate",
-        json!({ "cron": "*/5 * * * *", "prompt": "tick", "recurring": true }),
-    )
-    .await;
-    assert!(!result.is_error, "{result:?}");
-    let task_id = cron_task_id_from_tool_result(&result);
+    let task_id = seed_session_cron_task(&server, &session_id, "*/5 * * * *", "tick", true).await;
 
     // When the management write face removes it
     let deleted = server
@@ -12520,14 +13763,7 @@ async fn should_keep_a_deleted_cron_task_gone_when_the_session_is_resumed() {
         .unwrap();
     let session_id = created["id"].as_str().unwrap().to_string();
     converse_once(&server, &session_id).await;
-    let result = run_main_agent_tool(
-        &server,
-        &session_id,
-        "CronCreate",
-        json!({ "cron": "*/5 * * * *", "prompt": "tick", "recurring": true }),
-    )
-    .await;
-    let task_id = cron_task_id_from_tool_result(&result);
+    let task_id = seed_session_cron_task(&server, &session_id, "*/5 * * * *", "tick", true).await;
     server
         .call_method(
             "cron.delete",
@@ -12573,14 +13809,14 @@ async fn should_inject_the_prompt_as_an_engine_turn_when_cron_trigger_targets_a_
     // The scripted reply is queued after the setup turn so the *manual*
     // injected turn is the one that consumes it.
     mock.push_text("manual cron reply");
-    let result = run_main_agent_tool(
+    let task_id = seed_session_cron_task(
         &server,
         &session_id,
-        "CronCreate",
-        json!({ "cron": "0 9 1 1 *", "prompt": "do the manual thing", "recurring": true }),
+        "0 9 1 1 *",
+        "do the manual thing",
+        true,
     )
     .await;
-    let task_id = cron_task_id_from_tool_result(&result);
     let mut events = server.subscribe_events().await.unwrap();
 
     // When the management run-now face triggers it
@@ -12663,14 +13899,7 @@ async fn should_keep_the_schedule_untouched_when_cron_trigger_fires_a_task() {
         .unwrap();
     let session_id = created["id"].as_str().unwrap().to_string();
     converse_once(&server, &session_id).await;
-    let result = run_main_agent_tool(
-        &server,
-        &session_id,
-        "CronCreate",
-        json!({ "cron": "0 9 1 1 *", "prompt": "tick", "recurring": true }),
-    )
-    .await;
-    let task_id = cron_task_id_from_tool_result(&result);
+    let task_id = seed_session_cron_task(&server, &session_id, "0 9 1 1 *", "tick", true).await;
     let before = server
         .call_method("cron.list", json!({ "sessionId": session_id }))
         .await
@@ -13118,7 +14347,7 @@ async fn should_list_the_fork_when_sessions_are_listed_with_exclude_empty() {
     // conversed source session
     let mock = Arc::new(ScriptedLlm::new());
     mock.push_text("fork reply");
-    let (server, tmp) =
+    let (server, _tmp) =
         test_server_with_home_and_llm(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
     let created = server
         .call_method("session.create", json!({ "title": "source" }))
@@ -13173,7 +14402,6 @@ async fn should_list_the_fork_when_sessions_are_listed_with_exclude_empty() {
         listed_ids.contains(&fork_id.as_str()),
         "the exclude-empty listing must surface the fork, got {listed_ids:?}"
     );
-    let _ = tmp;
 }
 
 /// Given a session that ran a real engine turn, when `session.list` /
@@ -14682,8 +15910,16 @@ async fn should_start_and_complete_manual_compaction_when_begin_compaction_calle
     // engine-service `begin(): boolean` contract (no {ok, started} envelope)
     assert_eq!(result, json!(true));
 
-    // Give the background compaction task time to complete
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // The background compaction task completes once the mock has taken
+    // its third call (messages + compaction) — wait for that condition
+    // instead of a fixed settle.
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+        || (mock.chat_call_count() >= 3).then_some(()),
+    )
+    .await
+    .expect("the background compaction task must complete");
 
     // The mock should have been called at least three times (messages +
     // compaction)
@@ -14728,8 +15964,9 @@ async fn should_skip_with_info_notice_when_manual_compaction_has_nothing_to_comp
     // an info-level skip per the `begin(): boolean` contract (SDR-003)
     assert_eq!(result.unwrap(), json!(false));
 
-    // And the summarizer never ran — the skip must not pay for an LLM call
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    // And the summarizer never ran — the skip must not pay for an LLM call.
+    // No settle window: the `CompactionUnable` skip returns before the apply
+    // task is spawned, so nothing can reach the LLM later.
     assert_eq!(
         mock.chat_call_count(),
         chat_calls_before,
@@ -14895,7 +16132,22 @@ async fn should_fire_pre_and_post_compact_hooks_when_manual_compaction_runs() {
         .await
         .unwrap();
     assert_eq!(result, json!(true));
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    // The background compaction fires PreCompact before the summarizer and
+    // PostCompact after the apply — both hook records landing in the log is
+    // the completion signal, not a fixed settle.
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+        || {
+            let log = parse_hook_log(&log_path);
+            let has_pre = log.iter().any(|(prefix, _)| prefix == "PRECOMPACT");
+            let has_post = log.iter().any(|(prefix, _)| prefix == "POSTCOMPACT");
+            (has_pre && has_post).then_some(())
+        },
+    )
+    .await
+    .expect("the PreCompact and PostCompact hook records must land");
 
     // Then the PreCompact hook fired with the manual trigger and the
     // pre-compaction token count
@@ -14998,13 +16250,23 @@ async fn should_not_fire_post_compact_hook_when_manual_compaction_cancelled() {
         .await
         .unwrap();
     assert_eq!(result, json!(true));
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // The summarizer's round consuming the gated response is the in-flight
+    // signal (the mock counts a call when its queued response is taken) —
+    // cancel only once the round is deterministically in flight.
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+        || (mock.chat_call_count() >= 3).then_some(()),
+    )
+    .await
+    .expect("the compaction summarizer must be in flight before the cancel");
     server
         .call_method("cancelCompaction", json!({ "sessionId": &session_id }))
         .await
         .unwrap();
+    let applies_before = server.manual_compaction_apply_count();
     release_tx.send(()).unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    wait_for_manual_compaction_apply(&server, applies_before + 1).await;
 
     // Then the PostCompact hook never fired (TS parity: notifyPostCompact
     // runs only on the fulfilled promise)
@@ -15062,12 +16324,39 @@ async fn should_refresh_system_prompt_after_manual_compaction_completes() {
     // When AGENTS.md changes while the agent exists and a manual compaction
     // runs to completion
     std::fs::write(tmp.path().join("AGENTS.md"), "AGENTS_MD_V2").unwrap();
+    let agent = server
+        .resolve_agent(&AgentRefParams {
+            session_id: session_id.clone(),
+            agent_id: None,
+        })
+        .await
+        .unwrap();
     let result = server
         .call_method("beginCompaction", json!({ "sessionId": &session_id }))
         .await
         .unwrap();
     assert_eq!(result, json!(true));
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // The apply task rebuilds the system prompt as its final step — the
+    // fresh AGENTS.md content landing in the prompt state is the
+    // completion signal, not a fixed settle.
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+        || {
+            let prompt = agent
+                .config()
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .system_prompt
+                .clone();
+            prompt
+                .as_deref()
+                .is_some_and(|prompt| prompt.contains("AGENTS_MD_V2"))
+                .then_some(())
+        },
+    )
+    .await
+    .expect("the manual compaction must complete and refresh the system prompt");
 
     // Then the agent's system prompt was rebuilt from current workspace
     // state: fresh AGENTS.md content, base prompt intact, stale snapshot gone
@@ -15145,12 +16434,39 @@ async fn should_buffer_prompt_when_manual_compaction_in_flight_until_settled() {
 
     // Then the buffered turn has not started — only the two settled messages
     // and the parked summarizer have reached the LLM (TS parity: prompts
-    // defer while a full compaction is in flight)
-    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+    // defer while a full compaction is in flight).
+    //
+    // Two observations the deleted window carried:
+    //  1. the summarizer has reached the LLM (the third call — the window
+    //     gave the compaction's async begin time to get there);
+    //  2. the buffered send is still parked, not answered.
+    wait_for_chat_calls(&mock, 3).await;
+    assert!(
+        !send_task.is_finished(),
+        "the mid-compaction message must still be parked, not answered"
+    );
     assert_eq!(
         mock.chat_call_count(),
         3,
         "turn must not reach the LLM while the manual compaction is in flight"
+    );
+    // The parked state must hold, not just coincide: a send that slipped
+    // past the settle wait would pop the fourth scripted reply. Give it a
+    // bounded window to do so and confirm it did not.
+    assert!(
+        mirri_test_support::wait_for::wait_for_async(
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_millis(5),
+            || send_task.is_finished().then_some(()),
+        )
+        .await
+        .is_err(),
+        "the buffered message must stay parked until the compaction settles"
+    );
+    assert_eq!(
+        mock.chat_call_count(),
+        3,
+        "the buffered message must not have reached the LLM"
     );
 
     // And when the summarizer completes, the compaction applies and the
@@ -15203,7 +16519,7 @@ async fn should_replay_compaction_summary_when_compacted_session_resumes() {
     mock.push_text(&format!("Another scripted reply: {}", "b".repeat(8_000)));
     mock.push_text("COMPACTION_SUMMARY_MARKER of the conversation.");
     mock.push_text("Second turn reply");
-    let (server, _tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let (server, tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
     // A titled session — the scripted queue is position-sensitive, and an
     // untitled session's settle would spawn the side title call too.
     let created = server
@@ -15232,7 +16548,29 @@ async fn should_replay_compaction_summary_when_compacted_session_resumes() {
         .await
         .unwrap();
     assert_eq!(result, json!(true));
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    // The persisted `context.apply_compaction` op is the completion signal
+    // the resume replay depends on — the later message must append after
+    // it, so wait for the op to land in the wire log instead of a fixed
+    // settle.
+    let wire_log = tmp
+        .path()
+        .join(".mirri")
+        .join("v3_sessions")
+        .join(mirri_core::encode_work_dir_key(tmp.path()))
+        .join(&session_id)
+        .join("wire.jsonl");
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(10),
+        || {
+            std::fs::read_to_string(&wire_log)
+                .map(|raw| raw.contains("context.apply_compaction"))
+                .unwrap_or(false)
+                .then_some(())
+        },
+    )
+    .await
+    .expect("the manual compaction apply must persist before the later message lands");
     server
         .call_method(
             "message.send",
@@ -15529,6 +16867,7 @@ async fn should_not_persist_an_apply_record_when_the_must_shrink_guard_refuses()
     );
 
     // When the manual compaction runs and completes
+    let applies_before = server.manual_compaction_apply_count();
     let result = server
         .call_method("beginCompaction", json!({ "sessionId": &session_id }))
         .await
@@ -15565,14 +16904,10 @@ async fn should_not_persist_an_apply_record_when_the_must_shrink_guard_refuses()
     );
 
     // And the wire log carries no apply record. The write point records
-    // after the event publish within the same apply task, so give the task
-    // a settle window before reading (the same polling idiom the provenance
-    // twin uses, inverted for absence).
-    // TODO(time-based absence check): a loaded CI could let the recorder
-    // land after this read, turning the absence assertion green on a
-    // false negative — consider a bounded poll-until-stable loop if this
-    // ever flakes (registered from the test-remediation batch final review).
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // AFTER the event publish within the same apply task, so the absence is
+    // only final once that task has finished — hence a counter wait, not a
+    // settle window.
+    wait_for_manual_compaction_apply(&server, applies_before + 1).await;
     let ops = read_wire_ops(&server, &session_id).await;
     for op in &ops {
         assert!(
@@ -15775,6 +17110,7 @@ async fn should_deliver_the_compaction_cancelled_event_when_an_in_flight_compact
 
     // When a manual compaction is begun and then cancelled while the
     // summarizer is still parked on the gate
+    let applies_before = server.manual_compaction_apply_count();
     let begun = server
         .call_method("beginCompaction", json!({ "sessionId": &session_id }))
         .await
@@ -15820,9 +17156,11 @@ async fn should_deliver_the_compaction_cancelled_event_when_an_in_flight_compact
 
     // And a second beginCompaction is accepted again once the cancelled
     // attempt settles: release the gate, let the round wind down, then a
-    // fresh begin is not rejected with "already in flight"
+    // fresh begin is not rejected with "already in flight" (the apply task
+    // may have finished at cancel time or at gate release — either way it
+    // grows the counter by one from the begin mark).
     drop(gate);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_for_manual_compaction_apply(&server, applies_before + 1).await;
     mock.push_text("A second summary.");
     let re_begun = server
         .call_method("beginCompaction", json!({ "sessionId": &session_id }))
@@ -15879,10 +17217,11 @@ async fn should_reject_a_second_manual_compaction_while_one_is_in_flight() {
         second.is_err(),
         "a second begin while one is in flight must fail"
     );
+    let applies_before = server.manual_compaction_apply_count();
     drop(gate);
     // Give the still-running first attempt time to settle so the test's
     // server teardown is not racing its apply task
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_for_manual_compaction_apply(&server, applies_before + 1).await;
 }
 
 /// Given a session whose turn is still running (its LLM call parked behind
@@ -16042,14 +17381,15 @@ async fn should_refuse_manual_compaction_when_a_turn_is_active() {
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    let applies_before = server.manual_compaction_apply_count();
     let begun = server
         .call_method("beginCompaction", json!({ "sessionId": &session_id }))
         .await
         .unwrap();
     assert_eq!(begun, json!(true));
-    // Give the background compaction task time to settle so the test's
-    // server teardown is not racing its apply task
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Wait for the background compaction's apply task to finish so the
+    // test's server teardown is not racing it.
+    wait_for_manual_compaction_apply(&server, applies_before + 1).await;
 }
 
 #[tokio::test]
@@ -16154,8 +17494,9 @@ async fn should_keep_the_newer_attempts_registration_when_a_stale_attempt_settle
 
     // When the stale attempt #1 finally settles (its gate opens, its apply
     // task discards the cancelled result)
+    let applies_before = server.manual_compaction_apply_count();
     drop(first_gate);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_for_manual_compaction_apply(&server, applies_before + 1).await;
 
     // Then attempt #2's registration survived the stale settle: a third
     // begin is still rejected with the already-in-flight error (a stale
@@ -16171,8 +17512,9 @@ async fn should_keep_the_newer_attempts_registration_when_a_stale_attempt_settle
 
     // Cleanup: let attempt #2 run to completion so teardown does not race
     // its apply task
+    let applies_before = server.manual_compaction_apply_count();
     drop(second_gate);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    wait_for_manual_compaction_apply(&server, applies_before + 1).await;
 }
 
 #[tokio::test]
@@ -16219,8 +17561,9 @@ async fn should_not_deliver_a_completed_event_after_a_cancelled_attempt_settles(
         .await
         .unwrap();
     assert_eq!(cancelled, json!(null));
+    let applies_before = server.manual_compaction_apply_count();
     drop(gate);
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    wait_for_manual_compaction_apply(&server, applies_before + 1).await;
 
     // Then no completed event ever follows the cancelled one — the
     // cancelled attempt's result is discarded instead of applied
@@ -17709,9 +19052,15 @@ async fn should_expand_and_test_the_persisted_entry_when_addressed_by_scope_and_
 /// still reaches the connection test intact (spec §4.6 environment row).
 #[tokio::test]
 async fn should_not_expand_object_keys_when_mcp_config_test_expands_direct_config() {
-    // SAFETY: Test-only env vars in a uniquely named test scope.
-    unsafe { std::env::set_var("MCP_TEST_DIRECT_CMD", "definitely-not-a-real-command-xyz") };
-    unsafe { std::env::set_var("MCP_TEST_KEY_QUOTE", "bad\"key") };
+    // Test-only env vars in a uniquely named test scope, set under the
+    // workspace env lock. The guard is held across the RPC await on
+    // purpose (current-thread `#[tokio::test]` runtime: a waiter parks
+    // its own thread; bounded serialization — the documented precedent),
+    // and its Drop restores the previous values.
+    #[allow(clippy::await_holding_lock)]
+    let mut _env = mirri_test_support::env::EnvGuard::new();
+    _env.set("MCP_TEST_DIRECT_CMD", "definitely-not-a-real-command-xyz");
+    _env.set("MCP_TEST_KEY_QUOTE", "bad\"key");
 
     let (home, workspace) = layered_mcp_fixture(json!({}), None);
     let server = EmbeddedServer::for_workspace_root(
@@ -17749,11 +19098,8 @@ async fn should_not_expand_object_keys_when_mcp_config_test_expands_direct_confi
         "the failure must be the spawn error of the expanded command, proving the \
          ${{...}} env key was not rewritten: {result}"
     );
-
-    // SAFETY: Test-only env vars restored so the uniquely named values
-    // cannot leak into any later test in the same process.
-    unsafe { std::env::remove_var("MCP_TEST_DIRECT_CMD") };
-    unsafe { std::env::remove_var("MCP_TEST_KEY_QUOTE") };
+    // (Cleanup rides the EnvGuard's Drop — the uniquely named values are
+    // restored and cannot leak into any later test in the same process.)
 }
 
 /// Given a persisted user-layer server whose string values reference env
@@ -17765,9 +19111,14 @@ async fn should_not_expand_object_keys_when_mcp_config_test_expands_direct_confi
 /// and the stored text keeps its references verbatim (nothing persists).
 #[tokio::test]
 async fn should_return_expanded_config_and_undefined_vars_when_preview_is_requested() {
-    // SAFETY: Test-only env var in a uniquely named test scope, removed at
-    // the end of the test.
-    unsafe { std::env::set_var("MCP_TEST_PREVIEW_TOKEN", "no-secret") };
+    // Test-only env var in a uniquely named test scope, set under the
+    // workspace env lock. The guard is held across the RPC await on purpose
+    // (current-thread `#[tokio::test]` runtime: a waiter parks its own
+    // thread; bounded serialization — the documented precedent), and its
+    // Drop restores the previous value.
+    #[allow(clippy::await_holding_lock)]
+    let mut _env = mirri_test_support::env::EnvGuard::new();
+    _env.set("MCP_TEST_PREVIEW_TOKEN", "no-secret");
 
     let (home, workspace) = layered_mcp_fixture(
         json!({"demo": {
@@ -17813,9 +19164,7 @@ async fn should_return_expanded_config_and_undefined_vars_when_preview_is_reques
         stored.contains("${MCP_TEST_PREVIEW_TOKEN}"),
         "the stored text must keep its references verbatim: {stored}"
     );
-
-    // SAFETY: Test-only env var cleanup.
-    unsafe { std::env::remove_var("MCP_TEST_PREVIEW_TOKEN") };
+    // (Cleanup rides the EnvGuard's Drop.)
 }
 
 /// Given an unsaved config carried directly in the preview call (one
@@ -18364,7 +19713,7 @@ async fn should_inject_plugin_session_start_reminder_once_on_first_user_turn() {
             )
             .unwrap();
     }
-    let session_manager = Arc::new(SessionManager::new(workspace));
+    let session_manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let mock = Arc::new(ScriptedLlm::new());
     mock.push_text("ok");
     mock.push_text("ok");
@@ -18499,7 +19848,7 @@ async fn should_list_plugin_skills_with_their_plugin_id() {
             )
             .unwrap();
     }
-    let session_manager = Arc::new(SessionManager::new(workspace));
+    let session_manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let server = EmbeddedServer::with_providers(
         session_manager,
         None,
@@ -22131,14 +23480,24 @@ async fn wait_for_plugin_server_config(
 /// Serializes the item A7 managed-env e2e tests: they manipulate ambient
 /// `MIRRICODE_BASE_URL` vars, which are process-global — a parallel
 /// sibling would observe the override and misread its own source
-/// resolution.
-static MANAGED_PLUGIN_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
+/// resolution. Serialized on the workspace-wide
+/// [`mirri_test_support::env::lock`] (no crate-private mutex remains).
+/// Tests 2/3 only CLEAR the var (a short locked window right after the
+/// server fixture awaits, never held across one); test 1 must hold the
+/// lock across its connect-set await — the ambient value has to survive
+/// until the connection layer reads it — which is safe under the
+/// current-thread `#[tokio::test]` runtime (a waiter parks its own thread;
+/// the holder on another thread finishes; bounded serialization, the same
+/// documented precedent as the `model.generate` env-sub-table test).
+///
 /// Removes every managed-env var on drop — panic-safe cleanup so a failed
 /// ambient-env test never leaks process-global state into later runs.
 struct ManagedEnvGuard;
 impl Drop for ManagedEnvGuard {
     fn drop(&mut self) {
+        // SAFETY: the drop runs while the workspace env lock acquired by
+        // the pinning test is still held (field order keeps the lock alive
+        // past this restore).
         unsafe {
             std::env::remove_var("MIRRICODE_BASE_URL");
         }
@@ -22154,8 +23513,15 @@ impl Drop for ManagedEnvGuard {
 /// `MIRRICODE_BASE_URL` carries the trailing-slash-stripped env value,
 /// alongside `MIRRICODE_HOME` / `MIRRI_PLUGIN_ROOT` and the cwd default.
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
+// The workspace env lock is held across the connect-set await on purpose:
+// the ambient `MIRRICODE_BASE_URL` must survive until the connection layer
+// reads it, and each `#[tokio::test]` runs on its own (current-thread)
+// runtime thread — a waiter blocks its own thread while the holder, on
+// another, finishes; bounded serialization, no deadlock (the same
+// documented precedent as the `model.generate` env-sub-table test).
 async fn should_inject_managed_mirri_env_into_plugin_stdio_servers_when_ambient_env_is_set() {
-    let _guard = MANAGED_PLUGIN_ENV_LOCK.lock().await;
+    let _guard = mirri_test_support::env::lock();
     // Given a server with the plugin stdio server in the startup set and
     // the managed env var set (an ambient override, trailing slashes
     // included to lock the trim)
@@ -22206,9 +23572,6 @@ async fn should_inject_managed_mirri_env_into_plugin_stdio_servers_when_ambient_
 /// `MIRRICODE_BASE_URL` (item A7).
 #[tokio::test]
 async fn should_inject_managed_mirri_env_from_provider_config_when_no_ambient_override_is_set() {
-    let _guard = MANAGED_PLUGIN_ENV_LOCK.lock().await;
-    // Given a server whose config.toml seeds the mirri-code provider with a
-    // baseUrl
     let (server, _home, _workspace, _plugins_dir) = mcp_config_plugin_server_with_config(
         r#"
 [providers.mirri-code]
@@ -22216,6 +23579,15 @@ base_url = "https://managed.from-config.test"
 "#,
     )
     .await;
+    // A dev machine's ambient `MIRRICODE_BASE_URL` would override the
+    // provider-derived fallback — clear it in a short locked window after
+    // the fixture awaits (never held across one).
+    {
+        let _guard = mirri_test_support::env::lock();
+        // SAFETY: removed under the workspace env lock and never re-set;
+        // the restore is unnecessary (the var is not this test's to own).
+        unsafe { std::env::remove_var("MIRRICODE_BASE_URL") };
+    }
     let server =
         server.with_mcp_manager(std::sync::Arc::new(mirri_mcp::McpConnectionManager::new()));
 
@@ -22248,10 +23620,17 @@ base_url = "https://managed.from-config.test"
 /// domain.
 #[tokio::test]
 async fn should_not_inject_managed_mirri_env_when_no_source_is_configured() {
-    let _guard = MANAGED_PLUGIN_ENV_LOCK.lock().await;
     // Given a server with the plugin stdio server in the startup set and no
     // managed-env source anywhere
     let (server, _home, _workspace, _plugins_dir) = mcp_config_plugin_server().await;
+    // A dev machine's ambient `MIRRICODE_BASE_URL` would count as a source
+    // — clear it in a short locked window after the fixture awaits (never
+    // held across one).
+    {
+        let _guard = mirri_test_support::env::lock();
+        // SAFETY: removed under the workspace env lock and never re-set.
+        unsafe { std::env::remove_var("MIRRICODE_BASE_URL") };
+    }
     let server =
         server.with_mcp_manager(std::sync::Arc::new(mirri_mcp::McpConnectionManager::new()));
 
@@ -22349,9 +23728,11 @@ async fn should_not_connect_a_plugin_server_disabled_by_the_first_call() {
         .await
         .expect("disabling the plugin server must succeed");
 
+    // The startup connect task's LAST act is the disable reconcile, so a
+    // finished task makes the absence final — no sampling window.
     let runtime_name = "plugin-demo-plugin:helper";
-    for _ in 0..5 {
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    wait_for_mcp_startup_settled(&server).await;
+    {
         let listed = server
             .call_method("mcp.global.list", json!({}))
             .await
@@ -22620,7 +24001,7 @@ impl RetentionPassFixture {
             home.path().to_path_buf(),
             WorkspaceScopeConfig::default(),
         ));
-        let manager = Arc::new(SessionManager::new(workspace));
+        let manager = Arc::new(test_manager_with_sqlite_store(workspace, home.path()));
         let registry = Arc::new(crate::workspace_registry::WorkspaceRegistry::single(
             Arc::clone(&manager),
         ));
@@ -22937,6 +24318,141 @@ async fn should_skip_a_locked_candidate_and_succeed_on_the_next_pass() {
     );
 }
 
+/// Given an archived session whose metadata is the ROW ONLY (post-ADR-006:
+/// archived lives in the row, no `state.json` was ever written) and no
+/// session index, when the retention pass's candidate scan runs, then the
+/// no-index degrade discovers the session through the metadata ROW — the
+/// row's archived flag seeds the scan instead of a state.json disk walk
+/// (existence check 9/11 migrates to the metadata row). The candidate
+/// carries the row's archive stamp for the deadline verdict.
+#[tokio::test]
+async fn should_discover_a_row_archived_session_without_state_json_in_the_no_index_degrade() {
+    // Given the fixture's session with its state.json DELETED and the
+    // archived flag carried by the manager's metadata row alone
+    let fixture =
+        RetentionPassFixture::new("enabled = true\narchive_grace_days = 1").await;
+    let manager = fixture
+        .registry
+        .default_runtime()
+        .expect("the single-workspace registry holds the runtime")
+        .manager
+        .clone();
+    let aged = chrono::Utc::now() - chrono::Days::new(30);
+    manager
+        .metadata_store()
+        .apply(
+            &fixture.session_id,
+            &manager.metadata_workspace_id(),
+            mirri_core::session::metadata_port::MetadataPatch {
+                title: Some("Row archived".to_string()),
+                archived: Some(true),
+                archived_at: Some(Some(aged)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("apply the archived row");
+    std::fs::remove_file(fixture.persistence.state_path(&fixture.session_id))
+        .expect("the fixture's state.json is deletable");
+    assert!(
+        !fixture.persistence.state_path(&fixture.session_id).exists(),
+        "the session is row-only"
+    );
+
+    // When the candidate scan runs (no index — the degrade)
+    let candidates = super::retention_task::scan_candidates(
+        &fixture.sessions_root,
+        None,
+        &fixture.registry,
+    )
+    .await
+    .expect("the scan must succeed");
+
+    // Then the row-archived session was discovered through the row: it is
+    // a candidate whose archive stamp is the ROW's (30 days ago — past
+    // any grace), never the old disk walk's miss.
+    let candidate = candidates
+        .iter()
+        .find(|candidate| candidate.session_id == fixture.session_id)
+        .expect("the row-archived session must be a scan candidate");
+    assert_eq!(
+        candidate.archived_at,
+        Some(aged),
+        "the candidate's archive stamp is the row's"
+    );
+}
+
+/// Given an archived session whose metadata is the ROW ONLY (no
+/// `state.json`) and a server with NO session index (the no-home test
+/// shape), when `retention.list` scans its rows, then the row is served
+/// from the manager's metadata ROW — the degrade reads the row's archive
+/// and compression stamps instead of the state.json disk walk (existence
+/// check 10/11 migrates to the metadata row).
+#[tokio::test]
+async fn should_list_a_row_archived_session_without_state_json_when_no_index_exists() {
+    // Given a plain test server (no injected home — no index) whose
+    // manager carries the archived row, and the session directory with
+    // only a wire log on disk
+    let (server, tmp) = test_server(None);
+    let manager = server.session_manager();
+    let session_id = SessionId::new("row-archived-retention-list");
+    let session_dir = manager.persistence().session_dir(&session_id);
+    tokio::fs::create_dir_all(&session_dir).await.unwrap();
+    let mut log = mirri_persistence::JsonlAppendLog::create(
+        &session_dir.join(mirri_persistence::WIRE_LOG_FILE),
+    )
+    .await
+    .unwrap();
+    log.append(&mirri_proto::WireOp::Metadata {
+        protocol_version: None,
+        created_at: None,
+    })
+    .await
+    .unwrap();
+    drop(log);
+    let aged = chrono::Utc::now() - chrono::Days::new(30);
+    manager
+        .metadata_store()
+        .apply(
+            &session_id,
+            &manager.metadata_workspace_id(),
+            mirri_core::session::metadata_port::MetadataPatch {
+                title: Some("Row archived list view".to_string()),
+                archived: Some(true),
+                archived_at: Some(Some(aged)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("apply the archived row");
+    assert!(
+        !manager.persistence().state_path(&session_id).exists(),
+        "the session is row-only"
+    );
+    let _ = tmp;
+
+    // When the retention listing scans (include = archived)
+    let listed = server
+        .call_method("retention.list", json!({ "include": "archived" }))
+        .await
+        .expect("retention.list must succeed");
+
+    // Then the row-archived session is served with the row's stamp
+    let items = listed["items"].as_array().expect("items array");
+    let entry = items
+        .iter()
+        .find(|item| item["session_id"].as_str() == Some(session_id.as_str()))
+        .expect("the row-archived session must be listed");
+    let archived_at = entry["archived_at"].as_str().expect("the row's stamp");
+    let row_instant = chrono::DateTime::parse_from_rfc3339(archived_at)
+        .expect("the row's archive stamp parses");
+    assert_eq!(
+        row_instant.timestamp(),
+        aged.timestamp(),
+        "the listing carries the ROW's archived_at (to the second — the wire stamp truncates)"
+    );
+}
+
 /// Given the delete executor's decrement has zeroed an exclusive
 /// attachment's reference count, when the periodic pass's tail recheck
 /// runs, then its `reclaim_aged` sees the zeroing (the same ledger
@@ -23041,6 +24557,10 @@ struct RetentionDeleteFixture {
     _home: tempfile::TempDir,
     persistence: mirri_core::SessionPersistence,
     session_id: mirri_core::SessionId,
+    /// The store port the fixture wires into the persistence (the same
+    /// `<home>/session-index.db` the manager's store uses) — exposed so
+    /// tests can write the row directly (ADR-006 row-first fixtures).
+    fixture_store: std::sync::Arc<mirri_session_index::SessionIndexPort>,
 }
 
 impl RetentionDeleteFixture {
@@ -23054,8 +24574,14 @@ impl RetentionDeleteFixture {
         let sessions_root = home.path().join(".mirri").join("v3_sessions");
         let workspace_key = mirri_core::encode_work_dir_key(home.path());
         let io: Arc<dyn mirri_os::DynFileSystem> = Arc::new(mirri_os::LocalFs::new());
+        let fixture_store = Arc::new(mirri_session_index::SessionIndexPort(
+            mirri_session_index::SessionIndex::open(&home.path().join("session-index.db"))
+                .expect("the fixture's session index opens")
+                .into(),
+        ));
         let persistence = mirri_core::SessionPersistence::new(sessions_root, io)
-            .with_workspace_key(workspace_key);
+            .with_workspace_key(workspace_key.clone())
+            .with_metadata_store(fixture_store.clone(), workspace_key.clone());
         let session_id = mirri_core::SessionId::new("retention-delete-test-session");
         let dir = persistence.session_dir(&session_id);
         tokio::fs::create_dir_all(&dir).await.unwrap();
@@ -23090,7 +24616,7 @@ impl RetentionDeleteFixture {
             home.path().to_path_buf(),
             WorkspaceScopeConfig::default(),
         ));
-        let manager = Arc::new(SessionManager::new(workspace));
+        let manager = Arc::new(test_manager_with_sqlite_store(workspace, home.path()));
         let server = EmbeddedServer::with_providers(
             manager,
             None,
@@ -23107,6 +24633,7 @@ impl RetentionDeleteFixture {
             _home: home,
             persistence,
             session_id,
+            fixture_store,
         }
     }
 
@@ -23188,6 +24715,11 @@ async fn should_delete_the_directory_before_the_index_row_when_the_unified_delet
         archived_at: None,
         compressed: false,
         compressed_at: None,
+        pinned: false,
+        pinned_at: None,
+        pin_color: None,
+        last_used_at: None,
+        pre_compressed_size: None,
     };
     index.upsert_session(&row).unwrap();
     assert!(index.get_session(fixture.id()).is_some());
@@ -23313,20 +24845,24 @@ async fn should_delete_only_the_tier_old_sessions_when_the_tier_batch_runs() {
     )
     .await
     .unwrap();
-    // Age the compressed_at stamp past the 30-day tier (rewrite the raw
-    // state.json the way a legacy compression would carry it).
-    let state_path = fixture.persistence.state_path(&fixture.session_id);
-    let aged = (chrono::Utc::now() - chrono::Days::new(40))
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
-    let raw: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
-    let mut aged_doc = raw.clone();
-    aged_doc["compressedAt"] = json!(aged);
-    std::fs::write(
-        &state_path,
-        serde_json::to_string_pretty(&aged_doc).unwrap(),
-    )
-    .unwrap();
+    // Age the row's compressed_at stamp past the 30-day tier (ADR-006:
+    // the row is the source of truth — the retired reconcile's state.json
+    // re-read no longer carries a hand-edited state stamp into the row, so
+    // the aging writes the row directly through the store port).
+    let aged = chrono::Utc::now() - chrono::Days::new(40);
+    use mirri_core::session::metadata_port::MetadataStorePort as _;
+    fixture
+        .fixture_store
+        .apply(
+            &fixture.session_id,
+            "retention-delete-ws",
+            mirri_core::session::metadata_port::MetadataPatch {
+                compressed_at: Some(Some(aged)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 
     // When the tier batch runs at the 30-day tier
     let result = fixture
@@ -23402,6 +24938,10 @@ async fn should_keep_listing_rows_identical_when_a_session_compresses() {
         .unwrap();
     let id = fixture.id().to_string();
 
+    // The reconcile settles explicitly first: the listing is a
+    // whitelisted read-face and no longer waits for it (ADR-003 c) — the
+    // freshly persisted fixture row must be converged before the read.
+    fixture.server.await_housekeeping_settled().await;
     // The BEFORE row: the listing with the archive included.
     let before = fixture
         .server
@@ -23569,10 +25109,22 @@ fn should_keep_wire_names_unique_when_the_route_table_is_indexed() {
     // removal)
     // + the four provider-credential routes (credential.list / set /
     // remove / status, the credential store CRUD + health face)
-    // = 208.
+    // + the two stage-1 batch-3 cron routes (cron.add the user-creation
+    // face, cron.listAll the cross-session aggregated listing)
+    // + the two stage-2 batch-4b cron routes (cron.runs.list the run
+    // records, cron.run.open the explicit-open materialization; the
+    // cron.proposals.list row retired with the proposal channel)
+    // + the form batch-6 cron.preview route (the read-only schedule
+    // preview face)
+    // + the 3 batch-2 cron management routes (cron.update / cron.pause /
+    // cron.resume, the A9 edit + pause faces; cron.pendingApprovals, the
+    // A13待确认 aggregation, retired with the pending zone — ADR-022)
+    // + the two session pin routes (session.pin / session.unpin, the
+    // session pinning management face)
+    // = 218.
     assert_eq!(
         routes::all_routes().count(),
-        208,
+        218,
         "flattened route count drifted from the migrated arm total"
     );
 }
@@ -23820,8 +25372,8 @@ fn should_match_the_authoritative_registry_exactly_when_every_domain_has_migrate
     );
     assert_eq!(
         routed.len(),
-        208,
-        "the route table and the registry must both count 208 methods"
+        218,
+        "the route table and the registry must both count 218 methods"
     );
 }
 
@@ -23829,9 +25381,13 @@ fn should_match_the_authoritative_registry_exactly_when_every_domain_has_migrate
 
 /// Poll `agent.activity` until its result satisfies `check`, with a
 /// deadline. Returns the last result.
-async fn poll_agent_activity(
+/// Poll `agent.activity` for a SPECIFIC agent — the addressee-aware form.
+/// `agent.activity` already takes an `agentId`, so no production change is
+/// needed. `poll_agent_activity` is the `main`-scoped shorthand.
+async fn poll_agent_activity_for(
     server: &EmbeddedServer,
     session_id: &str,
+    agent_id: &str,
     mut check: impl FnMut(&Value) -> bool,
 ) -> Value {
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(5);
@@ -23839,7 +25395,7 @@ async fn poll_agent_activity(
         let result = server
             .call_method(
                 "agent.activity",
-                json!({ "session_id": session_id, "agent_id": "main" }),
+                json!({ "session_id": session_id, "agent_id": agent_id }),
             )
             .await
             .expect("agent.activity must answer");
@@ -23848,10 +25404,18 @@ async fn poll_agent_activity(
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "agent.activity never satisfied the poll condition: {result}"
+            "agent.activity for {agent_id} never satisfied the poll condition: {result}"
         );
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
+}
+
+async fn poll_agent_activity(
+    server: &EmbeddedServer,
+    session_id: &str,
+    check: impl FnMut(&Value) -> bool,
+) -> Value {
+    poll_agent_activity_for(server, session_id, "main", check).await
 }
 
 /// Given a fire-mode turn blocked inside its (never-yielding) LLM stream,
@@ -24179,7 +25743,8 @@ async fn should_answer_with_fresh_ready_view_when_agent_activity_queried_after_a
 /// (the fire-mode turn registers its pending request asynchronously), with a
 /// deadline. Returns the rows.
 async fn poll_until_pending(server: &EmbeddedServer, session_id: &str, method: &str) -> Vec<Value> {
-    for _ in 0..400 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
         if let Ok(rows) = server
             .call_method(method, json!({ "session_id": session_id }))
             .await
@@ -26141,10 +27706,14 @@ async fn should_answer_the_env_override_chain_when_flag_methods_called() {
         surface: mirri_core::FlagSurface::Core,
         env_name: None,
     });
-    unsafe {
-        std::env::set_var("MIRRICODE_EXPERIMENTAL_TEST_FEATURE", "1");
-        std::env::remove_var("MIRRICODE_EXPERIMENTAL_FLAG");
-    }
+    // The override must be visible while the flag surface is read across
+    // the awaits below — hold the workspace env lock guard for the whole
+    // read window (current-thread `#[tokio::test]` runtime: a waiter parks
+    // its own thread; bounded serialization, the documented precedent).
+    #[allow(clippy::await_holding_lock)]
+    let mut _env = mirri_test_support::env::EnvGuard::new();
+    _env.set("MIRRICODE_EXPERIMENTAL_TEST_FEATURE", "1");
+    _env.remove("MIRRICODE_EXPERIMENTAL_FLAG");
 
     // When the flag surface is read through the five flag methods
     let enabled = server
@@ -26180,14 +27749,14 @@ async fn should_answer_the_env_override_chain_when_flag_methods_called() {
         json!({
             "hook-command-rewrite": false,
             "session-consistency-follow": false,
-            "skillHotReload": false,
+            "skillHotReload": true,
             "test.feature": true
         })
     );
-    // The enabled-id list carries the env-enabled test feature only —
-    // skillHotReload is default-off while the feature settles (the
-    // repo's experimental-flag convention).
-    assert_eq!(ids, json!(["test.feature"]));
+    // The enabled-id list carries the env-enabled test feature plus
+    // skillHotReload, which is default-on since ADR-013 (decision 1) —
+    // the flag ships enabled with no user opt-in.
+    assert_eq!(ids, json!(["skillHotReload", "test.feature"]));
     assert_eq!(explained["id"], "test.feature");
     assert_eq!(explained["title"], "Test Feature");
     assert_eq!(explained["surface"], "core");
@@ -26210,11 +27779,8 @@ async fn should_answer_the_env_override_chain_when_flag_methods_called() {
         .await
         .unwrap();
     assert_eq!(missing, serde_json::Value::Null);
-
-    // Cleanup: the override must not leak into other tests
-    unsafe {
-        std::env::remove_var("MIRRICODE_EXPERIMENTAL_TEST_FEATURE");
-    }
+    // (Cleanup rides the EnvGuard's Drop — the override is restored to the
+    // pre-test value and cannot leak into other tests.)
 }
 
 #[tokio::test]
@@ -26899,7 +28465,10 @@ async fn should_roundtrip_records_when_provider_set_list_get_delete_called() {
         .await
         .unwrap();
     assert_eq!(record["type"], "openai");
-    assert!(record.get("apiKey").is_none(), "no apiKey field survives the set: {record}");
+    assert!(
+        record.get("apiKey").is_none(),
+        "no apiKey field survives the set: {record}"
+    );
     assert_eq!(record["baseUrl"], "https://api.example.test");
     assert_eq!(record["modelSource"], "static");
     assert_eq!(record["customHeaders"]["X-Extra"], "yes");
@@ -26923,8 +28492,14 @@ async fn should_roundtrip_records_when_provider_set_list_get_delete_called() {
         .await
         .unwrap();
     assert_eq!(stored[0]["provider_id"], "openai2");
-    assert!(stored.to_string().contains("key"), "the entry is a key entry: {stored}");
-    assert!(!stored.to_string().contains("sk-2"), "never the plaintext: {stored}");
+    assert!(
+        stored.to_string().contains("key"),
+        "the entry is a key entry: {stored}"
+    );
+    assert!(
+        !stored.to_string().contains("sk-2"),
+        "never the plaintext: {stored}"
+    );
     let catalog = server
         .call_method("model.getProvider", json!({ "providerId": "openai2" }))
         .await
@@ -27456,15 +29031,13 @@ max_context_size = 128000
 
     // When model.generate runs (the per-request LLM build resolves the
     // credential through the same chain as the agent-turn path). The std
-    // ENV_LOCK guard is held across the RPC's await on purpose: the
-    // credential is read inside the call, and every other ENV_LOCK holder
+    // env-lock guard is held across the RPC's await on purpose: the
+    // credential is read inside the call, and every other env-lock holder
     // holds it only briefly without awaiting, so the lock serializes the
     // mutation window without deadlock.
     #[allow(clippy::await_holding_lock)]
     let result = async {
-        let _guard = crate::providers::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         let prior = std::env::var("MIRRI_API_KEY").ok();
         unsafe { std::env::set_var("MIRRI_API_KEY", "shell-key") };
         let result = server
@@ -27480,6 +29053,7 @@ max_context_size = 128000
             )
             .await
             .expect("generate with the env sub-table credential succeeds");
+        // env_lock: restore under the workspace env lock guard above
         match prior {
             Some(value) => unsafe { std::env::set_var("MIRRI_API_KEY", value) },
             None => unsafe { std::env::remove_var("MIRRI_API_KEY") },
@@ -27979,6 +29553,7 @@ async fn should_admit_archived_media_originals_into_session_sandbox_when_media_i
         tool_call_id: "call-1".to_string(),
         cancel: Default::default(),
         progress: mirri_core::tool::ToolProgressHandle::default(),
+        turn_origin: Default::default(),
     })
     .await;
     assert!(
@@ -28057,7 +29632,7 @@ async fn should_inject_capability_gap_hint_on_the_main_message_send_path() {
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let config = ServerConfig {
         default_model: Some("text-model".to_string()),
         models: Some(
@@ -28392,7 +29967,7 @@ fn test_server_for_home(home: &std::path::Path) -> EmbeddedServer {
         home.to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, home));
     // The same loading `mirri serve` performs at startup (the boot order:
     // the agents roots first, then the legacy profiles dir; the generic
     // `$HOME/.agents/agents` root is deliberately absent — hermeticity).
@@ -31393,7 +32968,7 @@ async fn should_not_write_cache_file_when_persist_cache_is_disabled() {
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let config = Arc::new(RwLock::new(
         ServerConfig::load(&config_path, &mirri_os::LocalSyncFs).expect("seed config should load"),
     ));
@@ -31507,6 +33082,277 @@ async fn should_merge_only_the_addressed_provider_when_provider_id_is_given() {
                 if data["domainCode"] == "provider.not_found"
         ),
         "an unknown providerId must answer provider.not_found: {error:?}"
+    );
+}
+
+/// #185 root cause 1 — cache invalidation. Given an in-memory catalog
+/// already loaded (the preheat / lazy-load steady state), when a refresh
+/// succeeds (a new upstream directory lands in memory AND on disk), a
+/// subsequent `providerDiscovery.listCatalog` must serve the refreshed
+/// entries — not the stale pre-load. The current first-arrival-wins load
+/// never re-reads after the first populate, so a preloaded memory snapshot
+/// would win over the refreshed directory: red today.
+#[tokio::test]
+async fn should_invalidate_the_in_memory_catalog_when_a_refresh_lands() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::*};
+
+    // Given a preloaded in-memory catalog (the bundled-snapshot/no-cache
+    // steady state of a running engine — exactly what the preheat leaves
+    // behind on a first run) and an upstream serving a DIFFERENT directory
+    // with one new provider
+    let (server, tmp) = test_server_with_home();
+    *server
+        .models_dev_catalog
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(json!({
+        "stale-ai": {
+            "id": "stale-ai",
+            "name": "Stale AI",
+            "models": { "stale-model": { "name": "Stale Model" } }
+        }
+    })));
+    let upstream = MockServer::start().await;
+    let refreshed = json!({
+        "fresh-ai": {
+            "id": "fresh-ai",
+            "name": "Fresh AI",
+            "models": {
+                "xiaomi-token-plan-cn": { "name": "Token Plan CN" }
+            }
+        }
+    });
+    Mock::given(method("GET"))
+        .and(path("/api.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(refreshed.clone()))
+        .mount(&upstream)
+        .await;
+    let server = server.with_models_dev_url(Some(format!("{}/api.json", upstream.uri())));
+
+    // When the refresh succeeds
+    server
+        .call_method(
+            "providerDiscovery.refreshProviderModels",
+            json!({ "scope": "all" }),
+        )
+        .await
+        .unwrap();
+
+    // Then the browse serves the refreshed provider's entry (and the stale
+    // pre-load is gone) — the refresh must invalidate the in-memory catalog
+    let rows = server
+        .call_method("providerDiscovery.listCatalog", json!({}))
+        .await
+        .unwrap();
+    let ids: Vec<&str> = rows
+        .as_array()
+        .expect("the bare catalog array")
+        .iter()
+        .map(|row| row["id"].as_str().expect("row id"))
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["fresh-ai"],
+        "the refreshed directory must replace the stale pre-load in the browse: {ids:?}"
+    );
+
+    // And a new server over the same home (restart) reads the refreshed
+    // cache — the disk side of the same refresh
+    let restarted = test_server_for_home(tmp.path()).with_models_dev_url(None);
+    let rows = restarted
+        .call_method("providerDiscovery.listCatalog", json!({}))
+        .await
+        .unwrap();
+    let ids: Vec<&str> = rows
+        .as_array()
+        .expect("the bare catalog array")
+        .iter()
+        .map(|row| row["id"].as_str().expect("row id"))
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["fresh-ai"],
+        "the restart must lazy-load the refreshed cache file: {ids:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("models-dev.json")).expect("the cache file"),
+        refreshed.to_string(),
+        "the refresh must write the fetched directory to the cache file"
+    );
+}
+
+/// #185 root cause 2 — the scoped refresh truncation. Given an in-memory
+/// catalog with two providers, when a scoped (`providerId`) refresh
+/// re-fetches the full directory, the merged in-memory catalog must keep
+/// every fetched provider — the scope may bound the reported rows, never
+/// the directory the rest of the engine serves. Today the scoped merge
+/// replaces the whole catalog with the one addressed entry: red.
+#[tokio::test]
+async fn should_keep_the_whole_fetched_directory_when_a_scoped_refresh_lands() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::*};
+
+    // Given a server with the kimi provider configured and an upstream
+    // directory carrying kimi next to a second provider
+    let (server, tmp, _config_path) = test_server_with_config_toml(CONFIG_WRITE_SEED_TOML);
+    let upstream = MockServer::start().await;
+    let directory = json!({
+        "kimi": {
+            "id": "kimi",
+            "name": "Moonshot Kimi",
+            "models": {
+                "kimi-k2": { "name": "Kimi K2", "limit": { "context": 262144 } }
+            }
+        },
+        "wiremock-ai": {
+            "id": "wiremock-ai",
+            "name": "WireMock AI",
+            "models": {
+                "wm-large": { "name": "WM Large", "limit": { "context": 123456 } }
+            }
+        }
+    });
+    Mock::given(method("GET"))
+        .and(path("/api.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(directory))
+        .mount(&upstream)
+        .await;
+    let server = server
+        .with_home_dir(Some(tmp.path().to_path_buf()))
+        .with_models_dev_url(Some(format!("{}/api.json", upstream.uri())));
+
+    // When the refresh is scoped to the configured kimi provider
+    server
+        .call_method(
+            "providerDiscovery.refreshProviderModels",
+            json!({ "providerId": "kimi" }),
+        )
+        .await
+        .unwrap();
+
+    // Then the in-memory catalog still holds BOTH fetched providers — the
+    // browse (and any later display-name resolution over wiremock-ai) must
+    // not lose the unaddressed half of the directory
+    let catalog = server
+        .models_dev_catalog
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .expect("the catalog must be populated");
+    let ids: Vec<&str> = catalog
+        .as_object()
+        .expect("the directory is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["kimi", "wiremock-ai"],
+        "a scoped refresh must not truncate the in-memory directory: {ids:?}"
+    );
+
+    // And the browse serves both — a later import/browse over the
+    // unaddressed provider keeps working
+    let rows = server
+        .call_method("providerDiscovery.listCatalog", json!({}))
+        .await
+        .unwrap();
+    let ids: Vec<&str> = rows
+        .as_array()
+        .expect("the bare catalog array")
+        .iter()
+        .map(|row| row["id"].as_str().expect("row id"))
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["kimi", "wiremock-ai"],
+        "the browse must serve the whole fetched directory: {ids:?}"
+    );
+}
+
+/// #183 — the catalog load's single-flight gate, observed directly. A
+/// swarm of concurrent `ensure_models_dev_catalog_loaded` callers racing
+/// the cold catalog must share ONE read+parse: the first arrival holds
+/// the gate while its spawn_blocking runs, the rest wait and find the
+/// catalog settled. The `models_dev_load_count` seam counts arrivals
+/// into the load body, so a gate-less regression (every caller running
+/// its own load) would count one per caller — eight — instead of the
+/// asserted exactly-one. The count is deterministic: the background
+/// preheat only spawns on the first `call_method`, which this test does
+/// not make until after the assertion.
+#[tokio::test]
+async fn should_settle_the_catalog_load_for_concurrent_callers_exactly_once() {
+    use std::sync::atomic::Ordering;
+
+    // Given a home with a large-ish (multi-hundred-KB) cache file — big
+    // enough that the read+parse takes real time, so the racing callers
+    // genuinely overlap the in-flight load
+    let (server, tmp, _config_path) = test_server_with_config_toml(P5_LAZY_LOAD_SEED_TOML);
+    let mut big = serde_json::Map::new();
+    for i in 0..4000 {
+        big.insert(
+            format!("bulk-ai-{i:04}"),
+            json!({
+                "id": format!("bulk-ai-{i:04}"),
+                "name": format!("Bulk AI {i}"),
+                "models": {
+                    format!("bulk-model-{i}"): {
+                        "name": format!("Bulk Model {i}"),
+                        "limit": { "context": 100000 + i }
+                    }
+                }
+            }),
+        );
+    }
+    std::fs::write(
+        tmp.path().join("models-dev.json"),
+        Value::Object(big).to_string(),
+    )
+    .expect("the cache seed must be writable");
+    let server = server
+        .with_home_dir(Some(tmp.path().to_path_buf()))
+        .with_models_dev_url(None);
+
+    // When eight concurrent first consumers race the cold catalog (the
+    // `model.list` / `providerDiscovery.listCatalog` lazy-load entry —
+    // raced directly so the dispatcher's serializing prologue cannot
+    // mask the gate: all eight must overlap with the catalog still None)
+    let calls = std::iter::repeat_with(|| server.ensure_models_dev_catalog_loaded())
+        .take(8)
+        .collect::<Vec<_>>();
+    futures::future::join_all(calls).await;
+
+    // Then the catalog is populated — the load ran, first-arrival-wins
+    let settled = server
+        .models_dev_catalog
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|c| c.get("bulk-ai-0000").is_some());
+    assert!(
+        settled,
+        "the catalog must hold the seeded cache after the cold load"
+    );
+
+    // And exactly one load among the racing callers — deterministic
+    // because the preheat only spawns on the first `call_method`, which
+    // this test has not made yet: the counter's only contributor is the
+    // gated swarm itself. A gate-less regression would count one arrival
+    // per racing caller (eight), not the shared one.
+    let loads = server.models_dev_load_count.load(Ordering::SeqCst);
+    assert_eq!(
+        loads, 1,
+        "the concurrent cold-catalog load must be single-flight: the \
+         racing callers must share one read+parse, but saw {loads} loads"
+    );
+
+    // And a later consumer keeps serving from the settled catalog (the
+    // end-to-end leg: model.list resolves the seeded display names)
+    let rows = server
+        .call_method("model.list", json!({}))
+        .await
+        .expect("the post-settle list must succeed");
+    assert!(
+        rows.as_array().is_some_and(|rows| !rows.is_empty()),
+        "model.list must serve the configured models off the settled catalog"
     );
 }
 
@@ -31763,7 +33609,7 @@ async fn import_catalog_server(
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let config = Arc::new(RwLock::new(
         ServerConfig::load(&config_path, &mirri_os::LocalSyncFs).expect("seed config should load"),
     ));
@@ -31831,13 +33677,19 @@ api_key = "sk-kimi"
         .await
         .unwrap();
     assert_eq!(provider["type"], "openai");
-    assert!(provider.get("apiKey").is_none(), "no apiKey field survives the import: {provider}");
+    assert!(
+        provider.get("apiKey").is_none(),
+        "no apiKey field survives the import: {provider}"
+    );
     let stored = server
         .call_method("credential.list", json!({}))
         .await
         .unwrap();
     assert_eq!(stored[0]["provider_id"], "P");
-    assert!(!stored.to_string().contains("sk-test"), "never the plaintext: {stored}");
+    assert!(
+        !stored.to_string().contains("sk-test"),
+        "never the plaintext: {stored}"
+    );
 
     // And the fully declared model carries every derived fact (ADR-004):
     // capabilities, maxOutputSize, reasoningKey, supportEfforts — the
@@ -31968,9 +33820,7 @@ capabilities = ["tool_use"]
         .await
         .unwrap();
     assert!(
-        stored
-            .to_string()
-            .contains("P") && !stored.to_string().contains("sk-old"),
+        stored.to_string().contains("P") && !stored.to_string().contains("sk-old"),
         "the preserved credential lives in the store: {stored}"
     );
     let config_text = std::fs::read_to_string(tmp.path().join("config.toml")).unwrap();
@@ -31984,6 +33834,52 @@ capabilities = ["tool_use"]
     assert!(
         config_text.contains("default_model = \"P/imp-large\""),
         "the seed must land in config.toml: {config_text}"
+    );
+}
+
+#[tokio::test]
+async fn should_seed_the_catalog_endpoint_as_base_url_when_reimporting_a_fresh_id() {
+    // Given a config that once held [providers.import-ai] with a base URL and
+    // a credential, then had the provider DELETED (the github-copilot
+    // scenario: the user removes the provider after its token expired and
+    // re-imports it from the directory) — the re-import sees no existing
+    // entry, and the client sends no base_url (the UI demands one only when
+    // the directory's api is a placeholder)
+    let (server, tmp, _upstream) = import_catalog_server(
+        r#"
+[providers.kimi]
+type = "kimi"
+api_key = "sk-kimi"
+"#,
+        true,
+    )
+    .await;
+
+    // When the import lands under the same id the old entry used, with an
+    // API key but NO base_url
+    server
+        .call_method(
+            "providerDiscovery.importCatalog",
+            json!({ "catalog_id": "import-ai", "id": "import-ai", "api_key": "sk-test" }),
+        )
+        .await
+        .expect("the import must succeed");
+
+    // Then the directory's concrete api endpoint was persisted as the
+    // provider's base_url — the import never leaves a baseless third-party
+    // provider (#184; the api.githubcopilot.com regression this guards)
+    let provider = server
+        .call_method("provider.get", json!({ "id": "import-ai" }))
+        .await
+        .unwrap();
+    assert_eq!(
+        provider["baseUrl"], "https://api.import-ai.test/v1",
+        "the directory endpoint must seed base_url: {provider}"
+    );
+    let config_text = std::fs::read_to_string(tmp.path().join("config.toml")).unwrap();
+    assert!(
+        config_text.contains("https://api.import-ai.test/v1"),
+        "the base_url must land in config.toml: {config_text}"
     );
 }
 
@@ -33763,7 +35659,7 @@ async fn should_emit_goal_updated_from_the_goal_tools_after_a_cross_instance_res
             tmp.path().to_path_buf(),
             WorkspaceScopeConfig::default(),
         ));
-        let manager = Arc::new(SessionManager::new(workspace));
+        let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
         // The create chain requires a resolvable model (spec 11 R4 — no
         // built-in fallback), so this bare instance seeds the test default.
         EmbeddedServer::with_providers(
@@ -33869,7 +35765,7 @@ async fn should_persist_goal_budget_usage_across_a_restart_and_keep_enforcing_th
             tmp.path().to_path_buf(),
             WorkspaceScopeConfig::default(),
         ));
-        let manager = Arc::new(SessionManager::new(workspace));
+        let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
         // The create chain requires a resolvable model (spec 11 R4 — no
         // built-in fallback), so this bare instance seeds the test default.
         EmbeddedServer::with_providers(
@@ -34145,15 +36041,11 @@ async fn should_emit_cron_fired_when_a_due_task_fires_through_check_due() {
         .await
         .unwrap();
     let overdue = mirri_core::cron::CronTask {
-        id: "cron-overdue".to_string(),
-        cron: "* * * * *".to_string(),
-        prompt: "check the build".to_string(),
         session_id: session_id.clone(),
         recurring: false,
-        timezone: None,
         created_at: chrono::Utc::now() - chrono::Duration::minutes(10),
-        last_fired: None,
-        next_fire_at: None,
+        scope: mirri_core::cron::TaskScope::Session,
+        ..mirri_core::cron::cron_task_base("cron-overdue", "* * * * *", "check the build")
     };
     session.cron().restore_tasks([overdue]);
     // Force the restored task's schedule into the past — the host seam the
@@ -34198,15 +36090,11 @@ async fn should_drive_due_cron_tasks_through_the_cron_driver_when_the_tick_fires
         .await
         .unwrap();
     session.cron().restore_tasks([mirri_core::cron::CronTask {
-        id: "cron-driver".to_string(),
-        cron: "* * * * *".to_string(),
-        prompt: "do the cron thing".to_string(),
         session_id: session_id.clone(),
         recurring: false,
-        timezone: None,
         created_at: chrono::Utc::now() - chrono::Duration::minutes(10),
-        last_fired: None,
-        next_fire_at: None,
+        scope: mirri_core::cron::TaskScope::Session,
+        ..mirri_core::cron::cron_task_base("cron-driver", "* * * * *", "do the cron thing")
     }]);
     session.cron().set_next_fire_at(
         "cron-driver",
@@ -34272,15 +36160,11 @@ async fn should_cancel_the_cron_injected_turn_when_message_abort_targets_the_ses
         .await
         .unwrap();
     session.cron().restore_tasks([mirri_core::cron::CronTask {
-        id: "cron-abort".to_string(),
-        cron: "* * * * *".to_string(),
-        prompt: "do the cron thing".to_string(),
         session_id: session_id.clone(),
         recurring: false,
-        timezone: None,
         created_at: chrono::Utc::now() - chrono::Duration::minutes(10),
-        last_fired: None,
-        next_fire_at: None,
+        scope: mirri_core::cron::TaskScope::Session,
+        ..mirri_core::cron::cron_task_base("cron-abort", "* * * * *", "do the cron thing")
     }]);
     session.cron().set_next_fire_at(
         "cron-abort",
@@ -34788,12 +36672,27 @@ async fn should_keep_a_silent_turn_alive_when_turn_stall_timeout_ms_is_zero() {
         .await
         .unwrap();
 
-    // Then the turn survives a controlled wait far past any plausible
-    // watchdog window (a live watchdog would have fired within ms of the
-    // send; 1.5 s of continued silence proves it never did) — no
-    // failed turn.ended arrives (the subscription does echo
-    // turn.started/step events; only the failure frame counts)
-    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    // Then the watchdog cannot fire at all: `turnStallTimeoutMs = 0` arms an
+    // unreachable deadline (`Duration::MAX`), so "no failure frame" follows
+    // from the armed window rather than from a grace period.
+    assert_eq!(
+        server.turn_stall_timeout(),
+        std::time::Duration::MAX,
+        "a zero turnStallTimeoutMs must disarm the watchdog, not shorten it"
+    );
+    // The turn must be visibly in flight before the assertion — the deleted
+    // window also provided that ordering.
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(5),
+        || server.session_is_busy(&session_id).then_some(()),
+    )
+    .await
+    .expect("the silent turn must register in flight");
+    assert!(
+        server.session_is_busy(&session_id),
+        "a disabled watchdog must not cancel the silent turn"
+    );
     while let Ok(notification) = events.try_recv() {
         assert!(
             !(notification.method == "event.turn.ended"
@@ -35256,6 +37155,75 @@ async fn should_emit_mcp_server_status_when_an_overlay_server_fails_to_connect()
         event.params["server"]["error"].as_str().is_some(),
         "the failed status carries the error: {}",
         event.params
+    );
+}
+
+/// should tear down session overlays when the server is disposed
+///
+/// Scope note: this test exercises the dispose's *table semantics* only —
+/// the map is drained, the teardown is idempotent. It uses a
+/// never-connectable overlay (no child process exists), so it deliberately
+/// does NOT witness a real disconnect; the "child process actually dies"
+/// half of the regression is covered by the conformance suite's
+/// `should_complete_overlay_teardown_promptly_when_the_host_disposes_its_engines`
+/// (mirri-acp), which probes the echo fixture's OS-level liveness.
+#[tokio::test]
+async fn should_tear_down_session_overlays_when_the_server_is_disposed() {
+    // Given a server with a session whose overlay entry failed to connect
+    // (the entry stays in the map — the child's death never removes it)
+    let (server, _tmp) = test_server(None);
+    let created = server
+        .call_method(
+            "session.create",
+            json!({
+                "mcpServers": [
+                    {
+                        "name": "broken-server",
+                        "config": { "command": "/nonexistent/mcp-binary" },
+                    },
+                ],
+            }),
+        )
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+    // The overlay entry lands asynchronously — poll until it is registered
+    // (a connection that already failed still leaves its row).
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let connections = server.session_overlay_connections(&session_id).await;
+        if !connections.is_empty() {
+            assert_eq!(
+                connections.len(),
+                1,
+                "the broken overlay must leave exactly its row (got {connections:?})"
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the overlay entry never landed in the map"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // When the server is disposed (the engine dies — its session overlays
+    // must die with it)
+    server.dispose().await.unwrap();
+
+    // Then the session's overlay is gone: no entry, no connections.
+    let connections = server.session_overlay_connections(&session_id).await;
+    assert!(
+        connections.is_empty(),
+        "dispose must tear the session overlay down (got {connections:?})"
+    );
+
+    // And a second dispose stays a no-op (idempotent teardown).
+    server.dispose().await.unwrap();
+    let connections = server.session_overlay_connections(&session_id).await;
+    assert!(
+        connections.is_empty(),
+        "a repeated dispose must not resurrect anything (got {connections:?})"
     );
 }
 
@@ -36100,7 +38068,7 @@ fn server_for_workspace_root(root: &std::path::Path) -> EmbeddedServer {
         root.to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, root));
     // The create chain requires a resolvable model (spec 11 R4 — no
     // built-in fallback), so this bare server seeds the test default.
     EmbeddedServer::with_providers(manager, None, None, None, None, test_server_config(), None)
@@ -36399,7 +38367,7 @@ async fn should_normalize_dotdot_segments_when_resolving_an_additional_dir() {
 /// `~/x` resolves under `$HOME/x`, not `<projectRoot>/~/x` (F-P11a-5: the
 /// TS `resolvePath` expands `~` for persisted dirs too).
 #[tokio::test]
-// The crate-wide home lock is a std Mutex held across the awaits on
+// The workspace env lock is a std Mutex held across the awaits on
 // purpose: the pinned `$HOME` must survive the RPC that expands `~`,
 // and each `#[tokio::test]` runs on its own (current-thread) runtime
 // thread, so a waiter blocks its own thread while the holder — on
@@ -36416,11 +38384,11 @@ async fn should_expand_the_home_dir_when_reading_a_persisted_additional_dir() {
     )
     .expect("write the persisted ~ entry");
     // The expansion reads $HOME at call time (mirrors the TS kaos.gethome()).
-    // The crate-wide home lock serializes this pin against the other
+    // The workspace env lock serializes this pin against the other
     // HOME-reading tests — without it a concurrently running test that pins
     // $HOME (e.g. the bootstrap home-isolation tests) can clobber the value
     // between the write and the expansion read.
-    let _home_lock = crate::bootstrap::test_env::home_lock();
+    let _home_lock = env::lock();
     unsafe { std::env::set_var("HOME", home.path()) };
 
     let server = server_for_workspace_root(&root);
@@ -36637,6 +38605,7 @@ async fn should_block_a_read_outside_the_workspace_when_permission_mode_is_manua
         session_approvals: &std::collections::HashSet::new(),
         cancel: &cancel,
         net_class: None,
+        turn_origin: Default::default(),
     };
     let pm = main_agent.permission_manager();
     match pm.evaluate(&ctx) {
@@ -36726,6 +38695,7 @@ async fn should_let_the_read_tool_read_from_an_additional_dir_when_add_additiona
         tool_call_id: "call-1".to_string(),
         cancel: Default::default(),
         progress: mirri_core::tool::ToolProgressHandle::default(),
+        turn_origin: Default::default(),
     })
     .await;
     assert!(
@@ -36792,6 +38762,7 @@ async fn should_let_the_write_tool_write_into_an_additional_dir_when_add_additio
         tool_call_id: "call-1".to_string(),
         cancel: Default::default(),
         progress: mirri_core::tool::ToolProgressHandle::default(),
+        turn_origin: Default::default(),
     })
     .await;
     assert!(
@@ -36943,6 +38914,7 @@ async fn should_apply_a_session_dir_grant_when_decide_approves_an_outside_read_w
         session_approvals: &std::collections::HashSet::new(),
         cancel: &cancel,
         net_class: None,
+        turn_origin: Default::default(),
     };
     assert!(
         matches!(
@@ -37290,6 +39262,7 @@ async fn should_let_the_edit_tool_edit_in_an_additional_dir_when_add_additional_
         tool_call_id: "call-1".to_string(),
         cancel: Default::default(),
         progress: mirri_core::tool::ToolProgressHandle::default(),
+        turn_origin: Default::default(),
     })
     .await;
     assert!(
@@ -37363,6 +39336,7 @@ async fn should_keep_the_additional_dirs_effective_for_file_tools_when_the_sessi
         tool_call_id: "call-1".to_string(),
         cancel: Default::default(),
         progress: mirri_core::tool::ToolProgressHandle::default(),
+        turn_origin: Default::default(),
     })
     .await;
     assert!(
@@ -37423,6 +39397,7 @@ async fn should_admit_persisted_additional_dirs_for_file_tools_when_a_session_is
         tool_call_id: "call-1".to_string(),
         cancel: Default::default(),
         progress: mirri_core::tool::ToolProgressHandle::default(),
+        turn_origin: Default::default(),
     })
     .await;
     assert!(
@@ -38210,7 +40185,7 @@ fn test_server_with_two_models_and_profiles(
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let config = Arc::new(RwLock::new(
         ServerConfig::load(&config_path, &mirri_os::LocalSyncFs).expect("seed config should load"),
     ));
@@ -38505,7 +40480,7 @@ fn test_server_with_two_models_and_factory(
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let config = Arc::new(RwLock::new(
         ServerConfig::load(&config_path, &mirri_os::LocalSyncFs).expect("seed config should load"),
     ));
@@ -39267,7 +41242,7 @@ async fn should_restore_parked_steer_after_restart_when_session_resumed() {
             tmp.path().to_path_buf(),
             WorkspaceScopeConfig::default(),
         ));
-        let manager = Arc::new(SessionManager::new(workspace));
+        let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
         // The create chain requires a resolvable model (spec 11 R4 — no
         // built-in fallback), so this bare instance seeds the test default.
         EmbeddedServer::with_providers(
@@ -39586,7 +41561,7 @@ fn test_server_with_config_aware_factory(
         tmp.path().to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    let manager = Arc::new(SessionManager::new(workspace));
+    let manager = Arc::new(test_manager_with_sqlite_store(workspace, tmp.path()));
     let config = Arc::new(RwLock::new(
         ServerConfig::load(&config_path, &mirri_os::LocalSyncFs).expect("seed config should load"),
     ));
@@ -40432,14 +42407,8 @@ async fn should_re_attribute_usage_when_a_cron_created_flow_switches_mid_turn() 
     // FIRST turn of the session, so the driver path creates the turn flow
     // (the registration gap under test: the flow must carry the side-map
     // handles the later interactive switch pushes through)
-    let result = run_main_agent_tool(
-        &server,
-        &session_id,
-        "CronCreate",
-        json!({ "cron": "0 9 1 1 *", "prompt": "cron setup", "recurring": true }),
-    )
-    .await;
-    let task_id = cron_task_id_from_tool_result(&result);
+    let task_id =
+        seed_session_cron_task(&server, &session_id, "0 9 1 1 *", "cron setup", true).await;
     first.set_usage(1, 2, 0, 0);
     first.push_text("cron done");
     let triggered = server
@@ -40815,18 +42784,25 @@ fn write_skill_md(root: &Path, name: &str) {
 /// result reports that workspace with added=1 / removed=0 / updated=0, and
 /// a second reload with no further change reports all-zero buckets (the
 /// idempotent replay over the already-swapped table).
-#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the crate home lock across the async body
+#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the workspace env lock across the async body
 #[tokio::test]
 async fn should_report_one_added_skill_when_skill_reload_runs_after_a_new_skill_dir() {
-    // Given a workspace with one seed skill and a home config.toml
+    // Given a workspace with one seed skill and a home config.toml that
+    // disables skillHotReload through the experimental layer (the flag
+    // is on by default since ADR-013; the off pin keeps this manual-
+    // reload diff test deterministic — see the watching assertion below)
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     let home = tempfile::tempdir().expect("home tempdir");
     write_skill_md(workspace.path(), "alpha");
-    std::fs::write(home.path().join("config.toml"), "").expect("config.toml");
+    std::fs::write(
+        home.path().join("config.toml"),
+        "[experimental]\nskillHotReload = false\n",
+    )
+    .expect("config.toml");
     // Hermetic discovery: pin `$HOME` so the user root never leaks the
     // machine's (or a parallel test's) skills into the diff.
     let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
-    let _home_lock = crate::bootstrap::test_env::home_lock();
+    let _home_lock = env::lock();
     let previous_home = std::env::var_os("HOME");
     // SAFETY: held for the rest of the test; restored by the guard's Drop
     // while the lock is still held.
@@ -40855,10 +42831,11 @@ async fn should_report_one_added_skill_when_skill_reload_runs_after_a_new_skill_
     assert_eq!(row["added"], 1);
     assert_eq!(row["removed"], 0);
     assert_eq!(row["updated"], 0);
-    // watching: the flag is default-off (the repo's experimental
-    // convention), and this test's server carries no experimental
-    // override — the manual reload's lazy-attach pass mounts nothing,
-    // and the R4 status is honest about it (the diff rows still hold).
+    // watching: the config layer pins skillHotReload off (ADR-013's
+    // preserved OFF path — the same layer a restricted deployment
+    // disables it with), so the manual reload's lazy-attach pass
+    // mounts nothing and the R4 status is honest about it (the diff
+    // rows still hold).
     assert_eq!(row["watching"], false);
 
     // And the swapped table serves the new skill through the read face
@@ -40885,17 +42862,35 @@ async fn should_report_one_added_skill_when_skill_reload_runs_after_a_new_skill_
 /// runs, then every bucket is zero and the workspace row is still present
 /// (the rescan ran; the diff gate is the honest no-change answer).
 #[tokio::test]
+// The workspace env lock is held across the reload awaits on purpose:
+// the pinned `$HOME` must survive the rescan, and each `#[tokio::test]`
+// runs on its own (current-thread) runtime thread — a waiter blocks its
+// own thread while the holder, on another, finishes; bounded
+// serialization, no deadlock (the pinned_home_guard precedent).
+#[allow(clippy::await_holding_lock)]
 async fn should_report_zero_diffs_when_skill_reload_runs_over_an_unchanged_workspace() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     let home = tempfile::tempdir().expect("home tempdir");
     write_skill_md(workspace.path(), "alpha");
     std::fs::write(home.path().join("config.toml"), "").expect("config.toml");
+    // Hermetic discovery: the default root channels read `$HOME` directly
+    // (the user `.agents/skills` channel), so an un-pinned home makes the
+    // rescan discover the machine's real skills and the "unchanged
+    // workspace" answer becomes their count (the same pin the sibling
+    // reload tests hold).
+    let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
+    let _home_lock = env::lock();
+    let previous_home = std::env::var_os("HOME");
+    // SAFETY: held for the rest of the test; restored by the guard's Drop
+    // while the lock is still held.
+    unsafe { std::env::set_var("HOME", isolated_home.path()) };
     let server = EmbeddedServer::for_workspace_root(
         WorkspaceId::new("ws-skill-reload-quiet"),
         workspace.path().to_path_buf(),
         Some(home.path().to_path_buf()),
         Vec::new(),
     );
+    let _guard = PinnedHome(previous_home);
 
     let result = server.call_method("skill.reload", json!({})).await.unwrap();
 
@@ -40938,7 +42933,7 @@ async fn should_reject_invalid_params_when_skill_reload_carries_a_payload() {
 /// orchestrator's broadcast schema (workspace_id + name lists + trigger)
 /// — the ADR-010 decision-4 notification surface.
 #[tokio::test]
-#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the crate home lock across the async body
+#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the workspace env lock across the async body
 async fn should_broadcast_skill_catalog_changed_when_skill_reload_changes_the_catalog() {
     // Given a workspace with one seed skill and a live event subscriber
     let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -40947,7 +42942,7 @@ async fn should_broadcast_skill_catalog_changed_when_skill_reload_changes_the_ca
     // so a parallel test's pin (or the real machine's home) must not leak
     // skills into this diff — pin for the whole test (the e2e precedent).
     let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
-    let _home_lock = crate::bootstrap::test_env::home_lock();
+    let _home_lock = env::lock();
     let previous_home = std::env::var_os("HOME");
     // SAFETY: held for the rest of the test; restored by the guard's Drop
     // while the lock is still held.
@@ -40989,7 +42984,7 @@ async fn should_broadcast_skill_catalog_changed_when_skill_reload_changes_the_ca
 /// `skill.reload` run produces a non-empty diff, then the change also
 /// arrives on that stream as a `skill.catalogChanged` notification with
 /// the camelCase wire payload — the Task 7 TUI consumption face.
-#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the crate home lock across the async body
+#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the workspace env lock across the async body
 #[tokio::test]
 async fn should_relay_skill_catalog_changed_onto_the_event_stream() {
     // Given a workspace with one seed skill and a live event subscriber
@@ -41000,7 +42995,7 @@ async fn should_relay_skill_catalog_changed_onto_the_event_stream() {
     // Hermetic discovery: pin `$HOME` so the user root never leaks the
     // machine's (or a parallel test's) skills into the diff.
     let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
-    let _home_lock = crate::bootstrap::test_env::home_lock();
+    let _home_lock = env::lock();
     let previous_home = std::env::var_os("HOME");
     // SAFETY: held for the rest of the test; restored by the guard's Drop
     // while the lock is still held.
@@ -41048,6 +43043,27 @@ async fn should_relay_skill_catalog_changed_onto_the_event_stream() {
 // ===== ADR-010 Task 8: end-to-end hot-reload verification (file → watcher
 // → reload → session pending → next-turn listing reminder; replay) =====
 
+/// Given a fresh server with NO experimental config layer, when the flag
+/// registry resolves `skillHotReload`, then the default is enabled — the
+/// hot-reload watcher mounts without any user opt-in (ADR-013 decision 1).
+#[tokio::test]
+async fn should_default_the_skill_hot_reload_flag_to_enabled() {
+    // Guard the global flag env exactly like the env-override-chain test
+    // (~26462-26465): a dev machine's MIRRICODE_EXPERIMENTAL_FLAG would
+    // otherwise flip this default-pin test. The `skillHotReload` flag id
+    // derives the underscore variant's name (uppercase + strip
+    // non-alphanumerics), so both spellings are cleared.
+    let mut _env = mirri_test_support::env::EnvGuard::new();
+    _env.remove("MIRRICODE_EXPERIMENTAL_FLAG");
+    _env.remove("MIRRICODE_EXPERIMENTAL_SKILL_HOT_RELOAD");
+    _env.remove("MIRRICODE_EXPERIMENTAL_SKILLHOTRELOAD");
+    let (server, _tmp) = test_server(None);
+    assert!(
+        server.flag_registry().enabled(crate::SKILL_HOT_RELOAD_FLAG),
+        "skillHotReload must default to enabled (ADR-013)"
+    );
+}
+
 /// The session-id → live [`SessionScope`] resolution over the server's
 /// registry (the e2e tests observe the parked pending flag directly
 /// before running the turn).
@@ -41093,6 +43109,28 @@ where
     predicate().await
 }
 
+/// Wait until every built workspace reports its skill watcher as live.
+///
+/// `skill.reload` refreshes the mounts and then awaits them, but that await
+/// is bounded (`MOUNT_AWAIT_TIMEOUT`): a mount over an unreachable home must
+/// not hang the RPC, so on a fully loaded runner the blocking-pool mount can
+/// outlive the bound and the reload answers with it still in flight. Tests
+/// that then write a skill file need the watcher live first — otherwise the
+/// write races the FSEvents registration and is never seen.
+async fn wait_for_skill_watcher(server: &EmbeddedServer) {
+    let settled = e2e_wait_until(std::time::Duration::from_secs(60), || async {
+        let reload = server
+            .call_method("skill.reload", json!({}))
+            .await
+            .expect("skill.reload resolves");
+        reload["workspaces"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty() && rows.iter().all(|row| row["watching"] == true))
+    })
+    .await;
+    assert!(settled, "the skill watcher never mounted");
+}
+
 /// Whether the server's live catalog serves the named skill (the read
 /// face — `skill.list` over the swapped table).
 async fn catalog_serves(server: &EmbeddedServer, skill: &str) -> bool {
@@ -41108,7 +43146,8 @@ async fn catalog_serves(server: &EmbeddedServer, skill: &str) -> bool {
 }
 
 /// Given a fully assembled server (flag on — the watcher mounts through
-/// the `skill.reload` lazy pass) with a live session whose main agent's
+/// the `skill.reload` mount refresh — SDR-011: hosts mount explicitly,
+/// and this test exercises that refresh seam) with a live session whose main agent's
 /// tool face carries the Skill tool, when a NEW skill directory's
 /// `SKILL.md` lands under the watched project root while the session is
 /// idle, then the chain fires end-to-end: the watcher's debounce triggers
@@ -41118,7 +43157,7 @@ async fn catalog_serves(server: &EmbeddedServer, skill: &str) -> bool {
 /// listings` listing the new skill — the "file → reminder" full chain of
 /// ADR-010.
 #[allow(clippy::await_holding_lock)]
-// the hermetic $HOME pin holds the crate home lock across the async body (the pinned_home_guard precedent)
+// the hermetic $HOME pin holds the workspace env lock across the async body (the pinned_home_guard precedent)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn should_inject_the_refreshed_listing_on_the_next_turn_when_a_skill_file_lands() {
     // Given a fully assembled workspace with one seed skill
@@ -41128,9 +43167,9 @@ async fn should_inject_the_refreshed_listing_on_the_next_turn_when_a_skill_file_
     write_skill_md(workspace.path(), "alpha");
     // Hermetic discovery: pin $HOME for the whole test so the user root
     // (`~/.agents/skills`) never leaks the machine's real skills into
-    // the diff (the crate home lock serializes the pin).
+    // the diff (the workspace env lock serializes the pin).
     let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
-    let _home_lock = crate::bootstrap::test_env::home_lock();
+    let _home_lock = env::lock();
     let previous_home = std::env::var_os("HOME");
     // SAFETY: held for the rest of the test; restored by the guard's Drop
     // while the lock is still held.
@@ -41158,27 +43197,21 @@ async fn should_inject_the_refreshed_listing_on_the_next_turn_when_a_skill_file_
     converse_once(&server, &session_id).await;
     let session = live_session(&server, &session_id).await;
 
-    // And the watcher is mounted (the manual-reload lazy pass mounts every
-    // built workspace's watcher).
-    let reload = server
-        .call_method("skill.reload", json!({}))
-        .await
-        .expect("watcher-mounting reload");
-    let rows = reload["workspaces"].as_array().expect("workspaces");
-    assert!(
-        rows.first().is_some_and(|row| row["watching"] == true),
-        "the watcher must be mounted for the e2e chain: {reload}"
-    );
+    // And the watcher is mounted (the manual reload's mount refresh covers every
+    // built workspace's watcher). `skill.reload` bounds its wait
+    // (`MOUNT_AWAIT_TIMEOUT`) so an unreachable home cannot hang the RPC, so
+    // on a loaded runner the mount can still be in flight when the reload
+    // answers — wait for the watcher to be live rather than requiring the
+    // first RPC to have absorbed the whole mount.
+    wait_for_skill_watcher(&server).await;
     assert!(
         !session.take_pending_skill_reminder(),
         "the no-change mount reload parks no pending (the diff gate)"
     );
-    // The mount itself runs on the blocking pool (spawn_blocking — the
-    // RPC path must not pay for the recursive FS watches); `watching`
-    // reflects the live handle, not the mount's completion. Settle before
-    // writing: a write that lands pre-mount is invisible (FSEvents
-    // streams from watch registration).
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // No settle needed: `skill.reload` awaits the outstanding mounts before
+    // it answers (`await_skill_watcher_mounts` — "when this resolves, the
+    // watchers are live", no spawn-to-mount registration race), so the write
+    // below cannot land before the FSEvents stream is registered.
 
     // When a new skill lands under the watched project root (while the
     // session is idle — no turn is running)
@@ -41231,7 +43264,7 @@ async fn should_inject_the_refreshed_listing_on_the_next_turn_when_a_skill_file_
 /// face, and the pending stays parked for a future turn whose face does
 /// carry the tool.
 #[allow(clippy::await_holding_lock)]
-// the hermetic $HOME pin holds the crate home lock across the async body (the pinned_home_guard precedent)
+// the hermetic $HOME pin holds the workspace env lock across the async body (the pinned_home_guard precedent)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn should_not_inject_the_listing_when_the_tool_face_lacks_the_skill_tool() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -41239,7 +43272,7 @@ async fn should_not_inject_the_listing_when_the_tool_face_lacks_the_skill_tool()
     seed_home_default_model(home.path());
     write_skill_md(workspace.path(), "alpha");
     let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
-    let _home_lock = crate::bootstrap::test_env::home_lock();
+    let _home_lock = env::lock();
     let previous_home = std::env::var_os("HOME");
     // SAFETY: held for the rest of the test; restored by the guard's Drop
     // while the lock is still held.
@@ -41285,9 +43318,10 @@ async fn should_not_inject_the_listing_when_the_tool_face_lacks_the_skill_tool()
 
     // The watcher mounts (the no-diff gate means no pending from this).
     server.call_method("skill.reload", json!({})).await.unwrap();
-    // Settle the spawn_blocking mount before writing (see the positive
-    // chain test's note).
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // The mount may land after `skill.reload` answered (its await is bounded
+    // — see the positive chain test's note), so wait for the watcher to be
+    // live before writing.
+    wait_for_skill_watcher(&server).await;
 
     // When the new skill lands and the chain parks the pending
     mock.push_text("another reply");
@@ -41326,7 +43360,7 @@ async fn should_not_inject_the_listing_when_the_tool_face_lacks_the_skill_tool()
 /// once and produces NO new skill-activation fact (the reminder is an
 /// injected listing, not an activation — m-6's no-activation-replay).
 #[allow(clippy::await_holding_lock)]
-// the hermetic $HOME pin holds the crate home lock across the async body (the pinned_home_guard precedent)
+// the hermetic $HOME pin holds the workspace env lock across the async body (the pinned_home_guard precedent)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn should_replay_the_listing_reminder_on_resume_without_producing_activation_facts() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -41334,7 +43368,7 @@ async fn should_replay_the_listing_reminder_on_resume_without_producing_activati
     seed_home_default_model(home.path());
     write_skill_md(workspace.path(), "alpha");
     let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
-    let _home_lock = crate::bootstrap::test_env::home_lock();
+    let _home_lock = env::lock();
     let previous_home = std::env::var_os("HOME");
     // SAFETY: held for the rest of the test; restored by the guard's Drop
     // while the lock is still held.
@@ -41361,9 +43395,10 @@ async fn should_replay_the_listing_reminder_on_resume_without_producing_activati
 
     // The watcher mounts; the new skill lands; the chain parks the pending.
     server.call_method("skill.reload", json!({})).await.unwrap();
-    // Settle the spawn_blocking mount before writing (see the positive
-    // chain test's note).
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // The mount may land after `skill.reload` answered (its await is bounded
+    // — see the positive chain test's note), so wait for the watcher to be
+    // live before writing.
+    wait_for_skill_watcher(&server).await;
     mock.push_text("second reply");
     write_skill_md(workspace.path(), "replayed-skill");
     assert!(
@@ -41464,7 +43499,8 @@ async fn should_replay_the_listing_reminder_on_resume_without_producing_activati
 }
 
 /// The e2e hot-reload server shape: the full real composition root
-/// (`for_workspace_root` — config load + skill discovery + watcher mounting)
+/// (`for_workspace_root` — config load + skill discovery; the WATCHER is
+/// mounted explicitly by `skill.reload` inside these e2e tests, SDR-011)
 /// with the test's scripted LLM factory swapped in, so turns actually run
 /// against a scripted model. Unlike [`assembled_server_with_llm`] this
 /// keeps the DEFAULT skill roots (the e2e chain watches the project
@@ -41484,10 +43520,10 @@ fn e2e_server_with_llm(
         crate::bootstrap::WorkspacePolicy::UntrustedDefault,
         Vec::new(),
     );
-    // The hot-reload e2e chains need the watcher mounted: the flag is
-    // default-off (the repo's experimental convention), so the e2e
-    // helper opts in through the config's experimental overrides — the
-    // same layer a real user enables it with.
+    // The hot-reload e2e chains need the watcher mounted: the
+    // skillHotReload flag is explicitly pinned (the flag's default is on
+    // since ADR-013; the e2e helper keeps the pin so a default flip can
+    // never silently change e2e watcher behavior).
     {
         let mut config = parts.config.write().unwrap_or_else(|e| e.into_inner());
         let experimental = config
@@ -41500,15 +43536,15 @@ fn e2e_server_with_llm(
 }
 
 /// The RAII `$HOME` restore for the e2e tests — restores the previous
-/// value on drop while the crate home lock is still held (the field
+/// value on drop while the workspace env lock is still held (the field
 /// order keeps the lock alive past the restore).
 struct PinnedHome(Option<std::ffi::OsString>);
 
 impl Drop for PinnedHome {
     fn drop(&mut self) {
-        // SAFETY: the pre-test value, restored while the home lock guard
-        // (still alive in the test body's scope by drop order) serializes
-        // the write.
+        // SAFETY: the pre-test value, restored while the workspace env
+        // lock guard (still alive in the test body's scope by drop order)
+        // serializes the write (env_lock held).
         match self.0.take() {
             Some(value) => unsafe { std::env::set_var("HOME", value) },
             None => unsafe { std::env::remove_var("HOME") },
@@ -42105,14 +44141,7 @@ async fn should_fork_without_cron_tasks_when_forking_via_rpc() {
         .unwrap();
     let session_id = created["id"].as_str().unwrap().to_string();
     converse_once(&server, &session_id).await;
-    let tool = run_main_agent_tool(
-        &server,
-        &session_id,
-        "CronCreate",
-        json!({ "cron": "*/5 * * * *", "prompt": "tick", "recurring": true }),
-    )
-    .await;
-    assert!(!tool.is_error, "{tool:?}");
+    seed_session_cron_task(&server, &session_id, "*/5 * * * *", "tick", true).await;
 
     let forked = server
         .call_method("session.fork", json!({ "session_id": &session_id }))
@@ -42211,15 +44240,27 @@ async fn should_fire_in_an_explicit_timezone_when_the_driver_ticks() {
     let now_local_sh =
         chrono::Utc::now().with_timezone(&chrono_tz::Asia::Shanghai) + chrono::Duration::minutes(1);
     let expr = format!("{} {} * * *", now_local_sh.minute(), now_local_sh.hour());
-    let tool = run_main_agent_tool(
-        &server,
-        &session_id,
-        "CronCreate",
-        json!({ "cron": expr, "prompt": "tz fire", "recurring": false,
-                "timezone": "Asia/Shanghai" }),
-    )
-    .await;
-    assert!(!tool.is_error, "{tool:?}");
+    {
+        let session = server
+            .session_manager()
+            .get_session(&SessionId::new(&session_id))
+            .await
+            .expect("session stays live");
+        session
+            .cron()
+            .add(
+                expr,
+                "tz fire".to_string(),
+                session_id.clone(),
+                false,
+                mirri_core::cron::CronCreateOptions {
+                    timezone: Some("Asia/Shanghai".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("seed tz one-shot");
+    }
 
     let mut events = server.subscribe_events().await.unwrap();
     let event = next_event_where_within(
@@ -42254,9 +44295,14 @@ async fn should_fire_in_an_explicit_timezone_when_the_driver_ticks() {
 #[tokio::test]
 async fn should_fire_on_the_host_local_calendar_when_no_timezone_is_given() {
     use chrono::Timelike;
-    // The only test in the batch that writes TZ (guarded by
-    // --test-threads=1 within its binary; removed on every path).
-    unsafe { std::env::set_var("TZ", "Asia/Shanghai") };
+    // The only test in the batch that writes TZ — serialized on the
+    // workspace env lock, restored by the guard's Drop on every path.
+    // Held across the cron awaits on purpose (current-thread
+    // `#[tokio::test]` runtime: a waiter parks its own thread; bounded
+    // serialization — the documented precedent).
+    #[allow(clippy::await_holding_lock)]
+    let mut _env = mirri_test_support::env::EnvGuard::new();
+    _env.set("TZ", "Asia/Shanghai");
     let honors_tz = {
         let resolved = mirri_core::cron::CronTimezone::Local.resolve();
         resolved == chrono_tz::Asia::Shanghai
@@ -42266,7 +44312,6 @@ async fn should_fire_on_the_host_local_calendar_when_no_timezone_is_given() {
         // still yields a usable zone — the calendar firing chain is covered
         // by the explicit-timezone scenario.
         let _ = mirri_core::cron::CronTimezone::Local.resolve();
-        unsafe { std::env::remove_var("TZ") };
         return;
     }
     let mock = Arc::new(ScriptedLlm::new());
@@ -42285,14 +44330,7 @@ async fn should_fire_on_the_host_local_calendar_when_no_timezone_is_given() {
     let next_local_sh =
         chrono::Utc::now().with_timezone(&chrono_tz::Asia::Shanghai) + chrono::Duration::minutes(1);
     let expr = format!("{} {} * * *", next_local_sh.minute(), next_local_sh.hour());
-    let tool = run_main_agent_tool(
-        &server,
-        &session_id,
-        "CronCreate",
-        json!({ "cron": expr, "prompt": "local fire", "recurring": false }),
-    )
-    .await;
-    assert!(!tool.is_error, "{tool:?}");
+    seed_session_cron_task(&server, &session_id, &expr, "local fire", false).await;
 
     let mut events = server.subscribe_events().await.unwrap();
     let event = next_event_where_within(
@@ -42303,7 +44341,7 @@ async fn should_fire_on_the_host_local_calendar_when_no_timezone_is_given() {
     .await;
     assert_eq!(event.params["prompt"], "local fire");
     assert_eq!(event.params["origin"]["kind"], "cron_job");
-    unsafe { std::env::remove_var("TZ") };
+    // (TZ restore rides the EnvGuard's Drop.)
 }
 
 /// Given a resumed session whose wire log holds (a) a */5 recurring task
@@ -42559,6 +44597,12 @@ async fn wait_for_mcp_plugin_server(server: &EmbeddedServer, name: &str, present
 /// Assert that a plugin server is **not** connected over a short bounded
 /// window — the negative counterpart of the wait helper (the mutations below
 /// must NOT trigger a reconnect, so absence is immediate and deterministic).
+///
+/// This keeps a real window on purpose: `plugin.install` never touches
+/// `McpStartupTiming` (only the connect paths call `add_task`), so waiting
+/// for the startup set to settle would be vacuously true here and would
+/// collapse the check into a single instantaneous sample — exactly the
+/// regression ("install starts connecting asynchronously") this guards.
 async fn assert_plugin_server_absent_for_a_while(server: &EmbeddedServer, name: &str) {
     for _ in 0..5 {
         let listed = server
@@ -42573,7 +44617,7 @@ async fn assert_plugin_server_absent_for_a_while(server: &EmbeddedServer, name: 
                 .any(|entry| entry["name"].as_str() == Some(name)),
             "the plugin server must stay unconnected: {listed}"
         );
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await; // hygiene-allow: absence sample (plugin.install never touches McpStartupTiming; an async connect regression needs a real window)
     }
 }
 
@@ -43025,15 +45069,17 @@ async fn should_default_the_fork_title_to_the_source_title_when_no_title_is_give
     );
 }
 
-/// Given a fork, When the fork's state.json is read from disk, Then it
-/// carries `forkedFrom` pointing at the source session id and the merged
-/// custom metadata (source custom base + fork metadata override, `goal`
-/// dropped — the v2 forkCustomMetadata semantics).
+/// Given a fork, When the fork's metadata is read back, Then it carries
+/// `forkedFrom` pointing at the source session id and the merged custom
+/// metadata (source custom base + fork metadata override, `goal` dropped —
+/// the v2 forkCustomMetadata semantics). ADR-006: the live scope is the
+/// carrier (the fork pipeline reads the live source's metadata; the
+/// fork's own state.json no longer exists to read).
 #[tokio::test]
 async fn should_mint_forked_from_and_merged_custom_in_state_json_when_forking() {
     let mock = Arc::new(ScriptedLlm::new());
     mock.push_text("fork reply");
-    let (server, tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let (server, _tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
     let created = server
         .call_method("session.create", json!({ "title": "lineage source" }))
         .await
@@ -43041,22 +45087,23 @@ async fn should_mint_forked_from_and_merged_custom_in_state_json_when_forking() 
     let session_id = created["id"].as_str().unwrap().to_string();
     converse_once(&server, &session_id).await;
 
-    // The source's custom dict: seeded by hand into the live state.json
-    // (the fork reads the source's persisted state).
-    let bucket = mirri_core::encode_work_dir_key(tmp.path());
-    let source_state_path = tmp
-        .path()
-        .join(".mirri")
-        .join("v3_sessions")
-        .join(&bucket)
-        .join(&session_id)
-        .join("state.json");
-    let mut state: Value = serde_json::from_str(
-        &std::fs::read_to_string(&source_state_path).expect("source state.json exists"),
-    )
-    .expect("source state.json is valid JSON");
-    state["custom"] = json!({ "theme": "dark", "goal": "source goal" });
-    std::fs::write(&source_state_path, serde_json::to_string(&state).unwrap()).unwrap();
+    // The source's custom dict: seeded into the live scope's metadata
+    // (the fork reads the source's live metadata — ADR-006).
+    let source = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("the source stays live");
+    source
+        .update_metadata(|metadata| {
+            metadata.custom = Some(
+                serde_json::json!({ "theme": "dark", "goal": "source goal" })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            );
+        })
+        .await;
 
     let forked = server
         .call_method(
@@ -43070,27 +45117,26 @@ async fn should_mint_forked_from_and_merged_custom_in_state_json_when_forking() 
         .unwrap();
     let forked_id = forked["id"].as_str().unwrap().to_string();
 
-    let fork_state_path = tmp
-        .path()
-        .join(".mirri")
-        .join("v3_sessions")
-        .join(&bucket)
-        .join(&forked_id)
-        .join("state.json");
-    let raw = std::fs::read_to_string(&fork_state_path).expect("fork state.json exists");
-    let state: Value = serde_json::from_str(&raw).expect("fork state.json is valid JSON");
+    let fork = server
+        .session_manager()
+        .get_session(&SessionId::new(&forked_id))
+        .await
+        .expect("the fork stays live");
+    let fork_metadata = fork.metadata().await;
     assert_eq!(
-        state
-            .get("forked_from")
-            .or_else(|| state.get("forkedFrom"))
-            .and_then(Value::as_str),
+        fork_metadata.forked_from.as_deref(),
         Some(session_id.as_str()),
-        "the fork's state.json must record the source id as forkedFrom, got: {raw}"
+        "the fork's metadata must record the source id as forkedFrom"
     );
+    let custom = fork_metadata
+        .custom
+        .as_ref()
+        .map(|map| serde_json::Value::Object(map.clone()))
+        .unwrap_or(serde_json::Value::Null);
     assert_eq!(
-        state.get("custom"),
-        Some(&json!({ "theme": "dark", "origin": "fork" })),
-        "custom must be source-base + fork-metadata-override with goal dropped, got: {raw}"
+        custom,
+        json!({ "theme": "dark", "origin": "fork" }),
+        "custom must be source-base + fork-metadata-override with goal dropped"
     );
 }
 
@@ -43134,14 +45180,7 @@ async fn should_list_no_cron_tasks_when_a_forked_session_is_resumed() {
     let session_id = created["id"].as_str().unwrap().to_string();
     converse_once(&server, &session_id).await;
     for cron in ["*/5 * * * *", "0 9 * * *"] {
-        let result = run_main_agent_tool(
-            &server,
-            &session_id,
-            "CronCreate",
-            json!({ "cron": cron, "prompt": "tick", "recurring": true }),
-        )
-        .await;
-        assert!(!result.is_error, "{result:?}");
+        seed_session_cron_task(&server, &session_id, cron, "tick", true).await;
     }
     // The source's live cron table and wire log both hold the tasks.
     let listed = server
@@ -43522,6 +45561,7 @@ async fn should_continue_turn_ids_from_the_global_wire_log_maximum_when_resuming
                 reason: "completed".to_string(),
                 error: None,
                 duration_ms: Some(n * 100),
+                ended_at: None,
             })
             .await
             .unwrap();
@@ -44069,5 +46109,442 @@ async fn should_not_snapshot_a_session_whose_turn_settled() {
     assert!(
         !snapshot.iter().any(|entry| entry.session_id == session_id),
         "a settled session must not appear in the shutdown snapshot: {snapshot:?}"
+    );
+}
+
+// -------------------------------------------------------------------------
+// ADR-006 Task 7 — field-level write narrowing: every write point touches
+// ONLY the fields it owns; a concurrent writer's disjoint field must
+// survive (the clobber-lock tests).
+// -------------------------------------------------------------------------
+
+/// Given a session whose metadata ROW carries a retention flag (archived)
+/// a foreign writer set, when a turn settles (the recency backstop fires
+/// `note_turn_settled`), then the row's archived flag survives — the
+/// settle writes ONLY `updated_at`, never a whole-row snapshot.
+#[tokio::test]
+async fn should_not_clobber_concurrent_field_writes_when_turn_settles() {
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("done");
+    let (server, _tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let created = server
+        .call_method("session.create", json!({}))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+    converse_once(&server, &session_id).await;
+    let manager = server.session_manager();
+
+    // And a foreign writer (retention/compression lifecycle) set the
+    // archived flag through the row
+    manager
+        .metadata_store()
+        .apply(
+            &SessionId::new(&session_id),
+            &manager.metadata_workspace_id(),
+            mirri_core::session::metadata_port::MetadataPatch {
+                archived: Some(true),
+                archived_at: Some(Some(chrono::Utc::now())),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the foreign archive patch applies");
+
+    // When another turn settles (the recency write-through fires)
+    server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "second turn" }),
+        )
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let listed = server.call_method("session.list", json!({})).await.unwrap();
+        let busy = listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == json!(session_id))
+            .map(|view| view["busy"] == true || view["mainTurnActive"] == true)
+            .unwrap_or(false);
+        if !busy {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the second turn must settle before the clobber assertion"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // Then the foreign archived flag survived the settle's write
+    let record = manager
+        .metadata_store()
+        .get(&SessionId::new(&session_id))
+        .await
+        .expect("the row exists after the settle");
+    assert!(record.archived, "the settle's write must not clear archived");
+    assert!(
+        record.archived_at.is_some(),
+        "the settle's write must not clear archived_at"
+    );
+}
+
+/// Given a session whose metadata ROW carries a user title, when
+/// `session.touch` fires (the user-interaction recency bump), then the
+/// row's title survives — the touch writes ONLY `last_used_at`.
+#[tokio::test]
+async fn should_not_clobber_concurrent_field_writes_when_touch_fires() {
+    let (server, _tmp) = test_server(None);
+    let created = server
+        .call_method("session.create", json!({ "title": "keep my title" }))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+    converse_once(&server, &session_id).await;
+    let manager = server.session_manager();
+
+    // When session.touch fires
+    server
+        .call_method("session.touch", json!({ "session_id": &session_id }))
+        .await
+        .unwrap();
+
+    // Then the row's title survived the touch's write
+    let record = manager
+        .metadata_store()
+        .get(&SessionId::new(&session_id))
+        .await
+        .expect("the row exists after the touch");
+    assert_eq!(
+        record.title, "keep my title",
+        "the touch's write must not clobber the title"
+    );
+    assert!(
+        record.last_used_at.is_some(),
+        "the touch's write carries its own field"
+    );
+}
+
+/// Given a row-only session (a row plus a wire log, NO state.json —
+/// post-ADR-006's normal materialized shape) with no session index
+/// (the no-home test shape), when a second user message sends, then the
+/// metadata row's `last_prompt` carries the SECOND message — the
+/// materialization guard must not gate on state.json (I-1: the first
+/// prompt's value would otherwise be the row's forever).
+#[tokio::test]
+async fn should_update_last_prompt_on_subsequent_messages_when_session_is_row_only() {
+    let (server, _tmp) = test_server(None);
+    let manager = server.session_manager();
+    let created = server
+        .call_method("session.create", json!({}))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+    // Two distinct sends (both fail to run a turn — no LLM — but each
+    // materializes and stamps the send path's write-throughs).
+    let _ = server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "first prompt" }),
+        )
+        .await;
+    let _ = server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "second prompt" }),
+        )
+        .await;
+
+    // Then the row carries the SECOND message's prompt — and the session
+    // is row-only (no state.json was ever written).
+    let record = manager
+        .metadata_store()
+        .get(&SessionId::new(&session_id))
+        .await
+        .expect("the row exists after the sends");
+    assert!(
+        !manager
+            .persistence()
+            .state_path(&SessionId::new(&session_id))
+            .exists(),
+        "the fixture's premise: the session is row-only"
+    );
+    assert!(
+        manager
+            .persistence()
+            .wire_log_path(&SessionId::new(&session_id))
+            .is_file(),
+        "the wire log materialized (the guard's true test)"
+    );
+    assert_eq!(
+        record.last_prompt.as_deref(),
+        Some("second prompt"),
+        "the row's last_prompt must reflect the second send"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// session.pin / unpin (SDR-016/017, ADR-006 Task 15)
+// ---------------------------------------------------------------------------
+
+async fn pin_fixture_server() -> (EmbeddedServer, tempfile::TempDir, tempfile::TempDir, String) {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    seed_home_default_model(home.path());
+    let server = EmbeddedServer::for_workspace_root(
+        WorkspaceId::new("pin-ws"),
+        workspace.path().to_path_buf(),
+        Some(home.path().to_path_buf()),
+        Vec::new(),
+    );
+    let created = server
+        .call_method("session.create", json!({ "title": "Pin me" }))
+        .await
+        .expect("session.create");
+    let session_id = created["id"].as_str().expect("session id").to_string();
+    converse_once(&server, &session_id).await;
+    (server, workspace, home, session_id)
+}
+
+/// Given a live session, When it is pinned with a color over the RPC,
+/// Then the row carries the trio, `updated_at` stays untouched (SDR-004:
+/// a pin is not usage), and the listing places it above unpinned peers.
+#[tokio::test]
+async fn should_pin_without_refreshing_recency_when_rpc_invoked() {
+    let (server, _workspace, _home, session_id) = pin_fixture_server().await;
+    let index = server.session_index().expect("the index is open");
+    let before = index.get_session(&session_id).expect("the row exists");
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+    server
+        .call_method(
+            "session.pin",
+            json!({ "sessionId": &session_id, "color": "blue" }),
+        )
+        .await
+        .expect("session.pin");
+
+    let row = index.get_session(&session_id).expect("the row exists");
+    assert!(row.pinned);
+    assert!(row.pinned_at.is_some());
+    assert_eq!(row.pin_color.as_deref(), Some("blue"));
+    assert_eq!(
+        row.updated_at, before.updated_at,
+        "a pin must not refresh updated_at (SDR-004)"
+    );
+    let _ = before;
+}
+
+/// Given a pin request with an unknown color, When the RPC runs, Then the
+/// whole request rejects and NO row was touched.
+#[tokio::test]
+async fn should_reject_unknown_color_when_pinning() {
+    let (server, _workspace, _home, session_id) = pin_fixture_server().await;
+    let error = server
+        .call_method(
+            "session.pin",
+            json!({ "sessionId": &session_id, "color": "pink" }),
+        )
+        .await
+        .expect_err("an unknown color rejects");
+    assert!(error.to_string().contains("unknown pin color"), "{error:?}");
+
+    let index = server.session_index().expect("the index is open");
+    let row = index.get_session(&session_id).expect("the row exists");
+    assert!(!row.pinned, "the rejected request left no pin behind");
+}
+
+/// Given a pinned session with a color, When it is unpinned, Then the
+/// trio clears.
+#[tokio::test]
+async fn should_clear_color_when_unpinned() {
+    let (server, _workspace, _home, session_id) = pin_fixture_server().await;
+    server
+        .call_method(
+            "session.pin",
+            json!({ "sessionId": &session_id, "color": "green" }),
+        )
+        .await
+        .expect("session.pin");
+
+    server
+        .call_method("session.unpin", json!({ "sessionId": &session_id }))
+        .await
+        .expect("session.unpin");
+
+    let index = server.session_index().expect("the index is open");
+    let row = index.get_session(&session_id).expect("the row exists");
+    assert!(!row.pinned);
+    assert!(row.pinned_at.is_none());
+    assert!(row.pin_color.is_none());
+}
+
+/// Given pinned and unpinned sessions, When the listing runs, Then the
+/// pinned row sorts above the unpinned one regardless of recency, and a
+/// live session's pin is visible (the index-row overlay).
+#[tokio::test]
+async fn should_keep_pin_visible_for_live_sessions_when_listing() {
+    let (server, _workspace, _home, pinned_id) = pin_fixture_server().await;
+    // An OLDER unpinned session for the ordering probe.
+    let created = server
+        .call_method("session.create", json!({ "title": "Unpinned, newer" }))
+        .await
+        .expect("session.create");
+    let unpinned_id = created["id"].as_str().expect("session id").to_string();
+    converse_once(&server, &unpinned_id).await;
+    server
+        .call_method("session.pin", json!({ "sessionId": &pinned_id }))
+        .await
+        .expect("pin the older session");
+
+    let listed = server
+        .call_method("session.list", json!({ "includeArchive": true }))
+        .await
+        .expect("session.list");
+    let items = listed["items"].as_array().expect("items");
+    let ids: Vec<&str> = items
+        .iter()
+        .filter_map(|row| row["id"].as_str())
+        .collect();
+    let pinned_pos = ids.iter().position(|id| *id == pinned_id).expect("the pinned row lists");
+    let unpinned_pos = ids
+        .iter()
+        .position(|id| *id == unpinned_id)
+        .expect("the unpinned row lists");
+    assert!(
+        pinned_pos < unpinned_pos,
+        "the pinned session outranks the unpinned one"
+    );
+    // And the live pinned row's view carries the trio.
+    let pinned_row = &items[pinned_pos];
+    assert_eq!(pinned_row["pinned"], json!(true));
+    assert!(pinned_row["pinnedAt"].as_str().is_some());
+}
+
+/// Given a persisted-only (closed, not running) session, When it is
+/// pinned, Then the row updates — pinning an old session is a core use
+/// case and needs no live scope.
+#[tokio::test]
+async fn should_pin_persisted_only_session_when_not_running() {
+    let (server, _workspace, _home, session_id) = pin_fixture_server().await;
+    server
+        .call_method("session.close", json!({ "sessionId": &session_id }))
+        .await
+        .expect("session.close");
+
+    server
+        .call_method("session.pin", json!({ "sessionId": &session_id, "color": "purple" }))
+        .await
+        .expect("session.pin on a cold session");
+
+    let index = server.session_index().expect("the index is open");
+    let row = index.get_session(&session_id).expect("the row exists");
+    assert!(row.pinned);
+    assert_eq!(row.pin_color.as_deref(), Some("purple"));
+}
+
+/// Given the pinnedOnly filter, When the listing runs, Then ONLY pinned
+/// rows answer (the out-of-window load's input).
+#[tokio::test]
+async fn should_list_only_pinned_rows_when_filter_set() {
+    let (server, _workspace, _home, pinned_id) = pin_fixture_server().await;
+    let created = server
+        .call_method("session.create", json!({ "title": "Unpinned" }))
+        .await
+        .expect("session.create");
+    let unpinned_id = created["id"].as_str().expect("session id").to_string();
+    converse_once(&server, &unpinned_id).await;
+    server
+        .call_method("session.pin", json!({ "sessionId": &pinned_id }))
+        .await
+        .expect("pin");
+
+    let listed = server
+        .call_method("session.list", json!({ "pinnedOnly": true }))
+        .await
+        .expect("session.list");
+    let items = listed["items"].as_array().expect("items");
+    let ids: Vec<&str> = items.iter().filter_map(|r| r["id"].as_str()).collect();
+    assert_eq!(ids, vec![pinned_id.as_str()], "only the pinned row answers");
+}
+
+/// Given a pinned session, When the meta event publishes, Then the patch
+/// carries the pin fields (the multi-window sync face).
+#[tokio::test]
+async fn should_publish_meta_event_with_pin_patch_when_pinned() {
+    let (server, _workspace, _home, session_id) = pin_fixture_server().await;
+    let mut events = server.subscribe_events().await.expect("subscribe");
+    server
+        .call_method(
+            "session.pin",
+            json!({ "sessionId": &session_id, "color": "red" }),
+        )
+        .await
+        .expect("session.pin");
+
+    let mut saw_patch = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while let Ok(Some(event)) =
+        tokio::time::timeout_at(deadline.into(), events.recv()).await
+    {
+        let text = serde_json::to_string(&event).unwrap_or_default();
+        if text.contains("meta.updated") && text.contains(&session_id) {
+            let payload = serde_json::from_str::<serde_json::Value>(&text).unwrap_or_default();
+            let patch = &payload["params"]["patch"];
+            if patch.get("pinned").is_some() {
+                assert_eq!(patch["pinned"], json!(true));
+                assert_eq!(patch["pinColor"], json!("red"));
+                saw_patch = true;
+                break;
+            }
+        }
+    }
+    assert!(saw_patch, "the meta.updated pin patch arrived");
+}
+
+// ---------------------------------------------------------------------------
+// I-1 regression guard (the final review): session.archive stamps
+// archived_at — the retention pipeline's compression anchor.
+// ---------------------------------------------------------------------------
+
+/// Given a row-only archived session (the post-ADR-006 norm — no
+/// state.json backstop), When `session.archive` runs, Then the row
+/// carries `archived_at` and the retention compression window's
+/// "archived N days" judgment has its anchor.
+#[tokio::test]
+async fn should_stamp_archived_at_when_archiving_over_the_rpc() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    seed_home_default_model(home.path());
+    let server = EmbeddedServer::for_workspace_root(
+        WorkspaceId::new("archive-stamp"),
+        workspace.path().to_path_buf(),
+        Some(home.path().to_path_buf()),
+        Vec::new(),
+    );
+    let created = server
+        .call_method("session.create", json!({ "title": "Stamp me" }))
+        .await
+        .expect("session.create");
+    let session_id = created["id"].as_str().expect("session id").to_string();
+    converse_once(&server, &session_id).await;
+
+    let before = chrono::Utc::now();
+    server
+        .call_method("session.archive", json!({ "sessionId": &session_id }))
+        .await
+        .expect("session.archive");
+
+    let index = server.session_index().expect("the index is open");
+    let row = index.get_session(&session_id).expect("the row exists");
+    let stamped = row
+        .archived_at
+        .expect("the archive stamp lands on the row (I-1)");
+    assert!(
+        stamped >= before,
+        "the stamp is the archive moment, not a stale value"
     );
 }

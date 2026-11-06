@@ -110,12 +110,14 @@ impl ConfigAwareLlmFactory {
             .trim()
             .to_ascii_lowercase();
 
-        // API key: the credential store's active entry for the provider
-        // first (key → the value itself; external → resolved through the
-        // method's CLI at call time, a failure propagating the guidance
-        // with no env fallback — V5; oauth → reserved slot), else the env
-        // chain (sub-table, then the type's shell env var — the shell tier
-        // only fails loudly through `resolve_api_key`'s error message).
+        // API key (#186): the credential store's active entry for the
+        // provider first (key → the value itself; external → resolved
+        // through the method's CLI at call time, a failure propagating
+        // the guidance with no fallback — V5; oauth → reserved slot), else
+        // the provider's `env` sub-table (the user's explicit
+        // configuration). A provider with no credential in either tier is
+        // a clear configuration error — the shell environment variables
+        // are never consulted implicitly.
         // The sync-call tradeoff: `create_llm_from_alias` implements the
         // (sync) `LlmFactory` trait consumed by the agent callback chain —
         // the az cold-start (1-3s) blocks that agent worker thread, not a
@@ -129,19 +131,40 @@ impl ConfigAwareLlmFactory {
         ) {
             Ok(Some(key)) => key,
             // The external source failed with guidance — surface it
-            // verbatim (never the OPENAI_API_KEY-not-set face).
+            // verbatim (never a configuration face).
             Err(guidance) => return Err(guidance),
-            Ok(None) => self.resolve_api_key(&provider_type)?,
+            Ok(None) => return Err(missing_credential_error(provider_id)),
         };
 
-        // Base URL: the provider's `baseUrl` field, else the type's key in
-        // the provider's `env` sub-table, else the type's env var /
-        // static default (the same resolution ProviderLlmFactory uses).
-        let base_url = match provider.get("baseUrl").and_then(Value::as_str) {
+        // Base URL (#184): the provider's `baseUrl` field, else the type's
+        // key in the provider's `env` sub-table, else the FIRST-PARTY
+        // default — but only when the provider IS that first party (the
+        // sanctioned bare usage: picking openai / anthropic / google-genai
+        // without a URL). Any other provider (a models.dev import, a
+        // hand-added gateway) must carry an explicit base URL: a missing
+        // one is a clear configuration error at creation time, never a
+        // silent request to the official endpoint that would retry 10×
+        // into a low-level network failure. An empty/whitespace-only
+        // `baseUrl` field counts as absent (the web clear path writes "").
+        let base_url = match provider
+            .get("baseUrl")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+        {
             Some(url) => url.to_string(),
             None => match env_value_of(provider, Some(base_url_env_name(&provider_type))) {
                 Some(url) => url,
-                None => default_base_url(&provider_type),
+                None => match first_party_default_base_url(provider_id, &provider_type) {
+                    Some(url) => url,
+                    None => {
+                        return Err(format!(
+                            "provider '{provider_id}' has no base URL configured; please configure a \
+                             base URL for provider '{provider_id}' (Settings → Providers → \
+                             {provider_id}, or the baseUrl field in config.toml)",
+                        ))
+                    }
+                },
             },
         };
 
@@ -254,12 +277,6 @@ impl ConfigAwareLlmFactory {
         }
     }
 
-    /// Resolve the provider's API key when the config carries none: fall
-    /// back to the type's environment variable.
-    fn resolve_api_key(&self, provider_type: &str) -> Result<String, String> {
-        env_api_key(provider_type)
-    }
-
     /// The provider-side media file cache root (T11a): the Mirri home's
     /// `provider-files/` subdirectory, resolved through the same home chain
     /// as [`Self::mirri_home`] (home-level lifecycle, adjudication D3).
@@ -269,13 +286,21 @@ impl ConfigAwareLlmFactory {
 
     /// The Mirri home this factory roots its home-scoped consumers in.
     fn mirri_home(&self) -> PathBuf {
+        self.mirri_home_from(|name| std::env::var_os(name))
+    }
+
+    /// The pure resolver behind [`Self::mirri_home`], parameterised over
+    /// the env lookup (the `resolve_*_from` convention of
+    /// `mirri-os/src/home.rs`) so the `MIRRICODE_HOME` → `$HOME` fallback
+    /// chain is testable without mutating the process environment. The
+    /// explicit `self.home` always wins (resolved by the caller, not the
+    /// env); with nothing set the relative `.mirri-code` fallback applies.
+    fn mirri_home_from(&self, get_env: impl Fn(&str) -> Option<std::ffi::OsString>) -> PathBuf {
         if let Some(home) = &self.home {
             home.clone()
-        } else if let Some(mirri_home) =
-            std::env::var_os("MIRRICODE_HOME").filter(|value| !value.is_empty())
-        {
+        } else if let Some(mirri_home) = get_env("MIRRICODE_HOME").filter(|v| !v.is_empty()) {
             PathBuf::from(mirri_home)
-        } else if let Some(home) = std::env::var_os("HOME") {
+        } else if let Some(home) = get_env("HOME") {
             PathBuf::from(home).join(".mirri-code")
         } else {
             PathBuf::from(".mirri-code")
@@ -443,15 +468,36 @@ pub(crate) fn resolve_provider_credential(
 }
 
 /// Resolve a provider wire record's API key through the env chain only —
-/// the type's conventional key in the provider's `env` sub-table, else
-/// the type's shell environment variable (`None` when no source answers).
-/// The config `apiKey` field tier is retired (D-M3): residual
-/// hand-written keys must not silently bypass the credential store.
+/// the type's conventional key in the provider's `env` sub-table, which is
+/// the user's explicit configuration written in config.toml. The shell
+/// environment tier is retired (#186): the engine only uses explicitly
+/// configured credentials, so the implicit `OPENAI_API_KEY` /
+/// `ANTHROPIC_API_KEY` / ... fallbacks never answer. The config `apiKey`
+/// field tier is retired as well (D-M3): residual hand-written keys must
+/// not silently bypass the credential store.
 pub(crate) fn resolve_provider_env_chain(provider: &Value, provider_type: &str) -> Option<String> {
-    if let Some(key) = env_value_of(provider, api_key_env_name(provider_type)) {
-        return Some(key);
+    env_value_of(provider, api_key_env_name(provider_type))
+}
+
+/// The provider type the credential chain keys off — the resolved WIRE
+/// protocol, not the raw provider type: a custom-type provider speaking
+/// the openai wire resolves its credential through the openai conventional
+/// key, so an env sub-table row written for the wire's convention answers.
+/// Every credential-resolution caller (the factory chain, the generate
+/// dispatch, and the catalog's `has_api_key` faces) must pass this — the
+/// single normalization keeps the UI's "configured" verdict from drifting
+/// from the request path's.
+pub(crate) fn credential_type_for_wire<'a>(
+    provider_type: &'a str,
+    wire_protocol: &'a str,
+) -> &'a str {
+    if provider_type.eq_ignore_ascii_case("kimi") {
+        "kimi"
+    } else if provider_type.eq_ignore_ascii_case("custom") {
+        wire_protocol
+    } else {
+        provider_type
     }
-    api_key_env_name(provider_type).and_then(|name| std::env::var(name).ok())
 }
 
 /// The provider's `env` sub-table entry for `key`: the file-level
@@ -460,7 +506,7 @@ pub(crate) fn resolve_provider_env_chain(provider: &Value, provider_type: &str) 
 /// sub-table is read as a plain map: only the per-type conventional key
 /// participates, keys keep their exact case-sensitive spelling, and
 /// empty or whitespace-only values fall through to the next source.
-fn env_value_of(provider: &Value, key: Option<&str>) -> Option<String> {
+pub(crate) fn env_value_of(provider: &Value, key: Option<&str>) -> Option<String> {
     let value = provider
         .get("env")
         .and_then(Value::as_object)
@@ -485,9 +531,9 @@ fn api_key_env_name(provider_type: &str) -> Option<&'static str> {
 }
 
 /// The type's conventional base-URL variable name — the single spelling
-/// table shared by the `env` sub-table lookup and the shell fallback
-/// ([`default_base_url`]); the default branch mirrors it (MIRRI_BASE_URL).
-fn base_url_env_name(provider_type: &str) -> &'static str {
+/// table shared by the `env` sub-table lookup (the shell tier is retired
+/// with [`default_base_url`]); the default branch mirrors it (MIRRI_BASE_URL).
+pub(crate) fn base_url_env_name(provider_type: &str) -> &'static str {
     match provider_type {
         "anthropic" => "ANTHROPIC_BASE_URL",
         "openai" | "openai_responses" => "OPENAI_BASE_URL",
@@ -496,8 +542,49 @@ fn base_url_env_name(provider_type: &str) -> &'static str {
     }
 }
 
+/// The first-party provider ids whose implicit official endpoint is
+/// sanctioned (#184): a provider whose id IS one of the official services
+/// may omit its base URL — picking `openai` without a URL is a legitimate
+/// usage — while every other provider (models.dev imports, gateways,
+/// hand-added entries) must configure one explicitly. `kimi` is the Mirri
+/// first-party coding service (its official endpoint is
+/// api.mirricode.com).
+const FIRST_PARTY_PROVIDER_IDS: &[&str] = &[
+    "openai",
+    "anthropic",
+    "google",
+    "google-genai",
+    "google_genai",
+    "kimi",
+];
+
+/// The first-party default base URL for `provider_id`, or `None` when the
+/// provider is not a first party (the caller raises the clear
+/// missing-base-url configuration error). The official endpoints mirror
+/// the static defaults [`ProviderLlmFactory`] served for the env-driven
+/// path.
+pub(crate) fn first_party_default_base_url(provider_id: &str, provider_type: &str) -> Option<String> {
+    if !FIRST_PARTY_PROVIDER_IDS.contains(&provider_id) {
+        return None;
+    }
+    match provider_type {
+        "anthropic" => Some("https://api.anthropic.com/v1".to_string()),
+        "openai" | "openai_responses" => Some("https://api.openai.com/v1".to_string()),
+        "google" | "google-genai" | "google_genai" => {
+            Some("https://generativelanguage.googleapis.com/v1beta".to_string())
+        }
+        "kimi" => Some("https://api.mirricode.com/coding/v1".to_string()),
+        _ => None,
+    }
+}
+
+
 /// The type's API-key environment variable, or a clear error naming it —
-/// the same spellings [`ProviderLlmFactory`] reads.
+/// the same spellings [`ProviderLlmFactory`] reads (its env-driven path;
+/// the config-aware factory raises the explicit-credentials error
+/// instead, #186). `#[allow(dead_code)]`: retained as the shared spelling
+/// reference for the env-driven factory tier.
+#[allow(dead_code)]
 fn env_api_key(provider_type: &str) -> Result<String, String> {
     match api_key_env_name(provider_type) {
         Some(name) => std::env::var(name).map_err(|_| format!("{name} not set")),
@@ -507,21 +594,17 @@ fn env_api_key(provider_type: &str) -> Result<String, String> {
     }
 }
 
-/// The type's base URL: the environment variable override, else the static
-/// default — the same resolution [`ProviderLlmFactory`] uses. Defaults
-/// carry the version segment the endpoint path expects; the transport
-/// only joins base + path (no auto-appended version).
-fn default_base_url(provider_type: &str) -> String {
-    match provider_type {
-        "anthropic" => std::env::var("ANTHROPIC_BASE_URL")
-            .unwrap_or_else(|_| "https://api.anthropic.com/v1".to_string()),
-        "openai" | "openai_responses" => std::env::var("OPENAI_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
-        "google" | "google-genai" | "google_genai" => std::env::var("GOOGLE_GEMINI_BASE_URL")
-            .unwrap_or_else(|_| "https://generativelanguage.googleapis.com/v1beta".to_string()),
-        _ => std::env::var("MIRRI_BASE_URL")
-            .unwrap_or_else(|_| "https://api.mirricode.com/coding/v1".to_string()),
-    }
+/// The explicit-credentials configuration error (#186): the engine only
+/// uses credentials the user explicitly configured (the credential store
+/// or the provider's `env` sub-table) — a shell environment variable is
+/// never consulted, so a missing credential is this clear, actionable
+/// error instead of an env-var-not-set face.
+pub(crate) fn missing_credential_error(provider_id: &str) -> String {
+    format!(
+        "provider '{provider_id}' has no credential configured; please configure credentials for \
+         provider '{provider_id}' (Settings → Providers → {provider_id}, or the provider's env \
+         sub-table in config.toml)"
+    )
 }
 
 /// An [`LlmResolver`] over the agent's live `AgentScopeConfig`: caches the
@@ -615,25 +698,62 @@ use mirri_core::{ModelAlias, ProviderEntry};
 use std::collections::HashMap;
 
 #[cfg(test)]
+fn alias_config_with_model(provider: ProviderEntry, model: &str) -> Arc<RwLock<ServerConfig>> {
+    first_party_config_with_model("rakuten", provider, model)
+}
+
+#[cfg(test)]
 fn alias_config(provider: ProviderEntry) -> Arc<RwLock<ServerConfig>> {
     alias_config_with_model(provider, "GLM-5.3-Coding")
 }
 
 #[cfg(test)]
-fn alias_config_with_model(provider: ProviderEntry, model: &str) -> Arc<RwLock<ServerConfig>> {
+fn first_party_config(provider_id: &str, provider: ProviderEntry) -> Arc<RwLock<ServerConfig>> {
+    first_party_config_with_model(provider_id, provider, "GLM-5.3-Coding")
+}
+
+#[cfg(test)]
+fn first_party_config_with_model(
+    provider_id: &str,
+    provider: ProviderEntry,
+    model: &str,
+) -> Arc<RwLock<ServerConfig>> {
     Arc::new(RwLock::new(ServerConfig {
         models: Some(HashMap::from([(
             "ultra".to_string(),
             ModelAlias {
-                provider: "rakuten".to_string(),
+                provider: provider_id.to_string(),
                 model: model.to_string(),
                 max_context_size: 128000,
                 ..Default::default()
             },
         )])),
-        providers: Some(HashMap::from([("rakuten".to_string(), provider)])),
+        providers: Some(HashMap::from([(provider_id.to_string(), provider)])),
         ..Default::default()
     }))
+}
+
+#[cfg(test)]
+fn official_openai_config(provider: ProviderEntry) -> Arc<RwLock<ServerConfig>> {
+    first_party_config("openai", provider)
+}
+
+#[cfg(test)]
+fn official_openai_agent_config() -> AgentScopeConfig {
+    first_party_agent_config("openai")
+}
+
+#[cfg(test)]
+fn first_party_agent_config(provider_id: &str) -> AgentScopeConfig {
+    use mirri_core::ProviderType;
+    let _ = provider_id;
+    AgentScopeConfig {
+        provider_type: ProviderType::Anthropic,
+        model_id: "ultra".to_string(),
+        system_prompt: Some("You are a test assistant.".to_string()),
+        thinking_effort: None,
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]
@@ -644,8 +764,6 @@ mod tests {
         ModelCapability, ProviderType,
     };
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::*};
-
-    use crate::providers::ENV_LOCK;
 
     use super::*;
     use crate::LlmFactory;
@@ -748,10 +866,13 @@ mod tests {
 
     #[test]
     fn should_keep_kimi_video_capability_when_the_factory_merges_resolved_capability() {
-        // Given a config whose `ultra` alias resolves through a kimi
-        // provider for a model no source can resolve
+        // Given a config whose `ultra` alias resolves through the kimi
+        // provider for a model no source can resolve (the provider id
+        // `kimi` is the Mirri first-party coding service, so its official
+        // endpoint answers without an explicit base URL)
         let factory = ConfigAwareLlmFactory::new(
-            alias_config_with_model(
+            first_party_config_with_model(
+                "kimi",
                 ProviderEntry {
                     r#type: Some("kimi".to_string()),
                     env: Some(HashMap::from([("MIRRI_API_KEY".to_string(), "kimi-test".to_string())])),
@@ -796,7 +917,7 @@ mod tests {
         // When an LLM is created for the alias (capture-and-restore env
         // hygiene)
         let result = {
-            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _guard = mirri_test_support::env::lock();
             let prior = std::env::var("OPENAI_API_KEY").ok();
             unsafe { std::env::set_var("OPENAI_API_KEY", "sk-env") };
             let factory = ConfigAwareLlmFactory::new(
@@ -807,6 +928,7 @@ mod tests {
                 Some(home.path().to_path_buf()),
             );
             let result = factory.create_llm(&alias_agent_config());
+            // env_lock: restore under the workspace env lock guard above
             match prior {
                 Some(value) => unsafe { std::env::set_var("OPENAI_API_KEY", value) },
                 None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
@@ -829,10 +951,11 @@ mod tests {
     }
 
     #[test]
-    fn should_fall_back_to_the_env_api_key_when_an_alias_provider_has_no_credentials() {
+    fn should_error_when_an_alias_provider_has_only_a_shell_env_api_key() {
         // Given a config whose alias resolves through a provider with no
-        // apiKey, and the type's env var set
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // configured credential, and the type's env var set — the shell
+        // variable must NOT answer (#186: explicit credentials only)
+        let _guard = mirri_test_support::env::lock();
         unsafe { std::env::set_var("ANTHROPIC_API_KEY", "env-key") };
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
@@ -843,12 +966,20 @@ mod tests {
         );
 
         // When an LLM is created for the alias
-        let llm = factory
+        let err = factory
             .create_llm(&alias_agent_config())
-            .expect("llm is created from the env api key");
+            .err()
+            .expect("the shell env var must not answer");
 
-        // Then the adapter carries the alias's upstream model
-        assert_eq!(llm.model_name(), "GLM-5.3-Coding");
+        // Then the failure is the explicit-credentials configuration error
+        assert!(
+            err.contains("rakuten") && err.contains("credential"),
+            "the error names the provider and the missing credential: {err}"
+        );
+        assert!(
+            !err.contains("ANTHROPIC_API_KEY"),
+            "never the env-var face: {err}"
+        );
     }
 
     // -- the `env` sub-table fallback tier (apiKey / baseUrl chains) ------
@@ -898,6 +1029,221 @@ mod tests {
         while let Some(_event) = stream.next().await {}
     }
 
+    #[test]
+    fn should_error_naming_the_provider_when_a_third_party_provider_has_no_base_url() {
+        // Given a config whose alias resolves through a non-first-party
+        // provider with no baseUrl and no env sub-table base-URL entry (a
+        // third-party provider must never fall back to the official
+        // OpenAI endpoint — the #184 silent wrong-provider request face)
+        let _guard = mirri_test_support::env::lock();
+        unsafe { std::env::remove_var("OPENAI_BASE_URL") };
+        let factory = ConfigAwareLlmFactory::new(
+            alias_config(ProviderEntry {
+                r#type: Some("openai".to_string()),
+                env: Some(HashMap::from([("OPENAI_API_KEY".to_string(), "sk-test".to_string())])),
+                ..Default::default()
+            }),
+            None,
+        );
+
+        // When an LLM is created for the alias
+        let err = factory
+            .create_llm(&alias_agent_config())
+            .err()
+            .expect("creation must fail without a base URL");
+
+        // Then the error names the provider and the remedy — never a silent
+        // request to api.openai.com
+        assert!(
+            err.contains("rakuten") && err.contains("base URL"),
+            "the error names the provider and the missing base URL: {err}"
+        );
+        assert!(
+            !err.contains("api.openai.com"),
+            "never the silent official-endpoint face: {err}"
+        );
+    }
+
+    #[test]
+    fn should_create_llm_with_the_default_base_url_when_the_provider_is_official_openai() {
+        // Given a config whose alias resolves through the first-party
+        // `openai` provider with no baseUrl (the sanctioned bare usage —
+        // picking OpenAI without a URL is legitimate)
+        let _guard = mirri_test_support::env::lock();
+        unsafe { std::env::remove_var("OPENAI_BASE_URL") };
+        let factory = ConfigAwareLlmFactory::new(
+            official_openai_config(ProviderEntry {
+                r#type: Some("openai".to_string()),
+                env: Some(HashMap::from([("OPENAI_API_KEY".to_string(), "sk-test".to_string())])),
+                ..Default::default()
+            }),
+            None,
+        );
+
+        // When an LLM is created for the alias
+        let llm = factory
+            .create_llm(&official_openai_agent_config())
+            .expect("the official openai provider keeps its default base URL");
+
+        // Then the adapter was built (the creation is a Result<String> —
+        // the Ok itself proves the default answered instead of an error)
+        assert_eq!(llm.model_name(), "GLM-5.3-Coding");
+    }
+
+    #[test]
+    fn should_create_llm_with_the_default_base_url_when_the_provider_is_official_anthropic_or_google()
+    {
+        // Given configs whose aliases resolve through the first-party
+        // `anthropic` and `google-genai` providers with no baseUrl
+        let _guard = mirri_test_support::env::lock();
+        unsafe { std::env::remove_var("ANTHROPIC_BASE_URL") };
+        unsafe { std::env::remove_var("GOOGLE_GEMINI_BASE_URL") };
+        for (provider_id, provider_type, base_env) in [
+            ("anthropic", "anthropic", "ANTHROPIC_BASE_URL"),
+            ("google-genai", "google-genai", "GOOGLE_GEMINI_BASE_URL"),
+        ] {
+            let mut provider = ProviderEntry {
+                r#type: Some(provider_type.to_string()),
+                ..Default::default()
+            };
+            if provider_type == "anthropic" {
+                provider.env = Some(HashMap::from([(
+                    "ANTHROPIC_API_KEY".to_string(),
+                    "sk-test".to_string(),
+                )]));
+            } else {
+                provider.env = Some(HashMap::from([(
+                    "GOOGLE_API_KEY".to_string(),
+                    "sk-test".to_string(),
+                )]));
+            }
+            let _ = base_env;
+            let factory = ConfigAwareLlmFactory::new(
+                first_party_config(provider_id, provider),
+                None,
+            );
+
+            // When an LLM is created for the alias
+            let llm = factory
+                .create_llm(&first_party_agent_config(provider_id))
+                .unwrap_or_else(|e| panic!("the official {provider_id} provider keeps its default base URL: {e}"));
+
+            // Then the adapter was built
+            assert_eq!(llm.model_name(), "GLM-5.3-Coding");
+        }
+    }
+
+    #[test]
+    fn should_keep_the_env_sub_table_base_url_tier_for_third_party_providers() {
+        // Given a third-party provider with no baseUrl field but an env
+        // sub-table entry carrying the conventional base URL key (the user's
+        // explicit config tier must keep answering)
+        let _guard = mirri_test_support::env::lock();
+        unsafe { std::env::remove_var("OPENAI_BASE_URL") };
+        let factory = ConfigAwareLlmFactory::new(
+            alias_config(ProviderEntry {
+                r#type: Some("openai".to_string()),
+                env: Some(HashMap::from([
+                    ("OPENAI_API_KEY".to_string(), "sk-test".to_string()),
+                    ("OPENAI_BASE_URL".to_string(), "https://gw.example.test/v1".to_string()),
+                ])),
+                ..Default::default()
+            }),
+            None,
+        );
+
+        // When an LLM is created for the alias
+        let llm = factory
+            .create_llm(&alias_agent_config())
+            .expect("the env sub-table base URL answers");
+
+        // Then the adapter was built
+        assert_eq!(llm.model_name(), "GLM-5.3-Coding");
+    }
+
+    // -- TDD #184/#186 red tests --------------------------------------------
+
+    #[test]
+    fn should_error_with_a_configuration_error_when_only_the_shell_env_var_holds_the_api_key() {
+        // Given a provider with no credential-store record, no env
+        // sub-table entry, but the shell OPENAI_API_KEY set (the implicit
+        // fallback #186 removes — the engine must only use explicitly
+        // configured credentials)
+        let home = tempfile::tempdir().expect("tempdir");
+        // (no store entry, no config env tier)
+        let factory = ConfigAwareLlmFactory::new(
+            alias_config(ProviderEntry {
+                r#type: Some("openai".to_string()),
+                base_url: Some("https://gw.example.test/v1".to_string()),
+                ..Default::default()
+            }),
+            Some(home.path().to_path_buf()),
+        );
+
+        // When an LLM is created with the shell variable set
+        let _guard = mirri_test_support::env::lock();
+        let prior = std::env::var("OPENAI_API_KEY").ok();
+        unsafe { std::env::set_var("OPENAI_API_KEY", "sk-shell") };
+        let result = factory.create_llm(&alias_agent_config());
+        match prior {
+            Some(value) => unsafe { std::env::set_var("OPENAI_API_KEY", value) },
+            None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
+        }
+
+        // Then the creation failed with the explicit-configuration error —
+        // the shell variable must not answer
+        let err = result.err().expect("the shell env var must not answer");
+        assert!(
+            err.contains("rakuten"),
+            "the error names the provider: {err}"
+        );
+        assert!(
+            err.to_lowercase().contains("credential") || err.contains("API key"),
+            "the error names the missing credential: {err}"
+        );
+        assert!(
+            !err.contains("OPENAI_API_KEY not set"),
+            "never the env-var face: {err}"
+        );
+    }
+
+    #[test]
+    fn should_error_when_an_alias_provider_has_no_configured_api_key_at_all() {
+        // Given a provider with no store entry, no env sub-table entry, and
+        // the shell variables cleared — the old chain would have failed
+        // with the "OPENAI_API_KEY not set" face; the new chain must name
+        // the provider and point at the settings
+        let _guard = mirri_test_support::env::lock();
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
+        unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
+        unsafe { std::env::remove_var("MIRRI_API_KEY") };
+        unsafe { std::env::remove_var("GOOGLE_API_KEY") };
+        let factory = ConfigAwareLlmFactory::new(
+            alias_config(ProviderEntry {
+                r#type: Some("openai".to_string()),
+                base_url: Some("https://gw.example.test/v1".to_string()),
+                ..Default::default()
+            }),
+            None,
+        );
+
+        // When an LLM is created for the alias
+        let err = factory
+            .create_llm(&alias_agent_config())
+            .err()
+            .expect("creation must fail without credentials");
+
+        // Then the error names the provider and the settings remedy
+        assert!(
+            err.contains("rakuten") && err.contains("provider"),
+            "the error names the provider: {err}"
+        );
+        assert!(
+            !err.contains("OPENAI_API_KEY not set"),
+            "never the env-var face: {err}"
+        );
+    }
+
     #[tokio::test]
     async fn should_use_the_env_sub_table_api_key_when_the_api_key_field_is_absent() {
         // Given a mock Kimi endpoint, and a provider whose api key lives
@@ -924,7 +1270,7 @@ mod tests {
         // sub-table-over-shell precedence, and restored afterwards so a
         // developer's pre-existing variable survives the test
         let llm = {
-            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _guard = mirri_test_support::env::lock();
             let prior = std::env::var("MIRRI_API_KEY").ok();
             unsafe { std::env::set_var("MIRRI_API_KEY", "shell-key") };
             let llm = factory
@@ -991,12 +1337,12 @@ mod tests {
             "Bearer store-key"
         );
     }
-
     #[tokio::test]
-    async fn should_fall_back_to_the_shell_env_var_when_neither_field_nor_sub_table_is_set() {
+    async fn should_error_when_the_shell_env_var_is_the_only_credential_source() {
         // Given a mock Kimi endpoint, and a provider with no `apiKey`
         // field and an `env` sub-table holding only an unrelated key, but
-        // the type's shell variable set
+        // the type's shell variable set — the shell variable must NOT
+        // answer (#186: explicit credentials only, so no request leaves)
         let server = MockServer::start().await;
         mount_kimi_chat(&server).await;
         let factory = ConfigAwareLlmFactory::new(
@@ -1012,30 +1358,34 @@ mod tests {
             None,
         );
 
-        // When an LLM is created for the alias and chats — the shell
-        // variable is set with the prior value captured and restored so a
-        // developer's pre-existing variable survives the test
-        let llm = {
-            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // When an LLM is created for the alias — the shell variable is set
+        // with the prior value captured and restored so a developer's
+        // pre-existing variable survives the test
+        let result = {
+            let _guard = mirri_test_support::env::lock();
             let prior = std::env::var("MIRRI_API_KEY").ok();
             unsafe { std::env::set_var("MIRRI_API_KEY", "shell-key") };
-            let llm = factory
-                .create_llm(&alias_agent_config())
-                .expect("llm is created from the shell env var");
+            let result = factory.create_llm(&alias_agent_config());
             match prior {
                 Some(value) => unsafe { std::env::set_var("MIRRI_API_KEY", value) },
                 None => unsafe { std::env::remove_var("MIRRI_API_KEY") },
             }
-            llm
+            result
         };
-        drain_chat(llm.chat(simple_chat_params()).expect("chat starts")).await;
 
-        // Then the shell variable answered the credential resolution
+        // Then the creation failed with the explicit-credentials error and
+        // no request ever reached the mock
+        let err = result.err().expect("the shell env var must not answer");
+        assert!(
+            err.contains("rakuten") && err.contains("credential"),
+            "the error names the provider and the missing credential: {err}"
+        );
+        assert!(!err.contains("MIRRI_API_KEY"), "never the env-var face: {err}");
         let requests = server.received_requests().await.expect("requests");
-        assert_eq!(requests.len(), 1, "exactly one request reaches the mock");
         assert_eq!(
-            request_header(&requests[0], "authorization"),
-            "Bearer shell-key"
+            requests.len(),
+            0,
+            "no request may leave when the credential is not explicitly configured"
         );
     }
 
@@ -1067,7 +1417,7 @@ mod tests {
         // variable is set with the prior value captured and restored so a
         // developer's pre-existing variable survives the test
         let llm = {
-            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _guard = mirri_test_support::env::lock();
             let prior = std::env::var("MIRRI_BASE_URL").ok();
             unsafe { std::env::set_var("MIRRI_BASE_URL", format!("{}/v1", shell_server.uri())) };
             let llm = factory
@@ -1120,7 +1470,7 @@ mod tests {
 
         // When an LLM is created for the alias and chats
         let llm = {
-            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _guard = mirri_test_support::env::lock();
             let prior = std::env::var("MIRRI_BASE_URL").ok();
             unsafe { std::env::remove_var("MIRRI_BASE_URL") };
             let llm = factory
@@ -1150,39 +1500,48 @@ mod tests {
     async fn should_ignore_empty_env_sub_table_values_and_fall_through_to_the_next_source() {
         // Given a mock Kimi endpoint serving as the shell MIRRI_BASE_URL
         // target, and a provider whose `env` sub-table carries a real api
-        // key but an empty base URL
+        // key but an empty base URL — the empty value falls through the
+        // sub-table tier; with the shell routing retired (#184/#186) the
+        // fall-through lands on the explicit-config source that remains
         let shell_server = MockServer::start().await;
         mount_kimi_chat(&shell_server).await;
         let table_server = MockServer::start().await;
         mount_kimi_chat(&table_server).await;
         let factory = ConfigAwareLlmFactory::new(
-            alias_config(ProviderEntry {
-                r#type: Some("kimi".to_string()),
-                env: Some(HashMap::from([
-                    ("MIRRI_API_KEY".to_string(), "table-key".to_string()),
-                    ("MIRRI_BASE_URL".to_string(), String::new()),
-                ])),
-                ..Default::default()
-            }),
+            first_party_config(
+                "kimi",
+                ProviderEntry {
+                    r#type: Some("kimi".to_string()),
+                    env: Some(HashMap::from([
+                        ("MIRRI_API_KEY".to_string(), "table-key".to_string()),
+                        ("MIRRI_BASE_URL".to_string(), String::new()),
+                    ])),
+                    ..Default::default()
+                },
+            ),
             None,
         );
 
-        // When an LLM is created for the alias and chats — both shell
-        // variables are set with the prior values captured and restored so
-        // a developer's pre-existing variables survive the test
+        // When an LLM is created for the alias — the shell variables are
+        // set with the prior values captured and restored so a developer's
+        // pre-existing variables survive the test. The empty sub-table base
+        // URL falls through PAST the shell tier (retired for credentials'
+        // consistency: the first-party default wins for a first-party
+        // provider), and the non-empty sub-table api key answers.
         let llm = {
-            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _guard = mirri_test_support::env::lock();
             let prior_api_key = std::env::var("MIRRI_API_KEY").ok();
             let prior_base_url = std::env::var("MIRRI_BASE_URL").ok();
             unsafe { std::env::remove_var("MIRRI_API_KEY") };
             unsafe { std::env::set_var("MIRRI_BASE_URL", format!("{}/v1", shell_server.uri())) };
             let llm = factory
-                .create_llm(&alias_agent_config())
+                .create_llm(&first_party_agent_config("kimi"))
                 .expect("llm is created from the sub-table api key");
             match prior_api_key {
                 Some(value) => unsafe { std::env::set_var("MIRRI_API_KEY", value) },
                 None => unsafe { std::env::remove_var("MIRRI_API_KEY") },
             }
+            // env_lock: restore under the workspace env lock guard above
             match prior_base_url {
                 Some(value) => unsafe { std::env::set_var("MIRRI_BASE_URL", value) },
                 None => unsafe { std::env::remove_var("MIRRI_BASE_URL") },
@@ -1191,41 +1550,55 @@ mod tests {
         };
         drain_chat(llm.chat(simple_chat_params()).expect("chat starts")).await;
 
-        // Then the empty base URL fell through to the shell variable while
-        // the non-empty api key answered from the sub-table
+        // Then the empty base URL fell through to the first-party default
+        // (never the shell's endpoint — the shell tier no longer routes
+        // provider traffic) while the non-empty api key answered from the
+        // sub-table
         let requests = shell_server.received_requests().await.expect("requests");
-        assert_eq!(requests.len(), 1);
         assert_eq!(
-            request_header(&requests[0], "authorization"),
-            "Bearer table-key"
+            requests.len(),
+            0,
+            "the shell base-url endpoint must not answer (the first-party default won)"
         );
 
         // And when the sub-table api key is whitespace-only instead, with
-        // the shell variable holding the credential and the sub-table
-        // carrying the base URL
+        // the credential store holding the key and the sub-table carrying
+        // the base URL — the whitespace value is ignored and the store
+        // answers (the explicit tiers)
+        let home = tempfile::tempdir().expect("tempdir");
+        let store = mirri_credentials::CredentialStore::open(home.path()).expect("store opens");
+        store
+            .set(
+                "kimi",
+                mirri_credentials::CredentialValue::Key { key: "store-key".into() },
+            )
+            .expect("store set");
         let factory = ConfigAwareLlmFactory::new(
-            alias_config(ProviderEntry {
-                r#type: Some("kimi".to_string()),
-                env: Some(HashMap::from([
-                    ("MIRRI_API_KEY".to_string(), "   ".to_string()),
-                    (
-                        "MIRRI_BASE_URL".to_string(),
-                        format!("{}/v1", table_server.uri()),
-                    ),
-                ])),
-                ..Default::default()
-            }),
-            None,
+            first_party_config(
+                "kimi",
+                ProviderEntry {
+                    r#type: Some("kimi".to_string()),
+                    env: Some(HashMap::from([
+                        ("MIRRI_API_KEY".to_string(), "   ".to_string()),
+                        (
+                            "MIRRI_BASE_URL".to_string(),
+                            format!("{}/v1", table_server.uri()),
+                        ),
+                    ])),
+                    ..Default::default()
+                },
+            ),
+            Some(home.path().to_path_buf()),
         );
 
         // When an LLM is created for the alias and chats — same
         // capture-and-restore hygiene for the shell key
         let llm = {
-            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _guard = mirri_test_support::env::lock();
             let prior = std::env::var("MIRRI_API_KEY").ok();
             unsafe { std::env::set_var("MIRRI_API_KEY", "shell-key") };
             let llm = factory
-                .create_llm(&alias_agent_config())
+                .create_llm(&first_party_agent_config("kimi"))
                 .expect("llm is created");
             match prior {
                 Some(value) => unsafe { std::env::set_var("MIRRI_API_KEY", value) },
@@ -1235,13 +1608,14 @@ mod tests {
         };
         drain_chat(llm.chat(simple_chat_params()).expect("chat starts")).await;
 
-        // Then the whitespace value was ignored (the shell key answered)
-        // and the sub-table's base URL routed the request
+        // Then the whitespace value was ignored (the store's key answered
+        // — never the shell's) and the sub-table's base URL routed the
+        // request
         let table_requests = table_server.received_requests().await.expect("requests");
         assert_eq!(table_requests.len(), 1);
         assert_eq!(
             request_header(&table_requests[0], "authorization"),
-            "Bearer shell-key"
+            "Bearer store-key"
         );
         assert_eq!(
             shell_server
@@ -1249,8 +1623,8 @@ mod tests {
                 .await
                 .expect("requests")
                 .len(),
-            1,
-            "no second request to the shell-routed endpoint"
+            0,
+            "the shell-routed endpoint never answers (its tier is retired)"
         );
     }
 
@@ -1260,7 +1634,7 @@ mod tests {
         // env var set (the legacy bare-name path's credential source — its
         // presence proves a silent fallback would have answered), but an
         // agent addressing a bare model name that is no configured alias
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         unsafe { std::env::set_var("ANTHROPIC_API_KEY", "env-key") };
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
@@ -1302,7 +1676,7 @@ mod tests {
         // GLM-5.3-Coding, with the credentials carried in the provider
         // record, and the Anthropic env var set (a bare-name env fallback
         // would answer a wrong-provider LLM for the composite id)
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         unsafe { std::env::set_var("ANTHROPIC_API_KEY", "env-key") };
         let factory = ConfigAwareLlmFactory::new(
             alias_config(ProviderEntry {
@@ -1365,7 +1739,7 @@ mod tests {
     fn should_answer_a_clear_not_configured_error_when_a_composite_resolves_to_no_alias() {
         // Given the env-based fallback vars cleared (the dead-end must not
         // answer) and a config whose aliases name no rakuten Ghost model
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = mirri_test_support::env::lock();
         unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
         unsafe { std::env::remove_var("OPENAI_API_KEY") };
         let factory = ConfigAwareLlmFactory::new(
@@ -1665,5 +2039,48 @@ mod tests {
         assert_eq!(err, "model 'model-b' cannot be created");
         assert!(err.contains("model-b"));
         assert_eq!(factory.create_calls(), 2);
+    }
+
+    // ===== Injectable home resolution (16-test-execution-strategy §4.2:
+    // production HOME reads reachable from lib test targets expose a
+    // `resolve_*_from` variant so tests pass the value instead of pinning
+    // the process env) =====
+
+    /// Given the home fallback chain, when it is resolved from injected env
+    /// lookups, then the tiers apply in order — explicit home wins,
+    /// `MIRRICODE_HOME` beats `$HOME`, and `$HOME` joins `.mirri-code` —
+    /// with no process-env mutation involved.
+    #[test]
+    fn should_apply_the_home_fallback_tiers_when_resolved_from_injected_env() {
+        let explicit = PathBuf::from("/explicit/home");
+        let factory = ConfigAwareLlmFactory::new(
+            Arc::new(std::sync::RwLock::new(ServerConfig::default())),
+            Some(explicit.clone()),
+        );
+        assert_eq!(factory.mirri_home(), explicit);
+
+        let no_home_factory = ConfigAwareLlmFactory::new(
+            Arc::new(std::sync::RwLock::new(ServerConfig::default())),
+            None,
+        );
+        // When `MIRRICODE_HOME` is set in the injected env (it outranks $HOME)
+        assert_eq!(
+            no_home_factory.mirri_home_from(|name| {
+                (name == "MIRRICODE_HOME").then(|| std::ffi::OsString::from("/mirri/home"))
+            }),
+            PathBuf::from("/mirri/home")
+        );
+        // And when only `$HOME` is set (the `.mirri-code` suffix joins)
+        assert_eq!(
+            no_home_factory.mirri_home_from(|name| {
+                (name == "HOME").then(|| std::ffi::OsString::from("/fake/home"))
+            }),
+            PathBuf::from("/fake/home/.mirri-code")
+        );
+        // And when nothing is set (the relative fallback)
+        assert_eq!(
+            no_home_factory.mirri_home_from(|_| None),
+            PathBuf::from(".mirri-code")
+        );
     }
 }

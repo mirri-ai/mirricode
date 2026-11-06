@@ -863,7 +863,51 @@ pub fn apply_with_limits(
             }
         }
 
-        WireOp::CronCursor { id, last_fired_at } => {
+        // S9 / SDR-106 A.6b: the lineage one-shot creation count — the op
+        // carries the post-creation ABSOLUTE, so the fold is a max
+        // (idempotent under replay; an out-of-order duplicate never lowers
+        // the count).
+        WireOp::CronLineageCreated { count } => {
+            state.cron_lineage_one_shot_created =
+                state.cron_lineage_one_shot_created.max(*count);
+        }
+
+        // C.4 (stage-1 batch-2): a held fire upserts by task id — the
+        // same-task merge adds the incoming coalescedCount onto the held
+        // entry's (two due periods held while busy deliver as one merged
+        // injection after the wait), a fresh id appends. Raw JSON: a
+        // record without a readable id is appended verbatim rather than
+        // dropped (a skip here would lose a held fire silently).
+        WireOp::CronHeldAdd { task } => {
+            let task_id = task
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            match state.cron_held.iter().position(|existing| {
+                existing.get("task_id").and_then(|v| v.as_str()) == Some(task_id.as_str())
+            }) {
+                Some(index) => {
+                    let merged = merge_held_records(&state.cron_held[index], task);
+                    state.cron_held[index] = merged;
+                }
+                None => state.cron_held.push(task.clone()),
+            }
+        }
+
+        // C.4: the held fire left the table — injected (write-before-inject
+        // settled) or purged (task deleted).
+        WireOp::CronHeldClear { id } => {
+            state.cron_held.retain(|held| {
+                held.get("task_id").and_then(|v| v.as_str()) != Some(id.as_str())
+            });
+        }
+
+        WireOp::CronCursor {
+            id,
+            last_fired_at,
+            fire_count,
+        } => {
             // Stamp the cursor onto the matching task in place (F16): the
             // epoch-milliseconds value lands under the wire DTO key
             // `lastFiredAt` — the TS `cronCursor` apply stamps the same
@@ -883,6 +927,15 @@ pub fn apply_with_limits(
                     "lastFiredAt".to_string(),
                     serde_json::Value::from(*last_fired_at),
                 );
+                // S2: the post-fire delivery count rides the same stamp —
+                // written only when the op carries one, so pre-batch ops
+                // never fabricate a `fireCount` key on old records.
+                if let Some(fire_count) = fire_count {
+                    object.insert(
+                        "fireCount".to_string(),
+                        serde_json::Value::from(*fire_count),
+                    );
+                }
             }
         }
 
@@ -1031,6 +1084,52 @@ fn is_undo_anchor_message(message: &serde_json::Value) -> bool {
             )
         }
     }
+}
+
+/// Merge two held-fire records of the SAME task id (C.4 reducer arm): the
+/// incoming record's fields win (the latest hold carries the freshest
+/// stale/maxed_out state), except `coalescedCount`, which adds — two due
+/// periods held while busy deliver as one merged injection afterwards.
+/// Tolerant by design: an unreadable count falls back to the incoming
+/// value (never zero — a held fire always carries at least one period).
+/// m1 parity: the live [`hold_fire`](mirri_core::cron::CronManager::hold_fire)
+/// merge keeps an existing `scheduledAt` when the incoming record has
+/// none (a run-now hold is early by design, never a lateness eraser) —
+/// this reducer arm matches that: `merged` starts from the INCOMING
+/// record, so a run-now incoming record (`scheduledAt: null`) would
+/// erase the natural hold's anchor. The restore path re-holds each
+/// persisted entry through the live merge, so the reducer only sees
+/// already-merged records in practice; keeping the two merges aligned
+/// is defense against a future direct re-fold divergence.
+fn merge_held_records(
+    existing: &serde_json::Value,
+    incoming: &serde_json::Value,
+) -> serde_json::Value {
+    let mut merged = incoming.clone();
+    // m1 parity: keep the existing anchor when the incoming record has
+    // none (a run-now hold never erases a natural fire's scheduledAt).
+    let scheduled_at = existing
+        .get("scheduled_at")
+        .filter(|v| !v.is_null())
+        .cloned();
+    let add_counts = |record: &serde_json::Value| {
+        record
+            .get("coalesced_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1)
+    };
+    if let Some(object) = merged.as_object_mut() {
+        object.insert(
+            "coalesced_count".to_string(),
+            serde_json::Value::from(add_counts(existing) + add_counts(incoming)),
+        );
+        if let Some(scheduled_at) = scheduled_at
+            && incoming.get("scheduled_at").is_none_or(serde_json::Value::is_null)
+        {
+            object.insert("scheduled_at".to_string(), scheduled_at);
+        }
+    }
+    merged
 }
 
 /// Validate a `"todo"` store value: an array whose every item has a
@@ -2146,6 +2245,260 @@ mod tests {
     use super::*;
     use crate::wire::WireOp;
     use serde_json::json;
+
+    // ------------------------------------------------------------------
+    // cron.held / cron.held_clear (stage-1 batch-2, C.4)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn should_append_a_held_fire_when_a_cron_held_op_folds() {
+        // Given an empty state, when a held fire is recorded
+        let state = reduce(
+            &AgentState::new(),
+            &WireOp::CronHeldAdd {
+                task: json!({
+                    "task_id": "cron-1", "prompt": "tick", "cron": "* * * * *",
+                    "recurring": true, "coalesced_count": 1, "stale": false,
+                    "maxed_out": false,
+                }),
+            },
+        )
+        .0;
+
+        // Then the state holds exactly that entry
+        assert_eq!(state.cron_held.len(), 1);
+        assert_eq!(state.cron_held[0]["task_id"], "cron-1");
+        assert_eq!(state.cron_held[0]["coalesced_count"], 1);
+    }
+
+    #[test]
+    fn should_merge_by_task_id_and_add_counts_when_cron_held_ops_fold_twice() {
+        // Given a state already holding one fire of a task
+        let state = AgentState::new();
+        let state = reduce(
+            &state,
+            &WireOp::CronHeldAdd {
+                task: json!({
+                    "task_id": "cron-1", "prompt": "tick", "cron": "* * * * *",
+                    "recurring": true, "coalesced_count": 2, "stale": false,
+                    "maxed_out": false,
+                }),
+            },
+        )
+        .0;
+
+        // When a second due period of the SAME task is held while busy
+        let state = reduce(
+            &state,
+            &WireOp::CronHeldAdd {
+                task: json!({
+                    "task_id": "cron-1", "prompt": "tick", "cron": "* * * * *",
+                    "recurring": true, "coalesced_count": 3, "stale": false,
+                    "maxed_out": false,
+                }),
+            },
+        )
+        .0;
+
+        // Then there is one merged entry with the counts added
+        assert_eq!(state.cron_held.len(), 1, "same-task holds merge");
+        assert_eq!(state.cron_held[0]["coalesced_count"], 5);
+    }
+
+    #[test]
+    fn should_keep_the_existing_anchor_when_a_run_now_hold_merges_in() {
+        // Given a natural held fire carrying its scheduled anchor
+        let state = AgentState::new();
+        let state = reduce(
+            &state,
+            &WireOp::CronHeldAdd {
+                task: json!({
+                    "task_id": "cron-1", "coalesced_count": 2,
+                    "scheduled_at": "2026-10-31T00:00:00Z",
+                }),
+            },
+        )
+        .0;
+
+        // When a run-now hold of the SAME task merges (no scheduled_at —
+        // early by design, m1)
+        let state = reduce(
+            &state,
+            &WireOp::CronHeldAdd {
+                task: json!({
+                    "task_id": "cron-1", "coalesced_count": 1,
+                    "scheduled_at": null,
+                }),
+            },
+        )
+        .0;
+
+        // Then the merged entry keeps the natural fire's anchor and adds
+        // the counts (m1 parity with the live hold_fire merge)
+        assert_eq!(state.cron_held.len(), 1);
+        assert_eq!(state.cron_held[0]["coalesced_count"], 3);
+        assert_eq!(
+            state.cron_held[0]["scheduled_at"],
+            json!("2026-10-31T00:00:00Z"),
+            "a run-now hold never erases the natural fire's anchor: {}",
+            state.cron_held[0]
+        );
+    }
+
+    #[test]
+    fn should_remove_the_matching_entry_when_a_cron_held_clear_op_folds() {
+        // Given two held fires
+        let state = AgentState::new();
+        let state = reduce(
+            &state,
+            &WireOp::CronHeldAdd {
+                task: json!({"task_id": "cron-1", "coalesced_count": 1}),
+            },
+        )
+        .0;
+        let state = reduce(
+            &state,
+            &WireOp::CronHeldAdd {
+                task: json!({"task_id": "cron-2", "coalesced_count": 1}),
+            },
+        )
+        .0;
+
+        // When the first task's held fire is cleared
+        let state = reduce(
+            &state,
+            &WireOp::CronHeldClear {
+                id: "cron-1".to_string(),
+            },
+        )
+        .0;
+
+        // Then only the other task's entry remains
+        assert_eq!(state.cron_held.len(), 1);
+        assert_eq!(state.cron_held[0]["task_id"], "cron-2");
+    }
+
+    // ------------------------------------------------------------------
+    // cron.cursor fireCount stamping (stage-1 batch-1, S2)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn should_stamp_fire_count_when_a_cron_cursor_op_carries_one() {        // Given a state with one cron task
+        let mut state = AgentState::new();
+        state = reduce(
+            &state,
+            &WireOp::CronAdd {
+                task: json!({
+                    "id": "cron-1", "cron": "*/5 * * * *", "prompt": "tick",
+                    "recurring": true, "createdAt": 1_700_000_000_000i64,
+                }),
+            },
+        )
+        .0;
+
+        // When a cursor op carries the post-fire count
+        state = reduce(
+            &state,
+            &WireOp::CronCursor {
+                id: "cron-1".to_string(),
+                last_fired_at: 1_700_000_300_000,
+                fire_count: Some(3),
+            },
+        )
+        .0;
+
+        // Then the task's record carries the stamped fireCount
+        let task = &state.cron_tasks[0];
+        assert_eq!(task["fireCount"], 3);
+    }
+
+    #[test]
+    fn should_fold_the_lineage_count_as_a_max_when_reducing_lineage_ops() {
+        // Given a fresh state
+        let mut state = AgentState::new();
+
+        // When lineage ops arrive — including an out-of-order duplicate
+        state = reduce(
+            &state,
+            &WireOp::CronLineageCreated { count: 2 },
+        )
+        .0;
+        state = reduce(
+            &state,
+            &WireOp::CronLineageCreated { count: 5 },
+        )
+        .0;
+        state = reduce(
+            &state,
+            &WireOp::CronLineageCreated { count: 3 },
+        )
+        .0;
+
+        // Then the fold keeps the max (absolute, idempotent under replay)
+        assert_eq!(state.cron_lineage_one_shot_created, 5);
+    }
+
+    #[test]
+    fn should_default_the_lineage_count_to_zero_when_the_state_has_no_field() {
+        // A pre-batch state snapshot (no key) deserializes with the
+        // default 0 — serde default, no migration.
+        let legacy = serde_json::json!({
+            "conversation": { "messages": [], "loop_events": [] },
+            "permission": { "mode": "manual" },
+            "budget": {},
+            "usage": {}
+        });
+        let state: AgentState = serde_json::from_value(legacy).expect("legacy state parses");
+        assert_eq!(state.cron_lineage_one_shot_created, 0);
+    }
+
+    #[test]
+    fn should_round_trip_the_lineage_op_through_the_wire_serialization() {
+        // The op's wire name and shape must stay stable.
+        let op = WireOp::CronLineageCreated { count: 4 };
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains("cron.lineage_created"), "{json}");
+        assert!(json.contains("\"count\":4"), "{json}");
+        let decoded: WireOp = serde_json::from_str(&json).unwrap();
+        assert!(matches!(decoded, WireOp::CronLineageCreated { count: 4 }));
+    }
+
+    #[test]
+    fn should_not_stamp_a_fire_count_when_a_cron_cursor_op_carries_none() {
+        // Given a state with one cron task (a pre-batch record with no
+        // fireCount key)
+        let mut state = AgentState::new();
+        state = reduce(
+            &state,
+            &WireOp::CronAdd {
+                task: json!({
+                    "id": "cron-1", "cron": "*/5 * * * *", "prompt": "tick",
+                    "recurring": true, "createdAt": 1_700_000_000_000i64,
+                }),
+            },
+        )
+        .0;
+
+        // When an old-shape cursor op (no fireCount key) applies
+        state = reduce(
+            &state,
+            &WireOp::CronCursor {
+                id: "cron-1".to_string(),
+                last_fired_at: 1_700_000_300_000,
+                fire_count: None,
+            },
+        )
+        .0;
+
+        // Then no fireCount key is written (a 0 would misreport an
+        // unbudgeted task as having fired zero times... but worse, it
+        // would fabricate the key on pre-batch records).
+        let task = &state.cron_tasks[0];
+        assert!(
+            task.get("fireCount").is_none(),
+            "an absent count stays absent: {task}"
+        );
+    }
 
     #[test]
     fn should_rebuild_head_elision_summary_and_tail_when_counts_present() {

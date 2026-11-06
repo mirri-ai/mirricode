@@ -65,6 +65,8 @@
 
 ## 待办与开放项
 
+- [ ] **ADR-006 已裁决待实施（2026-11-03，用户），经架构师终审并修复全部 findings**：SQLite 升格为会话元数据唯一事实源。五项裁决落定（ACP 注入 home / 三级恢复金字塔 + expand-only / 可携带性无补偿 / 收窄端口 + 字段级强制 / 一次性迁移 + 地板锁）；ADR-003-R1、ADR-004 已打 superseded 指针，§1/§3.5/§3.6/§4.4/§5/§6 正文同步终态，US C1.1/C3.1/C3.2 落 SDR-001/002，墓碑机制与迁移独占约束已补入。下一步：实施计划（含迁移工具存量资产清单、测试回归面必排项）。用户可见影响：实施落地前无任何行为变化。
+
 - [ ] 用户评审需求/架构基线（ADR-005 已随批次 1.5/2 落地，需回写架构文档评审）
 - [ ] F-2 残余收窄：load_state/resume 登记三路合并祖先（见上"批次 2 已知裁剪"第 1 条）
 - [x] G3 核实（2026-10-14，Task 6 评审 M-2）：**无需立项——名册已存在**。服务端 `session.snapshot` 的 `subagents` 已从 `list_subagent_registrations` 填充（live registry 供数；`restore_subagents` 经 `seed_subagent_registry` 播种，重启/恢复路径同样覆盖——既有测试 `should_include_member_agents_in_the_snapshot_subagents_roster` 断言非空）；web 侧 `mergeSnapshotSubagents` 也已用快照名册播种任务面板（swarm 卡刷新存活）。conversation-rendering 域登记的"快照 subagents 恒 []"（其 G3 行，源自 rpc.rs 旧版）**过时**——名册填充已落地，登记未同步更新。批次 1.5 又补齐了双开跟随侧（新注册子 agent 事件帧即时到达 web）。剩余待办仅一条：**更新 conversation-rendering 域的过时登记**（G3 名册行、G10 身份分片行中与子代理名册/进度相关的部分）——纯文档修正，无代码工作。用户可见影响：双开场景下子 agent 名册与进度（任务面板路径）已可见；转录不折子 agent 帧是**有意设计**（主身份过滤防骨架气泡，子 agent 走任务面板/Agent 工具卡路径），非缺口。

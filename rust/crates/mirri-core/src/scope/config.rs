@@ -469,6 +469,14 @@ pub struct AgentScopeConfig {
     /// from the session's current user-rule set (the session is the source
     /// of truth; directly-constructed agent scopes keep none).
     pub permission_rules: Vec<PermissionRule>,
+    /// The workspace id the `CreateScheduledTask` tool binds its drafts to
+    /// (C2, ADR-014 kept): the proposing session's runtime workspace.
+    /// `None` keeps the tool unregistered.
+    pub workspace_id: Option<String>,
+    /// The host-side creation registration seam (C2): the
+    /// embedded server's registry-backed sink. `None` keeps
+    /// `CreateScheduledTask` unregistered.
+    pub scheduled_task_creator: Option<Arc<dyn crate::tools::create_scheduled_task::ScheduledTaskCreator>>,
 }
 
 impl Default for AgentScopeConfig {
@@ -504,6 +512,8 @@ impl Default for AgentScopeConfig {
             max_swarm_items: None,
             session_approvals: None,
             permission_rules: Vec::new(),
+            workspace_id: None,
+            scheduled_task_creator: None,
         }
     }
 }

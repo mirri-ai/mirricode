@@ -54,9 +54,11 @@ const SESSIONS_DIR: &str = "sessions";
 
 /// Run `mirri session-list`: list the persisted sessions found under the
 /// Mirri data dir's session roots — the v3 storage root first, then the
-/// TS-era `sessions/` root — reading each session's `state.json` for its
-/// creation timestamp. The session ID is the directory name (not a field
-/// inside `state.json`).
+/// TS-era `sessions/` root — reading each session's creation timestamp
+/// from the metadata ROW when one exists (ADR-006: the row is the source
+/// of truth; `mirri migrate` seeds it), falling back to the session's
+/// `state.json` for pre-row sessions. The session ID is the directory
+/// name (not a field inside `state.json`).
 ///
 /// The timestamp is read from the `created_at` field of the `Snapshot`
 /// object. Sessions written by the legacy TypeScript engine, however,
@@ -66,7 +68,12 @@ const SESSIONS_DIR: &str = "sessions";
 /// `created_at` (current Rust `Snapshot`).
 pub async fn run_session_list(_workspace: &str) -> Result<()> {
     let home = mirri_data_dir()?;
-    let sessions = list_sessions_dual_root(&home.join(V3_SESSIONS_DIR), &home.join(SESSIONS_DIR))?;
+    let sessions = list_sessions_dual_root(
+        &home.join(V3_SESSIONS_DIR),
+        &home.join(SESSIONS_DIR),
+        &home,
+    )
+    .await?;
 
     if sessions.is_empty() {
         println!("No sessions found.");
@@ -80,19 +87,45 @@ pub async fn run_session_list(_workspace: &str) -> Result<()> {
     Ok(())
 }
 
-/// Collect `(session_id, created_at)` pairs from every `state.json` under
-/// both session roots (v3 first, then the TS-era root), deduplicated by
-/// session id — a session present in both roots is reported once, from the
-/// v3 root (the post-migration location) — and sorted deterministically by
-/// `(created_at, session_id)`.
+/// Collect `(session_id, created_at)` pairs from the metadata ROWS of the
+/// home's `session-index.db` (the v3 sessions the row covers — the source
+/// of truth, ADR-006) plus every `state.json` under both session roots,
+/// deduplicated by session id — the row wins for an id it covers, then
+/// the v3 root's `state.json` (the post-migration location), then the
+/// TS-era root — and sorted deterministically by `(created_at,
+/// session_id)`.
 ///
-/// A missing root simply contributes nothing; only when NEITHER root exists
-/// is the absence reported.
-fn list_sessions_dual_root(
+/// A missing database simply contributes no rows (the pre-row fallback
+/// below fills those sessions); a missing root contributes nothing; only
+/// when NEITHER root exists AND no database carries rows is the absence
+/// reported.
+async fn list_sessions_dual_root(
     v3_sessions_dir: &Path,
     legacy_sessions_dir: &Path,
+    home: &Path,
 ) -> Result<Vec<(String, String)>> {
-    if !v3_sessions_dir.exists() && !legacy_sessions_dir.exists() {
+    // The row-first arm: the home's metadata rows (the v3 sessions the
+    // migration and every post-ADR-006 create cover). A missing or
+    // unreadable database degrades to the disk scan below — the CLI never
+    // fails the listing on a store it cannot open.
+    let mut sessions: Vec<(String, String)> = Vec::new();
+    if let Ok(mirri_session_index::OpenOutcome::Ok(index)) =
+        mirri_session_index::SessionIndex::open_with_check(&home.join("session-index.db"))
+        && let Ok(rows) = index.list_sessions(mirri_session_index::ListOpts::default())
+    {
+        for row in rows {
+            sessions.push((
+                row.id,
+                row.created_at
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
+            ));
+        }
+    }
+
+    if sessions.is_empty()
+        && !v3_sessions_dir.exists()
+        && !legacy_sessions_dir.exists()
+    {
         println!(
             "No sessions directory found at {} (or {})",
             v3_sessions_dir.display(),
@@ -101,10 +134,17 @@ fn list_sessions_dual_root(
         return Ok(vec![]);
     }
 
-    let mut sessions = list_sessions(v3_sessions_dir)?;
+    for (id, created) in list_sessions(v3_sessions_dir)? {
+        // A row already covered this session — the row's view is the
+        // truth (ADR-006); the state.json copy only fills pre-row
+        // sessions.
+        if !sessions.iter().any(|(existing, _)| existing == &id) {
+            sessions.push((id, created));
+        }
+    }
     for (id, created) in list_sessions(legacy_sessions_dir)? {
-        // A session id already seen from the v3 root wins — the legacy copy
-        // is the pre-migration duplicate.
+        // A session id already seen from the row or the v3 root wins —
+        // the legacy copy is the pre-migration duplicate.
         if !sessions.iter().any(|(existing, _)| existing == &id) {
             sessions.push((id, created));
         }
@@ -736,8 +776,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn should_list_sessions_from_both_storage_roots() {
+    #[tokio::test]
+    async fn should_list_sessions_from_both_storage_roots() {
         // Given a Mirri home with a rust-written session under
         // v3_sessions/<bucket>/<id> and a TS-era session under
         // sessions/<bucket>/<id>
@@ -761,7 +801,8 @@ mod tests {
         .expect("write ts state.json should succeed");
 
         // When listing sessions across both roots
-        let sessions = list_sessions_dual_root(&v3_dir, &legacy_dir)
+        let sessions = list_sessions_dual_root(&v3_dir, &legacy_dir, temp_dir.path())
+            .await
             .expect("list_sessions_dual_root should succeed");
 
         // Then both eras' sessions are found, sorted by (timestamp, id)
@@ -777,8 +818,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn should_prefer_the_v3_entry_when_a_session_exists_in_both_roots() {
+    #[tokio::test]
+    async fn should_prefer_the_v3_entry_when_a_session_exists_in_both_roots() {
         // Given a session id present in both the v3 root and the legacy root
         // (the pre-migration duplicate left behind by --copy)
         let temp_dir = tempfile::tempdir().expect("tempdir should succeed");
@@ -802,7 +843,8 @@ mod tests {
         .expect("write legacy state.json should succeed");
 
         // When listing sessions across both roots
-        let sessions = list_sessions_dual_root(&v3_dir, &legacy_dir)
+        let sessions = list_sessions_dual_root(&v3_dir, &legacy_dir, temp_dir.path())
+            .await
             .expect("list_sessions_dual_root should succeed");
 
         // Then the id appears once, with the v3 root's entry winning
@@ -823,11 +865,83 @@ mod tests {
         let legacy_dir = temp_dir.path().join("sessions");
 
         // When listing sessions across both roots
-        let sessions = list_sessions_dual_root(&v3_dir, &legacy_dir)
+        let sessions = tokio::runtime::Runtime::new()
+            .expect("test runtime")
+            .block_on(list_sessions_dual_root(
+                &v3_dir,
+                &legacy_dir,
+                temp_dir.path(),
+            ))
             .expect("list_sessions_dual_root should succeed");
 
         // Then the result is an empty vector (not an error)
         assert!(sessions.is_empty());
+    }
+
+    /// Given a metadata ROW in the home's session-index.db whose session
+    /// directory carries NO state.json (the post-ADR-006 shape: the row is
+    /// the durable record), when session-list runs, then the row is served
+    /// — the listing reads the index first, the disk scan only fills
+    /// pre-row sessions (existence check 6/11 migrates to the metadata
+    /// row).
+    #[tokio::test]
+    async fn should_list_a_row_only_session_without_state_json_from_the_index() {
+        // Given a home whose index carries a row and whose v3 root holds
+        // the session directory with only a wire log (no state.json)
+        let temp_dir = tempfile::tempdir().expect("tempdir should succeed");
+        let v3_dir = temp_dir.path().join("v3_sessions");
+        let session_dir = v3_dir.join("wd_row_bucket").join("session-row-only");
+        std::fs::create_dir_all(&session_dir).expect("create session dir should succeed");
+        std::fs::write(session_dir.join("wire.jsonl"), "{}\n")
+            .expect("write wire.jsonl should succeed");
+        let index = mirri_session_index::SessionIndex::open(&temp_dir.path().join("session-index.db"))
+            .expect("open the index");
+        index
+            .upsert_session(&mirri_session_index::SessionRow {
+                id: "session-row-only".to_string(),
+                workspace_id: "wd_row_bucket".to_string(),
+                cwd: None,
+                title: None,
+                created_at: chrono::DateTime::parse_from_rfc3339("2025-07-01T09:00:00Z")
+                    .expect("parse created")
+                    .with_timezone(&chrono::Utc),
+                updated_at: chrono::Utc::now(),
+                archived: false,
+                tags: Vec::new(),
+                custom: None,
+                last_prompt: None,
+                state_mtime: None,
+                archived_at: None,
+                compressed: false,
+                compressed_at: None,
+                pinned: false,
+                pinned_at: None,
+                pin_color: None,
+                last_used_at: None,
+                pre_compressed_size: None,
+            })
+            .expect("upsert the row");
+        drop(index);
+
+        // When listing sessions across both roots
+        let sessions = list_sessions_dual_root(&v3_dir, &temp_dir.path().join("sessions"), temp_dir.path())
+            .await
+            .expect("list_sessions_dual_root should succeed");
+
+        // Then the row-only session is listed (the disk scan alone would
+        // have missed it — no state.json exists to find), with the row's
+        // creation stamp
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].0, "session-row-only");
+        let listed_instant = chrono::DateTime::parse_from_rfc3339(&sessions[0].1)
+            .expect("the listed stamp parses");
+        assert_eq!(
+            listed_instant.timestamp(),
+            chrono::DateTime::parse_from_rfc3339("2025-07-01T09:00:00Z")
+                .expect("parse the fixture stamp")
+                .timestamp(),
+            "the row's created_at is the listed stamp (to the second — the stamp spelling differs, the instant does not)"
+        );
     }
 
     // --- credential subcommands ---

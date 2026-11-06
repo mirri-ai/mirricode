@@ -31,6 +31,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
+use mirri_core::cron::WorkspaceCronManager;
 use mirri_core::hook_engine::HookDef;
 use mirri_core::{SessionId, SessionManager, WorkspaceScope, encode_work_dir_key};
 use mirri_session_index::{
@@ -106,6 +107,14 @@ pub struct WorkspaceRuntime {
     /// a runtime rebuild; sessions created after the refresh inherit the
     /// refreshed workspace hook engine.
     pub base_hooks: Vec<HookDef>,
+    /// The workspace's cron manager (stage-2 T5 — D-M1's coexistence): the
+    /// workspace-scoped task table, backed by the workspace bucket's
+    /// `cron/tasks.json` store, independent of every session of this
+    /// runtime. Attached when the runtime is built (a home-rooted store)
+    /// or first touched (a runtime built before workspace cron existed —
+    /// `Option` keeps the legacy constructors in tests compiling); the
+    /// scheduler's workspace arm reads it every tick.
+    pub cron: Option<std::sync::Arc<WorkspaceCronManager>>,
 }
 
 impl WorkspaceRuntime {
@@ -114,6 +123,14 @@ impl WorkspaceRuntime {
     /// atomic, from outside the registry.
     pub fn trusted(&self) -> bool {
         self.trusted.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The workspace's cron manager (stage-2 T5): the attached manager when
+    /// the runtime was built with one, else `None` (a runtime built before
+    /// workspace cron, e.g. a test's `fake_runtime` — the scheduler's
+    /// workspace arm simply skips such a runtime).
+    pub fn cron(&self) -> Option<&std::sync::Arc<WorkspaceCronManager>> {
+        self.cron.as_ref()
     }
 
     /// Flip the live trust verdict (W8): the `workspace.setTrust` face's
@@ -231,6 +248,15 @@ pub struct WorkspaceRegistry {
     /// The home the shared index connection roots at (see
     /// [`Self::install_session_index`]).
     session_index_home: RwLock<Option<PathBuf>>,
+    /// The shared cron-index connection (ADR-020): lazily opened on the
+    /// first [`Self::shared_cron_index`] call, rooted at the same home as
+    /// the session index (`<home>/cron-index.db`).
+    cron_index: OnceLock<Arc<mirri_cron_index::CronIndex>>,
+    /// The one-time legacy cron JSON import's per-process guard (ADR-006
+    /// Task 8): the import runs on the census-settled background task,
+    /// exactly once per process — the SQLite-side persisted flag covers
+    /// the cross-boot cases.
+    cron_import_done: OnceLock<()>,
     /// The D8 touch debounce's pending set (W6, design §2.3 写放大控制):
     /// workspace ids whose `last_opened_at` touch is updated in memory but
     /// not yet flushed to the registry file. Session creation only touches
@@ -261,6 +287,8 @@ impl WorkspaceRegistry {
             builder,
             session_index: OnceLock::new(),
             session_index_home: RwLock::new(None),
+            cron_index: OnceLock::new(),
+            cron_import_done: OnceLock::new(),
             pending_touches: Mutex::new(std::collections::HashSet::new()),
             touch_flush_armed: std::sync::atomic::AtomicBool::new(false),
             touch_flush_count: std::sync::atomic::AtomicUsize::new(0),
@@ -293,6 +321,7 @@ impl WorkspaceRegistry {
             trusted: std::sync::atomic::AtomicBool::new(true),
             mcp_connect_spawned: std::sync::atomic::AtomicBool::new(false),
             base_hooks: Vec::new(),
+            cron: None,
         };
         let registry = Self::new(
             Arc::new(NoopResolver),
@@ -607,12 +636,12 @@ impl WorkspaceRegistry {
     /// is synchronous (the builder is synchronous).
     ///
     /// The bucket probe (level 3) is *honest attribution*, not the forbidden
-    /// silent default: a session whose `state.json` physically lives in a
-    /// built runtime's own bucket belongs to that workspace, so engines
-    /// without an index (no injected home — every direct-constructor
-    /// server) and cold index misses still resolve their persisted
-    /// sessions. The default runtime is probed first, the rest by id (a
-    /// deterministic order).
+    /// silent default: a session whose body (wire log, either shape) lives
+    /// in a built runtime's own bucket belongs to that workspace, so
+    /// engines without an index (no injected home — every
+    /// direct-constructor server) and cold index misses still resolve their
+    /// persisted sessions. The default runtime is probed first, the rest by
+    /// id (a deterministic order).
     pub fn manager_for(&self, session_id: &str) -> ManagerResolution {
         // Level 1: the active-session table — this process's authoritative
         // answer. The owning workspace must be built to serve the manager;
@@ -662,8 +691,15 @@ impl WorkspaceRegistry {
     }
 
     /// Probe the built runtimes' own persistence buckets for a session's
-    /// `state.json` — default workspace first, then the rest by id. See
+    /// body — default workspace first, then the rest by id. See
     /// [`Self::manager_for`] for why this is attribution, not fallback.
+    ///
+    /// The body probe (ADR-006 decision b): a session is attributed to the
+    /// workspace whose bucket holds its `wire.jsonl` or `wire.jsonl.gz`
+    /// — the conversation log's existence, either shape, replaced the
+    /// old `state.json` probe when the metadata row became the source of
+    /// truth (the create path no longer writes state.json, so probing it
+    /// would miss every post-ADR-006 session).
     fn probe_built_buckets(&self, session_id: &str) -> Option<(String, Arc<WorkspaceRuntime>)> {
         let sid = SessionId::new(session_id);
         let built = self.built.read().unwrap_or_else(|e| e.into_inner());
@@ -673,7 +709,8 @@ impl WorkspaceRegistry {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         let owns = |runtime: &Arc<WorkspaceRuntime>| {
-            runtime.manager.persistence().state_path(&sid).is_file()
+            let dir = runtime.manager.persistence().session_dir(&sid);
+            mirri_persistence::probe_compressed(&dir) != mirri_persistence::CompressedShape::Missing
         };
         if let Some((id, runtime)) = default_id.as_deref().and_then(|id| {
             built
@@ -743,6 +780,132 @@ impl WorkspaceRegistry {
                 },
             )
             .clone()
+    }
+
+    /// The shared cron-index connection (ADR-020), lazily opened at
+    /// `<home>/cron-index.db` — the same home the shared session index
+    /// roots at, sibling file. The first open builds ONLY the connection
+    /// (ADR-006 Task 8): the ONE-TIME legacy JSON import
+    /// ([`Self::import_legacy_cron_once`]) rides a background task gated
+    /// on the startup census settlement instead — e956f5e8a's principle
+    /// (startup housekeeping stays off the first-request path) applies to
+    /// the import too: it walks EVERY registered workspace's bucket files,
+    /// so it must not run inline under the first `shared_cron_index` call.
+    ///
+    /// Degrade posture (the `shared_session_index` precedent): a failed
+    /// open logs a warning and the engine runs on an in-memory index —
+    /// cron stops persisting for the process, never a boot panic.
+    pub fn shared_cron_index(&self) -> Option<Arc<mirri_cron_index::CronIndex>> {
+        let home = self
+            .session_index_home
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        let index = self.cron_index.get_or_init(|| {
+            match mirri_cron_index::CronIndex::open(&home.join("cron-index.db")) {
+                Ok(index) => Arc::new(index),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        home = %home.display(),
+                        "opening cron-index.db failed; cron persistence degrades \
+                         to in-memory for this process"
+                    );
+                    Arc::new(
+                        mirri_cron_index::CronIndex::open_in_memory()
+                            .expect("the in-memory cron index constructor cannot fail"),
+                    )
+                }
+            }
+        });
+        Some(Arc::clone(index))
+    }
+
+    /// Run the one-time legacy cron JSON import (ADR-006 Task 8): the
+    /// census-settled background task's body, invoked after the startup
+    /// settlement so the import never rides the first request path. The
+    /// `cron_import_done` OnceCell makes it idempotent per process (the
+    /// SQLite-side persisted flag covers the cross-boot cases); a failure
+    /// logs and the next boot retries (the persisted flag is only set
+    /// after a fully successful pass). Refreshes every built runtime's
+    /// cron manager from the index afterwards — the managers were built
+    /// from the (possibly not-yet-imported) rows at construction time.
+    pub fn import_legacy_cron_once(&self) {
+        let _ = self.cron_import_done.get_or_init(|| {
+            let Some(index) = self.shared_cron_index() else {
+                return;
+            };
+            let buckets = self.list_workspace_buckets();
+            let imported = match index.import_legacy_json_once(&buckets) {
+                Ok(imported) => imported,
+                // Best-effort at boot (the original posture): a failure
+                // logs and the next boot retries.
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "the one-time legacy cron JSON import failed; the next boot retries"
+                    );
+                    // A failed import must not reload: the in-memory
+                    // tables (live writes the dispatch path already
+                    // landed, e.g. a just-added task's schedule) win over
+                    // the possibly-half-imported rows.
+                    return;
+                }
+            };
+            // The reload runs ONLY when this boot actually imported rows
+            // (first import after an upgrade). An already-imported home
+            // (flag set, `imported == 0`) skips the reload entirely: the
+            // import runs off the census settlement AFTER the dispatch
+            // path has begun mutating the in-memory tables, and an
+            // unconditional reload would clobber a live write (a task
+            // added and forced due within the settle window loses its
+            // cursor to the pre-write DB snapshot — the 4a regression).
+            if imported > 0 {
+                // The default workspace's manager was built from the
+                // pre-import rows (its in-memory table would otherwise stay
+                // empty and never schedule an adopted task); lazily-built
+                // runtimes rebuild from the already-imported rows at their
+                // own build time.
+                for runtime in self.built_runtimes() {
+                    if let Some(cron) = runtime.cron() {
+                        cron.reload_from_index();
+                    }
+                }
+            }
+        });
+    }
+
+    /// Every registered workspace's `(workspace_id, sessions bucket dir)`
+    /// pairs — the full enumeration over ALL registrations (alias members
+    /// included), each bucket covering BOTH media the one-time legacy
+    /// import reads:
+    ///
+    /// 1. the home bucket `<home>/v3_sessions/<id>` (the ADR-020 shape —
+    ///    the registry file's registered roots), and
+    /// 2. the workspace-local bucket `<root>/.mirri/v3_sessions/<id>`
+    ///    (the pre-ADR-006 no-home ACP shape — the archive the round-2
+    ///    SESSION migration leaves in place under the same root).
+    ///
+    /// A workspace whose runtime was never built still imports its tasks,
+    /// and a missing directory contributes nothing (the import's read is
+    /// tolerant).
+    fn list_workspace_buckets(&self) -> Vec<(String, PathBuf)> {
+        let Some(home) = self.session_index_home() else {
+            return Vec::new();
+        };
+        self.registrations()
+            .into_iter()
+            .flat_map(|row| {
+                let id = row.id.clone();
+                [
+                    (id.clone(), home.join("v3_sessions").join(&id)),
+                    (
+                        id,
+                        row.root.join(".mirri").join("v3_sessions").join(&row.id),
+                    ),
+                ]
+            })
+            .collect()
     }
 
     /// The workspace's built runtime, when one is cached — a read-only peek
@@ -986,6 +1149,7 @@ mod tests {
             trusted: std::sync::atomic::AtomicBool::new(true),
             mcp_connect_spawned: std::sync::atomic::AtomicBool::new(false),
             base_hooks: Vec::new(),
+            cron: None,
         }
     }
 
@@ -1195,12 +1359,13 @@ mod tests {
             .expect("the row is registered")
             .expect("the build succeeds");
 
-        // A persisted session in the OTHER workspace's bucket.
+        // A persisted session in the OTHER workspace's bucket (ADR-006:
+        // the body probe looks for the wire log — either shape — not
+        // state.json, which the create path no longer writes).
         let sid = SessionId::new("sess-on-disk");
-        let state = other.manager.persistence().state_path(&sid);
-        std::fs::create_dir_all(state.parent().expect("the session dir has a parent"))
-            .expect("create the session dir");
-        std::fs::write(&state, "{}").expect("write state.json");
+        let session_dir = other.manager.persistence().session_dir(&sid);
+        std::fs::create_dir_all(&session_dir).expect("create the session dir");
+        std::fs::write(session_dir.join("wire.jsonl"), "{}\n").expect("write the wire log");
 
         match registry.manager_for("sess-on-disk") {
             ManagerResolution::Restored {
@@ -1248,6 +1413,11 @@ mod tests {
                 archived_at: None,
                 compressed: false,
                 compressed_at: None,
+                pinned: false,
+                pinned_at: None,
+                pin_color: None,
+                last_used_at: None,
+                pre_compressed_size: None,
             })
             .expect("upsert the row");
         drop(index);
@@ -1440,6 +1610,11 @@ mod tests {
             archived_at: None,
             compressed: false,
             compressed_at: None,
+            pinned: false,
+            pinned_at: None,
+            pin_color: None,
+            last_used_at: None,
+            pre_compressed_size: None,
         };
         index
             .upsert_session(&row("wd_split_bucket", Some("/tmp/w5/split")))

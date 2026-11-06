@@ -486,6 +486,14 @@ impl<'de> Deserialize<'de> for ThinkingEffort {
 ///   out of the box) and whose content is overridable by a same-name user
 ///   file.
 ///
+/// **Essential-name exemption (SDR-015)**: the essential default profile
+/// (`agent`) is itself **never dispatchable** — this function filters its
+/// name out of every resolved allowlist, including one a same-name user
+/// override re-added it to. The main agent still *runs as* the essential
+/// profile; it just cannot *spawn* one. A user who wants a fully-capable
+/// dispatchable agent defines their own profile (any name but `agent`)
+/// with the same tool surface and allowlists that.
+///
 /// The allowlist is consulted live (per spawn / per description build), so
 /// profile hot-reloads take effect on the next dispatch.
 pub fn subagent_allowlist_for(
@@ -498,6 +506,13 @@ pub fn subagent_allowlist_for(
     }
     .and_then(|profile| profile.subagents)
     .unwrap_or_default()
+    .into_iter()
+    // SDR-015: the essential default profile is never dispatchable — the
+    // filter is applied to the RESOLVED list (not just the built-in seed),
+    // so a same-name user override re-adding "agent" to its own allowlist
+    // changes nothing.
+    .filter(|name| name != ESSENTIAL_PROFILE_NAME)
+    .collect()
 }
 
 /// The subagent-dispatch refusal message — the TS
@@ -514,6 +529,20 @@ pub fn subagent_type_not_allowed_message(name: &str, allowlist: &[String]) -> St
         "Subagent type \"{name}\" is not allowed for this agent. \
          Allowed subagent types: {allowed}."
     )
+}
+
+/// The essential-profile dispatch refusal message (SDR-015): the default
+/// `agent` profile is never dispatchable — not as a built-in, and not
+/// through a same-name user override re-adding it to an allowlist. The
+/// message points the caller at the sanctioned alternative (a
+/// user-defined profile with the same capabilities) instead of the
+/// allowlist, because the refusal is not allowlist-shaped: no allowlist
+/// change can lift it.
+pub fn essential_profile_not_dispatchable_message() -> String {
+    "Subagent type \"agent\" is the essential default profile and is never \
+     dispatchable. Define your own agent profile (any name other than \
+     \"agent\") with the capabilities you need and dispatch that instead."
+        .to_string()
 }
 
 /// Profile manager — loads profiles from files and resolves them.
@@ -1433,6 +1462,8 @@ impl ProfileManager {
         };
 
         Ok(AgentScopeConfig {
+            workspace_id: None,
+            scheduled_task_creator: None,
             model_id: profile.model.clone(),
             provider_type,
             role_additional,
@@ -2932,9 +2963,12 @@ fn builtin_profiles() -> Vec<AgentProfile> {
             // built-in dispatchable names (default-deny: an unset list
             // would block ALL dispatch, so the essential profile carries
             // the built-ins; a same-name user file overrides it like any
-            // other content — D16).
+            // other content — D16). The essential's own name is NOT in
+            // the seed: it is never dispatchable (SDR-015) — the
+            // `subagent_allowlist_for` filter and the spawn gate enforce
+            // that regardless of what any list says.
             subagents: Some(
-                ["agent", "coder", "explore", "plan"]
+                ["coder", "explore", "plan"]
                     .iter()
                     .map(|t| t.to_string())
                     .collect(),
@@ -3045,10 +3079,9 @@ const AGENT_PROFILE_TOOLS: &[&str] = &[
     "TaskList",
     "TaskOutput",
     "TaskStop",
-    "CronCreate",
-    "CronList",
-    "CronDelete",
     "ReadMediaFile",
+    "SetTimer",
+    "CreateScheduledTask",
     "TodoList",
     "Skill",
     "WebSearch",
@@ -3072,9 +3105,6 @@ const CODER_PROFILE_TOOLS: &[&str] = &[
     "Agent",
     "AgentSwarm",
     "Bash",
-    "CronCreate",
-    "CronDelete",
-    "CronList",
     "Edit",
     "EnterPlanMode",
     "ExitPlanMode",
@@ -3082,6 +3112,8 @@ const CODER_PROFILE_TOOLS: &[&str] = &[
     "Grep",
     "Read",
     "ReadMediaFile",
+    "CreateScheduledTask",
+    "SetTimer",
     "Skill",
     "TaskList",
     "TaskOutput",
@@ -3266,6 +3298,10 @@ mod tests {
             );
         }
         assert!(
+            agent_tools.contains(&"CreateScheduledTask".to_string()),
+            "the default agent whitelist must include CreateScheduledTask (workspace creations are main-session work)"
+        );
+        assert!(
             agent_tools.contains(&"mcp__*".to_string()),
             "the default agent whitelist must carry the MCP glob"
         );
@@ -3278,6 +3314,10 @@ mod tests {
                 "coder keeps {expected}"
             );
         }
+        assert!(
+            coder_tools.contains(&"CreateScheduledTask".to_string()),
+            "coder keeps CreateScheduledTask"
+        );
 
         let explore = manager.get("explore").expect("builtin explore profile");
         let explore_tools = explore.tools.as_ref().expect("explore whitelist");
@@ -3408,13 +3448,13 @@ mod tests {
         assert_eq!(
             agent.subagents,
             Some(vec![
-                "agent".to_string(),
                 "coder".to_string(),
                 "explore".to_string(),
                 "plan".to_string(),
             ]),
             "the default agent's allowlist seeds the built-in dispatchable \
-             names (default-deny: an unset list would block all dispatch)"
+             names (default-deny: an unset list would block all dispatch); the \
+             essential's own name is excluded — it is never dispatchable (SDR-015)"
         );
     }
 
@@ -4255,11 +4295,52 @@ subagents = ["coder", "explore"]
         assert_eq!(
             subagent_allowlist_for(&manager, None),
             vec![
-                "agent".to_string(),
                 "coder".to_string(),
                 "explore".to_string(),
                 "plan".to_string(),
             ]
+        );
+    }
+
+    /// Given the fresh built-in essential profile, When the unbound caller
+    /// resolves, Then the essential `agent` name is absent from the
+    /// effective allowlist — the essential profile is never dispatchable,
+    /// even though the main agent resolves through it (SDR-015).
+    #[test]
+    fn should_exclude_the_essential_name_from_the_builtin_allowlist() {
+        let manager = ProfileManager::new();
+        let allowlist = subagent_allowlist_for(&manager, None);
+        assert!(
+            !allowlist.contains(&ESSENTIAL_PROFILE_NAME.to_string()),
+            "the essential profile must never appear in a dispatch allowlist: {allowlist:?}"
+        );
+    }
+
+    /// Given an essential-profile override that re-adds its own name to its
+    /// allowlist (the D16 same-name user file), When the unbound caller
+    /// resolves, Then the essential name is STILL refused — the
+    /// non-dispatchable ruling (SDR-015) overrides the D16 content override
+    /// for this one name.
+    #[test]
+    fn should_refuse_the_essential_name_even_when_the_override_re_adds_it() {
+        let manager = ProfileManager::new();
+        let mut essential = builtin_profiles()
+            .into_iter()
+            .find(|profile| profile.name == ESSENTIAL_PROFILE_NAME)
+            .expect("the essential profile is registered");
+        essential.subagents = Some(vec![
+            ESSENTIAL_PROFILE_NAME.to_string(),
+            "coder".to_string(),
+        ]);
+        manager
+            .profiles
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(ESSENTIAL_PROFILE_NAME.to_string(), essential);
+
+        assert_eq!(
+            subagent_allowlist_for(&manager, None),
+            vec!["coder".to_string()]
         );
     }
 

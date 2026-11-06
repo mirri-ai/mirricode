@@ -105,6 +105,7 @@ impl EmbeddedServer {
         // memorizing the tool-name pattern would over-approve every later
         // call of the same tool). Non-grant asks keep the pre-D3 mapping.
         let session = self.resolve_session(&params.session_id).await.ok();
+
         let decision = if params.approved {
             let pending = artifacts.approval_gate.snapshot(request_id);
             if let Some(dir) = pending.as_ref().and_then(|s| s.grant_dir.clone())
@@ -128,7 +129,9 @@ impl EmbeddedServer {
             )
         };
         // Resolve through the session's own gate — approvals of other
-        // sessions are never reachable (or affected) here.
+        // sessions are never reachable (or affected) here. ADR-022: the
+        // CreateScheduledTask approval is an ordinary tool approval —
+        // the creation already happened inside the tool's execution.
         if !artifacts.approval_gate.resolve(request_id, decision) {
             return Err(not_found(format!(
                 "approval request not found: {}",

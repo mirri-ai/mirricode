@@ -71,7 +71,7 @@ use super::workdir_key::encode_work_dir_key;
 /// writes epoch-milliseconds integers (`"createdAt": 1788494508725`), the
 /// Rust kernel writes RFC 3339 strings — via
 /// [`deserialize_epoch_or_rfc3339`]; the write side stays RFC 3339.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 struct PersistedSessionMetadata {
     /// Layout version written by the producing kernel: TS writes `2`,
     /// rust writes `3` (the v3_sessions storage-root era). Absent on
@@ -382,11 +382,22 @@ pub struct SessionPersistence {
     /// Injected filesystem provider (async hosts → the object-safe
     /// `DynFileSystem` mirror of `FileSystem`).
     io: Arc<dyn DynFileSystem>,
+    /// The metadata store port (ADR-006 裁决 4): the retention lifecycle's
+    /// column-group writes route through it. `None` (a bare persistence,
+    /// e.g. a directly-constructed test instance) keeps the legacy
+    /// state.json direct-write fallback.
+    metadata_store: Option<Arc<dyn super::metadata_port::MetadataStorePort>>,
+    /// The workspace id the port's `apply` files rows under (ADR-006 W3 —
+    /// the bucket attribution; `None` files under the empty key, the
+    /// pre-ADR-006 flat-root attribution).
+    metadata_workspace_id: Option<String>,
     /// Our own last-written `state.json` snapshot per session — the common
     /// ancestor of the ADR-003-R1 three-way merge (in-memory only; the
     /// shared map is the price of [`SessionPersistence`] being `Clone`, the
     /// per-save mutex section keeps the read-merge-write steps contiguous
-    /// within one process).
+    /// within one process). ADR-006 note: no production surface saves
+    /// through `save_state` anymore — the map survives for the test-only
+    /// seeding path and its merge-contract tests.
     last_written: Arc<Mutex<HashMap<String, PersistedSessionMetadata>>>,
 }
 
@@ -398,8 +409,33 @@ impl SessionPersistence {
             sessions_dir,
             workspace_key: None,
             io,
+            metadata_store: None,
+            metadata_workspace_id: None,
             last_written: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Builder: wire the metadata store port the retention lifecycle's
+    /// column-group writes route through (ADR-006 裁决 4 — field-level
+    /// narrowing; the state.json direct write is retired when a store is
+    /// present). The workspace id is the bucket attribution every
+    /// `apply` files rows under.
+    pub fn with_metadata_store(
+        mut self,
+        store: Arc<dyn super::metadata_port::MetadataStorePort>,
+        workspace_id: String,
+    ) -> Self {
+        self.metadata_store = Some(store);
+        self.metadata_workspace_id = Some(workspace_id);
+        self
+    }
+
+    /// The wired metadata store port, when one is present — the retention
+    /// engine's row-first revalidation read (ADR-006 fix round 1: a
+    /// row-only session has no state.json; the row is the archive
+    /// flag's source of truth).
+    pub fn metadata_store(&self) -> Option<&Arc<dyn super::metadata_port::MetadataStorePort>> {
+        self.metadata_store.as_ref()
     }
 
     /// Builder: nest every session under the workspace bucket `key`
@@ -474,6 +510,17 @@ impl SessionPersistence {
 
     /// Atomically save session metadata to `state.json`.
     ///
+    /// **ADR-006 scope**: no production call surface writes through this
+    /// method anymore — the metadata ROW (the
+    /// [`MetadataStorePort`](crate::session::metadata_port::MetadataStorePort))
+    /// is the metadata source of truth, and the create/materialize/close/
+    /// write-through paths all `apply` a patch instead. Task 7 retired the
+    /// retention lifecycle's direct writes too (the column-group patches
+    /// now route through the wired store); the remaining callers are tests
+    /// seeding a pre-ADR-006 on-disk session (the shape the resume
+    /// fallback and the disk scan still honor until the one-time migration
+    /// retires them) and the `merge_persisted_metadata` contract tests.
+    ///
     /// The write is crash-safe: a temp file is written and synced before an
     /// atomic rename. Parent directories are created as needed.
     ///
@@ -496,9 +543,7 @@ impl SessionPersistence {
 
         // Snapshot our own last-written state BEFORE any await: the guard
         // must not live across an await (the returned future would not be
-        // `Send`). Two in-process saves racing here degrade exactly like the
-        // cross-process race the merge itself resolves — the second save
-        // sees either the first's ancestor or the disk it produced.
+        // `Send`).
         let ancestor: Option<PersistedSessionMetadata> = {
             let last_written = self
                 .last_written
@@ -536,17 +581,14 @@ impl SessionPersistence {
         // Retention-field guard (§3.1 / ADR-006): the retention stamps
         // (`archived_at` / `compressed` / `compressed_at` /
         // `pre_compressed_size`) are written ONLY by the retention
-        // lifecycle's explicit writes (`set_archived` /
-        // `set_compressed` / `clear_compressed`) — the scope-layer
-        // metadata `save_state` serializes does not model them, so
-        // `persisted` always carries their defaults. Without this guard
-        // every save after an archive/compress stamp (e.g. the turn-settle
-        // recency write) would take the merge's "last writer wins" branch
-        // (ours ≠ base because the stamp landed in base or on disk after
-        // our ancestor) and erase the stamp. The disk document — `theirs`
-        // when a foreign write is detected, else our own last-written
-        // snapshot, which equals the disk — is the authority: copy its
-        // stamps through unconditionally.
+        // lifecycle (the wired store's column-group patches — Task 7; the
+        // scope-layer metadata `save_state` serializes does not model
+        // them, so `persisted` always carries their defaults). Without
+        // this guard every save after an archive/compress stamp would take
+        // the merge's "last writer wins" branch and erase the stamp. The
+        // disk document — `theirs` when a foreign write is detected, else
+        // our own last-written snapshot, which equals the disk — is the
+        // authority: copy its stamps through unconditionally.
         {
             let disk_stamps = theirs.as_ref().or(ancestor.as_ref());
             if let Some(disk) = disk_stamps {
@@ -770,28 +812,60 @@ impl SessionPersistence {
         }
     }
 
-    /// Set the archived flag on a session's persisted `state.json`.
+    /// Set the archived flag on a session's persisted metadata — the
+    /// retention lifecycle's archive column group (ADR-006 裁决 4: the
+    /// metadata ROW is the durable carrier; the write names ONLY the
+    /// archive group, so a concurrent writer's disjoint field survives).
     ///
-    /// Unlike [`Self::load_state`] (which degrades a corrupt file to default
-    /// metadata, the TS `safeParse` tolerance), this is an **explicit write**
-    /// driven by the `session.archive` / `session.restore` lifecycle: a
-    /// missing or unreadable `state.json` is an error, not a silent default.
-    /// The loaded struct is written back with only the flag mutated, so the
-    /// TS extra fields (`customTitle` / `lastPrompt` / `workDir` / …) survive
-    /// the round-trip untouched.
+    /// The patch semantics mirror the pre-Task-7 `state.json` semantics
+    /// verbatim: `archived = true` stamps `archived_at = now` (§3.1 — the
+    /// retention scanner's "already archived for N days" anchor and the
+    /// SDR-008 backfill for legacy states); `archived = false` (the
+    /// restore side, §3.1) un-archives AND clears the whole compression
+    /// cache batch (`archived_at` / `compressed` / `compressed_at` /
+    /// `pre_compressed_size` — ADR-004: restore fully decompresses back
+    /// to `wire.jsonl`).
     ///
-    /// The write is a bare full-document write (it must keep the TS fields
-    /// [`Self::save_state`] cannot carry), so it records the **read** content
-    /// — not the archived-tweaked document it writes — as the merge
-    /// ancestor in `last_written`. That keeps the on-disk document looking
-    /// foreign to the next [`Self::save_state`] (the `archived` flag differs),
-    /// forcing the ADR-003-R1 three-way merge instead of the plain-overwrite
-    /// branch: a concurrent save that landed a field change while we were
-    /// archiving survives (ours == base takes the disk value), instead of
-    /// being clobbered back to this process's in-memory view ("被冲掉的版本").
+    /// A persistence wired with the metadata store (the production shape —
+    /// the manager's builder threads it through) applies the column group
+    /// through the port; a bare persistence (tests) keeps the legacy
+    /// `state.json` load-mutate-write, the exact behaviour the
+    /// `read_persisted_info` family still reads.
     pub async fn set_archived(&self, session_id: &SessionId, archived: bool) -> SessionResult<()> {
+        if let Some(store) = self.metadata_store.as_ref() {
+            let now = Utc::now();
+            let (archived_at, compressed, compressed_at, pre_compressed_size) = if archived {
+                // The archive stamp (§3.1): RFC 3339 at the archive moment.
+                (Some(Some(now)), None, None, None)
+            } else {
+                // The restore side (§3.1): a restored session is
+                // un-archived AND uncompressed (ADR-004 — restore fully
+                // decompresses back to `wire.jsonl`), so the archive stamp
+                // and the whole compression cache batch clear together.
+                (Some(None), Some(false), Some(None), Some(None))
+            };
+            let patch = super::metadata_port::MetadataPatch {
+                archived: Some(archived),
+                archived_at,
+                compressed,
+                compressed_at,
+                pre_compressed_size,
+                ..Default::default()
+            };
+            let workspace_id = self
+                .metadata_workspace_id
+                .as_deref()
+                .unwrap_or_default()
+                .to_string();
+            return store
+                .apply(session_id, &workspace_id, patch)
+                .await
+                .map_err(|e| SessionError::StateFile(e.to_string()));
+        }
+
+        // The legacy bare-persistence path: the explicit state.json write.
         let path = self.state_path(session_id);
-        let loaded: PersistedSessionMetadata = match AtomicDocument::read(&path).await {
+        let mut persisted: PersistedSessionMetadata = match AtomicDocument::read(&path).await {
             Ok(Some(persisted)) => persisted,
             Ok(None) => {
                 return Err(SessionError::StateFile(format!(
@@ -806,7 +880,6 @@ impl SessionPersistence {
                 )));
             }
         };
-        let mut persisted = loaded.clone();
         persisted.archived = archived;
         if archived {
             // The archive stamp (§3.1): RFC 3339 at the archive moment —
@@ -825,32 +898,41 @@ impl SessionPersistence {
         }
         AtomicDocument::write(&path, &persisted)
             .await
-            .map_err(|e| SessionError::StateFile(e.to_string()))?;
-        // Ancestor registration AFTER the write: the next save_state must
-        // merge against what the disk held when we read it (a foreign
-        // change landed there survives), never against our in-memory view.
-        self.last_written
-            .lock()
-            .map_err(|_| SessionError::StateFile("last-written map poisoned".to_string()))?
-            .insert(session_id.to_string(), loaded);
-        Ok(())
+            .map_err(|e| SessionError::StateFile(e.to_string()))
     }
 
-    /// Stamp the session's `state.json` with the compression metadata
-    /// (retention domain, §3.1 / Task 5's engine): `compressed = true`,
-    /// `compressed_at = now`, `pre_compressed_size = pre_size`. Called
-    /// after the atomic `wire.jsonl` → `wire.jsonl.gz` replacement landed —
-    /// the flag is the **cache** of the disk shape (ADR-007), so the write
-    /// order (shape first, then stamp) keeps the cache at worst stale,
-    /// never falsely ahead.
+    /// Stamp the session's compression metadata (retention domain, §3.1 /
+    /// Task 5's engine): `compressed = true`, `compressed_at = now`,
+    /// `pre_compressed_size = pre_size`. Called after the atomic
+    /// `wire.jsonl` → `wire.jsonl.gz` replacement landed — the flag is the
+    /// **cache** of the disk shape (ADR-007), so the write order (shape
+    /// first, then stamp) keeps the cache at worst stale, never falsely
+    /// ahead.
     ///
-    /// The same ancestor-registration contract as
-    /// [`Self::set_archived`]: the READ document (not the stamped one) is
-    /// registered as the merge ancestor, so a foreign field change that
-    /// landed while we compressed survives the stamp.
+    /// ADR-006 裁决 4: with a wired metadata store the stamp names ONLY the
+    /// compression column group; a bare persistence keeps the legacy
+    /// `state.json` load-mutate-write.
     pub async fn set_compressed(&self, session_id: &SessionId, pre_size: u64) -> SessionResult<()> {
+        if let Some(store) = self.metadata_store.as_ref() {
+            let patch = super::metadata_port::MetadataPatch {
+                compressed: Some(true),
+                compressed_at: Some(Some(Utc::now())),
+                pre_compressed_size: Some(Some(pre_size)),
+                ..Default::default()
+            };
+            let workspace_id = self
+                .metadata_workspace_id
+                .as_deref()
+                .unwrap_or_default()
+                .to_string();
+            return store
+                .apply(session_id, &workspace_id, patch)
+                .await
+                .map_err(|e| SessionError::StateFile(e.to_string()));
+        }
+
         let path = self.state_path(session_id);
-        let loaded: PersistedSessionMetadata = match AtomicDocument::read(&path).await {
+        let mut persisted: PersistedSessionMetadata = match AtomicDocument::read(&path).await {
             Ok(Some(persisted)) => persisted,
             Ok(None) => {
                 return Err(SessionError::StateFile(format!(
@@ -865,29 +947,45 @@ impl SessionPersistence {
                 )));
             }
         };
-        let mut persisted = loaded.clone();
         persisted.compressed = true;
         persisted.compressed_at = Some(Utc::now());
         persisted.pre_compressed_size = Some(pre_size);
         AtomicDocument::write(&path, &persisted)
             .await
-            .map_err(|e| SessionError::StateFile(e.to_string()))?;
-        self.last_written
-            .lock()
-            .map_err(|_| SessionError::StateFile("last-written map poisoned".to_string()))?
-            .insert(session_id.to_string(), loaded);
-        Ok(())
+            .map_err(|e| SessionError::StateFile(e.to_string()))
     }
 
     /// Clear the compression metadata batch (`compressed` / `compressed_at`
-    /// / `pre_compressed_size`) from a session's `state.json` (retention
+    /// / `pre_compressed_size`) from a session's metadata (retention
     /// domain, §3.1). The complement of [`Self::set_compressed`]: called
     /// after a full restore decompressed the wire log back to
     /// `wire.jsonl`, and by the ADR-007 self-heal paths when the marker
     /// disagrees with the disk shape (`.gz` absent).
+    ///
+    /// ADR-006 裁决 4: with a wired metadata store the clear names ONLY the
+    /// compression column group (the tri-state `Some(None)` clear); a bare
+    /// persistence keeps the legacy `state.json` load-mutate-write.
     pub async fn clear_compressed(&self, session_id: &SessionId) -> SessionResult<()> {
+        if let Some(store) = self.metadata_store.as_ref() {
+            let patch = super::metadata_port::MetadataPatch {
+                compressed: Some(false),
+                compressed_at: Some(None),
+                pre_compressed_size: Some(None),
+                ..Default::default()
+            };
+            let workspace_id = self
+                .metadata_workspace_id
+                .as_deref()
+                .unwrap_or_default()
+                .to_string();
+            return store
+                .apply(session_id, &workspace_id, patch)
+                .await
+                .map_err(|e| SessionError::StateFile(e.to_string()));
+        }
+
         let path = self.state_path(session_id);
-        let loaded: PersistedSessionMetadata = match AtomicDocument::read(&path).await {
+        let mut persisted: PersistedSessionMetadata = match AtomicDocument::read(&path).await {
             Ok(Some(persisted)) => persisted,
             Ok(None) => {
                 return Err(SessionError::StateFile(format!(
@@ -902,18 +1000,12 @@ impl SessionPersistence {
                 )));
             }
         };
-        let mut persisted = loaded.clone();
         persisted.compressed = false;
         persisted.compressed_at = None;
         persisted.pre_compressed_size = None;
         AtomicDocument::write(&path, &persisted)
             .await
-            .map_err(|e| SessionError::StateFile(e.to_string()))?;
-        self.last_written
-            .lock()
-            .map_err(|_| SessionError::StateFile("last-written map poisoned".to_string()))?
-            .insert(session_id.to_string(), loaded);
-        Ok(())
+            .map_err(|e| SessionError::StateFile(e.to_string()))
     }
 
     /// Read a session's TS `agents` manifest from its `state.json` (F5).
@@ -956,6 +1048,10 @@ impl SessionPersistence {
     /// `agents` key is touched — every other field of the freshly minted
     /// state survives untouched. A `None` manifest is a no-op (the fork
     /// of a manifest-less source stays manifest-less).
+    /// A missing `state.json` mints a fresh document carrying only the
+    /// manifest (ADR-006: the create path no longer writes state.json —
+    /// the row carries the metadata; this document exists precisely so a
+    /// TS reader sees the fork's member identities, and nothing else).
     pub async fn write_ts_agents_manifest(
         &self,
         session_id: &SessionId,
@@ -965,14 +1061,9 @@ impl SessionPersistence {
             return Ok(());
         };
         let path = self.state_path(session_id);
-        let loaded: PersistedSessionMetadata = match AtomicDocument::read(&path).await {
+        let mut persisted: PersistedSessionMetadata = match AtomicDocument::read(&path).await {
             Ok(Some(persisted)) => persisted,
-            Ok(None) => {
-                return Err(SessionError::StateFile(format!(
-                    "state.json not found for session {}",
-                    session_id
-                )));
-            }
+            Ok(None) => PersistedSessionMetadata::default(),
             Err(error) => {
                 return Err(SessionError::StateFile(format!(
                     "failed to read {}: {error}",
@@ -980,7 +1071,6 @@ impl SessionPersistence {
                 )));
             }
         };
-        let mut persisted = loaded;
         persisted.agents = Some(agents.clone());
         AtomicDocument::write(&path, &persisted)
             .await
@@ -2013,6 +2103,117 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(&error, SessionError::StateFile(_)), "{error:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // ADR-006 Task 7 — retention-field clobber locks: a metadata store wired
+    // beside the persistence, the retention lifecycle writes only its own
+    // column group, and a foreign field (title) survives each write.
+    // -----------------------------------------------------------------------
+
+    use crate::session::metadata_port::MetadataStorePort as _;
+
+    /// A persistence + an in-memory metadata store pair (the ADR-006 write
+    /// seam: `set_archived`/`set_compressed`/`clear_compressed` apply their
+    /// column group through the store; the state.json direct write is
+    /// retired).
+    async fn retention_store_pair(
+        name: &str,
+    ) -> (
+        SessionPersistence,
+        std::sync::Arc<crate::session::metadata_port::InMemoryMetadataStore>,
+        SessionId,
+        tempfile::TempDir,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::session::metadata_port::InMemoryMetadataStore::new());
+        let persistence = SessionPersistence::new(
+            tmp.path().to_path_buf(),
+            std::sync::Arc::new(mirri_os::LocalFs::new()),
+        )
+        .with_metadata_store(
+            std::sync::Arc::clone(&store) as std::sync::Arc<
+                dyn crate::session::metadata_port::MetadataStorePort,
+            >,
+            "ws-test".to_string(),
+        );
+        let session_id = SessionId::new(name);
+        // Seed the row with a foreign title (the clobber lock's victim).
+        store
+            .apply(
+                &session_id,
+                "ws-test",
+                crate::session::metadata_port::MetadataPatch {
+                    title: Some("Foreign Title".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        (persistence, store, session_id, tmp)
+    }
+
+    /// Given a row whose title a foreign writer set, when the archive flag
+    /// is written, then the row's title survives — `set_archived` touches
+    /// ONLY the archive column group.
+    #[tokio::test]
+    async fn should_not_clobber_the_title_when_set_archived_writes_the_row() {
+        let (persistence, store, session_id, _tmp) =
+            retention_store_pair("archive-clobber").await;
+
+        persistence
+            .set_archived(&session_id, true)
+            .await
+            .unwrap();
+
+        let record = store.get(&session_id).await.expect("the row exists");
+        assert_eq!(record.title, "Foreign Title");
+        assert!(record.archived);
+        assert!(record.archived_at.is_some());
+    }
+
+    /// Given a row whose title a foreign writer set, when the compression
+    /// batch is written, then the row's title survives — `set_compressed`
+    /// touches ONLY the compression column group.
+    #[tokio::test]
+    async fn should_not_clobber_the_title_when_set_compressed_writes_the_row() {
+        let (persistence, store, session_id, _tmp) =
+            retention_store_pair("compressed-clobber").await;
+
+        persistence
+            .set_compressed(&session_id, 123_456)
+            .await
+            .unwrap();
+
+        let record = store.get(&session_id).await.expect("the row exists");
+        assert_eq!(record.title, "Foreign Title");
+        assert!(record.compressed);
+        assert!(record.compressed_at.is_some());
+        assert_eq!(record.pre_compressed_size, Some(123_456));
+    }
+
+    /// Given a row whose title a foreign writer set, when the compression
+    /// batch is cleared, then the row's title survives — `clear_compressed`
+    /// touches ONLY the compression column group.
+    #[tokio::test]
+    async fn should_not_clobber_the_title_when_clear_compressed_writes_the_row() {
+        let (persistence, store, session_id, _tmp) =
+            retention_store_pair("clear-clobber").await;
+        persistence
+            .set_compressed(&session_id, 987)
+            .await
+            .unwrap();
+
+        persistence
+            .clear_compressed(&session_id)
+            .await
+            .unwrap();
+
+        let record = store.get(&session_id).await.expect("the row exists");
+        assert_eq!(record.title, "Foreign Title");
+        assert!(!record.compressed);
+        assert!(record.compressed_at.is_none());
+        assert!(record.pre_compressed_size.is_none());
     }
 
     #[tokio::test]

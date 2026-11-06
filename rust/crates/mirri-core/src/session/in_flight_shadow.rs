@@ -41,6 +41,10 @@ struct RunningTool {
     /// Most recent `tool.progress` update (the wire `last_progress` shape:
     /// `{kind, text?, percent?}`), when any arrived yet.
     last_progress: Option<Value>,
+    /// The started event's epoch-ms instant — ADR-7's snapshot timing
+    /// anchor, so a reconnecting client ticks elapsed time from the engine's
+    /// clock across the reload.
+    started_at_ms: u64,
 }
 
 /// The accumulated state of the current turn (empty = no turn in flight).
@@ -152,6 +156,7 @@ impl InFlightTurnShadow {
                 tool_call_id,
                 tool_name,
                 args,
+                started_at_ms,
                 ..
             } if agent_id == MAIN_AGENT => {
                 state.running_tools.push(RunningTool {
@@ -159,6 +164,7 @@ impl InFlightTurnShadow {
                     tool_name,
                     args,
                     last_progress: None,
+                    started_at_ms,
                 });
             }
             SessionEvent::ToolProgress {
@@ -202,7 +208,8 @@ impl InFlightTurnShadow {
     /// The `in_flight_turn` wire value (`None` when no turn is running) —
     /// the TS `rest-snapshot` `in_flight_turn` shape: snake_case keys,
     /// `turn_id` / `assistant_text` / `thinking_text` /
-    /// `running_tools[{tool_call_id, name, args, last_progress}]`.
+    /// `running_tools[{tool_call_id, name, args, started_at_ms,
+    /// last_progress}]`.
     /// `current_prompt_id` is NOT accumulated here — the shadow tracks the
     /// event-bus turn, not the wire-log fold — but
     /// [`SessionSnapshotHandler`](mirri_server::rpc) stamps the fold's
@@ -226,6 +233,9 @@ impl InFlightTurnShadow {
                         "tool_call_id": tool.tool_call_id,
                         "name": tool.tool_name,
                         "args": tool.args,
+                        // Snake_case follows the snapshot path's existing
+                        // convention; ADR-7 makes this the elapsed anchor.
+                        "started_at_ms": tool.started_at_ms,
                     });
                     if let Some(progress) = &tool.last_progress {
                         row["last_progress"] = progress.clone();
@@ -306,6 +316,7 @@ mod tests {
             tool_name: "Bash".to_string(),
             tool_call_id: "call-1".to_string(),
             args: json!({ "command": "ls" }),
+            started_at_ms: 1_730_000_000_000,
         });
 
         let value = shadow.snapshot_value().expect("turn in flight");
@@ -322,6 +333,7 @@ mod tests {
             tool_name: "Bash".to_string(),
             is_error: false,
             output: crate::tool::ToolOutput::text("ok"),
+            duration_ms: 5,
         });
         let value = shadow.snapshot_value().expect("turn still in flight");
         assert!(
@@ -336,8 +348,37 @@ mod tests {
             stop_reason: "completed".to_string(),
             wire_turn_id: 1,
             duration_ms: None,
+            ended_at_ms: None,
         });
         assert!(shadow.snapshot_value().is_none());
+    }
+
+    /// Given a turn with a running tool started at a known epoch-ms instant,
+    /// when the snapshot reads the shadow, then the running-tool row carries
+    /// `started_at_ms` so a reconnecting client can render elapsed time from
+    /// the engine's clock rather than its own reload moment.
+    #[test]
+    fn should_carry_started_at_ms_when_a_tool_is_running() {
+        let (shadow, _bus) = shadow_with_bus();
+        shadow.apply(SessionEvent::TurnStarted {
+            agent_id: "main".to_string(),
+            session_id: "s1".to_string(),
+            turn_id: "turn-1".to_string(),
+        });
+        shadow.apply(SessionEvent::ToolCallStarted {
+            agent_id: "main".to_string(),
+            session_id: "s1".to_string(),
+            tool_name: "Bash".to_string(),
+            tool_call_id: "call-1".to_string(),
+            args: json!({ "command": "ls" }),
+            started_at_ms: 1_730_000_000_000,
+        });
+
+        let value = shadow.snapshot_value().expect("turn in flight");
+        assert_eq!(
+            value["running_tools"][0]["started_at_ms"],
+            1_730_000_000_000_u64
+        );
     }
 
     /// Given subagent-scoped deltas, when they fold in, then they are

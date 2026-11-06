@@ -498,7 +498,19 @@ impl Tool for AskUserQuestionTool {
         PARAMETERS.get_or_init(|| serde_json::from_str(ASK_USER_PARAMETERS).unwrap())
     }
 
+    /// ADR-015 (stage-2 D-M2): the read-only capability category —
+    /// observation only, no side effects the ReadOnly posture must gate.
+    fn readonly(&self) -> bool {
+        true
+    }
+
     fn resolve_execution(&self, input: Value) -> EngineResult<ToolExecution> {
+        // M3 (SDR-002 D-M3, the tool face): an UNATTENDED cron turn has no
+        // user to answer a question — the call is rejected with the same
+        // reroute receipt the permission chain's ask-deny applies (one
+        // shared constant), so the model never hangs on `question.ask` in a
+        // headless fire. The check runs at execute time — the turn's origin
+        // rides the ExecutableToolContext, not the tool input.
         // 重问护栏 (US8 / ADR-007): 在同一会话内, 对刚被用户关闭的问题
         // 原样重问在工具入参校验层直接拒绝 — 不注册新 pending, 不打扰用户,
         // 回附行为指引 (rephrase or proceed per the dismissal instruction),
@@ -536,8 +548,23 @@ impl Tool for AskUserQuestionTool {
                     approval_rule: "AskUserQuestion".to_string(),
                     stop_batch_after_this: false,
                 },
-                execute: Box::new(move |_ctx| {
+                execute: Box::new(move |ctx| {
                     Box::pin(async move {
+                        // M3: an unattended cron turn fails fast — see
+                        // the resolve_execution comment above.
+                        if matches!(
+                            ctx.turn_origin,
+                            crate::permission::TurnOriginContext::Cron {
+                                workspace: true,
+                                reject_asks: true,
+                                readonly: false,
+                                ..
+                            }
+                        ) {
+                            return ToolResult::error(
+                                crate::permission::CRON_ASK_DENY_MESSAGE.to_string(),
+                            );
+                        }
                         ToolResult::error(
                             "no interactive client is attached to this session, so a structured \
                              question cannot be asked right now; ask the user in plain assistant \
@@ -587,6 +614,25 @@ impl Tool for AskUserQuestionTool {
                         let description = description.clone();
                         let question_count = question_count;
                         let interaction_kernel = interaction_kernel.clone();
+                        // M3: an unattended cron turn has no user to
+                        // answer — fail fast with the shared reroute
+                        // receipt instead of registering a background
+                        // question nobody can settle.
+                        if matches!(
+                            ctx.turn_origin,
+                            crate::permission::TurnOriginContext::Cron {
+                                workspace: true,
+                                reject_asks: true,
+                                readonly: false,
+                                ..
+                            }
+                        ) {
+                            return Box::pin(async move {
+                                ToolResult::error(
+                                    crate::permission::CRON_ASK_DENY_MESSAGE.to_string(),
+                                )
+                            }) as ToolFuture;
+                        }
                         Box::pin(async move {
                             // 后台路径同样把问题登记进 QuestionGate (B4-a): gate
                             // 是 pending 唯一事实源, `question.dismiss` (web 关闭
@@ -810,6 +856,24 @@ impl Tool for AskUserQuestionTool {
             execute: Box::new(move |ctx| {
                 let callback_slot = Arc::clone(&callback_slot);
                 let interaction_kernel = interaction_kernel.clone();
+                // M3: an unattended cron turn has no user to answer —
+                // fail fast with the shared reroute receipt before any
+                // gate registration or delivery loop starts.
+                if matches!(
+                    ctx.turn_origin,
+                    crate::permission::TurnOriginContext::Cron {
+                        workspace: true,
+                        reject_asks: true,
+                        readonly: false,
+                        ..
+                    }
+                ) {
+                    return Box::pin(async move {
+                        ToolResult::error(
+                            crate::permission::CRON_ASK_DENY_MESSAGE.to_string(),
+                        )
+                    }) as ToolFuture;
+                }
                 // ADR-006: the gate wait registers its WaitingGate entry
                 // when the interaction kernel is wired — the watchdog
                 // pulls the kernel's pending list at window expiry (a
@@ -1177,6 +1241,13 @@ mod tests {
 
     /// 构建测试用的 ExecutableToolContext。
     fn make_ctx() -> ExecutableToolContext {
+        make_ctx_with_origin(Default::default())
+    }
+
+    /// 构建携带指定 turn origin 的 ExecutableToolContext。
+    fn make_ctx_with_origin(
+        turn_origin: crate::permission::TurnOriginContext,
+    ) -> ExecutableToolContext {
         ExecutableToolContext {
             approval_metadata: None,
             wait_registry: None,
@@ -1184,6 +1255,62 @@ mod tests {
             tool_call_id: "c1".to_string(),
             cancel: CancelToken::new(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin,
+        }
+    }
+
+    /// Given an `AskUserQuestion` call on an UNATTENDED cron turn, when the
+    /// tool executes, then it fails IMMEDIATELY with the shared
+    /// unattended-ask-deny receipt — no gate registration, no
+    /// `question.ask` delivery, no hang (M3: the DEFAULT_APPROVE_TOOLS
+    /// posture would otherwise silently approve past the chain, and the
+    /// tool itself never consulted the origin).
+    #[tokio::test]
+    async fn should_fail_immediately_when_asked_from_an_unattended_cron_turn() {
+        let callback = Arc::new(MockCallback {
+            response: json!({ "answers": [] }),
+            last_method: Mutex::new(None),
+            last_params: Mutex::new(None),
+        });
+        let tool = AskUserQuestionTool::new(slot_with(callback.clone()));
+        let input = json!({
+            "questions": [{
+                "question": "Which approach?",
+                "options": [
+                    { "label": "A", "description": "Option A" },
+                ],
+            }],
+        });
+
+        let execution = tool.resolve_execution(input).unwrap();
+        match execution {
+            ToolExecution::Runnable { execute, .. } => {
+                let result = execute(make_ctx_with_origin(
+                    crate::permission::TurnOriginContext::Cron {
+                        workspace: true,
+                        reject_asks: true,
+                        readonly: false,
+                        task_id: "cron-ask-1".to_string(),
+                    },
+                ))
+                .await;
+                assert!(result.is_error, "the unattended ask is a failure: {result:?}");
+                let text = match result.output {
+                    crate::tool::ToolOutput::Text(text) => text,
+                    other => panic!("expected text output, got {other:?}"),
+                };
+                assert_eq!(
+                    text,
+                    crate::permission::CRON_ASK_DENY_MESSAGE,
+                    "the receipt is the shared unattended ask-deny text"
+                );
+                // No delivery ever happened.
+                assert!(
+                    callback.last_method.lock().unwrap().is_none(),
+                    "question.ask was never issued"
+                );
+            }
+            ToolExecution::Error(err) => panic!("expected runnable, got error: {err:?}"),
         }
     }
 
@@ -1869,6 +1996,7 @@ mod tests {
                     tool_call_id: "c1".to_string(),
                     cancel: CancelToken::new(),
                     progress,
+                    turn_origin: Default::default(),
                 };
 
                 // Advance far past the engine's stall window in virtual

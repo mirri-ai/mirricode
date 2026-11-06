@@ -70,6 +70,20 @@ pub struct SkillDirectoryWatcher {
     /// handle drops; the watcher task's select loop observes the close
     /// and exits.
     _shutdown: tokio::sync::oneshot::Sender<()>,
+    /// Test observation: set by the task on its way out, so a test can wait
+    /// for the exit instead of sleeping past it. Absent in production (the
+    /// exit is not part of the watcher's public contract).
+    #[cfg(test)]
+    exited: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl SkillDirectoryWatcher {
+    /// Whether the watcher task has observed the shutdown and exited.
+    #[cfg(test)]
+    #[allow(dead_code)] // consumed by the determinization plan's Task 6
+    pub(crate) fn has_exited(&self) -> bool {
+        self.exited.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 impl Drop for SkillDirectoryWatcher {
@@ -291,9 +305,9 @@ fn remount(
 /// and the initial mount (recursive FS watches over potentially large
 /// skill trees) are **moved onto the spawned task** — this function only
 /// creates the notify watcher and returns a handle immediately, so the
-/// lazy `call_method` mount pass never blocks an RPC on filesystem
-/// work (the t8 slow-MCP pin: `session.create` must not pay for the
-/// watcher's directory scans).
+/// host's mount call never blocks an RPC on filesystem work (the t8
+/// slow-MCP pin: `session.create` must not pay for the watcher's
+/// directory scans).
 pub async fn spawn_skill_watcher(
     runtime: &Arc<WorkspaceRuntime>,
     orchestrator: &Arc<SkillReloadOrchestrator>,
@@ -337,7 +351,7 @@ pub async fn spawn_skill_watcher(
     // returns: a caller proceeding on the handle's existence alone
     // would race the watch registration — a file written in that window
     // is invisible (FSEvents streams from registration) with no later
-    // signal to recover it. The first RPC pays this once per workspace.
+    // signal to recover it. The host's mount pays this once per workspace.
     let mount_runtime = Arc::clone(runtime);
     let (watch_set, currently_watched, inputs) =
         match tokio::task::spawn_blocking(move || {
@@ -375,6 +389,10 @@ pub async fn spawn_skill_watcher(
     );
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    #[cfg(test)]
+    let exited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    #[cfg(test)]
+    let exit_flag = std::sync::Arc::clone(&exited);
     let runtime = Arc::clone(runtime);
     let orchestrator = Arc::clone(orchestrator);
     let debounce = QUIET_PERIOD;
@@ -426,8 +444,9 @@ pub async fn spawn_skill_watcher(
                     // SinceNow). Until the notify behavior is understood
                     // or worked around, this arm stays synchronous; a
                     // local-SSD rescan is milliseconds. A network-home
-                    // deployment should keep `skillHotReload` off (the
-                    // flag's default) and use the manual reload.
+                    // deployment should disable `skillHotReload` through
+                    // the experimental layer (the flag is on by default
+                    // since ADR-013) and use the manual reload.
                     let config_snapshot = inputs
                         .config
                         .read()
@@ -472,6 +491,8 @@ pub async fn spawn_skill_watcher(
                 }
             }
         }
+        #[cfg(test)]
+        exit_flag.store(true, std::sync::atomic::Ordering::SeqCst);
         tracing::debug!(
             workspace = %runtime.workspace_id,
             "skill directory watcher task exited"
@@ -480,6 +501,8 @@ pub async fn spawn_skill_watcher(
 
     Some(SkillDirectoryWatcher {
         _shutdown: shutdown_tx,
+        #[cfg(test)]
+        exited,
     })
 }
 
@@ -499,7 +522,7 @@ async fn wait_for_quiet_period(receiver: &mut UnboundedReceiver<()>, quiet_for: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bootstrap::test_env;
+    use mirri_test_support::env;
 
     /// A session resolver that knows nothing — the isolated test
     /// registry's attribution fallback.
@@ -578,7 +601,7 @@ mod tests {
     /// The hermetic `$HOME` pin — same pattern as the skill_reload tests
     /// (the default roots read `$HOME/.agents/skills` at replay time).
     fn with_pinned_home<T>(isolated: &Path, f: impl FnOnce() -> T) -> T {
-        let _home_lock = test_env::home_lock();
+        let _home_lock = env::lock();
         let previous_home = std::env::var_os("HOME");
         // SAFETY: restored immediately after `f`, under the crate home
         // lock.
@@ -599,13 +622,13 @@ mod tests {
     /// scoped pin that restores the real `$HOME` would leak the actual
     /// user's `~/.agents/skills` into every replay (the async-task race
     /// the sync tests never face). The guard releases when the test
-    /// ends; the crate home lock serializes the held window against
+    /// ends; the workspace env lock serializes the held window against
     /// every other HOME-reading test in the binary.
     fn pinned_home_guard(isolated: &Path) -> (PinnedHomeGuard, PathBuf) {
-        let _home_lock = test_env::home_lock();
+        let _home_lock = env::lock();
         let previous_home = std::env::var_os("HOME");
         // SAFETY: held for the rest of the test; restored by the guard's
-        // Drop (still under the crate home lock, which the guard also
+        // Drop (still under the workspace env lock, which the guard also
         // holds — the lock outlives the env restore by construction).
         unsafe { std::env::set_var("HOME", isolated) };
         (
@@ -617,7 +640,7 @@ mod tests {
         )
     }
 
-    /// The RAII pin: restores `$HOME` and releases the crate home lock on
+    /// The RAII pin: restores `$HOME` and releases the workspace env lock on
     /// drop. The env restore happens while the lock is still held (the
     /// field order keeps `_home_lock` alive until after
     /// `previous_home` is written back).
@@ -630,7 +653,7 @@ mod tests {
         fn drop(&mut self) {
             // SAFETY: restores the pre-test value before the lock guard
             // (declared first) drops — the same serialization window the
-            // scoped pin uses.
+            // scoped pin uses (env_lock held).
             match self.previous_home.take() {
                 Some(value) => unsafe { std::env::set_var("HOME", value) },
                 None => unsafe { std::env::remove_var("HOME") },
@@ -667,6 +690,8 @@ mod tests {
             trust_store: None,
             default_registration_id: None,
             default_scope_id: None,
+            workspace_registry: std::sync::OnceLock::new(),
+            metadata_store: std::sync::OnceLock::new(),
         });
         let registry = crate::workspace_registry::WorkspaceRegistry::new(
             Arc::new(NoopResolver),
@@ -985,9 +1010,16 @@ mod tests {
         );
 
         // When the handle drops (the registry-remove path)
+        let watcher_exited = Arc::clone(&watcher.exited);
         drop(watcher);
-        // Give the task time to observe the shutdown signal and exit.
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // Wait for the task's OWN exit flag — not a grace period.
+        assert!(
+            wait_until(Duration::from_secs(5), || {
+                watcher_exited.load(std::sync::atomic::Ordering::SeqCst)
+            })
+            .await,
+            "the watcher task must exit once its handle drops"
+        );
 
         // Then a later write does NOT reload — the task is gone, not
         // merely quiet (the whole point of the explicit shutdown channel:
@@ -1003,6 +1035,91 @@ mod tests {
         assert!(
             runtime.scope.skills().get("gamma").is_none(),
             "the catalog stays stale after the watcher is dropped"
+        );
+    }
+
+    /// Given the macOS FSEvents backend, when a watcher mounts its listen
+    /// set and is then dropped, then the mount completes well inside a
+    /// fixed budget — the notify 6 regression this test pins had every
+    /// `watch()` spend 8-11 s busy-waiting inside its internal `stop()`
+    /// (the runloop-teardown spin), which made every watcher-mounting
+    /// test report "running for over 60 seconds" and starved the whole
+    /// suite. The budget is generous against CI noise but a fraction of
+    /// the regression's per-watch cost (one regression watch alone
+    /// exceeds it).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn should_mount_the_watcher_within_a_fixed_time_budget() {
+        let workspace_root = tempfile::tempdir().expect("workspace tempdir");
+        let home = tempfile::tempdir().expect("home tempdir");
+        let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
+        write_skill(
+            &workspace_root.path().join(".agents/skills"),
+            "alpha",
+            "first",
+        );
+
+        let (_pin, _isolated) = pinned_home_guard(isolated_home.path());
+        let runtime = built_runtime(&workspace_root, &home, "ws-budget");
+        let orchestrator = Arc::new(SkillReloadOrchestrator::new());
+
+        // When the watcher mounts (the awaited spawn — the watch
+        // registrations are included in the measured window)
+        //
+        // Mounted twice and the FASTER of the two is judged. Mounting is a
+        // one-off cost this assertion wants to characterise, but it runs on
+        // the blocking pool, so under a full-suite run the first mount can
+        // sit in the queue behind other tests' blocking work and report that
+        // wait as if it were watch() cost. Taking the minimum removes the
+        // queueing term without weakening what is measured: the notify-6
+        // regression is per-`watch()` and hits EVERY mount (8-11 s each), so
+        // a regression cannot produce a fast sample, while a starved runner
+        // cannot produce a slow one twice in a row.
+        let mut mounts = Vec::with_capacity(2);
+        for _ in 0..2 {
+            let mount_started = std::time::Instant::now();
+            let watcher = spawn_skill_watcher(&runtime, &orchestrator, inputs(&home))
+                .await
+                .expect("watcher spawn");
+            mounts.push(mount_started.elapsed());
+            drop(watcher);
+        }
+        let fastest = mounts.iter().min().copied().expect("two mounts were measured");
+
+        // The notify-6 regression is a BUSY-WAIT: every `watch()` spins for
+        // 8-11 s burning CPU. A starved runner instead makes the mount slow
+        // by not scheduling it — the thread waits, it does not spin. Distinguish
+        // the two by calibrating against how slow this machine is right now:
+        // a few trivial sleeps must take roughly their nominal time, and if
+        // they take far longer, the runner is starved and the absolute
+        // measurement below says nothing about notify.
+        let calibration_started = std::time::Instant::now();
+        for _ in 0..20 {
+            // The calibration IS the measurement: a fixed nominal sleep is
+            // what the runner's actual pace is compared against.
+            tokio::time::sleep(Duration::from_millis(1)).await; // hygiene-allow: measures the runner's pace
+        }
+        let calibration = calibration_started.elapsed();
+        // 20 x 1 ms nominal; a loaded runner inflates this. Anything up to
+        // 5x still leaves the 5 s budget meaningful (the regression's own
+        // floor is 8 s per watch).
+        let starved = calibration > Duration::from_millis(100);
+
+        // Then the mount stayed inside the budget (a single notify-6
+        // watch() already costs 8 s+ on macOS 26 — the mount alone trips).
+        // Under starvation the measurement is reported, not asserted: the
+        // 8 s regression floor is still above the budget, so a real
+        // regression fails even on a slow runner once the mount exceeds it
+        // outright.
+        if starved && fastest < Duration::from_secs(8) {
+            eprintln!(
+                "skill watcher mount took {fastest:?} (samples: {mounts:?}) on a starved runner \
+                 (20 ms of sleeps took {calibration:?}) — skipping the budget assertion"
+            );
+            return;
+        }
+        assert!(
+            fastest < Duration::from_secs(5),
+            "the watcher mount took {fastest:?} (samples: {mounts:?}, calibration {calibration:?}) — the FSEvents backend is busy-waiting again (the notify 6 regression)"
         );
     }
 

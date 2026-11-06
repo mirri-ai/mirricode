@@ -11,6 +11,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "interaction.listPending",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_interaction_list_pending(params)),
+        settlement: Route::SETTLES,
     },
     // Respond to one pending interaction by id (approval → decision,
     // question → answer; JSON null result).
@@ -18,6 +19,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "interaction.respond",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_interaction_respond(params)),
+        settlement: Route::SETTLES,
     },
     // Whether the request id was resolved recently (plain boolean).
     Route {
@@ -26,5 +28,6 @@ pub(super) const ROUTES: &[Route] = &[
         handler: |server, params| {
             Box::pin(server.dispatch_interaction_is_recently_resolved(params))
         },
+        settlement: Route::SETTLES,
     },
 ];

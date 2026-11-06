@@ -10,6 +10,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "question.answer",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_answer_question(params)),
+        settlement: Route::SETTLES,
     },
     // Dismiss a pending question without answering it
     // (`{ok: true, dismissed: true}`).
@@ -17,6 +18,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "question.dismiss",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_dismiss_question(params)),
+        settlement: Route::SETTLES,
     },
     // The session's pending questions (klient `questionRequest[]`, bare
     // array).
@@ -24,5 +26,6 @@ pub(super) const ROUTES: &[Route] = &[
         method: "question.listPending",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_question_list_pending(params)),
+        settlement: Route::SETTLES,
     },
 ];

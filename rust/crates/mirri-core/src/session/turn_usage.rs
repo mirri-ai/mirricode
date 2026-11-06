@@ -48,6 +48,14 @@ pub struct TurnUsageRecord {
     /// live one. `None` for dangling brackets (no `turn.ended` record) and
     /// for records that omitted the field.
     pub duration_ms: Option<u64>,
+    /// The `turn.ended` wire record's wall-clock completion time in epoch
+    /// milliseconds — stamped on the SAME last assistant history row as
+    /// [`Self::duration_ms`], so a restored transcript renders the same
+    /// "completed at" time the live one shows. Independent of
+    /// `duration_ms`: each field is present only when the wire record
+    /// carried it. `None` for dangling brackets and for records that
+    /// omitted the field.
+    pub ended_at: Option<u64>,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
@@ -187,6 +195,7 @@ pub fn fold_turn_usages(ops: &[WireOp]) -> TurnUsageFold {
             WireOp::TurnEnded {
                 turn_id,
                 duration_ms,
+                ended_at,
                 ..
             } => {
                 if let Some(mut bracket) = open.take() {
@@ -199,6 +208,7 @@ pub fn fold_turn_usages(ops: &[WireOp]) -> TurnUsageFold {
                     rekey_bracket(&mut bracket, || format!("turn-{turn_id}"));
                     bracket.record.turn_id = Some(*turn_id);
                     bracket.record.duration_ms = *duration_ms;
+                    bracket.record.ended_at = *ended_at;
                     finalize_bracket(&mut fold, bracket);
                 }
             }
@@ -459,6 +469,37 @@ pub fn assign_turn_durations(
     out
 }
 
+/// Attribute each completed turn's wall-clock completion time (epoch ms)
+/// to the LAST assistant history row of that turn — the exact row
+/// [`assign_turn_durations`] stamps, so the read face's "completed at"
+/// backfill rides the identical row-attribution identity: the fold
+/// record's BRACKET ordinal, never the turn-key string (see
+/// [`assign_turn_durations`] for why the string collides on allocator
+/// restarts). Independent of the duration: each record contributes its
+/// `ended_at` iff the wire record carried it.
+pub fn assign_turn_ended_ats(
+    fold: &TurnUsageFold,
+    assignment: &TurnRowAssignment,
+) -> std::collections::HashMap<u64, u64> {
+    let mut last_seq: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+    for (seq, bracket) in &assignment.row_brackets {
+        let entry = last_seq.entry(*bracket).or_insert(*seq);
+        if *seq > *entry {
+            *entry = *seq;
+        }
+    }
+    let mut out = std::collections::HashMap::new();
+    for record in &fold.turns {
+        let Some(ended_at) = record.ended_at else {
+            continue;
+        };
+        if let Some(seq) = last_seq.get(&record.bracket) {
+            out.insert(*seq, ended_at);
+        }
+    }
+    out
+}
+
 /// The matching signature of a user history row: its serialized origin
 /// plus a content signature. Media rehydration and blob archives must
 /// not break the comparison — see [`content_signature`].
@@ -506,12 +547,13 @@ mod tests {
         }
     }
 
-    fn turn_ended(turn_id: u64, duration_ms: Option<u64>) -> WireOp {
+    fn turn_ended(turn_id: u64, duration_ms: Option<u64>, ended_at: Option<u64>) -> WireOp {
         WireOp::TurnEnded {
             turn_id,
             reason: "completed".to_string(),
             error: None,
             duration_ms,
+            ended_at,
         }
     }
 
@@ -521,7 +563,7 @@ mod tests {
             turn_prompt("hi"),
             user_append("hi", json!({ "kind": "user" })),
             step_end(100, 50, 1000, 200),
-            turn_ended(1, None),
+            turn_ended(1, None, None),
         ];
         let fold = fold_turn_usages(&ops);
         assert_eq!(fold.turns.len(), 1, "one bracket with usage: {fold:?}");
@@ -539,7 +581,7 @@ mod tests {
             user_append("hi", json!({ "kind": "user" })),
             step_end(10, 5, 100, 20),
             step_end(1, 2, 3, 4),
-            turn_ended(1, None),
+            turn_ended(1, None, None),
         ];
         let fold = fold_turn_usages(&ops);
         assert_eq!(fold.turns.len(), 1);
@@ -554,7 +596,7 @@ mod tests {
         let ops = vec![
             turn_prompt("hi"),
             user_append("hi", json!({ "kind": "user" })),
-            turn_ended(1, None),
+            turn_ended(1, None, None),
         ];
         let fold = fold_turn_usages(&ops);
         assert!(fold.turns.is_empty(), "no usage → no record: {fold:?}");
@@ -567,7 +609,7 @@ mod tests {
             turn_prompt("hi"),
             user_append("hi", json!({ "kind": "user" })),
             step_end(1, 1, 0, 0),
-            turn_ended(1, Some(1200)),
+            turn_ended(1, Some(1200), None),
         ];
         let fold = fold_turn_usages(&ops);
         assert_eq!(fold.turns.len(), 1);
@@ -586,7 +628,7 @@ mod tests {
             turn_prompt("second"),
             user_append("second", json!({ "kind": "user" })),
             step_end(2, 2, 0, 0),
-            turn_ended(2, Some(500)),
+            turn_ended(2, Some(500), None),
         ];
         let fold = fold_turn_usages(&ops);
         assert_eq!(fold.turns.len(), 2);
@@ -604,7 +646,7 @@ mod tests {
             turn_prompt("hi"),
             user_append("hi", json!({ "kind": "user" })),
             step_end(1, 1, 0, 0),
-            turn_ended(1, None),
+            turn_ended(1, None, None),
         ];
         let fold = fold_turn_usages(&ops);
         assert_eq!(fold.turns.len(), 1);
@@ -633,7 +675,7 @@ mod tests {
                 usage: json!({ "inputTokens": 1, "outputTokens": 1 }),
                 usage_scope: None,
             },
-            turn_ended(1, None),
+            turn_ended(1, None, None),
         ];
         let fold = fold_turn_usages(&ops);
         assert_eq!(fold.turns.len(), 1);
@@ -646,7 +688,7 @@ mod tests {
             turn_prompt("hi"),
             user_append("hi", json!({ "kind": "user" })),
             step_end(1, 1, 0, 0),
-            turn_ended(1, None),
+            turn_ended(1, None, None),
         ];
         let fold = fold_turn_usages(&ops);
         assert_eq!(fold.openers.len(), 1);
@@ -662,7 +704,7 @@ mod tests {
             user_append("hi", json!({ "kind": "user" })),
             user_append("a steer", json!({ "kind": "user" })),
             step_end(1, 1, 0, 0),
-            turn_ended(1, None),
+            turn_ended(1, None, None),
         ];
         let fold = fold_turn_usages(&ops);
         assert_eq!(fold.openers.len(), 1);
@@ -676,7 +718,7 @@ mod tests {
             turn_prompt("hi"),
             user_append("hi", json!({ "kind": "user" })),
             step_end(1, 1, 0, 0),
-            turn_ended(1, None),
+            turn_ended(1, None, None),
         ];
         let fold = fold_turn_usages(&ops);
         assert_eq!(fold.openers.len(), 1);
@@ -695,7 +737,7 @@ mod tests {
             turn_prompt("second"),
             user_append("second", json!({ "kind": "user" })),
             step_end(2, 2, 0, 0),
-            turn_ended(2, None),
+            turn_ended(2, None, None),
         ];
         let fold = fold_turn_usages(&ops);
         assert_eq!(fold.turns.len(), 2);
@@ -729,11 +771,11 @@ mod tests {
             turn_prompt("d"),
             user_append("d", json!({ "kind": "user" })),
             step_end(4, 4, 0, 0),
-            turn_ended(1, None),
+            turn_ended(1, None, None),
             turn_prompt("e"),
             user_append("e", json!({ "kind": "user" })),
             step_end(8, 8, 0, 0),
-            turn_ended(2, None),
+            turn_ended(2, None, None),
         ];
         let fold = fold_turn_usages(&ops);
         // Brackets: a, b, c, d(aborted tail closed by turn_ended 1),
@@ -802,7 +844,7 @@ mod tests {
             ops.push(turn_prompt(text));
             ops.push(user_append(text, json!({ "kind": "user" })));
             ops.push(step_end(1, 1, 0, 0));
-            ops.push(turn_ended(index as u64 + 1, None));
+            ops.push(turn_ended(index as u64 + 1, None, None));
         }
         ops.push(turn_prompt("third"));
         ops.push(user_append("third", json!({ "kind": "user" })));
@@ -859,7 +901,7 @@ mod tests {
             ops.push(turn_prompt(text));
             ops.push(user_append(text, json!({ "kind": "user" })));
             ops.push(step_end(1, 1, 0, 0));
-            ops.push(turn_ended(index as u64 + 1, None));
+            ops.push(turn_ended(index as u64 + 1, None, None));
         }
         fold_turn_usages(&ops)
     }
@@ -886,11 +928,11 @@ mod tests {
             turn_prompt("first"),
             user_append("first", json!({ "kind": "user" })),
             step_end(1, 1, 0, 0),
-            turn_ended(1, Some(1000)),
+            turn_ended(1, Some(1000), None),
             turn_prompt("second"),
             user_append("second", json!({ "kind": "user" })),
             step_end(1, 1, 0, 0),
-            turn_ended(2, Some(2000)),
+            turn_ended(2, Some(2000), None),
         ];
         let fold = fold_turn_usages(&ops);
         let history = vec![
@@ -915,6 +957,104 @@ mod tests {
     }
 
     #[test]
+    fn should_assign_ended_at_to_same_row_as_duration() {
+        // Given: a journal whose turn.ended carries both duration and ended_at
+        let ops = vec![
+            turn_prompt("hi"),
+            user_append("hi", json!({ "kind": "user" })),
+            step_end(1, 1, 0, 0),
+            turn_ended(1, Some(1200), Some(1730000000000)),
+        ];
+        let fold = fold_turn_usages(&ops);
+        let history = vec![user_row(1, "hi"), assistant_row(2, "hello!")];
+        let assignment = assign_turn_rows(&fold, &history);
+        // When: durations and ended-ats are assigned
+        let durations = assign_turn_durations(&fold, &assignment);
+        let ended_ats = assign_turn_ended_ats(&fold, &assignment);
+        // Then: both land on the same last-assistant row
+        assert_eq!(durations.get(&2), Some(&1200));
+        assert_eq!(ended_ats.get(&2), Some(&1730000000000));
+    }
+
+    #[test]
+    fn should_leave_ended_at_unstamped_when_the_turn_ended_record_omits_it() {
+        // The wire field is optional and independent of `duration_ms`: a
+        // record carrying only a duration folds `ended_at` to None, never to
+        // a duration-derived time.
+        let ops = vec![
+            turn_prompt("hi"),
+            user_append("hi", json!({ "kind": "user" })),
+            step_end(1, 1, 0, 0),
+            turn_ended(1, Some(1200), None),
+        ];
+        let fold = fold_turn_usages(&ops);
+        assert_eq!(fold.turns[0].duration_ms, Some(1200));
+        assert_eq!(fold.turns[0].ended_at, None);
+        let history = vec![user_row(1, "hi"), assistant_row(2, "hello!")];
+        let assignment = assign_turn_rows(&fold, &history);
+        assert!(
+            assign_turn_ended_ats(&fold, &assignment).is_empty(),
+            "no ended_at → nothing to stamp"
+        );
+    }
+
+    #[test]
+    fn should_leave_ended_at_none_when_the_bracket_dangles_without_a_turn_ended() {
+        // A crashed turn never wrote `turn.ended` — there is no wall-clock
+        // completion time to stamp.
+        let ops = vec![
+            turn_prompt("first"),
+            user_append("first", json!({ "kind": "user" })),
+            step_end(1, 1, 0, 0),
+            turn_prompt("second"),
+            user_append("second", json!({ "kind": "user" })),
+            step_end(2, 2, 0, 0),
+            turn_ended(2, Some(500), Some(1730000000000)),
+        ];
+        let fold = fold_turn_usages(&ops);
+        assert_eq!(fold.turns.len(), 2);
+        assert_eq!(fold.turns[0].turn_key, "aborted-1");
+        assert_eq!(fold.turns[0].ended_at, None);
+        assert_eq!(fold.turns[1].ended_at, Some(1730000000000));
+    }
+
+    #[test]
+    fn should_keep_each_batchs_ended_at_on_its_own_rows_when_turn_keys_collide_across_restarts() {
+        // Same identity discipline as the duration assignment: the ended-at
+        // stamp follows the fold's bracket identity, not the colliding
+        // `turn-<n>` key string.
+        let ops = vec![
+            turn_prompt("q1"),
+            user_append("q1", json!({ "kind": "user" })),
+            step_end(1, 1, 0, 0),
+            turn_ended(1, Some(1000), Some(1730000000000)),
+            turn_prompt("q2"),
+            user_append("q2", json!({ "kind": "user" })),
+            step_end(1, 1, 0, 0),
+            turn_ended(1, Some(2000), Some(1730000009000)),
+        ];
+        let fold = fold_turn_usages(&ops);
+        let history = vec![
+            user_row(1, "q1"),
+            assistant_row(2, "a1"),
+            user_row(3, "q2"),
+            assistant_row(4, "a2"),
+        ];
+        let assignment = assign_turn_rows(&fold, &history);
+        let ended_ats = assign_turn_ended_ats(&fold, &assignment);
+        assert_eq!(
+            ended_ats.get(&2),
+            Some(&1730000000000),
+            "batch one's row keeps its own ended-at: {ended_ats:?}"
+        );
+        assert_eq!(
+            ended_ats.get(&4),
+            Some(&1730000009000),
+            "batch two's row gets its own ended-at: {ended_ats:?}"
+        );
+    }
+
+    #[test]
     fn should_count_dangling_turn_ordinals_when_deriving_the_wire_log_turn_id_floor() {
         // The production failure shape: 8 completed turns (ended ids 1..=8)
         // plus dangling brackets whose ordinals run past the ended maximum
@@ -924,7 +1064,7 @@ mod tests {
         let mut ops = Vec::new();
         for n in 1..=8u64 {
             ops.push(turn_prompt(&format!("ended-{n}")));
-            ops.push(turn_ended(n, None));
+            ops.push(turn_ended(n, None, None));
         }
         for n in 9..=29u64 {
             // Dangling brackets: prompts with no turn.ended.
@@ -941,7 +1081,7 @@ mod tests {
     fn should_count_cancelled_turn_ids_when_deriving_the_wire_log_turn_id_floor() {
         let ops = vec![
             turn_prompt("a"),
-            turn_ended(4, None),
+            turn_ended(4, None, None),
             turn_prompt("b"),
             WireOp::TurnCancel {
                 turn_id: Some(9),
@@ -967,13 +1107,13 @@ mod tests {
         // ids, so the log holds turn.ended 1 several times.
         let ops = vec![
             turn_prompt("a"),
-            turn_ended(1, None),
+            turn_ended(1, None, None),
             turn_prompt("b"),
-            turn_ended(2, None),
+            turn_ended(2, None, None),
             turn_prompt("c"),
-            turn_ended(1, None),
+            turn_ended(1, None, None),
             turn_prompt("d"),
-            turn_ended(1, None),
+            turn_ended(1, None, None),
         ];
         assert_eq!(
             duplicate_turn_ids(&ops),
@@ -986,9 +1126,9 @@ mod tests {
     fn should_flag_nothing_when_every_ended_turn_id_is_unique() {
         let ops = vec![
             turn_prompt("a"),
-            turn_ended(1, None),
+            turn_ended(1, None, None),
             turn_prompt("b"),
-            turn_ended(2, None),
+            turn_ended(2, None, None),
         ];
         assert!(duplicate_turn_ids(&ops).is_empty());
     }
@@ -1008,20 +1148,20 @@ mod tests {
             turn_prompt("q1"),
             user_append("q1", json!({ "kind": "user" })),
             step_end(1, 1, 0, 0),
-            turn_ended(1, Some(1000)),
+            turn_ended(1, Some(1000), None),
             turn_prompt("q2"),
             user_append("q2", json!({ "kind": "user" })),
             step_end(1, 1, 0, 0),
-            turn_ended(2, Some(1100)),
+            turn_ended(2, Some(1100), None),
             // Batch two: the allocator restarted, so the keys repeat.
             turn_prompt("q3"),
             user_append("q3", json!({ "kind": "user" })),
             step_end(1, 1, 0, 0),
-            turn_ended(1, Some(2000)),
+            turn_ended(1, Some(2000), None),
             turn_prompt("q4"),
             user_append("q4", json!({ "kind": "user" })),
             step_end(1, 1, 0, 0),
-            turn_ended(2, Some(2100)),
+            turn_ended(2, Some(2100), None),
         ];
         let fold = fold_turn_usages(&ops);
         let history = vec![
@@ -1072,7 +1212,7 @@ mod tests {
             turn_prompt("first"),
             user_append("first", json!({ "kind": "user" })),
             step_end(1, 1, 0, 0),
-            turn_ended(1, Some(1000)),
+            turn_ended(1, Some(1000), None),
         ];
         let fold = fold_turn_usages(&ops);
         let history = vec![
@@ -1096,7 +1236,7 @@ mod tests {
             turn_prompt("hi"),
             user_append("hi", json!({ "kind": "user" })),
             step_end(1, 1, 0, 0),
-            turn_ended(1, None),
+            turn_ended(1, None, None),
         ];
         let fold = fold_turn_usages(&ops);
         let history = vec![
@@ -1168,7 +1308,7 @@ mod tests {
                 }),
             },
             step_end(1, 1, 0, 0),
-            turn_ended(1, None),
+            turn_ended(1, None, None),
         ];
         let fold = fold_turn_usages(&ops);
         let history = vec![

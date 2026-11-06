@@ -45,10 +45,22 @@ pub fn render_cron_fire_envelope(fire: &CronFire) -> String {
     let recurring = if fire.recurring { "true" } else { "false" };
     let coalesced_count = fire.coalesced_count.to_string();
     let stale = if fire.stale { "true" } else { "false" };
+    // S3 (F.2): the maxed-out mark rides the envelope's terminal-signal
+    // slot — the same presentation a stale finale uses, so consumers
+    // treat "this is the last delivery" uniformly.
+    let maxed_out = if fire.maxed_out { "true" } else { "false" };
+    // C.2a (stage-1 batch-2): the lateness mark rides only LATE fires —
+    // an on-time or run-now fire keeps the envelope exactly as before,
+    // so consumers that never read the key see zero change.
+    let late_attr = match fire.late_by_ms {
+        Some(ms) => format!(" lateByMs=\"{ms}\""),
+        None => String::new(),
+    };
     [
         format!(
             "<cron-fire jobId=\"{job_id}\" cron=\"{cron}\" recurring=\"{recurring}\" \
-             coalescedCount=\"{coalesced_count}\" stale=\"{stale}\">"
+             coalescedCount=\"{coalesced_count}\" stale=\"{stale}\" maxedOut=\"{maxed_out}\"\
+             {late_attr}>"
         ),
         "<prompt>".to_string(),
         fire.prompt.clone(),
@@ -70,6 +82,12 @@ mod tests {
             recurring: true,
             coalesced_count: 3,
             stale: false,
+            maxed_out: false,
+            readonly: false,
+            scheduled_at: None,
+            late_by_ms: None,
+            scope: crate::cron::TaskScope::Session,
+            ended: false,
         }
     }
 
@@ -83,7 +101,7 @@ mod tests {
         assert_eq!(
             xml,
             "<cron-fire jobId=\"cron-01J8Z3\" cron=\"*/5 * * * *\" \
-             recurring=\"true\" coalescedCount=\"3\" stale=\"false\">\n\
+             recurring=\"true\" coalescedCount=\"3\" stale=\"false\" maxedOut=\"false\">\n\
              <prompt>\n\
              Check the build status.\nReport failures.\n\
              </prompt>\n\
@@ -114,6 +132,32 @@ mod tests {
     }
 
     #[test]
+    fn should_carry_the_late_by_ms_attribute_when_the_fire_is_late() {
+        // Given a late fire (C.2a), when rendered
+        let mut late = fire();
+        late.late_by_ms = Some(7_200_000);
+        let xml = render_cron_fire_envelope(&late);
+        // Then the lateness mark rides the opening tag
+        assert!(
+            xml.contains("lateByMs=\"7200000\""),
+            "the late fire carries its lateness: {xml}"
+        );
+    }
+
+    #[test]
+    fn should_omit_the_late_by_ms_attribute_when_the_fire_is_on_time() {
+        // Given an on-time fire (late_by_ms None — the default), when
+        // rendered
+        let xml = render_cron_fire_envelope(&fire());
+        // Then the envelope carries no lateness key at all (an on-time
+        // fire is byte-identical to the pre-C.2a shape)
+        assert!(
+            !xml.contains("lateByMs"),
+            "an on-time fire carries no lateness mark: {xml}"
+        );
+    }
+
+    #[test]
     fn should_spell_the_booleans_and_fall_back_when_the_identity_is_empty() {
         // Given a stale one-shot fire with no cron expression
         let empty = CronFire {
@@ -123,6 +167,12 @@ mod tests {
             recurring: false,
             coalesced_count: 1,
             stale: true,
+            maxed_out: false,
+            readonly: false,
+            scheduled_at: None,
+            late_by_ms: None,
+            scope: crate::cron::TaskScope::Session,
+            ended: false,
         };
         let xml = render_cron_fire_envelope(&empty);
         // Then the booleans are lowercase words and the empty cron falls

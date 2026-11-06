@@ -20,7 +20,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
 use tokio::sync::{Mutex, oneshot};
 use tracing::{debug, warn};
 
@@ -106,7 +105,7 @@ impl StdioTransport {
         env_overrides: Option<HashMap<String, String>>,
         cwd: Option<PathBuf>,
     ) -> McpResult<Self> {
-        let mut cmd = Command::new(&command);
+        let mut cmd = mirri_os::new_tokio_command(&command);
         cmd.args(&args);
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());

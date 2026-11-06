@@ -163,6 +163,11 @@ pub async fn run() -> anyhow::Result<()> {
             embedded_factory,
         );
         serve(&transport, &handler).await?;
+        // The serve loop is over (stdin closed — the host went away): tear
+        // the engine pool down so each engine's session-scoped MCP overlays
+        // disconnect and their child processes die with the connection
+        // (issue #193). Failure only logs — the shutdown proceeds.
+        handler.dispose().await;
         tracing::info!("mirri-acp shutting down (stdin closed)");
         return Ok(());
     }
@@ -170,10 +175,10 @@ pub async fn run() -> anyhow::Result<()> {
     // The embedded engine: fully-wired (config.toml, MCP servers,
     // plugins, and agent profiles auto-discovered), with the
     // config-aware LLM factory attached so prompts run turns on the
-    // configured `[models]` aliases, with provider credentials
-    // injectable through the environment (ANTHROPIC_API_KEY /
-    // OPENAI_API_KEY — the provider-resolution layer under each
-    // configured alias). Rooted at the workspace directory:
+    // configured `[models]` aliases, with provider credentials coming
+    // only from explicit configuration — the credential store or the
+    // provider's `[providers.<id>.env]` sub-table (#186 retired the
+    // shell env fallback). Rooted at the workspace directory:
     // `MIRRI_ACP_WORKSPACE_DIR` when set (tests point it at a
     // throwaway tempdir), the current working directory otherwise.
     let workspace_dir = std::env::var("MIRRI_ACP_WORKSPACE_DIR")
@@ -182,13 +187,18 @@ pub async fn run() -> anyhow::Result<()> {
             std::env::current_dir().expect("current working directory must be readable")
         });
     tracing::info!("mirri-acp using embedded engine");
-    let default_engine: Arc<dyn EngineAdapter> =
-        Arc::new(mirri_embedded::EmbeddedServer::for_workspace_root(
+    let default_engine: Arc<dyn EngineAdapter> = {
+        let engine = mirri_embedded::EmbeddedServer::for_workspace_root(
             WorkspaceId::new("acp"),
             workspace_dir.clone(),
             None,
             Vec::new(),
-        ));
+        );
+        // SDR-011: the ACP host mounts the skill watchers explicitly —
+        // engine construction alone never registers FSEventStreams.
+        engine.mount_skill_watchers();
+        Arc::new(engine)
+    };
     // The per-cwd engine pool: every `session/new` / `session/load`
     // carrying a `cwd` routes to the engine cached under that
     // (canonicalized) directory — same-cwd sessions share it, so the
@@ -203,12 +213,16 @@ pub async fn run() -> anyhow::Result<()> {
         if cwd == factory_root {
             return Arc::clone(&engine_for_pool);
         }
-        Arc::new(mirri_embedded::EmbeddedServer::for_workspace_root(
-            WorkspaceId::new("acp"),
-            cwd.to_path_buf(),
-            None,
-            Vec::new(),
-        )) as Arc<dyn EngineAdapter>
+        Arc::new({
+            let engine = mirri_embedded::EmbeddedServer::for_workspace_root(
+                WorkspaceId::new("acp"),
+                cwd.to_path_buf(),
+                None,
+                Vec::new(),
+            );
+            engine.mount_skill_watchers();
+            engine
+        }) as Arc<dyn EngineAdapter>
     });
     let transport = Arc::new(StdioTransport::new());
     let handler = Arc::new(AcpHandler::with_engine_pool(
@@ -220,6 +234,11 @@ pub async fn run() -> anyhow::Result<()> {
     // (the pool mint records every factory engine itself).
     handler.remember_engine_cwd(&default_engine, default_root);
     serve(&transport, &handler).await?;
+    // The serve loop is over (stdin closed — the host went away): tear the
+    // engine pool down so each engine's session-scoped MCP overlays
+    // disconnect and their child processes die with the connection (issue
+    // #193). Failure only logs — the shutdown proceeds.
+    handler.dispose().await;
     tracing::info!("mirri-acp shutting down (stdin closed)");
     Ok(())
 }
@@ -273,10 +292,11 @@ async fn probe_and_connect_desktop() -> Option<Arc<dyn EngineAdapter>> {
 }
 
 /// The embedded fallback factory of the degrade path (design 14 D3): the
-/// engine a dead remote connection degrades to. Home injection (the
-/// ADR-019 batch) is NOT applied here — it lands as an independently
-/// deliverable change; today's form stays `for_workspace_root(..., None,
-/// ...)` rooted at the startup directory.
+/// engine a dead remote connection degrades to. The engine resolves its
+/// home through the env chain (`MIRRICODE_HOME`, else `$HOME/.mirri-code`
+/// — ADR-006: an unresolvable home is a hard error, the no-home shape is
+/// out of the product surface), rooting sessions and the metadata
+/// database there.
 fn build_embedded_engine_factory() -> crate::acp_handler::EmbeddedEngineFactory {
     let workspace_dir = std::env::var("MIRRI_ACP_WORKSPACE_DIR")
         .map(PathBuf::from)
@@ -284,12 +304,16 @@ fn build_embedded_engine_factory() -> crate::acp_handler::EmbeddedEngineFactory 
             std::env::current_dir().expect("current working directory must be readable")
         });
     Arc::new(move || {
-        Arc::new(mirri_embedded::EmbeddedServer::for_workspace_root(
-            WorkspaceId::new("acp"),
-            workspace_dir.clone(),
-            None,
-            Vec::new(),
-        )) as Arc<dyn EngineAdapter>
+        Arc::new({
+            let engine = mirri_embedded::EmbeddedServer::for_workspace_root(
+                WorkspaceId::new("acp"),
+                workspace_dir.clone(),
+                None,
+                Vec::new(),
+            );
+            engine.mount_skill_watchers();
+            engine
+        }) as Arc<dyn EngineAdapter>
     })
 }
 
@@ -536,14 +560,8 @@ mod tests {
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
-    /// Serializes tests that mutate process environment variables.
-    ///
-    /// `std::env::set_var`/`remove_var` are `unsafe` in edition 2024, and
-    /// environment reads/writes race across threads when tests run in
-    /// parallel, so every env-mutating test holds this lock and restores
-    /// the previous value on drop (the same discipline as
-    /// `desktop_probe`'s tests).
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // Env-mutating tests serialize on the workspace-wide env lock
+    // (mirri-test-support) instead of a crate-local mutex.
 
     /// Saves the current value of every variable the engine-choice
     /// resolution reads and clears them for the test, restoring the
@@ -603,7 +621,7 @@ mod tests {
     /// with the pre-probe behavior).
     #[test]
     fn should_prefer_explicit_remote_engine_over_everything() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = mirri_test_support::env::lock();
         let _guard = EnvGuard::new();
         // SAFETY: ENV_LOCK held; restored by EnvGuard's Drop.
         unsafe {
@@ -624,7 +642,7 @@ mod tests {
     /// skips probing entirely (design 14 §D3).
     #[test]
     fn should_force_embedded_when_engine_env_says_so() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = mirri_test_support::env::lock();
         let _guard = EnvGuard::new();
         // SAFETY: ENV_LOCK held; restored by EnvGuard's Drop.
         unsafe { std::env::set_var("MIRRI_ACP_ENGINE", "embedded") };
@@ -637,7 +655,7 @@ mod tests {
     /// (design 14 §D3 / acceptance 4).
     #[test]
     fn should_skip_probing_when_workspace_dir_is_set() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = mirri_test_support::env::lock();
         let _guard = EnvGuard::new();
         // SAFETY: ENV_LOCK held; restored by EnvGuard's Drop.
         unsafe { std::env::set_var("MIRRI_ACP_WORKSPACE_DIR", "/tmp/some-workspace") };
@@ -648,7 +666,7 @@ mod tests {
     /// choice is to probe — the new default path of design 14 §2.
     #[test]
     fn should_probe_only_when_no_override_applies() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = mirri_test_support::env::lock();
         let _guard = EnvGuard::new();
         assert_eq!(resolve_engine_choice(), EngineChoice::ProbeDesktop);
     }

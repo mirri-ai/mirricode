@@ -16,6 +16,7 @@ import type {
   AppSession,
   AppSessionUsage,
   AppTask,
+  NarrativeSegment,
 } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -1066,6 +1067,7 @@ describe('state reference reuse (SDR-003b invalidation isolation)', () => {
         updatedAt: '2025-01-01T00:00:00.000Z',
         busy: false,
         archived: false,
+        pinned: false,
         cwd: '/tmp/w',
         model: 'model-a',
         usage: makePurityUsage(),
@@ -1079,6 +1081,7 @@ describe('state reference reuse (SDR-003b invalidation isolation)', () => {
         updatedAt: '2025-01-01T00:00:00.000Z',
         busy: false,
         archived: false,
+        pinned: false,
         cwd: '/tmp/w',
         model: 'model-a',
         usage: makePurityUsage(),
@@ -1240,6 +1243,7 @@ describe('messageCreated recency (SDR-014: content output is not use)', () => {
       updatedAt: '2025-01-01T00:00:00.000Z',
       busy: false,
       archived: false,
+      pinned: false,
       cwd: '/tmp/w',
       model: 'model-a',
       usage: {
@@ -1272,54 +1276,6 @@ describe('subagentStepBoundary reduction (ADR-015)', () => {
     };
   }
 
-  it('should truncate text and thinking to the step-start marks and arm the tail guard when a retry boundary arrives', () => {
-    // Given a running subagent with marks recorded at an empty step start,
-    // then step text/thinking accumulated
-    const state = createInitialState();
-    state.tasksBySession['s1'] = [
-      subagentTask({
-        id: 'sa-1',
-        text: 'step1step2',
-        thinking: 'think1think2',
-        stepTextLen: 5,
-        stepThinkLen: 6,
-      }),
-    ];
-
-    // When a retry boundary arrives
-    const after = reduceAppEvent(
-      state,
-      { type: 'subagentStepBoundary', sessionId: 's1', taskId: 'sa-1', retry: true },
-      { sessionId: 's1', seq: 1 },
-    );
-
-    // Then both fields are truncated back to the step start and the one-shot
-    // tail guard is armed (design F-1 ③: BOTH boundary branches arm it — the
-    // replay-after-retry is the guard's primary scenario)
-    const row = after.tasksBySession['s1']![0]!;
-    expect(row.text).toBe('step1');
-    expect(row.thinking).toBe('think1');
-    expect(row.tailGuard).toBe(true);
-  });
-
-  it('should commit new marks on a non-retry boundary and arm the tail guard', () => {
-    const state = createInitialState();
-    state.tasksBySession['s1'] = [
-      subagentTask({ id: 'sa-1', text: 'abc', thinking: 'xyz' }),
-    ];
-
-    const after = reduceAppEvent(
-      state,
-      { type: 'subagentStepBoundary', sessionId: 's1', taskId: 'sa-1', retry: false },
-      { sessionId: 's1', seq: 1 },
-    );
-
-    const row = after.tasksBySession['s1']![0]!;
-    expect(row.stepTextLen).toBe(3);
-    expect(row.stepThinkLen).toBe(3);
-    expect(row.tailGuard).toBe(true);
-  });
-
   it('should not write when the boundary names an unknown task', () => {
     const state = createInitialState();
     state.tasksBySession['s1'] = [subagentTask({ id: 't-a' })];
@@ -1331,13 +1287,11 @@ describe('subagentStepBoundary reduction (ADR-015)', () => {
     expect(after.tasksBySession).toBe(state.tasksBySession);
   });
 
-  it('should keep whole-turn text and arm the tail guard when a retry boundary arrives with no marks (mid-subscription reconnect)', () => {
-    // Given a running subagent whose turn.started was never seen — text
-    // accumulated across the whole turn and NO step-start marks exist
+  it('should keep the member narrative untouched when a retry boundary arrives with no segment mark (mid-subscription reconnect)', () => {    // Given a running subagent whose turn.started was never seen — segments
+    // accumulated across the whole turn and NO step-start mark exists
     const state = createInitialState();
-    state.tasksBySession['s1'] = [
-      subagentTask({ id: 'sa-1', text: 'whole turn narrative' }),
-    ];
+    const seg: NarrativeSegment = { id: 'seg-1', kind: 'text', text: 'whole turn narrative', seq: 0 };
+    state.tasksBySession['s1'] = [subagentTask({ id: 'sa-1', segments: [seg] })];
 
     // When a retry boundary arrives
     const after = reduceAppEvent(
@@ -1346,23 +1300,20 @@ describe('subagentStepBoundary reduction (ADR-015)', () => {
       { sessionId: 's1', seq: 1 },
     );
 
-    // Then the text is unchanged (truncating via `?? 0` would wipe the whole
-    // turn while the engine only replays the current step — the one-shot tail
-    // guard is the designed backstop for replay overlap; 宁可多显不可丢失)
+    // Then the segment list is unchanged (truncating via a zero mark would
+    // wipe the whole turn while the engine only replays the current step —
+    // 宁可多显不可丢失) and the open segment's guard is armed so the replay's
+    // first chunk is deduped by the segment tail match
     const row = after.tasksBySession['s1']![0]!;
-    expect(row.text).toBe('whole turn narrative');
-    expect(row.tailGuard).toBe(true);
+    expect(row.segments).toHaveLength(1);
+    expect(row.segments![0]).toMatchObject({ id: 'seg-1', text: 'whole turn narrative', tailGuard: true });
   });
 
   it('should not truncate a terminal member row on a late retry boundary (ADR-010 ② guard)', () => {
+    const seg: NarrativeSegment = { id: 'seg-1', kind: 'text', text: 'final narrative', seq: 0 };
     const state = createInitialState();
     state.tasksBySession['s1'] = [
-      subagentTask({
-        id: 'sa-1',
-        status: 'completed',
-        text: 'final narrative',
-        stepTextLen: 0,
-      }),
+      subagentTask({ id: 'sa-1', status: 'completed', segments: [seg] }),
     ];
 
     const after = reduceAppEvent(
@@ -1371,24 +1322,23 @@ describe('subagentStepBoundary reduction (ADR-015)', () => {
       { sessionId: 's1', seq: 1 },
     );
 
-    expect(after.tasksBySession['s1']![0]!.text).toBe('final narrative');
+    expect(after.tasksBySession['s1']![0]!.segments).toEqual([seg]);
   });
 
-  it('should keep thinking and marks across a taskCreated replacement', () => {
-    // Given a row with reducer-owned accumulated fields
+  it('should keep segment narrative and marks across a taskCreated replacement', () => {
+    // Given a row with reducer-owned narrative fields
     const state = createInitialState();
     state.tasksBySession['s1'] = [
       subagentTask({
         id: 'sa-1',
-        thinking: 'reasoning so far',
-        text: 'narrative',
-        steps: [{ id: 'tc-1', name: 'Read', arg: 'a.ts', status: 'ok', outputLines: ['body'] }],
-        stepTextLen: 9,
-        stepThinkLen: 17,
+        steps: [{ id: 'tc-1', name: 'Read', arg: 'a.ts', status: 'ok', outputLines: ['body'], seq: 0 }],
+        segments: [{ id: 'seg-1', kind: 'thinking', text: 'reasoning so far', seq: 1 }],
+        stepSegMark: { count: 1, openLen: 9 },
+        truncatedSegmentIds: ['seg-dropped'],
       }),
     ];
 
-    // When the projector re-projects the row (skeleton — no thinking/steps/marks)
+    // When the projector re-projects the row (skeleton — no segments/steps/marks)
     const after = reduceAppEvent(
       state,
       {
@@ -1400,11 +1350,11 @@ describe('subagentStepBoundary reduction (ADR-015)', () => {
     );
 
     // Then the reducer-owned narrative fields survive the replacement
-    // (steps is already preserved today — the pre-fix red comes from thinking)
+    // (steps is already preserved today — the pre-fix red came from thinking)
     const row = after.tasksBySession['s1']![0]!;
-    expect(row.thinking).toBe('reasoning so far');
-    expect(row.stepTextLen).toBe(9);
-    expect(row.stepThinkLen).toBe(17);
+    expect(row.segments).toEqual([{ id: 'seg-1', kind: 'thinking', text: 'reasoning so far', seq: 1 }]);
+    expect(row.stepSegMark).toEqual({ count: 1, openLen: 9 });
+    expect(row.truncatedSegmentIds).toEqual(['seg-dropped']);
     expect(row.steps).toHaveLength(1);
   });
 
@@ -1435,9 +1385,224 @@ describe('subagentStepBoundary reduction (ADR-015)', () => {
       requestId: 'req-1',
     });
   });
+
+  it('should record the segment step-start mark and arm the open segment without truncating when a non-retry boundary arrives', () => {
+    // Given 段表 [seg-1(闭合,"step one"), seg-2(开放,"partial")]，尚无段记账
+    const state = createInitialState();
+    const seg1: NarrativeSegment = { id: 'seg-1', kind: 'text', text: 'step one', seq: 0 };
+    const seg2: NarrativeSegment = { id: 'seg-2', kind: 'text', text: 'partial', seq: 1 };
+    state.tasksBySession['s1'] = [subagentTask({ id: 'sa-1', segments: [seg1, seg2] })];
+
+    // When 非重试步边界到达（新步开始）
+    const after = reduceAppEvent(
+      state,
+      { type: 'subagentStepBoundary', sessionId: 's1', taskId: 'sa-1', retry: false },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then 段表原样（记账不截断），stepSegMark = 段表长度 + 开放段文本长度，
+    // 末段（开放段）武装一次性守卫
+    const row = after.tasksBySession['s1']![0]!;
+    expect(row.segments?.map((s) => s.text)).toEqual(['step one', 'partial']);
+    expect(row.stepSegMark).toEqual({ count: 2, openLen: 7 });
+    expect(row.segments![1]).toMatchObject({ id: 'seg-2', tailGuard: true });
+  });
+
+  it('should truncate the segment list back to the step-start mark and arm the retained open segment when a retry boundary arrives', () => {
+    // Given 记账 {count:1, openLen:5} 提交后段表长到 [seg-1("0123456789"), seg-2("extra")]
+    const state = createInitialState();
+    const seg1: NarrativeSegment = { id: 'seg-1', kind: 'text', text: '0123456789', seq: 0 };
+    const seg2: NarrativeSegment = { id: 'seg-2', kind: 'text', text: 'extra', seq: 1 };
+    state.tasksBySession['s1'] = [
+      subagentTask({ id: 'sa-1', segments: [seg1, seg2], stepSegMark: { count: 1, openLen: 5 } }),
+    ];
+
+    // When 重试步边界到达（引擎将从步起点重放当前步）
+    const after = reduceAppEvent(
+      state,
+      { type: 'subagentStepBoundary', sessionId: 's1', taskId: 'sa-1', retry: true },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then 段表截断回步起点：只剩 seg-1、其文本截到 openLen、守卫武装；
+    // 记账保持（重试重放的是同一步，步起点不变）
+    const row = after.tasksBySession['s1']![0]!;
+    expect(row.segments).toHaveLength(1);
+    expect(row.segments![0]).toMatchObject({ id: 'seg-1', text: '01234', tailGuard: true });
+    expect(row.stepSegMark).toEqual({ count: 1, openLen: 5 });
+  });
+
+  it('should arm the last segment without truncating when a retry boundary arrives with no segment mark (replay across reset)', () => {
+    // Given 段表存在但 stepSegMark 缺失（订阅起点在步边界之后——跨越 reset 的重放）
+    const state = createInitialState();
+    const seg1: NarrativeSegment = { id: 'seg-1', kind: 'text', text: 'whole turn', seq: 0 };
+    state.tasksBySession['s1'] = [subagentTask({ id: 'sa-1', segments: [seg1] })];
+
+    // When 重试步边界到达
+    const after = reduceAppEvent(
+      state,
+      { type: 'subagentStepBoundary', sessionId: 's1', taskId: 'sa-1', retry: true },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then 段表不截断（截到 `?? 0` 会整轮清空而引擎只重放当前步——宁可多显
+    // 不可丢失），仅末段武装守卫
+    const row = after.tasksBySession['s1']![0]!;
+    expect(row.segments).toHaveLength(1);
+    expect(row.segments![0]).toMatchObject({ id: 'seg-1', text: 'whole turn', tailGuard: true });
+  });
+
+  it('should not resurrect truncated segments when a post-retry taskCreated replays the projector full list', () => {
+    // Given 记账 {count:1, openLen:5} 提交后段表长到 [seg-1("0123456789"), seg-2(失败尝试)]
+    const state = createInitialState();
+    const seg1: NarrativeSegment = { id: 'seg-1', kind: 'text', text: '0123456789', seq: 0 };
+    const seg2: NarrativeSegment = { id: 'seg-2', kind: 'text', text: 'failed attempt', seq: 1 };
+    state.tasksBySession['s1'] = [
+      subagentTask({ id: 'sa-1', segments: [seg1, seg2], stepSegMark: { count: 1, openLen: 5 } }),
+    ];
+
+    // When 重试步边界截断（seg-2 被丢弃、seg-1 截回 "01234"）
+    const afterRetry = reduceAppEvent(
+      state,
+      { type: 'subagentStepBoundary', sessionId: 's1', taskId: 'sa-1', retry: true },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then 截断生效 + tombstone 记录被丢弃段 id
+    const truncatedRow = afterRetry.tasksBySession['s1']![0]!;
+    expect(truncatedRow.segments).toHaveLength(1);
+    expect(truncatedRow.segments![0]).toMatchObject({ id: 'seg-1', text: '01234' });
+    expect(truncatedRow.truncatedSegmentIds).toEqual(['seg-2']);
+
+    // When 下一条 delta 的 taskCreated 携带投影层全量段表——含被截掉的 seg-2
+    //（投影层不截断）+ 重试后新铸的 seg-3（新 id）
+    const afterReplay = reduceAppEvent(
+      afterRetry,
+      {
+        type: 'taskCreated',
+        sessionId: 's1',
+        task: subagentTask({
+          id: 'sa-1',
+          segments: [
+            { id: 'seg-1', kind: 'text', text: '0123456789', seq: 0 },
+            { id: 'seg-2', kind: 'text', text: 'failed attempt', seq: 1 },
+            { id: 'seg-3', kind: 'text', text: 'retried', seq: 2 },
+          ],
+        }),
+      },
+      { sessionId: 's1', seq: 2 },
+    );
+
+    // Then tombstone 过滤生效：seg-2（失败残段）不复活、不重放渲染；存活段
+    // seg-1 取更长文本重武装、新铸段 seg-3 正常并入
+    const row = afterReplay.tasksBySession['s1']![0]!;
+    expect(row.segments?.map((s) => s.id)).toEqual(['seg-1', 'seg-3']);
+    expect(row.segments![0]).toMatchObject({ id: 'seg-1', text: '0123456789', tailGuard: true });
+    expect(row.segments![1]).toMatchObject({ id: 'seg-3', text: 'retried' });
+    // tombstone 跨 taskCreated 保活（后续重放继续拦截）
+    expect(row.truncatedSegmentIds).toEqual(['seg-2']);
+  });
+
+  it('should keep truncated segment tombstones across a non-retry boundary (run-scoped)', () => {
+    // Given 重试截断后行上带 tombstone——fix-2 后存活整个成员 run，非重试边界不清
+    const state = createInitialState();
+    const seg1: NarrativeSegment = {
+      id: 'seg-1',
+      kind: 'text',
+      text: '01234',
+      seq: 0,
+      tailGuard: true,
+    };
+    state.tasksBySession['s1'] = [
+      subagentTask({
+        id: 'sa-1',
+        segments: [seg1],
+        stepSegMark: { count: 1, openLen: 5 },
+        truncatedSegmentIds: ['seg-2'],
+      }),
+    ];
+
+    // When 下一个非重试步边界到达（新步开始）
+    const after = reduceAppEvent(
+      state,
+      { type: 'subagentStepBoundary', sessionId: 's1', taskId: 'sa-1', retry: false },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then tombstone 保留（投影层 generation 域段 id 保证 reset 后重铸不碰撞）
+    expect(after.tasksBySession['s1']![0]!.truncatedSegmentIds).toEqual(['seg-2']);
+  });
+
+  it('should not resurrect a truncated-away segment when a post-retry taskProgress names its id', () => {
+    // Given 重试截断后段表只剩 seg-1（记账保留），投影层重放仍向已截掉的 seg-2 投 chunk
+    const state = createInitialState();
+    const seg1: NarrativeSegment = {
+      id: 'seg-1',
+      kind: 'text',
+      text: '01234',
+      seq: 0,
+      tailGuard: true,
+    };
+    state.tasksBySession['s1'] = [
+      subagentTask({ id: 'sa-1', segments: [seg1], stepSegMark: { count: 1, openLen: 5 } }),
+    ];
+    const rowBefore = state.tasksBySession['s1']![0]!;
+
+    // When 指向被截掉段 id 的 taskProgress 到达
+    const after = reduceAppEvent(
+      state,
+      {
+        type: 'taskProgress',
+        sessionId: 's1',
+        taskId: 'sa-1',
+        outputChunk: 'x',
+        stream: 'stdout',
+        kind: 'text',
+        segmentId: 'seg-2',
+      },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then 静默丢弃：被截掉的段不复活，行引用不变（未知段 no-op 契约）
+    expect(after.tasksBySession['s1']![0]).toBe(rowBefore);
+  });
+
+  it('should skip the map write when a non-retry boundary re-commits identical marks onto armed guards', () => {
+    // Given 步边界已提交过的行：段记账等值 + 末段已武装
+    const state = createInitialState();
+    const seg1: NarrativeSegment = {
+      id: 'seg-1',
+      kind: 'text',
+      text: 'partial',
+      seq: 0,
+      tailGuard: true,
+    };
+    state.tasksBySession['s1'] = [
+      subagentTask({
+        id: 'sa-1',
+        segments: [seg1],
+        stepSegMark: { count: 1, openLen: 7 },
+      }),
+    ];
+    const rowBefore = state.tasksBySession['s1']![0]!;
+
+    // When 同一非重试边界重放（重连重放窗口内的重复帧）
+    const after = reduceAppEvent(
+      state,
+      { type: 'subagentStepBoundary', sessionId: 's1', taskId: 'sa-1', retry: false },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then 引用 no-op：段记账已等值且末段守卫已武装，跳过 map 写
+    expect(after.tasksBySession['s1']![0]).toBe(rowBefore);
+  });
 });
 
-describe('subagent stream tail guard (one-shot post-boundary replay dedupe)', () => {
+// ---------------------------------------------------------------------------
+// ADR-011 ②: reducer consumption of projector-minted narrative segments
+// ---------------------------------------------------------------------------
+
+describe('taskProgress segment consumption (ADR-011)', () => {
   // local helper — the file's other subagentTask is scoped to its own describe
   function subagentTask(overrides: Partial<AppTask> & { id: string }): AppTask {
     return {
@@ -1450,62 +1615,230 @@ describe('subagent stream tail guard (one-shot post-boundary replay dedupe)', ()
     };
   }
 
-  it('should skip a post-boundary chunk that exactly repeats the field tail (>= 16 chars)', () => {
-    // Given a boundary just committed (tail guard armed) and a field ending in a long chunk
+  it('should append a chunk onto its target segment without touching sibling segments', () => {
+    // Given 行上有两段 [seg-a(text,"A"), seg-b(thinking,"B")]
+    const state = createInitialState();
+    const segA: NarrativeSegment = { id: 'seg-a', kind: 'text', text: 'A', seq: 0 };
+    const segB: NarrativeSegment = { id: 'seg-b', kind: 'thinking', text: 'B', seq: 1 };
+    state.tasksBySession['s1'] = [
+      subagentTask({ id: 'sa-1', segments: [segA, segB] }),
+    ];
+
+    // When taskProgress(segmentId=seg-a, kind='text', chunk="x")
+    const after = reduceAppEvent(
+      state,
+      {
+        type: 'taskProgress',
+        sessionId: 's1',
+        taskId: 'sa-1',
+        outputChunk: 'x',
+        stream: 'stdout',
+        kind: 'text',
+        segmentId: 'seg-a',
+      },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then 仅 seg-a 文本变 "Ax"，seg-b 引用/内容不变
+    const row = after.tasksBySession['s1']![0]!;
+    const segments = row.segments!;
+    expect(segments[0]).toMatchObject({ id: 'seg-a', text: 'Ax' });
+    expect(segments[1]).toBe(segB);
+  });
+
+  it('should preserve accumulated segments across a taskCreated replacement', () => {
+    // Given 行有 segments
+    const state = createInitialState();
+    const segA: NarrativeSegment = { id: 'seg-a', kind: 'text', text: 'A', seq: 0 };
+    state.tasksBySession['s1'] = [
+      subagentTask({ id: 'sa-1', segments: [segA] }),
+    ];
+
+    // When 投影层再发 taskCreated（骨架行，不带 segments）
+    const after = reduceAppEvent(
+      state,
+      { type: 'taskCreated', sessionId: 's1', task: subagentTask({ id: 'sa-1' }) },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then 替换后行仍持有原 segments 引用
+    const row = after.tasksBySession['s1']![0]!;
+    expect(row.segments).toBe(state.tasksBySession['s1']![0]!.segments);
+  });
+
+  it('should drop the replayed tail chunk once when the segment guard is armed', () => {
+    // Given 段 tailGuard=true、text="prefix..."，chunk 恰为 ≥16 字符尾部
     const tail = 'x'.repeat(20);
     const state = createInitialState();
-    state.tasksBySession['s1'] = [
-      subagentTask({ id: 'sa-1', text: `head${tail}`, tailGuard: true }),
-    ];
+    const seg: NarrativeSegment = {
+      id: 'seg-a',
+      kind: 'text',
+      text: `prefix${tail}`,
+      seq: 0,
+      tailGuard: true,
+    };
+    state.tasksBySession['s1'] = [subagentTask({ id: 'sa-1', segments: [seg] })];
 
-    // When the same long chunk is re-delivered as the first chunk after the boundary
+    // When 重放首 chunk 与段文本尾部精确匹配
     const after = reduceAppEvent(
       state,
-      { type: 'taskProgress', sessionId: 's1', taskId: 'sa-1', outputChunk: tail, stream: 'stdout', kind: 'text' },
+      {
+        type: 'taskProgress',
+        sessionId: 's1',
+        taskId: 'sa-1',
+        outputChunk: tail,
+        stream: 'stdout',
+        kind: 'text',
+        segmentId: 'seg-a',
+      },
       { sessionId: 's1', seq: 1 },
     );
 
-    // Then the chunk is dropped (no double-append) and the guard is consumed
+    // Then 段文本不变、tailGuard 消耗为 undefined
     const row = after.tasksBySession['s1']![0]!;
-    expect(row.text).toBe(`head${tail}`);
-    expect(row.tailGuard).toBeUndefined();
+    expect(row.segments![0]).toMatchObject({ text: `prefix${tail}`, tailGuard: undefined });
   });
 
-  it('should not apply the tail guard to steady-state chunks', () => {
-    // Given a steady-state row — the guard was never armed (or already
-    // consumed): content is never dropped outside the post-boundary window
-    const chunk = 'y'.repeat(20);
+  it('should ignore a chunk whose segment id is unknown to the row', () => {
+    // Given 行上已有段，但事件命中的是投影层已不存在/从未见过的段 id
+    const segA: NarrativeSegment = { id: 'seg-a', kind: 'text', text: 'A', seq: 0 };
     const state = createInitialState();
-    state.tasksBySession['s1'] = [
-      subagentTask({ id: 'sa-1', text: `head${chunk}` }),
-    ];
+    state.tasksBySession['s1'] = [subagentTask({ id: 'sa-1', segments: [segA] })];
 
-    // When the same chunk text arrives again
+    // When 未知段 id 的 chunk 到达
     const after = reduceAppEvent(
       state,
-      { type: 'taskProgress', sessionId: 's1', taskId: 'sa-1', outputChunk: chunk, stream: 'stdout', kind: 'text' },
+      {
+        type: 'taskProgress',
+        sessionId: 's1',
+        taskId: 'sa-1',
+        outputChunk: 'x',
+        stream: 'stdout',
+        kind: 'text',
+        segmentId: 'seg-missing',
+      },
       { sessionId: 's1', seq: 1 },
     );
 
-    // Then it appends (content is never dropped in steady state)
-    expect(after.tasksBySession['s1']![0]!.text).toBe(`head${chunk}${chunk}`);
+    // Then 静默丢弃（连不上投影层的段），行引用不变
+    expect(after.tasksBySession['s1']![0]).toBe(state.tasksBySession['s1']![0]);
   });
+});
 
-  it('should ignore short repeated chunks even when the guard is armed', () => {
-    // Guard armed, but the chunk is 4 chars — below the 16-char floor
+describe('segment survival across a resync taskCreated replay (ADR-011 ①)', () => {
+  function subagentTask(overrides: Partial<AppTask> & { id: string }): AppTask {
+    return {
+      sessionId: 's1',
+      kind: 'subagent',
+      status: 'running',
+      createdAt: '2026-01-01T00:00:00Z',
+      description: 'member',
+      ...overrides,
+    };
+  }
+
+  it('should keep surviving segments and dedupe the replayed first chunk after a resync', () => {
+    // Given 行上已有段 seg-1(text,"0123456789abcdef0123456789")
+    const full = '0123456789abcdef0123456789';
     const state = createInitialState();
-    state.tasksBySession['s1'] = [
-      subagentTask({ id: 'sa-1', text: 'abcd', tailGuard: true }),
-    ];
+    const seg1: NarrativeSegment = { id: 'seg-1', kind: 'text', text: full, seq: 0 };
+    state.tasksBySession['s1'] = [subagentTask({ id: 'sa-1', segments: [seg1] })];
 
-    const after = reduceAppEvent(
+    // When 投影态已清（模拟 resync）后 taskCreated 携带 [seg-1(text,全量)]（同 id 重放）
+    const replayed: NarrativeSegment = { id: 'seg-1', kind: 'text', text: full, seq: 0 };
+    const afterResync = reduceAppEvent(
       state,
-      { type: 'taskProgress', sessionId: 's1', taskId: 'sa-1', outputChunk: 'abcd', stream: 'stdout', kind: 'text' },
+      {
+        type: 'taskCreated',
+        sessionId: 's1',
+        task: subagentTask({ id: 'sa-1', segments: [replayed] }),
+      },
       { sessionId: 's1', seq: 1 },
     );
 
-    // Then it appends (short tokens like "\n\n" must never be dropped)
-    expect(after.tasksBySession['s1']![0]!.text).toBe('abcdabcd');
+    // Then 行上仍只有一个 seg-1、文本保留、其 tailGuard 为 true（重武装，吞重放首 chunk）
+    const resyncedRow = afterResync.tasksBySession['s1']![0]!;
+    expect(resyncedRow.segments).toHaveLength(1);
+    expect(resyncedRow.segments![0]).toMatchObject({ id: 'seg-1', text: full, tailGuard: true });
+
+    // When 再投 taskProgress(segmentId=seg-1, chunk="...456789")（重放尾块）
+    const afterReplay = reduceAppEvent(
+      afterResync,
+      {
+        type: 'taskProgress',
+        sessionId: 's1',
+        taskId: 'sa-1',
+        outputChunk: '456789',
+        stream: 'stdout',
+        kind: 'text',
+        segmentId: 'seg-1',
+      },
+      { sessionId: 's1', seq: 2 },
+    );
+
+    // Then 段文本不变（尾匹配吞掉）
+    const finalRow = afterReplay.tasksBySession['s1']![0]!;
+    expect(finalRow.segments![0]).toMatchObject({ id: 'seg-1', text: full });
+  });
+
+  it('should adopt the projector segment text as authoritative when it is longer than the surviving copy', () => {
+    // Given 存活段只有半截（重连窗口丢过增量）
+    const state = createInitialState();
+    const seg1: NarrativeSegment = { id: 'seg-1', kind: 'text', text: '0123', seq: 0 };
+    state.tasksBySession['s1'] = [subagentTask({ id: 'sa-1', segments: [seg1] })];
+
+    // When 重放 taskCreated 携带更全的同 id 段文本
+    const after = reduceAppEvent(
+      state,
+      {
+        type: 'taskCreated',
+        sessionId: 's1',
+        task: subagentTask({
+          id: 'sa-1',
+          segments: [{ id: 'seg-1', kind: 'text', text: '0123456789', seq: 0 }],
+        }),
+      },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then 以投影层全量为准（同 id 取更长文本），且重武装守卫
+    expect(after.tasksBySession['s1']![0]!.segments![0]).toMatchObject({
+      id: 'seg-1',
+      text: '0123456789',
+      tailGuard: true,
+    });
+  });
+
+  it('should keep only surviving segments that predate the replay window ahead of the merged list', () => {
+    // Given 存活独有段 seg-0（早于重放起点）+ 重放列表只带 seg-1/seg-2
+    const state = createInitialState();
+    const seg0: NarrativeSegment = { id: 'seg-0', kind: 'thinking', text: 'early', seq: 0 };
+    const seg1: NarrativeSegment = { id: 'seg-1', kind: 'text', text: 'A', seq: 1 };
+    state.tasksBySession['s1'] = [subagentTask({ id: 'sa-1', segments: [seg0, seg1] })];
+
+    // When 重放 taskCreated 只携带 [seg-1, seg-2]（投影层最新序）；seg-2 是
+    // 投影层重放窗口内的新铸段——真实投影器铸造新段时带 tailGuard: true
+    const after = reduceAppEvent(
+      state,
+      {
+        type: 'taskCreated',
+        sessionId: 's1',
+        task: subagentTask({
+          id: 'sa-1',
+          segments: [
+            { id: 'seg-1', kind: 'text', text: 'A', seq: 1 },
+            { id: 'seg-2', kind: 'text', text: 'B', seq: 2, tailGuard: true },
+          ],
+        }),
+      },
+      { sessionId: 's1', seq: 1 },
+    );
+
+    // Then seg-0 保序在前、新铸段 seg-2 原样并入、seg-1 保留且重武装守卫
+    const segments = after.tasksBySession['s1']![0]!.segments!;
+    expect(segments.map((s) => s.id)).toEqual(['seg-0', 'seg-1', 'seg-2']);
+    expect(segments[2]).toMatchObject({ id: 'seg-2', text: 'B', tailGuard: true });
+    expect(segments[1]).toMatchObject({ id: 'seg-1', text: 'A', tailGuard: true });
   });
 });
 

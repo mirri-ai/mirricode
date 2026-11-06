@@ -1,3 +1,4 @@
+// layer: T1
 //! End-to-end mock-LLM test for the ACP handler.
 //!
 //! Instead of spawning the `mirri-acp` binary, this test drives the library

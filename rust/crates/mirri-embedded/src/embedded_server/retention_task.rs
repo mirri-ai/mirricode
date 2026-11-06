@@ -269,12 +269,19 @@ pub(super) async fn run_retention_pass(
             );
             continue;
         }
-        // Re-read the (possibly just-backfilled) stamp for the verdict.
-        let archived_at = persistence
-            .read_persisted_info(session_id)
-            .await
-            .and_then(|info| info.archived_at)
-            .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
+        // Re-read the (possibly just-backfilled) stamp for the verdict:
+        // the ROW's first (ADR-006 — the scan carried it), the state.json
+        // re-read only as the pre-row fallback.
+        let archived_at = match candidate.archived_at {
+            Some(at) => Some(at),
+            // zero-io-allow: read-only best-effort stamp re-read on a
+            // pre-row candidate, same class the scan's disk recheck carries
+            None => persistence
+                .read_persisted_info(session_id)
+                .await
+                .and_then(|info| info.archived_at),
+        }
+        .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, false));
         if !should_compress(
             archived_at.as_deref(),
             chrono::Utc::now(),
@@ -294,48 +301,12 @@ pub(super) async fn run_retention_pass(
                     pre_size,
                     "retention pass compressed an archived session"
                 );
-                // Task 10: the listing's compression state rides the index
-                // row (the W5 source), so the just-written stamps
-                // (compressed/compressedAt) refresh the row — the same
-                // write-through compressNow performs (the shape-first
-                // disk facts come through read_persisted_info).
-                if let Some(index) = index
-                    && let Some(info) = persistence.read_persisted_info(session_id).await
-                    && let Some(bucket_key) = persistence.workspace_key()
-                    && let Some(owner) = registry.registration(bucket_key)
-                {
-                    // The refreshed row: the same shape the index
-                    // write-throughs build (session_row_with_retention
-                    // over the just-read disk facts). The compression
-                    // verdict is the SHAPE's (ADR-007 effective_compressed
-                    // — shape first, the state.json marker only as the
-                    // Missing fallback), never the raw marker: a crash
-                    // between the atomic replacement and the stamp must
-                    // not regress the row to the pre-compression view.
-                    let effective = mirri_core::session::persistence::effective_compressed(
-                        dir,
-                        info.compressed,
-                    );
-                    let row = super::EmbeddedServer::session_row_with_retention(
-                        session_id.as_str(),
-                        &owner.id,
-                        &owner.root,
-                        &info.metadata,
-                        None,
-                        None,
-                        info.archived_at,
-                        effective,
-                        info.compressed_at,
-                    );
-                    if let Err(error) = index.upsert_session(&row) {
-                        tracing::warn!(
-                            session_id = %session_id,
-                            %error,
-                            "retention pass: the compressed row's index \
-                             write-through failed; the next reconcile rebuilds it"
-                        );
-                    }
-                }
+                // ADR-006: the compression column group landed in the
+                // metadata ROW through the store-wired persistence (the
+                // candidate carries the owning manager's handle), and the
+                // listing reads the row — no index write-through is needed
+                // anymore (Task 7 retired the post-compress whole-row
+                // rebuild; the stale-window it maintained closes with it).
             }
             Ok(CompressOutcome::Skipped(reason)) => {
                 // §5: 跳过不是终局 — a benign skip (lock held elsewhere,
@@ -421,22 +392,29 @@ async fn resolve_shared_ledger(
     Ok(Some(ledger))
 }
 
-/// One compressed-candidate candidate: the verified disk row plus the
-/// bucket persistence handle the actions address.
-struct RetentionCandidate {
-    session_id: SessionId,
-    dir: PathBuf,
-    persistence: mirri_core::SessionPersistence,
+/// One archived candidate: the verified row plus the bucket persistence
+/// handle the actions address, carrying the scan-time archive stamp (the
+/// ROW's when a row carried it — ADR-006's source of truth — else the
+/// legacy state.json re-read's).
+pub(super) struct RetentionCandidate {
+    pub(super) session_id: SessionId,
+    pub(super) dir: PathBuf,
+    pub(super) persistence: mirri_core::SessionPersistence,
+    /// The archive stamp the verdict anchors on: the row's first, the
+    /// state.json re-read's as the pre-row fallback.
+    pub(super) archived_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// The candidate scan (§2.1): `archived = 1` rows from the index (or the
-/// disk walk when no index exists), each disk-verified through
-/// `read_persisted_info`, minus the live-session tables' ids.
+/// metadata ROWS of every built runtime's manager when no index exists,
+/// with the legacy state.json disk walk filling pre-row sessions the
+/// migration has not adopted), each verified against the row-or-disk
+/// truth, minus the live-session tables' ids.
 ///
 /// The per-candidate persistence handle is the owning workspace's (W3:
 /// the state-path resolution must match the rest of the lifecycle), and
 /// the directory comes from that same handle — never a hand-built path.
-async fn scan_candidates(
+pub(super) async fn scan_candidates(
     sessions_root: &std::path::Path,
     index: Option<&Arc<mirri_session_index::SessionIndex>>,
     registry: &crate::workspace_registry::WorkspaceRegistry,
@@ -450,9 +428,17 @@ async fn scan_candidates(
         }
     }
 
-    // The archived rows: from the index when it exists (the cheap
-    // indexed source), else the default manager's persisted listing.
-    let mut rows: Vec<(String, String)> = Vec::new(); // (session_id, workspace_id)
+    // The archived rows: (session_id, workspace_id, archived_at). From the
+    // index when it exists (the cheap indexed source); else the metadata
+    // ROWS of every built runtime's manager — the row is the archive
+    // flag's source of truth (ADR-006), and a row-only archived session
+    // (post-ADR-006: creation writes the row, not state.json) has no
+    // state.json for a disk walk to find — plus the legacy state.json
+    // disk walk as the pre-row fallback (the same transition read
+    // `list_all_sessions` performs: the row set first, the disk scan
+    // only fills sessions the migration has not adopted).
+    let mut rows: Vec<(String, String, Option<chrono::DateTime<chrono::Utc>>)> = Vec::new();
+    let mut row_ids: HashSet<String> = HashSet::new();
     if let Some(index) = index {
         let listed = index
             .list_sessions(mirri_session_index::ListOpts {
@@ -462,61 +448,122 @@ async fn scan_candidates(
             .map_err(|e| e.to_string())?;
         for row in listed {
             if row.archived {
-                rows.push((row.id, row.workspace_id));
+                row_ids.insert(row.id.clone());
+                rows.push((row.id, row.workspace_id, row.archived_at));
             }
         }
     } else {
+        for runtime in registry.built_runtimes() {
+            let manager = &runtime.manager;
+            let workspace_id = runtime.workspace_id.clone();
+            for row_id in manager
+                .metadata_store()
+                .list_ids(&manager.metadata_workspace_id())
+                .await
+            {
+                if let Some(record) = manager.metadata_store().get(&SessionId::new(&row_id)).await
+                    && record.archived
+                {
+                    row_ids.insert(row_id.clone());
+                    rows.push((row_id, workspace_id.clone(), record.archived_at));
+                }
+            }
+        }
+        // The pre-row fallback: state.json-archived sessions no row
+        // covers (a row already covering the id wins — its view is the
+        // truth, ADR-006).
         for persisted in list_persisted_archived(sessions_root).await {
-            rows.push((persisted, String::new()));
+            if !row_ids.contains(&persisted) {
+                rows.push((persisted, String::new(), None));
+            }
         }
     }
 
     let mut candidates = Vec::new();
-    for (session_id, workspace_id) in rows {
+    for (session_id, workspace_id, row_archived_at) in rows {
         if live_ids.contains(&session_id) {
             continue; // a running session is never a candidate
         }
-        // The owning workspace's persistence (W3): route through the
-        // registry when it knows the owner; the no-index degrade uses a
-        // root-level handle over the same sessions root. The workspace
-        // key IS the bucket name (the registry's `id` — the identity the
-        // index row's `workspace_id` carries).
-        let persistence = if workspace_id.is_empty() {
-            mirri_core::SessionPersistence::new(
+        // The owning workspace's persistence (W3): the BUILT runtime's
+        // manager handle when one exists (ADR-006 裁决 4 — its persistence
+        // carries the metadata store, so the retention actions' writes land
+        // in the row), else a bare root-level handle over the same sessions
+        // root (the pre-row legacy candidate). The workspace key IS the
+        // bucket name (the registry's `id` — the identity the index row's
+        // `workspace_id` carries).
+        let owning_manager = registry
+            .built_runtimes()
+            .into_iter()
+            .find(|runtime| runtime.workspace_id == workspace_id)
+            .map(|runtime| Arc::clone(&runtime.manager));
+        let persistence = match (&owning_manager, workspace_id.is_empty()) {
+            // The owning runtime is built: its manager's persistence (the
+            // store-wired handle).
+            (Some(manager), _) => manager.persistence().clone(),
+            (None, true) => mirri_core::SessionPersistence::new(
                 sessions_root.to_path_buf(),
                 Arc::new(mirri_os::LocalFs::new()),
-            )
-        } else if registry.registration(&workspace_id).is_some() {
-            mirri_core::SessionPersistence::new(
-                sessions_root.to_path_buf(),
-                Arc::new(mirri_os::LocalFs::new()),
-            )
-            .with_workspace_key(workspace_id)
-        } else {
+            ),
+            (None, false) if registry.registration(&workspace_id).is_some() => {
+                mirri_core::SessionPersistence::new(
+                    sessions_root.to_path_buf(),
+                    Arc::new(mirri_os::LocalFs::new()),
+                )
+                .with_workspace_key(workspace_id)
+            }
             // A row of a workspace this registry does not know: its
             // owning engine sweeps it; skip (the same posture as the
             // index orphan pass).
-            continue;
+            (None, false) => continue,
         };
         let id = SessionId::new(&session_id);
         let dir = persistence.session_dir(&id);
-        // The disk verification (§2.1: 索引是缓存、磁盘是事实源): the row
-        // must still read as archived on disk; a lock-held directory is
-        // not excluded here — the compress action's own lock attempt
-        // handles contention (§5 tier 2).
-        let Some(info) = persistence.read_persisted_info(&id).await else {
-            continue; // unreadable state.json — the index row is stale
+        // The archive-flag verification (§2.1: 索引是缓存、磁盘是事实源):
+        // the row source above is a cache snapshot. Re-verify the flag
+        // against the OWNING manager's row when one exists (ADR-006's
+        // truth — a session restored since the snapshot drops out here);
+        // a row-less legacy candidate keeps the state.json recheck. A
+        // lock-held directory is not excluded here — the compress
+        // action's own lock attempt handles contention (§5 tier 2).
+        let mut archived_at = row_archived_at;
+        let verified = match first_row_of(registry, &id).await {
+            Some(record) => record.archived,
+            None => {
+                // No manager row: the legacy state.json recheck.
+                match persistence.read_persisted_info(&id).await {
+                    Some(info) => {
+                        archived_at = archived_at.or(info.archived_at);
+                        info.metadata.archived
+                    }
+                    None => false,
+                }
+            }
         };
-        if !info.metadata.archived {
-            continue; // restored since the row was written
+        if !verified {
+            continue; // restored since the row source was written
         }
         candidates.push(RetentionCandidate {
             session_id: id,
             dir,
             persistence,
+            archived_at,
         });
     }
     Ok(candidates)
+}
+
+/// The first built runtime's row for `id`, when any manager's store holds
+/// one (a shared home means one row per id — the first hit is the row).
+async fn first_row_of(
+    registry: &crate::workspace_registry::WorkspaceRegistry,
+    id: &SessionId,
+) -> Option<mirri_core::session::metadata_port::SessionMetadataRecord> {
+    for runtime in registry.built_runtimes() {
+        if let Some(record) = runtime.manager.metadata_store().get(id).await {
+            return Some(record);
+        }
+    }
+    None
 }
 
 /// The no-index degrade: every archived persisted session under the root

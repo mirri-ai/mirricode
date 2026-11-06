@@ -139,6 +139,142 @@ describe('ensureServerTokenPrivate()', () => {
 });
 
 // ---------------------------------------------------------------------------
+// shutdownDaemon() — quit handshake
+// ---------------------------------------------------------------------------
+
+describe('shutdownDaemon() — quit handshake', () => {
+  it('should wait for SIGTERM to take effect before resolving', async () => {
+    // A daemon that dies 400ms after SIGTERM — the handshake must wait for
+    // the exit, not fire-and-forget.
+    let alive = true;
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: NodeJS.Signals | number,
+    ) => {
+      if (signal === 'SIGTERM') {
+        setTimeout(() => {
+          alive = false;
+        }, 400);
+        return true;
+      }
+      if (signal === 0) {
+        if (!alive) {
+          const err = new Error('process not found') as NodeJS.ErrnoException;
+          err.code = 'ESRCH';
+          throw err;
+        }
+        return true;
+      }
+      if (signal === 'SIGKILL') {
+        throw new Error('should not SIGKILL a promptly-exiting daemon');
+      }
+      return true;
+    }) as typeof process.kill);
+
+    const { shutdownDaemon } = await import('./daemon');
+    await shutdownDaemon(4242, 58827, 5_000);
+
+    expect(killSpy.mock.calls.filter(([, sig]) => sig === 'SIGTERM')).toHaveLength(1);
+    expect(killSpy.mock.calls.filter(([, sig]) => sig === 'SIGKILL')).toHaveLength(0);
+    killSpy.mockRestore();
+  });
+
+  it('should SIGKILL the daemon when it ignores SIGTERM past the grace window', async () => {
+    // A daemon that never dies — the handshake must escalate to SIGKILL.
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: NodeJS.Signals | number,
+    ) => {
+      if (signal === 0) return true; // forever alive
+      return true;
+    }) as typeof process.kill);
+
+    const { shutdownDaemon } = await import('./daemon');
+    await shutdownDaemon(4242, 58827, 300);
+
+    const sigs = killSpy.mock.calls.map(([, sig]) => sig).filter((s) => s !== 0);
+    expect(sigs).toEqual(['SIGTERM', 'SIGKILL']);
+    killSpy.mockRestore();
+  });
+
+  it('should remove the desktop state file after the daemon exits', async () => {
+    writeDesktopState({ pid: 4242, port: 58827, startedAt: Date.now() });
+
+    vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: NodeJS.Signals | number,
+    ) => {
+      if (signal === 0) {
+        const err = new Error('process not found') as NodeJS.ErrnoException;
+        err.code = 'ESRCH';
+        throw err;
+      }
+      return true;
+    }) as typeof process.kill);
+
+    const { shutdownDaemon } = await import('./daemon');
+    await shutdownDaemon(4242, 58827, 5_000);
+
+    expect(readDesktopState()).toBeUndefined();
+  });
+
+  it('should not signal anything when the pid is unknown (reuse-branch fallback)', async () => {
+    writeDesktopState({ pid: -1, port: 58827, startedAt: Date.now() });
+
+    vi.spyOn(process, 'kill').mockImplementation(((
+      _pid: number,
+      signal?: NodeJS.Signals | number,
+    ) => {
+      if (signal !== undefined && signal !== 0) {
+        throw new Error(`should not signal with a non-positive pid (got ${String(signal)})`);
+      }
+      return true;
+    }) as typeof process.kill);
+
+    const { shutdownDaemon } = await import('./daemon');
+    await expect(shutdownDaemon(-1, 58827, 5_000)).resolves.toBeUndefined();
+    expect(readDesktopState()).toBeUndefined();
+  });
+
+  it('should resolve without killing when the pid is already dead', async () => {
+    vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: NodeJS.Signals | number,
+    ) => {
+      if (signal === undefined || signal === 0) {
+        const err = new Error('process not found') as NodeJS.ErrnoException;
+        err.code = 'ESRCH';
+        throw err;
+      }
+      throw new Error('should not signal a dead daemon');
+    }) as typeof process.kill);
+
+    const { shutdownDaemon } = await import('./daemon');
+    await expect(shutdownDaemon(4242, 58827, 5_000)).resolves.toBeUndefined();
+  });
+
+  it('should tolerate a SIGTERM error (already-dead race) and still clean up state', async () => {
+    writeDesktopState({ pid: 4242, port: 58827, startedAt: Date.now() });
+
+    vi.spyOn(process, 'kill').mockImplementation(((
+      pid: number,
+      signal?: NodeJS.Signals | number,
+    ) => {
+      if (signal === 'SIGTERM') {
+        const err = new Error('process not found') as NodeJS.ErrnoException;
+        err.code = 'ESRCH';
+        throw err;
+      }
+      return true;
+    }) as typeof process.kill);
+
+    const { shutdownDaemon } = await import('./daemon');
+    await expect(shutdownDaemon(4242, 58827, 5_000)).resolves.toBeUndefined();
+    expect(readDesktopState()).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // killStaleDaemon() — v2 state file
 // ---------------------------------------------------------------------------
 

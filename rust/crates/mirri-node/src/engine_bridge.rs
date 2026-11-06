@@ -113,6 +113,10 @@ impl EngineBridge {
                 oauth_token_dir,
             ));
         }
+        // SDR-011 finding F2: the NAPI host's engine assembly mounts the
+        // skill watchers explicitly — the retired lazy pass was the only
+        // thing keeping this public embedded surface hot-reloading.
+        server.mount_skill_watchers();
         Self::with_engine(Arc::new(server))
     }
 

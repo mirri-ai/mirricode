@@ -171,8 +171,8 @@ pub fn new_engine_flag_registry(
     });
     registry.register(mirri_core::FlagDef {
         id: crate::SKILL_HOT_RELOAD_FLAG.to_string(),
-        default: false,
-        description: "Mount per-workspace skill directory watchers that hot-reload the skill catalog on file changes (ADR-010). Off by default while the feature settles; enable via the experimental flags layer. The manual reload (skill.reload RPC) stays available either way.".to_string(),
+        default: true,
+        description: "Mount per-workspace skill directory watchers that hot-reload the skill catalog on file changes (ADR-010; hosts mount them at startup, SDR-011). On by default (ADR-013); disable via the experimental flags layer (env override or config [experimental] explicit false) for network-home or restricted environments. The manual reload (skill.reload RPC) stays available either way.".to_string(),
         title: None,
         surface: mirri_core::FlagSurface::Core,
         env_name: None,
@@ -204,6 +204,57 @@ const MODELS_DEV_FETCH_TIMEOUT_SECS: u64 = 10;
 /// How long the manual `skill.reload` waits for outstanding watcher
 /// mounts before answering (an NFS-hung home must not hang the RPC).
 const MOUNT_AWAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The warn threshold of a startup-housekeeping segment's summary line
+/// (ADR-003 d): a segment that settles within this stays info-level, a
+/// slower one adds a warn so the slowness stays attributable where the
+/// desktop assembly runs the engine at error level.
+pub(super) const HOUSEKEEPING_SLOW_WARN_MS: u64 = 1_000;
+
+/// Log one startup-housekeeping segment's settlement summary (ADR-003 d):
+/// one info line with the elapsed time and the segment's own volume
+/// counters, upgraded with a warn line past
+/// [`HOUSEKEEPING_SLOW_WARN_MS`] — the desktop assembly raises the
+/// engine at error level, so info alone would not surface a slow
+/// segment there.
+///
+/// The counters ride as `tracing` fields under the caller-chosen
+/// snake_case names, matching the surrounding tracing style. Log-only
+/// observability, deliberately not unit-tested: the statements carry no
+/// behaviour to regress, and pinning `tracing` output would couple the
+/// tests to log phrasing.
+pub(super) fn log_housekeeping_summary(
+    message: &str,
+    elapsed_ms: u64,
+    counters: &[(&'static str, usize)],
+) {
+    let emit = |level: tracing::Level| {
+        // The field set must be built once per level call site; the
+        // macro takes its field list at compile time, so the counters
+        // are formatted into a single `summary` field.
+        let summary = counters
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        match level {
+            tracing::Level::WARN => tracing::warn!(
+                elapsed_ms,
+                summary = %summary,
+                "{message}"
+            ),
+            _ => tracing::info!(
+                elapsed_ms,
+                summary = %summary,
+                "{message}"
+            ),
+        }
+    };
+    emit(tracing::Level::INFO);
+    if elapsed_ms >= HOUSEKEEPING_SLOW_WARN_MS {
+        emit(tracing::Level::WARN);
+    }
+}
 
 // JSON-RPC error codes and the domain-code → JSON-RPC-code mapping come
 // from `mirri-proto`'s `rpc` module — the single fact source for the
@@ -681,6 +732,19 @@ pub struct SessionView {
     /// `None` for live sessions and never-compressed rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compressed_at: Option<String>,
+    /// Whether the session is pinned (SDR-016/017): the sidebar's pinned
+    /// group input. `false` by default; the live constructor post-fills it
+    /// from the metadata ROW (the pin writes ride the store port, never
+    /// the in-memory scope).
+    #[serde(default)]
+    pub pinned: bool,
+    /// When the session was pinned — the pinned group's sort key
+    /// (descending). Skipped when not pinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<String>,
+    /// The pin's color name (one of the seven-color preset), when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin_color: Option<String>,
 }
 
 impl From<&SessionInfo> for SessionView {
@@ -721,6 +785,14 @@ impl From<&SessionInfo> for SessionView {
             // live session is never compressed (ADR-004).
             compressed: info.compressed,
             compressed_at: info.compressed_at.map(stamp_rfc3339),
+            // The static summary carries no pin fields (SessionInfo
+            // models the scope layer, which never sees pins) — the
+            // listing overlays the row's values (the last_prompt
+            // precedent). A view built straight from a SessionInfo
+            // honestly reports un-pinned.
+            pinned: false,
+            pinned_at: None,
+            pin_color: None,
         }
     }
 }
@@ -759,7 +831,7 @@ async fn build_session_view(server: &EmbeddedServer, session: &SessionScope) -> 
         .get(session_id.as_str())
         .copied()
         .unwrap_or(0);
-    SessionView {
+    let mut view = SessionView {
         id: session_id.as_str().to_string(),
         title: metadata.title,
         created_at: metadata.created_at,
@@ -802,7 +874,25 @@ async fn build_session_view(server: &EmbeddedServer, session: &SessionScope) -> 
         // forces the plain shape) — the retention fields stay at rest.
         compressed: false,
         compressed_at: None,
+        // The pin trio post-fills from the metadata ROW (SDR-016/017:
+        // pins ride the store port; the live scope's memory never sees
+        // them — the last_prompt overlay precedent).
+        pinned: false,
+        pinned_at: None,
+        pin_color: None,
+    };
+    // The row overlay: the index row (when this engine has one) is the
+    // pin trio's home. `unwrap_or_default` keeps a no-index engine's view
+    // at the resting values above.
+    if let Some(row) = server
+        .session_index()
+        .and_then(|index| index.get_session(session_id.as_str()))
+    {
+        view.pinned = row.pinned;
+        view.pinned_at = row.pinned_at.map(stamp_rfc3339);
+        view.pin_color = row.pin_color;
     }
+    view
 }
 
 /// RFC 3339 with second precision (the retention stamps' wire form —
@@ -878,6 +968,7 @@ fn turn_end_to_json(result: TurnEndResult) -> Value {
             "cacheCreationTokens": result.usage.cache_creation_tokens,
         },
         "durationMs": result.duration_ms,
+        "endedAtMs": result.ended_at,
         "blockedByPromptHook": result.blocked_by_prompt_hook,
     })
 }
@@ -918,7 +1009,7 @@ impl ReverseRpcCallback for ReverseRpcCallbackImpl {
 ///   would never be written).
 ///
 /// `pub(super)` because [`InFlightTurnsMap`] — the registry shape the
-/// dispatch handlers and the task/cron drivers share — exposes it.
+/// dispatch handlers and the task driver / cron scheduler share — exposes it.
 pub(super) enum InFlightTurn {
     Fire {
         handle: tokio::task::JoinHandle<()>,
@@ -941,7 +1032,7 @@ impl InFlightTurn {
 }
 
 /// The engine-wide in-flight turn registry's map type — shared by the
-/// dispatch handlers and the task/cron drivers so every engine turn
+/// dispatch handlers and the task driver / cron scheduler so every engine turn
 /// (user-dispatched or driver-injected) is cancellable via
 /// `message.abort`.
 pub(super) type InFlightTurnsMap = Arc<std::sync::Mutex<HashMap<String, InFlightTurn>>>;
@@ -966,7 +1057,7 @@ impl Drop for WaitTurnGuard {
 
 /// Wire the structured agent-status publisher (CR4) onto an agent's turn
 /// flow — the free-function core of [`EmbeddedServer::attach_status_publisher`],
-/// shared with the task/cron drivers (which hold the session artifacts
+/// shared with the task driver / cron scheduler (which hold the session artifacts
 /// directly, not `&EmbeddedServer`).
 pub(super) fn wire_agent_status_publisher(
     event_bus: &Arc<mirri_core::session::EventBus>,
@@ -991,7 +1082,7 @@ pub(super) fn wire_agent_status_publisher(
 /// a cancelled turn reports `Aborted` even when the provider stream ended
 /// cleanly after observing the token (the awaiting client cancelled and
 /// must hear the turn ended because of that). Shared by the message.send
-/// wait arm and the task/cron drivers' inline injected turns.
+/// wait arm and the task driver / cron scheduler' inline injected turns.
 ///
 /// ADR-004 batch d: a watchdog-sourced cancellation reports `Stalled`
 /// regardless of what the engine surfaced (a racing clean settle included)
@@ -1111,7 +1202,7 @@ pub struct EmbeddedServer {
     /// when it finishes; an entry whose task finished in the race window is
     /// swept by the insert path, so the map never accumulates completed
     /// turns. Wait-mode turns (the `message.send` wait arm and the
-    /// task/cron drivers' injected turns) register the same shape — only
+    /// task driver / cron scheduler' injected turns) register the same shape — only
     /// their cooperative cancel token is tracked, and a
     /// [`WaitTurnGuard`] removes the entry when the turn settles.
     ///
@@ -1126,6 +1217,13 @@ pub struct EmbeddedServer {
     /// Live event subscribers, registered by [`EngineAdapter::subscribe_events`].
     /// Every session relay fans out to all of them.
     subscribers: Arc<std::sync::Mutex<Vec<mpsc::Sender<JsonRpcNotification>>>>,
+    /// The forwarder tasks [`EngineAdapter::subscribe_events`] installs per
+    /// subscriber (the server-event and skill-catalog broadcasts). Tracked
+    /// so `dispose` can abort them: each holds a `Sender` clone, and a
+    /// forwarder that is merely dropped-but-alive would keep the
+    /// subscriber's channel open forever — the subscriber's `recv()` must
+    /// resolve `None` once the engine is disposed.
+    subscriber_forwarders: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     /// The server-scoped lifecycle event broadcast — workspace
     /// create/touch/rename/delete ([`ServerEvent`]). Every `subscribe_events`
     /// call installs a forwarder from this broadcast to the caller's channel,
@@ -1250,10 +1348,12 @@ pub struct EmbeddedServer {
     /// notification shape.
     skill_reload: Arc<crate::skill_reload::SkillReloadOrchestrator>,
     /// The per-workspace skill-directory watcher handles (plan Task 5,
-    /// ADR-010 decision 1): one [`SkillDirectoryWatcher`] per BUILT
-    /// runtime, mounted on the first dispatcher call (the same lazy-attach
-    /// pattern as `maybe_spawn_workspace_pool_connects` — construction may
-    /// precede the Tokio runtime, the first RPC call never does) and
+    /// ADR-010 decision 1, SDR-011): one [`SkillDirectoryWatcher`] per BUILT
+    /// runtime, mounted when the HOST explicitly calls
+    /// [`Self::mount_skill_watchers`] (serve's startup / acp's engine
+    /// assembly — never as a constructor or dispatcher side effect; the
+    /// lazy pass SDR-011 retired made every engine construction register
+    /// FSEventStreams and starved test binaries) and
     /// dropped when the registry removes the workspace (the handle's Drop
     /// signals the watcher task to exit — the anti-leak shutdown channel).
     /// The map holds STRONG handles: the watcher task itself holds the
@@ -1262,10 +1362,16 @@ pub struct EmbeddedServer {
     /// runtime) actually reclaims the watcher.
     skill_watchers_shared:
         Arc<std::sync::Mutex<HashMap<String, Option<crate::skill_watcher::SkillDirectoryWatcher>>>>,
-    /// Outstanding fire-and-forget watcher-mount tasks (the lazy call_method
-    /// pass spawns them); `skill.reload` drains this list so its `watching`
-    /// answers are settled before it responds.
+    /// Outstanding fire-and-forget watcher-mount tasks (the host mount call
+    /// and `skill.reload`'s refresh pass spawn them); `skill.reload` drains
+    /// this list so its `watching` answers are settled before it responds.
     pending_mounts: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// When the dispatcher's throttled watcher sweep last ran (SDR-011
+    /// finding F1: workspaces built AFTER the host's startup mount — a
+    /// mid-session workspace switch — still need a watcher; the sweep is
+    /// the backstop, throttled so the no-op pass costs one map read at
+    /// most once per second).
+    last_watcher_sweep: std::sync::Mutex<Option<std::time::Instant>>,
     /// The measured MCP startup window (see [`McpStartupTiming`]) behind
     /// the `mcp.startupMetrics` RPC — this engine's own startup connect
     /// set, from the first spawned connect task until the last settles.
@@ -1365,10 +1471,22 @@ pub struct EmbeddedServer {
     /// background preheat lands first — first-arrival-wins on the mutex
     /// (P5 C1). Behind an `Arc` so the detached preheat task can hold it.
     models_dev_catalog: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<Value>>>>,
+    /// The single-flight gate for the lazy catalog load (see
+    /// [`Self::ensure_models_dev_catalog_loaded`]): concurrent first
+    /// callers all await the SAME spawn_blocking read+parse instead of
+    /// each stalling its runtime worker (#183).
+    models_dev_load_inflight: Arc<tokio::sync::Mutex<()>>,
     /// Guards the models.dev catalog preheat spawn (see
     /// [`Self::maybe_spawn_models_catalog_preheat`]) so it fires exactly
     /// once per engine — the [`Self::maybe_spawn_mcp_connect`] pattern.
     models_preheat_spawned: std::sync::atomic::AtomicBool,
+    /// Test seam for the catalog load's single-flight (#183): counts
+    /// ARRIVALS into [`Self::load_models_dev_catalog_from_disk`] (before
+    /// the early-return guards) — concurrent first callers funneling
+    /// through [`Self::ensure_models_dev_catalog_loaded`] must total
+    /// exactly one; the gate-less preheat adds at most its own one.
+    /// `pub(super)` so the embedded-server tests can observe it.
+    pub(super) models_dev_load_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// Guards the one-time legacy flat-layout session migration (see
     /// [`Self::migrate_legacy_sessions_once`]) so it runs exactly once per
     /// engine, before the first dispatched RPC observes the sessions root.
@@ -1380,38 +1498,66 @@ pub struct EmbeddedServer {
     /// `None` inside the cell means no home is injected (or the open
     /// failed) and every consumer degrades to the plain disk scan.
     session_index: std::sync::OnceLock<Option<Arc<mirri_session_index::SessionIndex>>>,
-    /// Guards the one-time index converge (see
-    /// [`Self::reconcile_session_index_once`]) so it runs exactly once per
-    /// engine, after the legacy migration settles.
-    session_index_reconciled: std::sync::atomic::AtomicBool,
     /// The models.dev refresh degradation warning surfaced by
     /// `config.diagnostics`: set when the last refresh failed and the
     /// cached directory is being served instead, cleared by the next
     /// successful refresh.
     models_dev_warning: std::sync::Mutex<Option<String>>,
-    /// The cron driver's tick interval (tests shrink it to sub-second
-    /// values; the production default is [`CRON_DRIVER_TICK_SECS`]).
+    /// The cron scheduler's tick interval (tests shrink it to sub-second
+    /// values; the production default is [`CRON_SCHEDULER_TICK_SECS`]).
     cron_tick: std::time::Duration,
+    /// Test seam for M2 (panic isolation): when set, the scheduler's
+    /// per-session pass for THIS session id panics at its entry — a
+    /// deterministic injection point for "one session's pass dies while
+    /// the others keep being scheduled". `None` (always, in production).
+    /// Shared live state (not a spawn-time snapshot): tests arm it AFTER
+    /// the scheduler has already spawned (the first RPC latches it).
+    #[cfg(test)]
+    cron_pass_panic_session: Arc<std::sync::Mutex<Option<String>>>,
+    /// Whether the cron subsystem is disabled via `MIRRICODE_DISABLE_CRON`
+    /// (ADR-006 / E.4): a disabled server never enters the driver's check
+    /// loop, refuses task creation at the tool face, and reports the
+    /// disabled state in `cron.list`. Read from the environment once at
+    /// construction — the switch takes effect at server start and clears
+    /// at restart (no hot reload).
+    cron_scheduling_disabled: bool,
+    /// The last `cron.listAll` aggregation's answer and the instant it was
+    /// computed — the top-level throttle of the cross-session aggregation
+    /// (review Major 1). The aggregation walks EVERY existing session on
+    /// every call, so a polling UI's back-to-back calls (or two surfaces
+    /// refreshing together) would repeat the whole walk within milliseconds;
+    /// a second call inside [`CRON_LIST_ALL_MIN_INTERVAL`] returns the
+    /// stored answer verbatim. `disabled` is NOT read from the snapshot but
+    /// re-read live, so a config flip surfaces on the very next call even
+    /// inside the window (the flag is one cheap field read — the sessions
+    /// walk is what the throttle exists to protect).
+    cron_list_all_cache: std::sync::Mutex<Option<(std::time::Instant, Vec<serde_json::Value>)>>,
+    /// The last `cron.listAll` aggregation's WORKSPACE groups (stage-2 T6)
+    /// — the workspace arm of the same throttle: a second call inside
+    /// the window answers these groups verbatim alongside the stored
+    /// session groups.
+    cron_workspace_groups_cache: std::sync::Mutex<Option<Vec<serde_json::Value>>>,
     /// The session-consistency follow driver's tick interval (batch 1:
     /// tests shrink it to sub-second values; the production default is
     /// [`FOREGROUND_FOLLOW_TICK_SECS`], itself bounded by the 5-second
     /// follow latency ceiling of US C1.2).
     follow_tick: std::time::Duration,
-    /// The index-refresh driver's tick interval (batch 1: tests shrink it
-    /// to sub-second values; the production default is
-    /// [`INDEX_REFRESH_TICK_SECS`], the C1.1 list-freshness ceiling).
-    index_refresh_tick: std::time::Duration,
-    /// Guards the one-time index-refresh driver spawn (see
-    /// [`Self::maybe_spawn_index_refresh_driver`]) so exactly one
-    /// per-server task runs — the
-    /// [`Self::maybe_spawn_models_catalog_preheat`] pattern.
-    index_refresh_spawned: std::sync::atomic::AtomicBool,
+    /// Guards the one-time cron scheduler spawn (see
+    /// [`Self::maybe_spawn_cron_scheduler`]) so exactly one server-level
+    /// scheduling task runs per server — the
+    /// [`Self::maybe_spawn_models_catalog_preheat`] pattern. Unconditional
+    /// (independent of the disabled gate): the gate returning early
+    /// never re-arms a second task.
+    cron_scheduler_spawned: std::sync::atomic::AtomicBool,
     /// Guards the one-time startup orphan census + lifetime-sweeper spawn
     /// (see [`Self::run_startup_orphan_governance`]) so exactly one census
     /// and one sweeper run per server, and every concurrent first
     /// dispatch awaits the same settlement (the OnceCell wait semantics —
     /// the Task 3 ordering ledger holds under concurrent first calls).
-    orphan_governance_settled: tokio::sync::OnceCell<()>,
+    /// `Arc`-wrapped so the cron scheduler task (which holds no
+    /// `&EmbeddedServer`) can await the same settlement before its first
+    /// tick (ADR-003 c).
+    orphan_governance_settled: Arc<tokio::sync::OnceCell<()>>,
     /// The task-lifecycle sweeper's tick interval (B1: tests shrink it to
     /// sub-second values; the production default is
     /// [`TASK_SWEEP_TICK_SECS`]).
@@ -1432,7 +1578,7 @@ pub struct EmbeddedServer {
     /// Guards the one-time retention task spawn (see
     /// [`Self::maybe_spawn_retention_task`]) so exactly one periodic task
     /// runs per server — the
-    /// [`Self::maybe_spawn_index_refresh_driver`] pattern. The guard is
+    /// [`Self::maybe_spawn_models_catalog_preheat`] pattern. The guard is
     /// unconditional (independent of the enabled gate): a config that
     /// flips `enabled` between two first-round RPCs must not mint a
     /// second task — every round re-reads the config anyway, so the
@@ -1461,8 +1607,9 @@ pub struct EmbeddedServer {
     /// [`Self::run_startup_recovery_check`]) so exactly one judgement runs
     /// per server, and every concurrent first dispatch awaits the same
     /// settlement (the [`Self::orphan_governance_settled`] OnceCell
-    /// pattern — the wait, not the early-return).
-    recovery_settled: tokio::sync::OnceCell<()>,
+    /// pattern — the wait, not the early-return). `Arc`-wrapped like that
+    /// field so the cron scheduler's first-tick gate can await it too.
+    recovery_settled: Arc<tokio::sync::OnceCell<()>>,
     /// The lifecycle sentinel injection (interrupted-task recovery spec
     /// §5/§1.2): the sentinel root (`<mirri-home>/lifecycle`), this
     /// instance's port, and the caller-minted instance id — `None` in
@@ -1476,6 +1623,93 @@ pub struct EmbeddedServer {
     /// without real sockets. Taken (and dropped) by the one startup check.
     #[cfg(test)]
     recovery_probe: std::sync::Mutex<Option<RecoveryProbe>>,
+    /// The test-injection seam for the judge-to-write race (ADR-008): a
+    /// hook run after the shared scan and before the backfill writes.
+    /// Taken (and dropped) by the one startup check.
+    #[cfg(test)]
+    recovery_pre_backfill: std::sync::Mutex<Option<Box<dyn FnOnce() + Send + Sync>>>,
+    /// The test-injection seam for the settlement gates (ADR-003 c): a
+    /// probe consulted before each census and recovery settlement with its
+    /// `settlement_access` verdict; returning `false` from the probe holds
+    /// the settlement (a barrier a test can raise and lower to observe what
+    /// a gated route waits for). `None` in production — no probe, no hold.
+    #[cfg(test)]
+    settlement_hold: std::sync::Mutex<Option<SettlementProbe>>,
+    /// Test observation seam: manual-compaction apply tasks that have
+    /// FINISHED (every arm — applied, cancelled, failed, panicked). The
+    /// apply task's tail is where the cancel/settle/persist decisions land,
+    /// so "the attempt wound down" is a counter wait, never a settle sleep.
+    /// A counter (not a direct call) because the task is spawned inside
+    /// `dispatch_begin_compaction` and its handle is not reachable here.
+    #[cfg(test)]
+    manual_compaction_applies: Arc<std::sync::atomic::AtomicU64>,
+    /// Test observation seam: drivers that exited because their session
+    /// disappeared. The exit test waits on this instead of sleeping past "a
+    /// few ticks": the driver's loop is the only place that can observe the
+    /// disappearance.
+    #[cfg(test)]
+    task_driver_exits: Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// The test probe of the settlement gates — a predicate over the segment
+/// name (`"census"` / `"recovery"`); `false` holds the settlement.
+#[cfg(test)]
+type SettlementProbe = Arc<dyn Fn(&'static str) -> bool + Send + Sync>;
+
+/// The startup housekeeping cells the cron scheduler's first-tick gate
+/// awaits (ADR-003 c): the same `Arc`s `call_method`'s gates settle, so the
+/// scheduler (a task holding no `&EmbeddedServer`) can wait on them without
+/// re-running anything.
+pub(super) struct SettlementCells {
+    pub census: Arc<tokio::sync::OnceCell<()>>,
+    pub recovery: Arc<tokio::sync::OnceCell<()>>,
+}
+
+impl SettlementCells {
+    /// Wait for a segment's settlement WITHOUT ever initializing the cell:
+    /// `get_or_init` with a no-op would claim the cell for an empty
+    /// settlement and silently swallow the real census/recovery body when
+    /// this waiter wins the race — only the settlement paths themselves
+    /// may initialize. The wait is a get-yield poll (a held OnceCell is
+    /// only ever filled by bounded local-disk work, so a poll loop is
+    /// plenty responsive).
+    pub(super) async fn await_settled(&self, cell: &Arc<tokio::sync::OnceCell<()>>) {
+        while cell.get().is_none() {
+            tokio::task::yield_now().await;
+        }
+    }
+}
+
+/// What a route must wait for before its handler runs — the settlement
+/// classes of non-functional-architecture ADR-003 c (the startup
+/// housekeeping assembly seam).
+///
+/// The startup housekeeping (legacy migration, orphan census, index
+/// reconcile, interrupted-turn recovery) used to settle inline on every
+/// first `call_method`, so every route paid for all of it. ADR-003 c
+/// replaces that with a gate per route: the default waits for everything
+/// (the closed-by-default stance — a new route lands on the waiting side),
+/// and a small, auditable read-face whitelist skips what it provably needs
+/// no ordering against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SettlementClass {
+    /// Waits for every segment except the recoverable-session drain.
+    /// The closed-by-default class, and the one a method-less dispatch
+    /// (`MethodNotFound`) takes.
+    FullHousekeeping,
+    /// The pure read face with no task-registration / session-residency /
+    /// write side effects: waits for the legacy migration and the orphan
+    /// census (no route may overtake a census that has not seen this
+    /// instance's tasks — ADR-012 c), then skips the recovery check.
+    /// (ADR-006: the reconcile gate is retired — the one-shot migration
+    /// seeds rows inside the census settlement, so no route waits for a
+    /// converge pass anymore.)
+    AwaitCensus,
+    /// The interruption list: waits for the recovery check (so the rows it
+    /// reads are the settled ones) and for everything `FullHousekeeping`
+    /// covers, since a recovery act (resume/dismiss) drives turns and
+    /// writes the wire logs.
+    AwaitRecovery,
 }
 
 /// How often each session's task sweeper ticks
@@ -1484,28 +1718,27 @@ pub struct EmbeddedServer {
 /// after its deadline, coarse enough to be noise on an idle session.
 const TASK_SWEEP_TICK_SECS: u64 = 1;
 
-/// How often each session's cron driver ticks [`CronManager::check_due`]:
-/// coarse on purpose — cron expressions have minute granularity, so a
-/// half-minute worst-case fire latency is within the scheduling noise.
-const CRON_DRIVER_TICK_SECS: u64 = 30;
+/// How often the server-level cron scheduler ticks
+/// [`CronManager::check_due`](mirri_core::cron::CronManager::check_due)
+/// for every live session: coarse on purpose — cron expressions have
+/// minute granularity, so a half-minute worst-case fire latency is
+/// within the scheduling noise.
+const CRON_SCHEDULER_TICK_SECS: u64 = 30;
+
+/// The minimum spacing between two full `cron.listAll` aggregations (review
+/// Major 1): a second call inside this window answers the stored sessions
+/// verbatim, because the aggregation's cost is a per-persisted-session wire
+/// log replay (mitigated further by the per-session fingerprint cache on
+/// [`SessionManager::read_only_cron_tasks_cached`]) — one second is the
+/// smallest window that absorbs a polling UI's back-to-back refreshes
+/// without ever hiding a user-visible change from a deliberate later call.
+const CRON_LIST_ALL_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// How often each session's follow driver ticks an incremental absorb of
 /// foreign journal appends: two seconds, comfortably under the 5-second
 /// follow latency ceiling (US C1.2) while keeping the stat-probe traffic
 /// per session at a negligible level.
 const FOREGROUND_FOLLOW_TICK_SECS: u64 = 2;
-
-/// How often the per-server index refresh driver ticks
-/// [`EmbeddedServer::reconcile_session_index`]: ten seconds, the C1.1
-/// list-freshness ceiling — a foreign entry's session mutation (rename,
-/// archive, delete, create) must surface in this engine's `session.list`
-/// within the tick, while a full-bucket mtime scan stays negligible at
-/// that cadence. Each pass converges from the engine's own disk view,
-/// serialized across processes through the `<home>/session-index.reconcile.lock`
-/// file lock (ADR-004's D8 create_new + stale-takeover pattern — batch 2,
-/// see `session_index.rs`); a lock wait timeout skips the round and the
-/// next tick retries.
-const INDEX_REFRESH_TICK_SECS: u64 = 10;
 
 /// Capacity of the app-level MCP pool status broadcast (see
 /// [`EmbeddedServer::mcp_pool_events`]) — the management-plane event volume
@@ -1553,6 +1786,16 @@ impl McpStartupTiming {
         if self.outstanding == 0 {
             self.finished = Some(std::time::Instant::now());
         }
+    }
+
+    /// Whether this engine's startup connect set has FINISHED. Both halves
+    /// are required: `outstanding == 0` is also the pristine initial state
+    /// (a set that never spawned would read "settled" before anything ran),
+    /// while `finished` is stamped only when the last outstanding task
+    /// landed.
+    #[cfg(test)]
+    fn is_settled(&self) -> bool {
+        self.started.is_some() && self.outstanding == 0
     }
 
     /// The measured span: start-to-finished once settled, elapsed-so-far
@@ -1650,6 +1893,7 @@ impl EmbeddedServer {
             usage_model_key_handles: Arc::new(std::sync::Mutex::new(HashMap::new())),
             in_flight_turns: Arc::new(std::sync::Mutex::new(HashMap::new())),
             subscribers: Arc::new(std::sync::Mutex::new(Vec::new())),
+            subscriber_forwarders: Arc::new(std::sync::Mutex::new(Vec::new())),
             server_events: tokio::sync::broadcast::channel(SERVER_EVENT_CAPACITY).0,
             epoch: uuid::Uuid::new_v4().to_string(),
             relays: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -1675,6 +1919,7 @@ impl EmbeddedServer {
             skill_reload: Arc::new(crate::skill_reload::SkillReloadOrchestrator::new()),
             skill_watchers_shared: Arc::new(std::sync::Mutex::new(HashMap::new())),
             pending_mounts: std::sync::Mutex::new(Vec::new()),
+            last_watcher_sweep: std::sync::Mutex::new(None),
             mcp_startup: Arc::new(std::sync::Mutex::new(McpStartupTiming::default())),
             plugin_manager: None,
             config,
@@ -1693,38 +1938,61 @@ impl EmbeddedServer {
             ),
             models_dev_url: Some(MODELS_DEV_URL.to_string()),
             models_dev_catalog: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            models_dev_load_inflight: Arc::new(tokio::sync::Mutex::new(())),
             models_preheat_spawned: std::sync::atomic::AtomicBool::new(false),
+            models_dev_load_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             legacy_sessions_migrated: std::sync::atomic::AtomicBool::new(false),
             session_index: std::sync::OnceLock::new(),
             credentials: std::sync::OnceLock::new(),
             provider_auth_failures: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
-            session_index_reconciled: std::sync::atomic::AtomicBool::new(false),
             models_dev_warning: std::sync::Mutex::new(None),
-            cron_tick: std::time::Duration::from_secs(CRON_DRIVER_TICK_SECS),
+            cron_tick: std::time::Duration::from_secs(CRON_SCHEDULER_TICK_SECS),
+            #[cfg(test)]
+            cron_pass_panic_session: Arc::new(std::sync::Mutex::new(None)),
+            cron_scheduling_disabled: mirri_core::cron::scheduling_disabled_from_env(),
+            cron_list_all_cache: std::sync::Mutex::new(None),
+            cron_workspace_groups_cache: std::sync::Mutex::new(None),
+            cron_scheduler_spawned: std::sync::atomic::AtomicBool::new(false),
             follow_tick: std::time::Duration::from_secs(FOREGROUND_FOLLOW_TICK_SECS),
-            index_refresh_tick: std::time::Duration::from_secs(INDEX_REFRESH_TICK_SECS),
-            index_refresh_spawned: std::sync::atomic::AtomicBool::new(false),
             retention_task_spawned: std::sync::atomic::AtomicBool::new(false),
-            orphan_governance_settled: tokio::sync::OnceCell::new(),
+            orphan_governance_settled: Arc::new(tokio::sync::OnceCell::new()),
             task_sweep_tick: std::time::Duration::from_secs(TASK_SWEEP_TICK_SECS),
             turn_stall_timeout: message_handlers::ENGINE_TURN_STALL_TIMEOUT,
             turn_backstop_timeout: message_handlers::ENGINE_TURN_BACKSTOP_TIMEOUT,
             print_states: Arc::new(std::sync::Mutex::new(HashMap::new())),
             blob_ledger: Arc::new(tokio::sync::Mutex::new(None)),
             recovery: Arc::new(recovery_handlers::RecoveryState::new()),
-            recovery_settled: tokio::sync::OnceCell::new(),
+            recovery_settled: Arc::new(tokio::sync::OnceCell::new()),
             lifecycle_root: None,
             #[cfg(test)]
             recovery_probe: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            recovery_pre_backfill: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            settlement_hold: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            manual_compaction_applies: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            #[cfg(test)]
+            task_driver_exits: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
-    /// Shrink the cron driver's tick interval (tests inject sub-second
-    /// values so a due cron task fires without a multi-second wait; the
-    /// production default lives at [`CRON_DRIVER_TICK_SECS`]). Builder
-    /// style: consumes and returns the server.
+    /// Shrink the cron scheduler's tick interval (tests inject
+    /// sub-second values so a due cron task fires without a multi-second
+    /// wait; the production default lives at
+    /// [`CRON_SCHEDULER_TICK_SECS`]). Builder style: consumes and
+    /// returns the server.
     pub fn with_cron_tick(mut self, tick: std::time::Duration) -> Self {
         self.cron_tick = tick;
+        self
+    }
+
+    /// Force the cron scheduling disabled state (ADR-006 / E.4): tests
+    /// inject the `MIRRICODE_DISABLE_CRON=1` posture without mutating the
+    /// process environment; production reads the env once at construction.
+    /// Builder style: consumes and returns the server.
+    pub fn with_cron_scheduling_disabled(mut self, disabled: bool) -> Self {
+        self.cron_scheduling_disabled = disabled;
         self
     }
 
@@ -1741,13 +2009,6 @@ impl EmbeddedServer {
     /// Shrink the index-refresh driver's tick interval (tests inject
     /// sub-second values so a foreign mutation surfaces in the listing
     /// without a multi-second wait; the production default lives at
-    /// [`INDEX_REFRESH_TICK_SECS`]). Builder style: consumes and returns
-    /// the server.
-    pub fn with_index_refresh_tick(mut self, tick: std::time::Duration) -> Self {
-        self.index_refresh_tick = tick;
-        self
-    }
-
     /// Shrink the task-lifecycle sweeper's tick interval (tests inject
     /// sub-second values so an expired task terminates without a
     /// multi-second wait; the production default lives at
@@ -2041,11 +2302,35 @@ impl EmbeddedServer {
     /// listen set after every completed reload, so config-driven extra
     /// dirs and plugin-root changes land on the next refresh without a
     /// re-mount.
-    /// Fire-and-forget mount pass (the lazy call_method seam): every
-    /// pending workspace's watcher spawns; the mount itself runs on the
-    /// blocking pool inside the spawned task. The first RPC pays ~nothing
-    /// (the t8 slow-MCP pin keeps its budget).
-    pub(crate) fn spawn_skill_watchers(&self) {
+    /// The dispatcher's throttled backstop sweep (SDR-011 finding F1):
+    /// a workspace built after the host's startup mount — a mid-session
+    /// workspace switch — would otherwise never get a watcher until a
+    /// manual `skill.reload`. The sweep re-runs `mount_skill_watchers`
+    /// at most once per second; for an engine whose workspaces are all
+    /// mounted (the steady state, and every test engine that never
+    /// mounted) it is one HashMap read and an Instant check.
+    fn sweep_skill_watchers_throttled(&self) {
+        let mut last = self
+            .last_watcher_sweep
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let due = last
+            .map(|at| at.elapsed() >= std::time::Duration::from_secs(1))
+            .unwrap_or(true);
+        if !due {
+            return;
+        }
+        *last = Some(std::time::Instant::now());
+        drop(last);
+        self.mount_skill_watchers();
+    }
+
+    /// Fire-and-forget mount pass: every pending workspace's watcher
+    /// spawns; the mount itself runs on the blocking pool inside the
+    /// spawned task (the first mount pays the watch registration once per
+    /// workspace). Idempotent over built runtimes — later built
+    /// workspaces are picked up on the next call.
+    pub fn mount_skill_watchers(&self) {
         // Nothing to mount when automatic awareness is disabled for the
         // whole engine (the gate's honest-off semantics: no watchers, no
         // file triggers — the manual reload RPC stays available). Tests
@@ -2213,6 +2498,17 @@ impl EmbeddedServer {
         self
     }
 
+    /// The test seam for M2 (panic isolation): the named session's next
+    /// scheduler pass panics at its entry (see the field doc). Cleared by
+    /// passing `None`.
+    #[cfg(test)]
+    pub(crate) fn set_cron_pass_panic_session(&self, session_id: Option<String>) {
+        *self
+            .cron_pass_panic_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = session_id;
+    }
+
     /// The test seam for the startup recovery check's liveness gate: the
     /// installed probe overrides the production TCP connect, ruling every
     /// judged instance dead (`false`) or alive (`true`) without real
@@ -2223,6 +2519,18 @@ impl EmbeddedServer {
             .recovery_probe
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = probe;
+    }
+
+    /// The test seam for ADR-008's judge-to-write window: the installed
+    /// hook runs once after the shared scan and before the first backfill
+    /// write, letting a case append to a session's journal in between.
+    /// Taken (and dropped) by the one-shot check.
+    #[cfg(test)]
+    pub(crate) fn set_recovery_pre_backfill(&self, hook: Option<Box<dyn FnOnce() + Send + Sync>>) {
+        *self
+            .recovery_pre_backfill
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = hook;
     }
 
     /// The Mirri home this server roots its home-scoped consumers in: the
@@ -2826,16 +3134,68 @@ impl EmbeddedServer {
     }
 
     /// C1 懒加载：首次目录数据使用时从本地磁盘缓存恢复（N1：一次性本地
-    /// 读，量级 ~100-300ms；N2：失败静默降级——缺/坏缓存保持 `None`，
+    /// 读，量级 ~100-300ms；N2：失败静默降级——缺/坏缓存回落内置快照，
     /// 与刷新路径的既有降级语义一致）。幂等：目录已非 `None` 或
-    /// `persist_cache` 关闭（R6：不读）时直接返回；预热任务与首次使用
-    /// 先到先得——都经过同一把锁。
-    pub(super) fn ensure_models_dev_catalog_loaded(&self) {
-        Self::load_models_dev_catalog_from_disk(
-            &self.models_dev_catalog,
-            &self.config,
-            self.models_dev_cache_path(),
-        );
+    /// `persist_cache` 关闭（R6：不读）时直接返回。
+    ///
+    /// The read+parse runs on [`tokio::task::spawn_blocking`] guarded by a
+    /// single-flight mutex: the on-disk cache is the full models.dev
+    /// directory (multi-MB JSON), and parsing it inline would stall the
+    /// runtime worker — every task on that worker (timers included) waits
+    /// out the parse (#183). Concurrent callers of THIS gate all await the
+    /// SAME in-flight load — the file is read and parsed exactly once
+    /// however many of them race. The background preheat
+    /// ([`Self::maybe_spawn_models_catalog_preheat`]) is a separate
+    /// spawn_blocking that does NOT share this gate: when it races the
+    /// first call, the shared body's first-arrival-wins lock makes the
+    /// loser a no-op — at worst one redundant parse, harmless. A
+    /// successful refresh does not go through here at all: it swaps the
+    /// whole new directory into memory via
+    /// [`Self::merge_models_dev_catalog`], so the refreshed entries are
+    /// visible immediately (`model.list` / `providerDiscovery.listCatalog`
+    /// read the swapped catalog, #185) — this loader only restores the
+    /// disk cache after a restart.
+    pub(super) async fn ensure_models_dev_catalog_loaded(&self) {
+        // The fast path never touches the flight slot: a settled catalog
+        // (or the R6 off switch) returns before the async lock.
+        let settled = self
+            .models_dev_catalog
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some();
+        let disabled = !self
+            .config
+            .read()
+            .map_or(true, |c| c.persist_cache_enabled());
+        if settled || disabled {
+            return;
+        }
+        // Single flight: the first arrival holds the gate while its
+        // spawn_blocking runs; concurrent arrivals wait on the gate and
+        // re-check the settled state after it releases (the winner may
+        // have populated the catalog — or invalidated it since).
+        let _guard = self.models_dev_load_inflight.lock().await;
+        let settled = self
+            .models_dev_catalog
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some();
+        let disabled = !self
+            .config
+            .read()
+            .map_or(true, |c| c.persist_cache_enabled());
+        if settled || disabled {
+            return;
+        }
+        let catalog = Arc::clone(&self.models_dev_catalog);
+        let config = Arc::clone(&self.config);
+        let loads = Arc::clone(&self.models_dev_load_count);
+        let cache_path = self.models_dev_cache_path();
+        tokio::task::spawn_blocking(move || {
+            Self::load_models_dev_catalog_from_disk(&catalog, &config, &loads, cache_path);
+        })
+        .await
+        .ok();
     }
 
     /// Lazily spawn the models.dev catalog background preheat on the first
@@ -2858,9 +3218,10 @@ impl EmbeddedServer {
         }
         let catalog = Arc::clone(&self.models_dev_catalog);
         let config = Arc::clone(&self.config);
+        let loads = Arc::clone(&self.models_dev_load_count);
         let cache_path = self.models_dev_cache_path();
         tokio::task::spawn_blocking(move || {
-            Self::load_models_dev_catalog_from_disk(&catalog, &config, cache_path);
+            Self::load_models_dev_catalog_from_disk(&catalog, &config, &loads, cache_path);
         });
     }
 
@@ -2901,12 +3262,18 @@ impl EmbeddedServer {
     /// Shared lazy-load body — the call-time
     /// [`Self::ensure_models_dev_catalog_loaded`] and the preheat task
     /// both funnel through here: the first lock arrival wins, the second
-    /// no-ops (the early-return guards).
+    /// no-ops (the early-return guards). The `loads` seam counts ARRIVALS
+    /// into the body (before the guards) — the single-flight test's
+    /// observable (#183): concurrent callers sharing the gate must arrive
+    /// here exactly once among them; a gate-less regression would arrive
+    /// once per caller.
     fn load_models_dev_catalog_from_disk(
         catalog: &std::sync::Mutex<Option<std::sync::Arc<Value>>>,
         config: &Arc<RwLock<ServerConfig>>,
+        loads: &std::sync::atomic::AtomicUsize,
         cache_path: std::path::PathBuf,
     ) {
+        loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut guard = catalog.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_some() || !config.read().map_or(true, |c| c.persist_cache_enabled()) {
             return;
@@ -3156,6 +3523,14 @@ impl EmbeddedServer {
 
     /// The underlying session manager — lets consumers (tests, tooling)
     /// reach session-scoped APIs that have no RPC equivalent.
+    /// The per-agent turn-flow map (S7 test seam): keyed
+    /// `"{session_id}:{agent_id}"`. Test-only reading of a flow's
+    /// dispatch-set state (the turn-origin injection asserts through it).
+    #[cfg(test)]
+    pub(crate) fn turn_flow_map(&self) -> &goal_driver::TurnFlowMap {
+        &self.turn_flows
+    }
+
     pub fn session_manager(&self) -> Arc<SessionManager> {
         Arc::clone(&self.manager)
     }
@@ -3191,6 +3566,30 @@ impl EmbeddedServer {
             .map(|a| a.activity_shadow.snapshot_value().busy)
             .unwrap_or(false);
         in_flight || shadow_busy
+    }
+
+    /// Finished manual-compaction apply tasks (see the field's doc).
+    #[cfg(test)]
+    pub(crate) fn manual_compaction_apply_count(&self) -> u64 {
+        self.manual_compaction_applies
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Task drivers that have exited on this server (session gone).
+    #[cfg(test)]
+    pub(crate) fn task_driver_exit_count(&self) -> u64 {
+        self.task_driver_exits
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Whether this engine's startup MCP connect set (connect plus the
+    /// plugin disable reconcile) has settled.
+    #[cfg(test)]
+    pub(crate) fn mcp_startup_settled(&self) -> bool {
+        self.mcp_startup
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_settled()
     }
 
     /// Mark a session as active in an explicit workspace — the fork /
@@ -5327,6 +5726,124 @@ async fn remove_server_tools_from_sessions(
     }
 }
 
+impl EmbeddedServer {
+    /// The cron scheduler's first-tick gate (ADR-003 c): the shared census
+    /// and recovery settlement cells.
+    pub(super) fn housekeeping_settled(&self) -> SettlementCells {
+        SettlementCells {
+            census: Arc::clone(&self.orphan_governance_settled),
+            recovery: Arc::clone(&self.recovery_settled),
+        }
+    }
+
+    /// The census gate for `call_method` (ADR-003 c / ADR-012 c): every
+    /// route waits for the one-time startup orphan census (and the
+    /// lifetime-sweeper spawn behind it), regardless of class — the census
+    /// candidates carry no epoch filter, so a task this instance registers
+    /// before the census settles would be misread as an orphan. The
+    /// whitelist relaxes the other segments only.
+    async fn await_census_settled(&self) {
+        // H: census body completion, spill-style (the "first" tail is the
+        // release after mutation). E: gate entry.
+        self.run_startup_orphan_governance().await;
+    }
+
+    /// The recovery gate for `call_method` (ADR-003 c third gate): the
+    /// interruption list and every write-face route wait for the one-shot
+    /// startup recovery check (the `recovery.list` / `recovery.resume` /
+    /// `recovery.dismiss` family and everything `FullHousekeeping`). The
+    /// census gate always precedes it (see `call_method`), so the check
+    /// never runs before the census — the recovery candidate scan builds
+    /// every registered workspace's runtime.
+    async fn await_recovery_settled(&self) {
+        // The census gate always precedes the recovery check on the
+        // dispatch path — the check's candidate scan builds every
+        // registered workspace's runtime, a census-owned write surface.
+        self.await_census_settled().await;
+        self.run_startup_recovery_check().await;
+    }
+
+    /// The test seam of the settlement gates: consult the installed probe
+    /// ONCE (before the segment runs its own settle check — a settled cell
+    /// cannot be un-settled, so the hold must be observed first) and, while
+    /// it answers `false`, keep yielding and asking. No-op in production —
+    /// the field does not exist there.
+    ///
+    /// `segment` is `"census"` or `"recovery"`, naming the settlement the
+    /// caller is about to wait for.
+    #[cfg(test)]
+    async fn settlement_access(&self, segment: &'static str) {
+        // Re-read the slot on EVERY poll: the hold's release path is
+        // `set_settlement_probe(None)` replacing the slot, so a loop that
+        // captured the probe once would wait forever on the retired
+        // closure (a `false` probe is never flipped — the tests install
+        // one pinned to `false` and release by clearing the slot).
+        let mut hold = std::pin::pin!(async {
+            loop {
+                let probe = self
+                    .settlement_hold
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                let Some(probe) = probe else {
+                    return;
+                };
+                if probe(segment) {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+        let mut pace = std::pin::pin!(async {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        });
+        std::future::poll_fn(|cx| match hold.as_mut().poll(cx) {
+            std::task::Poll::Ready(()) => std::task::Poll::Ready(()),
+            std::task::Poll::Pending => {
+                // Registering the pace's timer with THIS task's waker is
+                // what keeps the dispatch eligible for another poll.
+                let _ = pace.as_mut().poll(cx);
+                std::task::Poll::Pending
+            }
+        })
+        .await;
+    }
+
+    /// Install the settlement probe — see [`Self::settlement_access`]. The
+    /// probe is consulted before each census and recovery settlement; a
+    /// `false` answer holds the settlement until the probe answers `true`.
+    #[cfg(test)]
+    pub(crate) fn set_settlement_probe(&self, probe: Option<SettlementProbe>) {
+        *self
+            .settlement_hold
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = probe;
+    }
+
+    /// Wait for the full startup housekeeping to settle — census and the
+    /// recovery check — for tests whose assertions read state the
+    /// housekeeping produces but which drive no gated route (or drive one
+    /// whose class skips a segment). Production never needs it: every
+    /// route's class settles what its handler reads. (ADR-006: the index
+    /// reconcile is retired — the one-shot migration seeds inside census.)
+    #[cfg(test)]
+    pub(crate) async fn await_housekeeping_settled(&self) {
+        self.await_census_settled().await;
+        self.await_recovery_settled().await;
+    }
+
+    /// The settlement class a route's wire name resolves to — the gate
+    /// table's test surface (an unknown name is the closed-by-default
+    /// class, exactly as `call_method` reads it).
+    #[cfg(test)]
+    pub(crate) fn settlement_class_of(method: &str) -> SettlementClass {
+        routes::find_route(method)
+            .map_or(SettlementClass::FullHousekeeping, |route| route.settlement)
+    }
+}
+
 impl Default for EmbeddedServer {
     fn default() -> Self {
         Self::for_cwd()
@@ -5348,53 +5865,84 @@ impl EngineAdapter for EmbeddedServer {
         // The per-workspace fan-out of the same lazy pattern (W7): every
         // built non-default runtime's project layers connect exactly once.
         self.maybe_spawn_workspace_pool_connects();
-        // Plan Task 5 (ADR-010 decision 1): mount the per-workspace skill
-        // directory watchers — the same lazy pattern (construction may
-        // precede the Tokio runtime; the first RPC call never does), and
-        // workspaces built lazily AFTER this point are picked up on the
-        // next call because the pass is idempotent over built runtimes.
-        // The mount itself is awaited (spawn_blocking inside): the first
-        // RPC pays the watch registration once per workspace, after
-        // which the handle's existence is a mounted watcher.
-        self.spawn_skill_watchers();
+        // SDR-011: the skill watchers mount on the host's explicit
+        // `mount_skill_watchers` call (serve startup / acp assembly) —
+        // the retired lazy pass made every engine construction register
+        // FSEventStreams, which starved test binaries on the OS-level
+        // FSEvents service. The throttled backstop sweep below still
+        // covers workspaces BUILT after the host mount (a mid-session
+        // workspace switch) without re-introducing the storm: the no-op
+        // pass is one map read, and only a genuinely new workspace pays
+        // a watch registration.
+        self.sweep_skill_watchers_throttled();
         // P5: the models.dev catalog background preheat rides the same lazy
         // spawn pattern — construction may precede the runtime, the first
         // RPC call never does.
         self.maybe_spawn_models_catalog_preheat();
-        // Batch 1 (US C1.1): the per-server index refresh driver rides the
-        // same lazy spawn pattern — it ticks the re-runnable index converge
-        // so a foreign entry's mutation on the shared home surfaces in this
-        // engine's session.list within the freshness budget (flag-gated).
-        self.maybe_spawn_index_refresh_driver();
+        // Batch 2 (C.1 / ADR-003): the server-level cron scheduler rides
+        // the same lazy spawn pattern — one loop drives every live
+        // session's due checks, replacing the retired per-session
+        // drivers.
+        self.maybe_spawn_cron_scheduler();
         // Task 8: the retention compression task rides the same lazy
         // spawn seam — only when `[retention] enabled = true` (the
         // assembly-time gate; 默认即无操作).
         self.maybe_spawn_retention_task();
+        let class = routes::find_route(method)
+            .map_or(SettlementClass::FullHousekeeping, |route| route.settlement);
+        // The settlement gates' test seam (ADR-003 c): the probe is consulted
+        // here, before the inline migration (which every class settles and
+        // whose own once-guard would otherwise put it beyond reach of the
+        // hold). A held probe parks the dispatch; no production code path
+        // reads it.
+        #[cfg(test)]
+        match class {
+            SettlementClass::AwaitCensus => self.settlement_access("census").await,
+            SettlementClass::AwaitRecovery | SettlementClass::FullHousekeeping => {
+                self.settlement_access("recovery").await;
+            }
+        }
         // Phase 2: the one-time legacy flat-layout migration settles before
         // the first dispatch reads the sessions root (an inline await, not
         // a spawn — a racing session.resume must find the moved session).
+        // It stays inline for EVERY route class: its input is a top-level
+        // shallow enumeration whose cost does not grow with the session
+        // count, so there is nothing to win by deferring it (ADR-003 c,
+        // last bullet).
         self.migrate_legacy_sessions_once().await;
-        // ADR-012 c/d/f: the one-time startup orphan census settles before
-        // any session of this instance registers a task (the Task 3
-        // ordering ledger — the census's candidates are all Running+Process
-        // archives with no epoch filter, so it must not run behind a live
-        // task of this instance), then the resident lifetime sweeper
-        // spawns behind it.
-        self.run_startup_orphan_governance().await;
-        // Phase 3: the one-time session-index converge settles before the
-        // first dispatch reads the sessions root too (an inline await for
-        // the same reason — a racing session.list must see the reconciled
-        // rows).
-        self.reconcile_session_index_once().await;
-        // Task 5 (interrupted-task recovery): the one-shot startup check
-        // settles before the first dispatch can read either the
-        // interruption list or the sessions it backfilled closures into —
-        // the OnceCell waits concurrent first-callers out (the
-        // `run_startup_orphan_governance` pattern).
-        self.run_startup_recovery_check().await;
+        // ADR-003 c: the rest of the startup housekeeping settles by route
+        // class, not unconditionally — the read-face whitelist answers
+        // without waiting for the reconcile and the recovery check (the
+        // ruling reversal recorded in ADR-003 c: "concurrent session.list
+        // must see the reconciled rows" and "the first dispatch must
+        // settle the backfill" are both relaxed). A method-less dispatch
+        // takes the closed-by-default class (resolved above).
+        // The census gate (ADR-012 c): it settles before ANY route that can
+        // register a task or keep a session resident — the census's
+        // candidates are all Running+Process archives with no epoch filter,
+        // so it must not run behind a live task of this instance (the Task
+        // 3 ordering ledger). The whitelist included: every route waits.
+        self.await_census_settled().await;
+        // ADR-006: the reconcile gate is retired. The one-shot metadata
+        // migration seeds the rows inside the census settlement (and the
+        // migration's own stamp makes every later start a FreshOk), so no
+        // dispatch waits for a converge pass; the resume family resolves
+        // persisted sessions from the rows the migration already wrote.
+        // The recovery gate (ADR-003 c): the interruption list and every
+        // route with a write face wait for the one-shot check — a write
+        // landing in a candidate session before the check settles would be
+        // misread as the previous instance's interrupted turn. A
+        // cron-injected turn — a write path outside the RPC surface — is
+        // held by the scheduler's own first-tick gate instead.
+        if matches!(
+            class,
+            SettlementClass::AwaitRecovery | SettlementClass::FullHousekeeping
+        ) {
+            self.await_recovery_settled().await;
+        }
 
         // Registry-driven dispatch: the static route table is the whole
-        // method surface (186 routes, every domain migrated).
+        // method surface (218 routes, every domain migrated).
         match routes::find_route(method) {
             Some(route) => (route.handler)(self, params).await,
             None => Err(EngineError::MethodNotFound(method.to_string())),
@@ -5412,7 +5960,7 @@ impl EngineAdapter for EmbeddedServer {
         // broadcast's bounded-ring semantics), never blocking the emitter.
         let mut server_rx = self.server_events.subscribe();
         let server_tx = tx.clone();
-        tokio::spawn(async move {
+        let server_forwarder = tokio::spawn(async move {
             loop {
                 match server_rx.recv().await {
                     Ok(event) => {
@@ -5442,7 +5990,7 @@ impl EngineAdapter for EmbeddedServer {
         // lagged, never blocking the emitter.
         let mut skill_catalog_rx = self.skill_reload.subscribe_camelcase();
         let skill_catalog_tx = tx.clone();
-        tokio::spawn(async move {
+        let skill_catalog_forwarder = tokio::spawn(async move {
             loop {
                 match skill_catalog_rx.recv().await {
                     Ok(params) => {
@@ -5461,6 +6009,12 @@ impl EngineAdapter for EmbeddedServer {
                 }
             }
         });
+        // Track both forwarders so `dispose` can close the channel: they
+        // hold the only `Sender` clones left once the vec below is cleared.
+        self.subscriber_forwarders
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .extend([server_forwarder, skill_catalog_forwarder]);
         self.subscribers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -5541,6 +6095,31 @@ impl EngineAdapter for EmbeddedServer {
         self.snapshot_running_sessions_now().await
     }
 
+    /// The graceful-shutdown interruption of in-flight turns (the
+    /// [`EngineAdapter::cancel_running_turns`] face): every running
+    /// session's turns are cancelled through the same kernel as
+    /// `message.abort` — the cooperative token fires, fire-mode tasks are
+    /// hard-aborted, and the aborted fire turns' brackets are closed with
+    /// a `TurnFailed` publish (wait-mode turns settle themselves as
+    /// cancelled). Reuses `cancel_in_flight_turns` so goal-parking, ADR-009
+    /// persistence and the terminal-event ordering stay identical to the
+    /// user-initiated abort. A failure per session is logged and skipped —
+    /// the interruption is best-effort and never blocks the shutdown.
+    async fn cancel_running_turns(&self, session_ids: &[String]) {
+        for session_id in session_ids {
+            if let Err(error) = self
+                .cancel_in_flight_turns(session_id, None, "graceful shutdown")
+                .await
+            {
+                tracing::warn!(
+                    session_id,
+                    %error,
+                    "failed to cancel running turns during graceful shutdown"
+                );
+            }
+        }
+    }
+
     async fn dispose(&self) -> Result<(), EngineError> {
         for (session_id, handle) in
             std::mem::take(&mut *self.relays.lock().unwrap_or_else(|e| e.into_inner()))
@@ -5561,10 +6140,43 @@ impl EngineAdapter for EmbeddedServer {
             handle.abort();
             tracing::debug!(session_id, "session follow driver aborted on dispose");
         }
+        // The per-subscriber forwarders hold the only remaining `Sender`
+        // clones once the vec below is cleared — abort them so each
+        // subscriber's channel actually closes (the documented dispose
+        // contract) instead of living on with a receiver that never sees
+        // `None`. `abort` is asynchronous, but the abort request drops the
+        // task's `Sender` at its next poll, and `mem::take` makes a second
+        // dispose a no-op.
+        for handle in std::mem::take(
+            &mut *self
+                .subscriber_forwarders
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        ) {
+            handle.abort();
+        }
         self.subscribers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();
+        // Session overlays die with the engine (the same lifecycle contract
+        // as `session.close`'s overlay teardown — the engine drop is the
+        // session-scoped MCP pool's last owner). `mem::take` makes the
+        // teardown idempotent (a second dispose finds an empty map), and
+        // the lock guard is dropped before the disconnect awaits (the
+        // future must stay Send). The status events the disconnects emit
+        // find no subscribers here (cleared above), so no host observes
+        // them.
+        let overlays = std::mem::take(
+            &mut *self
+                .session_overlays
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        for (session_id, overlay) in overlays {
+            overlay.manager.disconnect_all().await;
+            tracing::debug!(session_id, "session overlay disconnected on dispose");
+        }
         Ok(())
     }
 }
@@ -5599,17 +6211,21 @@ mod compaction_handlers;
 mod config_handlers;
 mod credential_handlers;
 mod cron_driver;
+mod cron_query_handlers;
+mod cron_run_spawner;
 mod env_handlers;
+mod existence_reaper;
+pub(crate) mod recovery_v3;
 mod event_relay;
 mod flag_handlers;
 mod follow_scheduler;
 mod fs_handlers;
 mod goal_driver;
-mod index_refresh;
 mod interaction_handlers;
 mod mcp_bridge;
 mod mcp_config_handlers;
 mod message_handlers;
+mod migration_v3;
 mod model_handlers;
 mod models_dev_import;
 mod orphan_governance;
@@ -5624,6 +6240,7 @@ mod retention_delete;
 mod retention_handlers;
 mod retention_task;
 mod routes;
+mod scheduled_task_create_handlers;
 mod search;
 mod session_handlers;
 mod session_index;

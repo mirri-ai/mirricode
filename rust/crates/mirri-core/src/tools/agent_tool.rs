@@ -71,14 +71,20 @@ impl AgentTool {
 /// from the host so the LLM knows what it can select.
 fn build_agent_description(host: &Arc<dyn SubagentHost>) -> String {
     let base = "Launch a subagent to handle a task. The subagent runs its own agent \
-         loop and returns a result. Use `subagent_type` to select a profile \
-         (e.g. 'coder', 'explore', 'plan'). Use `resume` to continue a \
-         previous subagent by its agent_id. Set `run_in_background` to return \
-         immediately with a task_id.";
+         loop and returns a result. Use `subagent_type` to select one of the \
+         available profiles listed below, choosing the profile whose duties \
+         best match the task. Use `resume` to continue a previous subagent by \
+         its agent_id. Set `run_in_background` to return immediately with a \
+         task_id.";
 
     let profiles = host.available_profiles();
     if profiles.is_empty() {
-        return base.to_string();
+        return "Launch a subagent to handle a task. The subagent runs its own agent \
+            loop and returns a result. No subagent profiles are currently \
+            available, so `subagent_type` cannot be used. Use `resume` to \
+            continue a previous subagent by its agent_id. Set \
+            `run_in_background` to return immediately with a task_id."
+            .to_string();
     }
 
     // Profile lines render the shared dispatch entry (see
@@ -283,6 +289,10 @@ impl Tool for AgentTool {
                             swarm_index: None,
                             swarm_item: None,
                             suppress_rate_limit_failure_event: false,
+                            // S5: the spawn inherits the executing turn's
+                            // origin — a cron-fired turn's subagent stays
+                            // in the Cron lineage.
+                            turn_origin: ctx.turn_origin.clone(),
                         };
                         match host.spawn(request) {
                             Ok(h) => h,
@@ -1035,6 +1045,7 @@ mod tests {
                     tool_call_id: "test-call".into(),
                     cancel: CancelToken::new(),
                     progress: crate::tool::ToolProgressHandle::default(),
+                    turn_origin: Default::default(),
                 };
                 execute(ctx).await
             }
@@ -2293,6 +2304,7 @@ mod tests {
             tool_call_id: "test-call".into(),
             cancel: CancelToken::new(),
             progress,
+            turn_origin: Default::default(),
         };
         let result = execute(ctx).await;
         assert!(!result.is_error, "the run itself must succeed");
@@ -2355,6 +2367,7 @@ mod tests {
             tool_call_id: "test-call".into(),
             cancel: CancelToken::new(),
             progress,
+            turn_origin: Default::default(),
         };
         let result = execute(ctx).await;
         assert!(!result.is_error, "the run itself must succeed");

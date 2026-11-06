@@ -7,7 +7,7 @@ packages:
   - docs
 
 catalog:
-  zod: 4.3.6
+  zod: 4.6.6
 
 overrides:
   "ssh2@1.17.0>cpu-features": "-"
@@ -18,3 +18,18 @@ overrides:
 # prebuilds, matching the prior default.
 onlyBuiltDependencies:
   - electron
+
+# pnpm 12 requires an explicit verdict for every dependency that declares a
+# build script; an unlisted one fails the install with
+# ERR_PNPM_IGNORED_BUILDS (it used to be a warning). The keys below were
+# placeholder text written by `pnpm approve-builds`.
+allowBuilds:
+  # Vite/tsdown build through esbuild's postinstall, which links the
+  # platform binary. Allowing it keeps the web and desktop builds working
+  # on every runner.
+  esbuild: true
+  # Installs the repo's pre-commit hook. Harmless where hooks are not
+  # wanted (CI) and required for contributors.
+  simple-git-hooks: true
+  # Only needed to package a Windows installer, which no CI job does.
+  electron-winstaller: false

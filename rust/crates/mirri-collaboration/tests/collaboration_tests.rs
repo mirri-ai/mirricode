@@ -1,3 +1,4 @@
+// layer: T1
 //! Integration tests for the collaboration crate: mode validation, session
 //! lifecycle, the inter-agent message protocol, intervention, conflict
 //! escalation, termination, and state transitions.

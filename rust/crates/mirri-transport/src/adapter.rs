@@ -130,6 +130,17 @@ pub trait EngineAdapter: Send + Sync {
         Vec::new()
     }
 
+    /// Cancel the in-flight turns of the given sessions at shutdown — the
+    /// engine-side interruption of the graceful-exit path. Called by
+    /// [`crate::state::ServerState::request_shutdown`] AFTER the graceful
+    /// record is written (the snapshot must see the turns still running)
+    /// and BEFORE the drain (a cancelled turn settles, instead of burning
+    /// the whole drain window while the shell's kill timeout races it).
+    /// Cause string: `"graceful shutdown"`. Default: no-op (adapters
+    /// without an engine-side turn registry — the shutdown then relies on
+    /// the runtime drop, exactly as before this seam existed).
+    async fn cancel_running_turns(&self, _session_ids: &[String]) {}
+
     /// Dispose of the engine, cancelling all in-flight work.
     async fn dispose(&self) -> Result<(), EngineError>;
 }

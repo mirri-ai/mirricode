@@ -12,11 +12,14 @@ import IconButton from '../ui/IconButton.vue';
 import Icon from '../ui/Icon.vue';
 import Tooltip from '../ui/Tooltip.vue';
 import { isCompositionKeyEvent } from '../../lib/keyboard';
+import { describeScheduledTaskApproval } from '../../lib/scheduledTaskApproval';
 import { expirySecondsLeft, formatExpiryCountdown } from '../../lib/approvalExpiry';
 import { useAlwaysAllowConfirm } from '../../composables/useAlwaysAllowConfirm';
 
 const props = defineProps<{
   block: ApprovalBlock;
+  /** Workspace display names by id (names the scheduled task's workspace). */
+  workspaceNames?: Record<string, string>;
   agentName?: string;
   /** True while a decision for this approval is in flight. Drives the action
    *  buttons' loading/disabled state and blocks duplicate decisions. */
@@ -94,7 +97,17 @@ watch(
 // Title by kind
 // ---------------------------------------------------------------------------
 
-const titleKinds = new Set(['shell', 'diff', 'file', 'fileop', 'url', 'search', 'invocation', 'todo', 'plan_review', 'goal', 'generic']);
+/** The scheduled-task creation in plain language (ADR-022) — null for any
+ *  other approval kind. */
+const scheduledTaskView = computed(() =>
+  props.block.kind === 'scheduled_task'
+    ? describeScheduledTaskApproval(props.block, t, {
+        workspaceName: props.workspaceNames?.[props.block.workspaceId],
+      })
+    : null,
+);
+
+const titleKinds = new Set(['shell', 'diff', 'file', 'fileop', 'url', 'search', 'invocation', 'todo', 'plan_review', 'goal', 'scheduled_task', 'generic']);
 
 function title(): string {
   const kind = titleKinds.has(props.block.kind) ? props.block.kind : 'generic';
@@ -375,6 +388,18 @@ onUnmounted(() => {
       </div>
 
       <!-- goal -->
+      <dl v-else-if="block.kind === 'scheduled_task'" class="body-sched">
+        <div class="sched-row"><dt>{{ t('approval.scheduledTask.labelTask') }}</dt><dd>{{ scheduledTaskView?.heading }}</dd></div>
+        <div class="sched-row">
+          <dt>{{ t('approval.scheduledTask.labelSchedule') }}</dt>
+          <dd>{{ scheduledTaskView?.schedule }}<span v-if="scheduledTaskView?.zone" class="sched-zone">（{{ scheduledTaskView?.zone }}）</span> · {{ scheduledTaskView?.repeat }}</dd>
+        </div>
+        <div class="sched-row"><dt>{{ t('approval.scheduledTask.labelWorkspace') }}</dt><dd>{{ scheduledTaskView?.workspace }}</dd></div>
+        <div class="sched-row"><dt>{{ t('approval.scheduledTask.labelModel') }}</dt><dd>{{ scheduledTaskView?.model }}</dd></div>
+        <div class="sched-row"><dt>{{ t('approval.scheduledTask.labelPermission') }}</dt><dd>{{ scheduledTaskView?.permission }}</dd></div>
+        <div class="sched-row sched-prompt"><dt>{{ t('approval.scheduledTask.labelInstruction') }}</dt><dd>{{ block.prompt }}</dd></div>
+        <div v-if="block.reason" class="sched-row"><dt>{{ t('approval.scheduledTask.labelReason') }}</dt><dd>{{ block.reason }}</dd></div>
+      </dl>
       <div v-else-if="block.kind === 'goal'" class="body-goal">
         <div class="goal-objective">{{ block.objective }}</div>
         <div v-if="block.completionCriterion" class="goal-criterion">{{ block.completionCriterion }}</div>
@@ -664,6 +689,22 @@ onUnmounted(() => {
 .body-plan { max-height: 50vh; overflow-y: auto; }
 
 /* Goal — objective text with the optional completion criterion below. */
+/* Scheduled-task creation — a label / value sheet in plain language. */
+.body-sched {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  font: var(--text-sm)/var(--leading-normal) var(--font-ui);
+  color: var(--color-text);
+  word-break: break-word;
+}
+.sched-row { display: flex; gap: var(--space-2); }
+.sched-row dt { flex: 0 0 4.5em; color: var(--color-text-muted); }
+.sched-row dd { margin: 0; flex: 1; min-width: 0; }
+.sched-zone { color: var(--color-text-muted); }
+.sched-prompt dd { white-space: pre-wrap; }
+
 .body-goal {
   font: var(--text-base)/var(--leading-normal) var(--font-ui);
   color: var(--color-text);

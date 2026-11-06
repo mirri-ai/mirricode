@@ -1,6 +1,6 @@
 # 工具调用 — 现状盘点（Context）
 
-> 快照日期：2026-09-10 · §7 增补：2026-09-12（启用集有序 + 协作工具门控索引）·
+> 快照日期：2026-09-10 · §7 增补：2026-09-12（启用集有序 + 协作工具门控索引）· §6 增补：2026-11-02（rust 引擎工具级时间戳现状）· §6 落地注记：2026-11-02（ADR-7 实现合入）·
 > 本文只盘点**当前状态与痛点**，不含目标、不含决策（那些见 [tool-calling-requirements.md](tool-calling-requirements.md) / [tool-calling-architecture.md](tool-calling-architecture.md)）。
 > 代码事实基线：v2 = `packages/agent-core-v2/src/`；v1 = `packages/agent-core/src/`；协议 = `packages/protocol/src/`；消费端 = `apps/mirri-code` / `apps/mirri-web` / `apps/mirri-desktop`。
 > v1 标记约定：`[v1-source][legacy]` = 仅在 legacy 引擎路径（`MIRRICODE_LEGACY_FLAG` / acp-legacy）存活；已退役面在 §4 明列。
@@ -152,6 +152,7 @@
 ## 6. 已知痛点 / 差距（消费端与跨引擎）
 
 - **web 工具级耗时未渲染**：wire `duration_ms` 存在但客户端未赋值（projector :910 注明 unused at client level；唯一赋值点在后台任务面板 useMirriWebClient.ts:1852-1864）；TUI 普通工具也无耗时显示（仅子代理有 elapsed）。
+- **Rust 引擎（v3，唯一引擎）工具事件无时间戳（2026-11-02 核实；同日已落地修复，见文末注记）**：`event.tool.call.started` 载荷无开始时刻（`rust/crates/mirri-core/src/session/event_projection.rs:366-384`），`event.tool.result` 无总耗时（`:385-411`），`session.snapshot` 的 `running_tools[]` 项无起点（`rust/crates/mirri-core/src/session/in_flight_shadow.rs:211-237`）——刷新/重连后工具计时必丢。引擎内部唯一工具起点在活动视图 `ToolCallRef.since`（`rust/crates/mirri-core/src/activity_view.rs:125-132`，epoch 毫秒），但只在解析阶段写入（含审批等待，`turn_flow/hooks.rs:1036` 早于授权点 `tool_registry/execution.rs:288`），且 web 从未调用 `agent.activity`。另有内部计时 `TurnFlowHooks.tool_call_starts`（`turn_flow/hooks.rs:429-432`），仅遥测启用时填充、不入事件流。web 投影器本地记录的开始时刻算完即弃（`apps/mirri-web/src/api/daemon/agentEventProjector.ts:1548-1550`）。上述 TS 路径 `duration_ms` 事实属已退役引擎；终态裁决见 ADR-7（服务端补 `startedAtMs`/`durationMs`）。
 - **web 忽略 `tool.call.delta`**（:872-875）：参数在 started 事件已全量，无损但失去流式参数形态。
 - **TUI `Think` 渲染器无对应 v2 工具**：`tool-renderers/registry.ts` 登记了 Think 渲染器（render-truncated 分支）——已查证为 fork 上游继承的转录兼容残留（本仓引擎历史无此工具，保留/删除无风险），见 ROADMAP F-3。
 - **历史命名遗迹（已澄清）**：已退役的 services/tool 层曾用 `mcp:` 单冒号命名（services/tool/tool.ts:58-59）；live 路径 v1 与 v2 一致为 `mcp__<server>__<tool>`，无跨引擎映射负担（2026-09-10 评审核实）。
@@ -160,6 +161,8 @@
 - **Rust 侧已知 TS 缺口**（rust-core-design ROADMAP 记录）：TS v2 无原生 `tool.call.delta` 块级事件面差距已被 Rust 补上（批 8b）；无 `tool.progress` 引擎级通道 Rust 已补（批 13）——TS 侧 `tool.progress` 事件存在但对齐面有限。
 - **v2 快照重放语义**：web 经 `WireInFlightToolCall` 快照恢复运行中工具；TUI 经会话日志回放（loopEventFold 折叠）——两套恢复面并存（跨端一致性风险点）。
 - **`tool.list.updated` 消费**：TUI 显式忽略、web 未见消费（事件面存在但工具集合变化 UI 无通知——与 US6.2 公告（模型侧）不同，用户侧无"工具集合变化"提示）。
+
+> **2026-11-02 落地注记（ADR-7 实现合入）**：本节两条工具级耗时差距已消除——`event.tool.call.started` 现携带 `startedAtMs`（服务端 epoch 毫秒，dispatch 时刻、不含审批等待）、`event.tool.result` 携带 `durationMs`（服务端计量）、`running_tools[]` 快照项携带 `started_at_ms`（刷新/重连后计时延续）；web 端运行中卡片实时计时、转球旁最晚调用「工具名 + 等待时长」、完成卡定格总耗时、中断定格冻结（`endedAt` 锚）。上方的行号引用为落地前快照，保留作历史差距记录；落地实现见 `rust/crates/mirri-core/src/session/event_projection.rs`、`in_flight_shadow.rs`、`loop_engine/turn_step.rs` 与 `apps/mirri-web/src/composables/messagesToTurns.ts`、`components/chat/ChatPane.vue`。TUI 卡片呈现仍待排期（ROADMAP F-18）。
 
 ## 7. Rust 侧现状（一句话索引，不重复）
 

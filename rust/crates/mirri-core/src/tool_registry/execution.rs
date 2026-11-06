@@ -276,6 +276,10 @@ pub async fn prepare_tool_call(
         step,
         tool_call_id: tool_call_id.clone(),
         tool_name: tool_name.clone(),
+        // ADR-015: the tool's own capability-category declaration — the
+        // ReadOnly posture's judgment input (D-M2), carried from the
+        // resolved tool so the authorize hook never re-derives it.
+        tool_readonly: tool.readonly(),
         args: &effective_args,
         approval_rule: &plan.approval_rule,
         display: &plan.display,
@@ -404,6 +408,9 @@ pub async fn execute_tool_batch(
                 cancel: cancel.clone(),
                 progress: progress.unwrap_or_default(),
                 wait_registry: wait_registry.cloned(),
+                // S5: the turn's origin rides the tool context so the
+                // Agent tool can propagate the lineage into its spawns.
+                turn_origin: hooks.turn_origin(),
             };
             PendingToolTask {
                 tool_call_id,

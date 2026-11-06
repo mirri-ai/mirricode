@@ -12,18 +12,21 @@ pub(super) const ROUTES: &[Route] = &[
         method: "agent.getContext",
         aliases: &["getContext"],
         handler: |server, params| Box::pin(server.dispatch_get_context(params)),
+        settlement: Route::SETTLES,
     },
     // Accumulated token usage, broken down by model.
     Route {
         method: "agent.getUsage",
         aliases: &["getUsage"],
         handler: |server, params| Box::pin(server.dispatch_get_usage(params)),
+        settlement: Route::SETTLES,
     },
     // The agent's current model id (a plain wire string).
     Route {
         method: "agent.getModel",
         aliases: &["getModel"],
         handler: |server, params| Box::pin(server.dispatch_get_model(params)),
+        settlement: Route::SETTLES,
     },
     // Agent-scope runtime config updates: all three apply immediately and
     // answer on the klient result shapes (`setModel` echoes
@@ -33,40 +36,47 @@ pub(super) const ROUTES: &[Route] = &[
         method: "agent.setModel",
         aliases: &["setModel"],
         handler: |server, params| Box::pin(server.dispatch_set_model(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "agent.setThinking",
         aliases: &["setThinking"],
         handler: |server, params| Box::pin(server.dispatch_set_thinking(params)),
+        settlement: Route::SETTLES,
     },
     // B2 gap implementation: the effective thinking effort (plain string).
     Route {
         method: "agent.getEffectiveThinkingLevel",
         aliases: &["getEffectiveThinkingLevel"],
         handler: |server, params| Box::pin(server.dispatch_get_effective_thinking_level(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "agent.setPermission",
         aliases: &["setPermission"],
         handler: |server, params| Box::pin(server.dispatch_set_permission(params)),
+        settlement: Route::SETTLES,
     },
     // The agent's permission mode.
     Route {
         method: "agent.getPermission",
         aliases: &["getPermission"],
         handler: |server, params| Box::pin(server.dispatch_get_permission(params)),
+        settlement: Route::SETTLES,
     },
     // The agent's resolved configuration.
     Route {
         method: "agent.getConfig",
         aliases: &["getConfig"],
         handler: |server, params| Box::pin(server.dispatch_get_config(params)),
+        settlement: Route::SETTLES,
     },
     // Restricts the agent's tool set by name.
     Route {
         method: "agent.setActiveTools",
         aliases: &["setActiveTools"],
         handler: |server, params| Box::pin(server.dispatch_set_active_tools(params)),
+        settlement: Route::SETTLES,
     },
     // User-registered tools need an executable tool type the embedded
     // engine lacks; acknowledged.
@@ -74,18 +84,21 @@ pub(super) const ROUTES: &[Route] = &[
         method: "agent.registerTool",
         aliases: &["registerTool"],
         handler: |server, params| Box::pin(server.dispatch_register_tool(params)),
+        settlement: Route::SETTLES,
     },
     // No user-tool removal API; acknowledged.
     Route {
         method: "agent.unregisterTool",
         aliases: &["unregisterTool"],
         handler: |server, params| Box::pin(server.dispatch_unregister_tool(params)),
+        settlement: Route::SETTLES,
     },
     // Injects the skill's SKILL.md content as a system reminder.
     Route {
         method: "agent.activateSkill",
         aliases: &["activateSkill"],
         handler: |server, params| Box::pin(server.dispatch_activate_skill(params)),
+        settlement: Route::SETTLES,
     },
     // B2 gap implementation: the agent's live activity snapshot (the klient
     // agentActivityView.state wire shape, folded by the engine-side
@@ -94,6 +107,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "agent.activity",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_agent_activity(params)),
+        settlement: Route::SETTLES,
     },
     // B2 gap implementations: the command surface available to the agent
     // (klient agentRpcContract listCommands / runCommand).
@@ -101,17 +115,20 @@ pub(super) const ROUTES: &[Route] = &[
         method: "agent.listCommands",
         aliases: &["listCommands"],
         handler: |server, params| Box::pin(server.dispatch_agent_list_commands(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "agent.runCommand",
         aliases: &["runCommand"],
         handler: |server, params| Box::pin(server.dispatch_agent_run_command(params)),
+        settlement: Route::SETTLES,
     },
     // The addressed agent's registered tool definitions.
     Route {
         method: "tool.list",
         aliases: &["getTools"],
         handler: |server, params| Box::pin(server.dispatch_get_tools(params)),
+        settlement: Route::SETTLES,
     },
     // T2 user-tool management read face: every registered user tool with
     // its registration payload and current visibility (disabled ones
@@ -120,6 +137,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "tool.listUserTools",
         aliases: &["listUserTools"],
         handler: |server, params| Box::pin(server.dispatch_list_user_tools(params)),
+        settlement: Route::SETTLES,
     },
     // T2 user-tool management write face: per-name enable/disable of a
     // registered user tool (removal stays on agent.unregisterTool).
@@ -127,6 +145,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "tool.setUserToolEnabled",
         aliases: &["setUserToolEnabled"],
         handler: |server, params| Box::pin(server.dispatch_set_user_tool_enabled(params)),
+        settlement: Route::SETTLES,
     },
     // Both session-level `listSkills` and workspace-level
     // `listWorkspaceSkills` read the workspace skill catalog.
@@ -134,6 +153,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "skill.list",
         aliases: &["listSkills", "listWorkspaceSkills"],
         handler: |server, params| Box::pin(server.dispatch_list_skills(params)),
+        settlement: Route::SETTLES,
     },
     // B8 skills management read face: the skill's SKILL.md content for the
     // web management view (workspace-scoped like skill.list; an optional
@@ -142,6 +162,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "skill.getContent",
         aliases: &["getSkillContent"],
         handler: |server, params| Box::pin(server.dispatch_get_skill_content(params)),
+        settlement: Route::SETTLES,
     },
     // B8 skills management write face: user-level per-skill enablement,
     // persisted as the top-level config key disabled_skills.
@@ -149,6 +170,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "skill.setEnabled",
         aliases: &["setSkillEnabled"],
         handler: |server, params| Box::pin(server.dispatch_set_skill_enabled(params)),
+        settlement: Route::SETTLES,
     },
     // ADR-010 Task 6: the manual skill-catalog reload face — rescan every
     // built workspace through the serialized orchestrator and answer the
@@ -157,5 +179,6 @@ pub(super) const ROUTES: &[Route] = &[
         method: "skill.reload",
         aliases: &["reloadSkills"],
         handler: |server, params| Box::pin(server.dispatch_skill_reload(params)),
+        settlement: Route::SETTLES,
     },
 ];

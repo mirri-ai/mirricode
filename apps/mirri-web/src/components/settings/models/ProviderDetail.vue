@@ -17,6 +17,7 @@ import {
   isEnvRef,
   type CredentialFormKind,
 } from '../../../lib/providerCredentials';
+import { buildBaseUrlConfigPatch, clearingBaseUrlNeedsConfirm } from '../../../lib/providerBaseUrl';
 import Button from '../../ui/Button.vue';
 import Badge from '../../ui/Badge.vue';
 import Checkbox from '../../ui/Checkbox.vue';
@@ -424,6 +425,58 @@ async function onRemoveCredential(): Promise<void> {
   }
 }
 
+// -------------------------------------------------------------------------
+// Edit base URL dialog (#187) — the same Dialog pattern as the edit-key
+// dialog above: an Input, a saving flag, an error line, and a setConfig
+// submit riding the klient null-means-clear encoding when cleared.
+// -------------------------------------------------------------------------
+const showEditBaseUrl = ref(false);
+const editBaseUrlValue = ref('');
+const editBaseUrlSaving = ref(false);
+const editBaseUrlError = ref('');
+
+function openEditBaseUrl(): void {
+  // Pre-filled with the current value (a base URL is not a secret — unlike
+  // the API key it reads back over the wire).
+  editBaseUrlValue.value = props.provider.baseUrl ?? '';
+  editBaseUrlError.value = '';
+  showEditBaseUrl.value = true;
+}
+
+async function submitEditBaseUrl(): Promise<void> {
+  editBaseUrlError.value = '';
+  // Clearing a third-party provider's base URL leaves it unbuildable (the
+  // engine refuses a provider with no endpoint, #184) — the confirm
+  // dialog makes that drop explicit. A first-party provider (openai /
+  // anthropic / google-genai) silently restores its official default.
+  if (clearingBaseUrlNeedsConfirm(props.provider, editBaseUrlValue.value)) {
+    const confirmed = await confirm({
+      title: t('settings.models.clearBaseUrl'),
+      message: t('settings.models.confirmClearBaseUrl', { name: props.provider.id }),
+      variant: 'danger',
+    });
+    if (!confirmed) return;
+  }
+  editBaseUrlSaving.value = true;
+  try {
+    await api.setConfig(buildBaseUrlConfigPatch(props.provider, editBaseUrlValue.value));
+    showEditBaseUrl.value = false;
+    emit('changed');
+  } catch (error) {
+    editBaseUrlError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    editBaseUrlSaving.value = false;
+  }
+}
+
+function onBaseUrlEditKeydown(e: KeyboardEvent): void {
+  if (isCompositionKeyEvent(e)) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    submitEditBaseUrl();
+  }
+}
+
 function onKeyEditKeydown(e: KeyboardEvent): void {
   if (isCompositionKeyEvent(e)) return;
   if (e.key === 'Enter') {
@@ -456,7 +509,8 @@ function caps(alias: AppModelAlias): string[] {
         <span class="status-dot" :style="{ background: statusColor(provider.status) }" />
         <div class="pvd-head-info">
           <span class="pvd-type">{{ provider.type }}</span>
-          <span v-if="provider.baseUrl" class="pvd-url">{{ provider.baseUrl }}</span>
+          <span v-if="provider.baseUrl" class="pvd-url" :title="t('settings.models.editBaseUrl')" @click="openEditBaseUrl">{{ provider.baseUrl }}</span>
+          <button v-else type="button" class="pvd-url pvd-url-empty" :title="t('settings.models.editBaseUrl')" @click="openEditBaseUrl">{{ t('settings.models.editBaseUrl') }}</button>
           <div class="pvd-head-meta">
             <Badge :variant="credentialBadge.variant" size="sm">
               <template v-if="credentialBadge.envRef">{{ credentialBadge.envRef }}</template>
@@ -630,6 +684,33 @@ function caps(alias: AppModelAlias): string[] {
       </template>
     </Dialog>
 
+    <!-- Edit base URL dialog (#187) -->
+    <Dialog
+      v-if="showEditBaseUrl"
+      :open="true"
+      :title="t('settings.models.editBaseUrl')"
+      size="md"
+      overlay-class="model-edit-overlay"
+      @close="showEditBaseUrl = false"
+    >
+      <div class="pvd-add-form">
+        <Field :label="t('settings.models.fieldBaseUrl')" :hint="t('settings.models.fieldBaseUrlHint')">
+          <Input
+            v-model="editBaseUrlValue"
+            :placeholder="'https://api.example.com/v1'"
+            autocomplete="off"
+            spellcheck="false"
+            @keydown="onBaseUrlEditKeydown"
+          />
+        </Field>
+        <div v-if="editBaseUrlError" class="pvd-add-err">{{ editBaseUrlError }}</div>
+      </div>
+      <template #foot>
+        <Button variant="primary" size="sm" :loading="editBaseUrlSaving" @click="submitEditBaseUrl">{{ t('common.save') }}</Button>
+        <Button variant="secondary" size="sm" @click="showEditBaseUrl = false">{{ t('common.cancel') }}</Button>
+      </template>
+    </Dialog>
+
     <!-- Add-model dialog -->
     <Dialog
       v-if="showAddModel"
@@ -693,6 +774,10 @@ function caps(alias: AppModelAlias): string[] {
 .pvd-head-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .pvd-type { font-family: var(--font-ui); font-size: var(--text-base); font-weight: var(--weight-medium); color: var(--color-text); }
 .pvd-url { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--color-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pvd-url:not(.pvd-url-empty) { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+.pvd-url:not(.pvd-url-empty):hover { color: var(--color-text); }
+.pvd-url-empty { background: none; border: none; padding: 0; text-align: left; cursor: pointer; color: var(--color-text-faint); font-size: var(--text-xs); }
+.pvd-url-empty:hover { color: var(--color-text); text-decoration: underline; }
 .pvd-head-meta { display: flex; align-items: center; gap: var(--space-2); margin-top: 2px; }
 .pvd-count { font-size: var(--text-xs); color: var(--color-text-faint); }
 .pvd-credential-guidance { margin-top: 2px; font-size: var(--text-xs); color: var(--color-danger); }

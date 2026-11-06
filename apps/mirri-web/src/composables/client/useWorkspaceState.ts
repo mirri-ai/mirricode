@@ -665,8 +665,15 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       loadedIds.add(session.id);
     }
     // SDR-014: same sort key as the sidebar (lastUsedAt ?? updatedAt), so a
-    // touched-but-not-updated session keeps its merge position.
-    merged.sort((a, b) => sortKeyEpoch(b) - sortKeyEpoch(a));
+    // touched-but-not-updated session keeps its merge position. SDR-016:
+    // pinned sessions ride the top regardless of recency (a pinned
+    // three-month-old session must never sink below the fold).
+    merged.sort(
+      (a, b) =>
+        Number(b.pinned ?? false) - Number(a.pinned ?? false) ||
+        (Date.parse(b.pinnedAt ?? '') || 0) - (Date.parse(a.pinnedAt ?? '') || 0) ||
+        sortKeyEpoch(b) - sortKeyEpoch(a),
+    );
     return merged;
   }
 
@@ -696,7 +703,11 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     // SDR-014: the recent-window age reads the same key the sidebar sorts by
     // (lastUsedAt ?? updatedAt) — otherwise a touched old session (fresh
     // lastUsedAt, stale updatedAt) gets trimmed out of the window.
-    const ageOf = (s: AppSession): number => now - sortKeyEpoch(s);
+    // SDR-016: a pinned session is never "beyond the window" — the pin
+    // outranks the recency window entirely (the out-of-window load below
+    // also guarantees visibility, but the trim must not fight it).
+    const ageOf = (s: AppSession): number =>
+      s.pinned ? 0 : now - sortKeyEpoch(s);
     let beforeId: string | undefined;
     let hasMore = false;
     let isFirstPage = true;
@@ -746,6 +757,36 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       beforeId = oldest.id;
     }
     return { workspaceId, page: { items, hasMore }, error: continuationError };
+  }
+
+  /** SDR-016 (the out-of-window pinned load): fetch the workspace's pinned
+   *  rows through the `pinnedOnly` filter — a pinned session whose recency
+   *  predates the recent window would otherwise never enter the windowed
+   *  pages, and the sidebar would silently drop it after a restart. The
+   *  merge is by id (no duplicates); the pinned-aware merge sort in the
+   *  caller places them at the top. Best-effort: a failure logs through
+   *  the operation-failure channel and never fails the workspace load. */
+  async function backfillPinnedSessionsForWorkspace(
+    workspaceId: string,
+    known: AppSession[],
+  ): Promise<AppSession[]> {
+    const api = getMirriWebApi();
+    const knownIds = new Set(known.map((session) => session.id));
+    let pinnedPage: { items: AppSession[] };
+    try {
+      pinnedPage = await api.listSessions({
+        workspaceId,
+        pageSize: 100,
+        pinnedOnly: true,
+        excludeEmpty: false,
+      });
+    } catch {
+      // Older engines without the filter answer an error — the windowed
+      // load's rows are already in place, so this is a soft miss.
+      return known;
+    }
+    const missing = pinnedPage.items.filter((session) => !knownIds.has(session.id));
+    return missing.length > 0 ? [...known, ...missing] : known;
   }
 
   /** Fetch the first page of sessions for every known workspace concurrently.
@@ -865,6 +906,26 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       loadedIds.add(session.id);
     }
 
+    // SDR-016 (the out-of-window pinned load): every successfully loaded
+    // workspace also pulls its pinned rows — the windowed pages above would
+    // otherwise miss a pinned session whose recency predates the window.
+    await Promise.allSettled(
+      Array.from(successfulPages.keys(), async (workspaceId) => {
+        const merged = await backfillPinnedSessionsForWorkspace(
+          workspaceId,
+          successfulPages.get(workspaceId)!.items,
+        );
+        successfulPages.set(workspaceId, {
+          ...successfulPages.get(workspaceId)!,
+          items: merged,
+        });
+        for (const session of merged) {
+          if (loadedIds.has(session.id)) continue;
+          loaded.push(session);
+          loadedIds.add(session.id);
+        }
+      }),
+    );
     const hasMore: Record<string, boolean> = {};
     const cursors: Record<string, string | undefined> = {};
     const counts: Record<string, number> = {};
@@ -879,7 +940,13 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     rawState.sessionsInitialCountByWorkspace = counts;
     rawState.sessionsFullyLoaded = false;
     // SDR-014: lastUsedAt ?? updatedAt, matching the sidebar's sort key.
-    loaded.sort((a, b) => sortKeyEpoch(b) - sortKeyEpoch(a));
+    // SDR-016: pinned first (pinnedAt desc within the group).
+    loaded.sort(
+      (a, b) =>
+        Number(b.pinned ?? false) - Number(a.pinned ?? false) ||
+        (Date.parse(b.pinnedAt ?? '') || 0) - (Date.parse(a.pinnedAt ?? '') || 0) ||
+        sortKeyEpoch(b) - sortKeyEpoch(a),
+    );
     if (failedWorkspaceIds.size > 0) pushOperationFailure('load', firstError);
     return loaded;
   }
@@ -2882,6 +2949,40 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
   }
 
+  /** Pin a session (SDR-016/017): the engine writes ONLY the pin trio —
+   *  the local patch mirrors that posture (no recency keys touched), and
+   *  the pinned-first re-order follows from the sort comparator (the
+   *  reactive session array re-sorts on the field flip). */
+  async function pinSession(
+    id: string,
+    color?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray',
+  ): Promise<void> {
+    try {
+      await getMirriWebApi().pinSession(id, color);
+      updateSession(id, (s) => ({
+        ...s,
+        pinned: true,
+        // Keep the previous pin moment on a re-pin (the engine's own
+        // idempotency); only a first pin stamps now.
+        pinnedAt: s.pinnedAt ?? new Date().toISOString(),
+        pinColor: color,
+      }));
+    } catch (error) {
+      pushOperationFailure('pinSession', error, { sessionId: id });
+    }
+  }
+
+  /** Unpin a session: the local patch clears the trio; the re-order drops
+   *  it back into the recency group. */
+  async function unpinSession(id: string): Promise<void> {
+    try {
+      await getMirriWebApi().unpinSession(id);
+      updateSession(id, (s) => ({ ...s, pinned: false, pinnedAt: undefined, pinColor: undefined }));
+    } catch (error) {
+      pushOperationFailure('unpinSession', error, { sessionId: id });
+    }
+  }
+
   /** Rename a workspace — persists via the daemon update API, then applies
    *  locally. Derived workspaces (a cwd with sessions that was never explicitly
    *  registered) can't be renamed by the daemon yet: PATCH rejects them with
@@ -3483,6 +3584,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     setPermission,
     dismissWarning,
     renameSession,
+    pinSession,
+    unpinSession,
     renameWorkspace,
     deleteWorkspace,
     trustWorkspace,

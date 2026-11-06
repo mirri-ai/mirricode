@@ -43,6 +43,9 @@ export default {
      *  从成员聚焦视图直达审批卡的跳转按钮。 */
     attention: 'Needs your attention',
     waiting: 'Waiting for subagents…',
+    /** 折叠态成员行时间线的思考元素标签（ADR-012 ②）：推理段只以 kind
+     *  信号进入时间线，标签由组件层本地化（纯函数层不掺 i18n）。 */
+    thinkingLabel: 'Thinking',
   },
   chip: {
     lines: '{count} lines',

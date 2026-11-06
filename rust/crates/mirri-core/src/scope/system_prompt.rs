@@ -442,6 +442,59 @@ mod tests {
         );
     }
 
+    /// Given the rendered base prompt, When the scheduling guidance is
+    /// inspected, Then the workspace-creation tool is named with its
+    /// session-scope counterpart and the do-now exclusion (C4: the two
+    /// concepts each get their own guidance — SetTimer for in-session
+    /// delayed callbacks, CreateScheduledTask for approved workspace
+    /// routines; the retired tool names are gone).
+    #[test]
+    fn should_carry_the_scheduling_guidance_in_the_base_prompt() {
+        let rendered = apply_workspace_part(
+            &render_fixed_part(&fixed_vars()),
+            "tree",
+            "AGENTS_MD_MARKER",
+            "",
+            "",
+            &[],
+        );
+
+        assert!(
+            rendered.contains("CreateScheduledTask"),
+            "the base prompt must name the workspace creation tool"
+        );
+        assert!(
+            rendered.contains("SetTimer"),
+            "the guidance must name the session-scope counterpart"
+        );
+        assert!(
+            rendered.contains("always triggers a user approval"),
+            "the guidance must state the approval requirement on the \
+             workspace-creation tool"
+        );
+        assert!(
+            rendered.contains("fires once, and cleans itself up"),
+            "the guidance must state the one-shot semantics on the timer \
+             tool"
+        );
+        for retired in ["CronCreate", "CronList", "CronDelete", "ScheduledTaskPropose"] {
+            assert!(
+                !rendered.contains(retired),
+                "the guidance must not name the retired tool {retired}"
+            );
+        }
+        assert!(
+            rendered.contains("work you can complete now in this session"),
+            "the guidance must exclude work completable in-session from the \
+             scheduling tools"
+        );
+        assert!(
+            rendered.contains("run later or on a recurring basis"),
+            "the guidance must keep deferred one-shot and recurring work as \
+             legitimate scheduling candidates"
+        );
+    }
+
     /// Given a fixed-part render, When applying the workspace part, Then the
     /// template's section order holds — the language directive
     /// precedes the AGENTS.md section (the same order the TS prompt uses).

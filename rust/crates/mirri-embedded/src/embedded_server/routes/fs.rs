@@ -9,11 +9,13 @@ pub(super) const ROUTES: &[Route] = &[
         method: "fs.browse",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_fs_browse(params)),
+        settlement: Route::SETTLES,
     },
     // The OS user home plus the (honestly empty) recent-roots list.
     Route {
         method: "fs.home",
         aliases: &[],
         handler: |server, _params| Box::pin(server.dispatch_fs_home()),
+        settlement: Route::SETTLES,
     },
 ];

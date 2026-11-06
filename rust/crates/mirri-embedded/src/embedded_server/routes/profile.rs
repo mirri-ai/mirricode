@@ -10,18 +10,21 @@ pub(super) const ROUTES: &[Route] = &[
         method: "agent.listProfiles",
         aliases: &["listProfiles"],
         handler: |server, _params| Box::pin(server.dispatch_list_profiles()),
+        settlement: Route::SETTLES,
     },
     // One profile row by name (not-found for an unknown name).
     Route {
         method: "agent.getProfile",
         aliases: &["getProfile"],
         handler: |server, params| Box::pin(server.dispatch_get_profile(params)),
+        settlement: Route::SETTLES,
     },
     // Register + persist a new user profile under <mirri-home>/profiles/.
     Route {
         method: "agent.createProfile",
         aliases: &["createProfile"],
         handler: |server, params| Box::pin(server.dispatch_create_profile(params)),
+        settlement: Route::SETTLES,
     },
     // Merge-provide fields into an existing profile (a built-in gains an
     // override file) and persist.
@@ -29,6 +32,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "agent.updateProfile",
         aliases: &["updateProfile"],
         handler: |server, params| Box::pin(server.dispatch_update_profile(params)),
+        settlement: Route::SETTLES,
     },
     // Remove the persisted profile (a built-in override delete restores
     // the built-in definition).
@@ -36,6 +40,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "agent.deleteProfile",
         aliases: &["deleteProfile"],
         handler: |server, params| Box::pin(server.dispatch_delete_profile(params)),
+        settlement: Route::SETTLES,
     },
     // Write the file-level `enabled = false` flag through the `.md` write
     // channel (an existing file keeps every byte outside the enabled
@@ -44,6 +49,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "agent.disableProfile",
         aliases: &["disableProfile"],
         handler: |server, params| Box::pin(server.dispatch_disable_profile(params)),
+        settlement: Route::SETTLES,
     },
     // Clear the file-level `enabled = false` flag (already-enabled
     // profiles, e.g. bare built-ins, are a legal no-op success).
@@ -51,6 +57,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "agent.enableProfile",
         aliases: &["enableProfile"],
         handler: |server, params| Box::pin(server.dispatch_enable_profile(params)),
+        settlement: Route::SETTLES,
     },
     // Delete a built-in's override `.md` so the built-in definition is
     // restored (the delete channel's legacy cleanup rides along).
@@ -58,5 +65,6 @@ pub(super) const ROUTES: &[Route] = &[
         method: "agent.resetProfile",
         aliases: &["resetProfile"],
         handler: |server, params| Box::pin(server.dispatch_reset_profile(params)),
+        settlement: Route::SETTLES,
     },
 ];

@@ -28,7 +28,7 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-use super::{EmbeddedServer, not_implemented};
+use super::{EmbeddedServer, SettlementClass, not_implemented};
 use mirri_transport::adapter::EngineError;
 
 mod agent;
@@ -65,6 +65,20 @@ pub(super) struct Route {
     pub aliases: &'static [&'static str],
     /// The dispatch function invoked with the server and the raw params.
     pub handler: HandlerFn,
+    /// What the startup housekeeping must settle before this handler runs
+    /// (non-functional-architecture ADR-003 c). Every table row spells
+    /// `settlement: Route::SETTLES` (the default — wait for everything) or
+    /// names its class; there is no struct-update escape, so the field is
+    /// always written and no row can silently inherit a class it was not
+    /// meant to have.
+    pub settlement: SettlementClass,
+}
+
+impl Route {
+    /// The default [`SettlementClass::FullHousekeeping`] every non-whitelist
+    /// row names — one spelling of the closed-by-default class, so the
+    /// mechanical bulk is greppable and a bespoke class stands out.
+    pub(super) const SETTLES: SettlementClass = SettlementClass::FullHousekeeping;
 }
 
 /// A dispatch function: borrows the server, owns the params, returns a

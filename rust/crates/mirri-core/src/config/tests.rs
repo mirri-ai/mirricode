@@ -2712,8 +2712,9 @@ fn should_use_anthropic_provider_type_when_mirricode_model_provider_type_is_anth
     // When applying the env model config
     config.apply_env_model_config(&env).expect("should succeed");
 
-    // Then the provider type is lowercased and the base_url is None
-    // (anthropic uses SDK default, no explicit base URL)
+    // Then the provider type is lowercased and the base_url is the official
+    // Anthropic endpoint (the first-party default — #184's sanctioned
+    // implicit base URL)
     let provider = config
         .providers
         .as_ref()
@@ -2721,9 +2722,73 @@ fn should_use_anthropic_provider_type_when_mirricode_model_provider_type_is_anth
         .get(ENV_MODEL_PROVIDER_KEY)
         .unwrap();
     assert_eq!(provider.r#type.as_deref(), Some("anthropic"));
-    assert!(
-        provider.base_url.is_none(),
-        "anthropic provider should not have a default base_url"
+    assert_eq!(
+        provider.base_url.as_deref(),
+        Some("https://api.anthropic.com/v1"),
+        "the first-party anthropic default must be synthesized explicitly"
+    );
+}
+
+#[test]
+fn should_use_the_official_google_endpoint_when_the_env_model_provider_type_is_google_genai() {
+    // Given MIRRICODE_MODEL_PROVIDER_TYPE is set to "google-genai" with no
+    // explicit base URL
+    let mut config = ServerConfig::default();
+    let env = fake_env(&[
+        ("MIRRICODE_MODEL_NAME", "gemini-test"),
+        ("MIRRICODE_MODEL_API_KEY", "sk-google"),
+        ("MIRRICODE_MODEL_PROVIDER_TYPE", "google-genai"),
+    ]);
+
+    // When applying the env model config
+    config.apply_env_model_config(&env).expect("should succeed");
+
+    // Then the synthesized provider carries the official Google endpoint
+    // (the first-party default)
+    let provider = config
+        .providers
+        .as_ref()
+        .unwrap()
+        .get(ENV_MODEL_PROVIDER_KEY)
+        .unwrap();
+    assert_eq!(provider.r#type.as_deref(), Some("google-genai"));
+    assert_eq!(
+        provider.base_url.as_deref(),
+        Some("https://generativelanguage.googleapis.com/v1beta")
+    );
+}
+
+#[test]
+fn should_return_error_when_the_env_model_provider_type_has_no_default_base_url() {
+    // Given MIRRICODE_MODEL_PROVIDER_TYPE set to a type with no first-party
+    // default (kimi is not in the allowed list, but a FUTURE allowed type
+    // without a default must error instead of synthesizing a baseless
+    // provider) — today this is exercised via the allowed list membership:
+    // all three allowed types have first-party defaults, so the error face
+    // guards future additions. Given the current list, the direct error
+    // trigger is an explicit-empty BASE_URL, which is treated as absent.
+    let mut config = ServerConfig::default();
+    let env = fake_env(&[
+        ("MIRRICODE_MODEL_NAME", "gpt-4o"),
+        ("MIRRICODE_MODEL_API_KEY", "sk-env"),
+        ("MIRRICODE_MODEL_PROVIDER_TYPE", "openai"),
+        ("MIRRICODE_MODEL_BASE_URL", ""),
+    ]);
+
+    // When applying the env model config
+    config.apply_env_model_config(&env).expect("should succeed");
+
+    // Then the empty base URL was treated as absent and the openai default
+    // answered (the first-party default — never a baseless provider)
+    let provider = config
+        .providers
+        .as_ref()
+        .unwrap()
+        .get(ENV_MODEL_PROVIDER_KEY)
+        .unwrap();
+    assert_eq!(
+        provider.base_url.as_deref(),
+        Some("https://api.openai.com/v1")
     );
 }
 

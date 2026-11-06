@@ -79,6 +79,12 @@ impl Tool for TaskOutputTool {
         })
     }
 
+    /// ADR-015 (stage-2 D-M2): the read-only capability category —
+    /// observation only, no side effects the ReadOnly posture must gate.
+    fn readonly(&self) -> bool {
+        true
+    }
+
     fn resolve_execution(&self, input: serde_json::Value) -> EngineResult<ToolExecution> {
         let Some(task_id) = input.get("task_id").and_then(serde_json::Value::as_str) else {
             return Ok(tool_execution_error(
@@ -291,6 +297,7 @@ mod tests {
             tool_call_id: "test-call".to_string(),
             cancel: crate::cancel::CancelToken::default(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         };
         futures::executor::block_on(execute(ctx))
     }
@@ -310,6 +317,7 @@ mod tests {
             tool_call_id: "test-call".to_string(),
             cancel: crate::cancel::CancelToken::default(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         };
         execute(ctx).await
     }
@@ -737,6 +745,7 @@ mod tests {
             tool_call_id: "test-call".to_string(),
             cancel,
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         };
 
         // When the wait runs (30s timeout — the cancel at 150ms must win)

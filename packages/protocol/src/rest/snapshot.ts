@@ -36,6 +36,8 @@ export const inFlightToolCallSchema = z.object({
   description: z.string().optional(),
   /** Display payload from `tool.call.started` (ToolInputDisplay). */
   display: z.unknown().optional(),
+  /** Server-stamped epoch-ms start (ADR-7; additive, absent on older engines). */
+  started_at_ms: z.number().optional(),
   /** Most recent `tool.progress` update, if any. */
   last_progress: z
     .object({

@@ -210,3 +210,11 @@
 | MCP fast path 回滚开关 | `MIRRI_DISABLE_MCP_FAST_PATH`（待实装） | `session/mcp/mcpFastPath.ts:16` 用 `MIRRICODE_DISABLE_MCP_FAST_PATH`（§10 差距 #1） | 同左（v2 现行即此名） | 无对应 |
 
 **裁决基准**：Rust 现行 `MIRRI_*` 为规范名（先例 `rust/crates/mirri-core/src/config/env_layer.rs:479-485` 的 `env_var_with_alias` 主名+别名模式）；两代一致的 `MIRRICODE_HOME` 保留原名。归档不是全量改名令，TS 侧不修（总计划 DEC-1）。
+
+### 1.6 首个 RPC 的启动整理现状（快照 2026-11-03）
+
+- 四段整理在 `rust/crates/mirri-embedded/src/embedded_server/mod.rs:5599-5620`（`call_method` 首次进入时串行内联 await）：①旧布局迁移（`:5602` → `migrate_legacy_sessions_once`，`mod.rs:3085-3103`——顶层浅枚举 + 每桶 `exists(state.json)`，成本 O(workspace 数)）；②孤儿普查（`:5609` → `orphan_governance.rs:65-116`，`spawn_blocking` 全量 `sweep_orphans`）；③索引对账（`:5614` → `session_index.rs:609-662`，锁内全量 pass）；④中断核对（`:5620` → `recovery_handlers.rs:265-359`）。
+- 孤儿普查的候选装载 `load_running_process_tasks`（`rust/crates/mirri-core/src/orphan_sweep.rs:493-555`）对每个会话的 `tasks/` 目录执行 `TaskPersistence::load_tasks`（`rust/crates/mirri-core/src/task_persist.rs:108-141`）——**逐条读取并反序列化全部任务 JSON**，仅在内存过滤 Running+Process；历史归档量大时（实测一例：约 5.9 万档案/60MB）该段达秒级。
+- 中断核对的异常路径（`recovery_handlers.rs:393-514` 推断、`:521-577` 补录）各自调用 `registered_workspace_managers()`（每次重走 `ensure_built`）+ `list_all_sessions(true)`（`mirri-core/src/session/manager/mod.rs:1773-1849`，磁盘全枚举 + 逐会话读 `state.json`）+ `scan_open_turn`（`mirri-core/src/session/recovery_scan.rs:54-`，经 `migrate_records_in_memory`（`mirri-persistence/src/migration.rs:680-`）**整文件读入逐行解析**）——每份会话日志完整读两遍。
+- 子代理域 ADR-012 c 裁决「普查器在服务启动路径上**异步**执行，不阻塞就绪」，现状实现为首 RPC 内联 await——与本裁决存在偏离（结算时序裁决未破：普查仍先于任务注册结算）。
+- 健康检查恒返回就绪（`rust/crates/mirri-server/src/http.rs:173-182`），与整理进度互不感知——桌面壳两阶段就绪（§1.5）依赖该语义。

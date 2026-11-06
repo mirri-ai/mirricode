@@ -10,8 +10,10 @@ import { buildEditDiffLines, parseArg, extractEditPath } from '../src/lib/toolDi
 import { createCoalescedAsyncRunner } from '../src/lib/snapshotSync';
 import { mergeSnapshotMessages } from '../src/lib/snapshotMessages';
 import { mergeSnapshotSubagents } from '../src/lib/taskMerge';
-import { normalizeToolName, toolSummary } from '../src/lib/toolMeta';
+import { normalizeToolName, toolPayload, toolSummary } from '../src/lib/toolMeta';
 import { collapsePrompt, humanizeCron } from '../src/lib/cronHumanize';
+import { describeSchedule, type CronSchedule } from '../src/lib/cronSchedule';
+import { messages } from '../src/i18n/locales';
 import {
   currentValidatedWorkspacePath,
   isWorkspacePathInput,
@@ -315,6 +317,33 @@ describe('toolMeta', () => {
   });
 });
 
+describe('toolPayload', () => {
+  it('should pretty-print a JSON argument so every field is readable on hover', () => {
+    const arg = JSON.stringify({ block: true, task_id: 'task-1', timeout: 20000 });
+    expect(toolPayload(arg)).toBe(
+      ['{', '  "block": true,', '  "task_id": "task-1",', '  "timeout": 20000', '}'].join('\n'),
+    );
+  });
+
+  it('should keep the argument key order instead of re-sorting it', () => {
+    expect(toolPayload('{"z":1,"a":2}')).toBe('{\n  "z": 1,\n  "a": 2\n}');
+  });
+
+  it('should return a plain-string argument verbatim rather than quoting it', () => {
+    expect(toolPayload('pnpm test')).toBe('pnpm test');
+  });
+
+  it('should return the raw argument when it only looks like JSON', () => {
+    expect(toolPayload('{not json')).toBe('{not json');
+  });
+
+  it('should drop an empty argument so the row shows no hover payload', () => {
+    expect(toolPayload('{}')).toBe('');
+    expect(toolPayload('[]')).toBe('');
+    expect(toolPayload('  ')).toBe('');
+  });
+});
+
 describe('resolveToolRenderer', () => {
   // Minimal ToolCall factory — resolveToolRenderer only reads `name`, `status`
   // and `media`, so the rest is filled with placeholders.
@@ -615,6 +644,83 @@ describe('mergeSnapshotMessages', () => {
   });
 });
 
+/** A locale lookup over the real messages tree — an absent key answers the
+ *  key itself, exactly like vue-i18n, so the assertions below see what the
+ *  user would see. */
+function localeTranslator(locale: 'zh' | 'en') {
+  return (key: string, params?: Record<string, unknown>): string => {
+    const raw = key
+      .split('.')
+      .reduce<unknown>((node, part) => (node as Record<string, unknown> | undefined)?.[part], messages[locale]);
+    if (typeof raw !== 'string') return key;
+    return raw.replaceAll(/\{(\w+)\}/g, (_match, name: string) =>
+      Object.hasOwn(params ?? {}, name) ? String(params?.[name]) : `{${name}}`,
+    );
+  };
+}
+
+describe('describeSchedule — the schedule sentence resolves every locale key', () => {
+  // One representative of every preset and custom branch — each must read as
+  // a sentence, never as a leaked i18n key or an unfilled placeholder.
+  const cases: Array<[string, CronSchedule]> = [
+    ['hourly', { kind: 'hourly', minute: 5 }],
+    ['daily', { kind: 'daily', time: '09:00' }],
+    ['weekday', { kind: 'weekday', time: '09:00' }],
+    ['weekly', { kind: 'weekly', days: [1, 3], time: '09:00' }],
+    ['weekly with no day', { kind: 'weekly', days: [], time: '09:00' }],
+    ['monthly', { kind: 'monthly', day: 15, time: '09:00' }],
+    ['interval', {
+      kind: 'custom',
+      mode: 'interval',
+      interval: { every: 2, unit: 'week', time: '09:00' },
+      ends: { kind: 'never' },
+    }],
+    ['raw', { kind: 'custom', mode: 'raw', raw: { expr: '*/5 * * * *' }, ends: { kind: 'never' } }],
+    ['custom minute', {
+      kind: 'custom',
+      mode: 'field',
+      field: { unit: 'minute-of-hour', picks: [5, 25], time: '00:00' },
+      ends: { kind: 'never' },
+    }],
+    ['custom hour', {
+      kind: 'custom',
+      mode: 'field',
+      field: { unit: 'hour-of-day', picks: [9, 18], time: '00:00' },
+      ends: { kind: 'never' },
+    }],
+    ['custom day-of-month', {
+      kind: 'custom',
+      mode: 'field',
+      field: { unit: 'day-of-month', picks: [1, 15], time: '00:00' },
+      ends: { kind: 'never' },
+    }],
+    ['custom day-of-week', {
+      kind: 'custom',
+      mode: 'field',
+      field: { unit: 'day-of-week', picks: [1, 5], time: '09:00' },
+      ends: { kind: 'never' },
+    }],
+    ['custom ends on', {
+      kind: 'custom',
+      mode: 'field',
+      field: { unit: 'day-of-week', picks: [1], time: '09:00' },
+      ends: { kind: 'on', date: '2026-12-31' },
+    }],
+  ];
+
+  it.each(['zh', 'en'] as const)(
+    'should resolve every sentence to real copy, not a key name, when the locale is %s',
+    (locale) => {
+      const t = localeTranslator(locale);
+      for (const [name, schedule] of cases) {
+        const sentence = describeSchedule(schedule, 'Asia/Shanghai', t);
+        expect(sentence, `${name} (${locale})`).not.toContain('settings.');
+        expect(sentence, `${name} (${locale})`).not.toMatch(/\{\w+\}/);
+      }
+    },
+  );
+});
+
 describe('mergeSnapshotSubagents', () => {
   function subagent(id: string, overrides: Partial<AppTask> = {}): AppTask {
     return {
@@ -640,7 +746,7 @@ describe('mergeSnapshotSubagents', () => {
     const live = subagent('a1', {
       subagentPhase: 'queued',
       outputLines: ['line 1'],
-      text: 'partial answer',
+      segments: [{ id: 'a1-g0-seg-0', kind: 'text', text: 'partial answer', seq: 0 }],
     });
     const roster = [subagent('a1', { subagentPhase: 'working' })];
     const [merged] = mergeSnapshotSubagents(roster, [live]);
@@ -648,7 +754,7 @@ describe('mergeSnapshotSubagents', () => {
     expect(merged?.subagentPhase).toBe('working');
     // …but the accumulated output survives the seed.
     expect(merged?.outputLines).toEqual(['line 1']);
-    expect(merged?.text).toBe('partial answer');
+    expect(merged?.segments).toEqual([{ id: 'a1-g0-seg-0', kind: 'text', text: 'partial answer', seq: 0 }]);
   });
 
   it('keeps tasks the roster does not know about', () => {

@@ -1,6 +1,6 @@
 # Rust Core Crate 结构设计
 
-> **文档类型：设计类**（按 `docs/specs/AGENTS.md` 治理约定）——只因设计变更修改。结构快照（2026-09-04）：17-crate 现实对照与规划差距见 §1.6，差距的当前状态以 [ROADMAP.md](ROADMAP.md) 为准。
+> **文档类型：设计类**（按 `docs/specs/AGENTS.md` 治理约定）——只因设计变更修改。结构快照（2026-11-02）：crate 现状对照与规划差距见 §1.6，差距的当前状态以 [ROADMAP.md](ROADMAP.md) 为准。
 > （OS 抽象 crate 实名为 `mirri-os`；`mirri-embedded` / `mirri-remote` 承载 EngineAdapter 实现；
 > `mirri-collaboration` / `mirri-plugin-host` 并入未执行，仍为独立 crate）。
 > 原「13 个 → 11 个」的收敛目标已废弃，见 §1.6 与 §2。
@@ -100,9 +100,9 @@ WS、stdio、FFI 只是 `Transport` 的三个实现；Remote、Embedded、InProc
 
 ### 1.6 现状与目标结构的差异
 
-当前 `rust/crates/` 有 **17 个 crate**，修订后的目标结构即 17-crate 现实（核心依赖图 13 个 + 外围 4 个，见 2.2）；原「13 个 → 11 个」的收敛目标已废弃。逐 crate 的差异与现实状态表见 [context.md](context.md) §3（参考类，带快照日期）。
+当前 `rust/crates/` 有 **18 个 crate**；目标结构在此基础上新增叶子 crate `mirri-id`（ADR-003），为 **19 个**。第 2 节依赖图按目标结构绘制（核心 14 个 + 外围 4 个，见 2.2）。原「13 个 → 11 个」的收敛目标已废弃。逐 crate 的差异与现实状态表见 [context.md](context.md) §3（参考类，带快照日期）。
 
-目标依赖图（第 2 节）画核心 13 个 crate；`mirri-kosong`、`mirri-auth`、`mirri-collaboration`、`mirri-plugin-host` 作为外围 crate 显式装配（并入决策待 C6/N2）。
+目标依赖图（第 2 节）画核心 14 个 crate；`mirri-kosong`、`mirri-auth`、`mirri-collaboration`、`mirri-plugin-host` 作为外围 crate 显式装配（并入决策待 C6/N2）。
 
 ## 2. Crate 依赖图
 
@@ -120,11 +120,12 @@ mirri-embedded ──→ mirri-core · mirri-transport
 mirri-remote  ──→ mirri-transport · mirri-proto
                 mirri-core ──→ mirri-proto
                 mirri-core ──→ mirri-os
+                mirri-core ──→ mirri-id
                 mirri-core ──→ mirri-persistence
                 mirri-core ──→ mirri-mcp
 ```
 
-### 2.2 完整依赖图（17 crates）
+### 2.2 完整依赖图（目标 19 crates）
 
 ```
                      ┌───────────────────────────────────────────┐
@@ -156,6 +157,12 @@ mirri-remote  ──→ mirri-transport · mirri-proto
                  └───────────┘ └───────────┘  └────────────┘  └─────────┘
                         (wire 类型)   (OS trait + 实现)   (append-log)  (MCP client)
 
+mirri-id ──→ （无 mirri 依赖：128 位标识符的生成 / 解析 / 前缀清单）
+             被 mirri-persistence · mirri-collaboration · mirri-plugin-host ·
+             mirri-core · mirri-server · mirri-embedded · mirri-remote ·
+             mirri-test-harness（dev）依赖；见
+             [15-identifier-strategy.md](15-identifier-strategy.md)
+
 mirri-test-harness ──→ mirri-server · mirri-transport · mirri-core · mirri-embedded · mirri-proto
                        (黑盒测试：起 server / 复用 client / EmbeddedEngine / wire 类型)
 ```
@@ -170,12 +177,12 @@ mirri-collaboration → mirri-core      （独立 crate；并入 core::swarm/sub
 mirri-plugin-host  → mirri-embedded / mirri-node   （独立 crate；并入 core::hook 未执行，待 C6/N2 决策）
 ```
 
-> 注：共 **17 个 crate** = 核心依赖图 **13 个**（cli / acp / node / server / transport / embedded / remote / core / proto / os / persistence / mcp / test-harness）+ 外围 **4 个**（`mirri-auth`、`mirri-kosong`、`mirri-collaboration`、`mirri-plugin-host`）；外围 crate 不参与 core 的零 IO 依赖面。
+> 注：目标结构共 **19 个 crate** = 核心依赖图 **14 个**（cli / acp / node / server / transport / embedded / remote / core / proto / os / persistence / mcp / id / test-harness）+ 外围 **4 个**（`mirri-auth`、`mirri-kosong`、`mirri-collaboration`、`mirri-plugin-host`）；外围 crate 不参与 core 的零 IO 依赖面。现状 18 个（无 `mirri-id`，含 `mirri-credentials` / `mirri-session-index`）的具体构成见 [context.md](context.md) §3。
 
 ### 2.3 依赖方向规则（可机械检查）
 
-1. `mirri-proto`、`mirri-os`：叶子，不依赖任何 mirri crate
-2. `mirri-core`：只依赖 `proto` / `os`（仅 trait）/ `persistence` / `mcp`（及 LLM provider trait）
+1. `mirri-proto`、`mirri-os`、`mirri-id`：叶子，不依赖任何 mirri crate
+2. `mirri-core`：只依赖 `proto` / `os`（仅 trait）/ `persistence` / `mcp` / `id`（及 LLM provider trait）
 3. `mirri-transport`：依赖 `core`（`EngineAdapter` trait，仅 trait）+ `proto`（+ 外部 ws/io 库）；`EngineAdapter` 实现位于 `mirri-embedded` / `mirri-remote`
 4. `mirri-server` / `mirri-acp` / `mirri-node`：依赖 `transport` + `core`（+ `os` 实现）；`mirri-acp` / `mirri-node` 另依赖 `mirri-embedded`（EmbeddedEngine）与 `mirri-remote`（帧适配）
 5. `mirri-cli`：依赖 `server` / `acp` / `auth`（`mirri login`）
@@ -189,7 +196,7 @@ mirri-plugin-host  → mirri-embedded / mirri-node   （独立 crate；并入 co
 
 | | |
 |---|---|
-| **依赖** | `mirri-proto`（wire 类型）、`mirri-os`（仅 trait）、`mirri-persistence`（仅纯接口）、`mirri-mcp`（client trait） |
+| **依赖** | `mirri-proto`（wire 类型）、`mirri-os`（仅 trait）、`mirri-id`（标识符）、`mirri-persistence`（仅纯接口）、`mirri-mcp`（client trait） |
 | **被依赖** | `mirri-transport`、`mirri-server`、`mirri-acp`、`mirri-node`、`mirri-test-harness`（dev） |
 
 **职责**：Session 生命周期、Agent Loop、Tool 注册与执行、Permission 决策、Hook/Skill/Plan/Goal 引擎、Swarm 协作、Profile/Config 管理、Background Task、Telemetry。详见第 5 节模块结构。
@@ -220,7 +227,7 @@ mirri-plugin-host  → mirri-embedded / mirri-node   （独立 crate；并入 co
 
 | | |
 |---|---|
-| **依赖** | `serde`、`serde_json`、`schemars`、`chrono`、`uuid` |
+| **依赖** | `serde`、`serde_json`、`schemars`、`chrono` |
 | **被依赖** | 除 `mirri-os` 外的所有 crate |
 
 **职责**：wire.jsonl 的**唯一权威类型定义**：wire op 枚举、事件、状态快照、JSON Schema 生成、reducer（op 序列 → 状态）。
@@ -268,7 +275,7 @@ mirri-plugin-host  → mirri-embedded / mirri-node   （独立 crate；并入 co
 
 | | |
 |---|---|
-| **依赖** | `mirri-core`、`mirri-transport`、`mirri-os`、`mirri-proto`、`mirri-persistence`（session 恢复）、`mirri-auth`（middleware） |
+| **依赖** | `mirri-core`、`mirri-transport`、`mirri-os`、`mirri-proto`、`mirri-id`、`mirri-persistence`（session 恢复）、`mirri-auth`（middleware） |
 | **被依赖** | `mirri-cli`、`mirri-test-harness`（dev） |
 
 **职责**：监听层。把「核心引擎」暴露给远程前端：
@@ -317,7 +324,7 @@ mirri-plugin-host  → mirri-embedded / mirri-node   （独立 crate；并入 co
 
 | | |
 |---|---|
-| **依赖** | `mirri-proto`、`rusqlite`（session 索引） |
+| **依赖** | `mirri-proto`、`mirri-id`、`rusqlite`（session 索引） |
 | **被依赖** | `mirri-core`、`mirri-server` |
 
 **职责**：wire.jsonl 追加日志（append-only、原子写、崩溃恢复）、按 session 的 wire 回放（replay）、session 导出（zip 打包）、持久化事件日志（见 3.6.1）。
@@ -419,7 +426,7 @@ mirri-plugin-host  → mirri-embedded / mirri-node   （独立 crate；并入 co
 
 | | |
 |---|---|
-| **依赖** | `mirri-server`、`mirri-transport`、`mirri-core`、`mirri-proto`（仅 dev 用途） |
+| **依赖** | `mirri-server`、`mirri-transport`、`mirri-core`、`mirri-proto`、`mirri-id`（仅 dev 用途） |
 | **被依赖** | 仅各 crate 的 `dev-dependencies` |
 
 **职责**：同一套测试套件对「任何讲 Mirri wire 协议的服务」跑黑盒测试 —— Rust `mirri-server`、TS 旧 server（`kap-server`）、`mirri-acp` binary、NAPI 内嵌引擎：
@@ -630,7 +637,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 anyhow = "1"
-uuid = { version = "1", features = ["v4", "serde"] }
+ulid = "3"
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
 base64 = "0.22"
@@ -651,7 +658,7 @@ portable-pty = "0.9"                  # mirri-os(unix)
 clap = { version = "4", features = ["derive"] }                # mirri-cli
 ```
 
-分层规则：`mirri-proto` / `mirri-os` / `mirri-core` 的骨架依赖只有 serde/serde_json/thiserror/tracing/uuid/chrono 一级；网络/进程类依赖只允许出现在表中「接入层专用」以下。
+分层规则：`mirri-proto` / `mirri-os` / `mirri-id` / `mirri-core` 的骨架依赖只有 serde/serde_json/thiserror/tracing/chrono 一级（`ulid` 仅 `mirri-id` 可直接依赖，其他 crate 经 `mirri-id` 使用）；网络/进程类依赖只允许出现在表中「接入层专用」以下。
 
 ### 6.3 features 规划
 

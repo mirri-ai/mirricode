@@ -12,18 +12,6 @@
 use super::*;
 use mirri_core::llm::LlmToolCall;
 
-/// The session directory (`…/v3_sessions/<bucket>/<session_id>`) a test
-/// server materializes under its tempdir home — the location of the
-/// `state.json` the settle write-throughs land in.
-fn session_dir_under(tmp: &tempfile::TempDir, session_id: &str) -> std::path::PathBuf {
-    let bucket = mirri_core::encode_work_dir_key(tmp.path());
-    tmp.path()
-        .join(".mirri")
-        .join("v3_sessions")
-        .join(&bucket)
-        .join(session_id)
-}
-
 /// Poll until the scripted LLM has served `count` chat calls — the
 /// deterministic seam for waiting out the out-of-band side title call
 /// (which produces no wire event when its fallback derives nothing, e.g.
@@ -67,7 +55,7 @@ async fn should_title_via_side_llm_call_after_the_first_user_turn_settles() {
     let mock = Arc::new(ScriptedLlm::new());
     mock.push_text("Done.");
     mock.push_text("Refactor the auth module");
-    let (server, tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let (server, _tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
     let created = server
         .call_method("session.create", json!({}))
         .await
@@ -107,23 +95,26 @@ async fn should_title_via_side_llm_call_after_the_first_user_turn_settles() {
     assert_eq!(metadata.title, "Refactor the auth module");
     assert!(!metadata.is_custom_title);
 
-    // And the side call's write-through persisted the title to disk
-    let state = tokio::time::timeout(Duration::from_secs(5), async {
+    // And the side call's write-through persisted the title to the
+    // metadata row (ADR-006: the row, not state.json, is the durable
+    // record the write-through targets).
+    let record = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let Ok(raw) =
-                std::fs::read_to_string(session_dir_under(&tmp, &session_id).join("state.json"))
-                && raw.contains("Refactor the auth module")
+            if let Some(record) = server
+                .session_manager()
+                .metadata_store()
+                .get(&SessionId::new(&session_id))
+                .await
+                && record.title == "Refactor the auth module"
             {
-                return raw;
+                return record;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("state.json must carry the side call's title");
-    let state: serde_json::Value =
-        serde_json::from_str(&state).expect("state.json must be valid JSON");
-    assert!(!state["is_custom_title"].as_bool().unwrap_or(true));
+    .expect("the metadata row must carry the side call's title");
+    let _ = record;
 }
 
 #[tokio::test]
@@ -178,12 +169,16 @@ async fn should_title_via_side_llm_call_when_the_first_response_lands_mid_turn()
     assert_eq!(metadata.title, expected);
     assert!(!metadata.is_custom_title);
 
-    // And the side call's write-through persisted the title to disk
+    // And the side call's write-through persisted the title to the
+    // metadata row (ADR-006).
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let Ok(raw) =
-                std::fs::read_to_string(session_dir_under(&tmp, &session_id).join("state.json"))
-                && raw.contains(expected)
+            if let Some(record) = server
+                .session_manager()
+                .metadata_store()
+                .get(&SessionId::new(&session_id))
+                .await
+                && record.title == expected
             {
                 return;
             }
@@ -191,7 +186,8 @@ async fn should_title_via_side_llm_call_when_the_first_response_lands_mid_turn()
         }
     })
     .await
-    .expect("state.json must carry the side call's title");
+    .expect("the metadata row must carry the side call's title");
+    let _ = &tmp;
 
     // Cleanup: let the parked turn finish so the test ends with no
     // dangling turn task.
@@ -647,15 +643,8 @@ async fn should_not_fall_back_or_inject_for_cron_turns() {
         .expect("session stays live");
 
     // When a cron turn of the same agent runs on the same turn flow
-    let tool = run_main_agent_tool(
-        &server,
-        &session_id,
-        "CronCreate",
-        json!({ "cron": "*/5 * * * *", "prompt": "tick", "recurring": true }),
-    )
-    .await;
-    assert!(!tool.is_error, "{tool:?}");
-    let task_id = cron_task_id_from_tool_result(&tool);
+    let task_id =
+        super::seed_session_cron_task(&server, &session_id, "*/5 * * * *", "tick", true).await;
     server
         .call_method(
             "cron.trigger",
@@ -738,16 +727,19 @@ async fn should_persist_the_derived_title_when_no_llm_provider_is_configured() {
     assert_eq!(metadata.title, "fix the login bug");
     assert!(!metadata.is_custom_title);
 
-    // And the on-disk state.json carries it (I-1: the branch's own write)
-    let state_path = session_dir_under(&tmp, &session_id).join("state.json");
-    let raw = std::fs::read_to_string(&state_path).expect("state.json was written on disk");
-    let state: serde_json::Value =
-        serde_json::from_str(&raw).expect("state.json must be valid JSON");
+    // And the metadata ROW carries it (I-1: the branch's own write —
+    // ADR-006: the row, not state.json, is the durable record)
+    let record = server
+        .session_manager()
+        .metadata_store()
+        .get(&SessionId::new(&session_id))
+        .await
+        .expect("the metadata row was written through");
     assert_eq!(
-        state.get("title").and_then(Value::as_str),
-        Some("fix the login bug"),
-        "state.json must carry the derived title, not the placeholder: {raw}"
+        record.title, "fix the login bug",
+        "the row must carry the derived title, not the placeholder"
     );
+    let _ = tmp;
 
     // And the session index row carries it too (the listing must not show
     // the placeholder for a conversed-but-providerless session)
@@ -1045,15 +1037,8 @@ async fn should_close_the_abort_residue_before_the_next_cron_turn() {
     next_event_where(&mut events, |n| n.method == "event.turn.ended", |_| {}).await;
 
     // And when a cron turn of the same agent runs on the reused turn flow
-    let tool = run_main_agent_tool(
-        &server,
-        &session_id,
-        "CronCreate",
-        json!({ "cron": "*/5 * * * *", "prompt": "tick", "recurring": true }),
-    )
-    .await;
-    assert!(!tool.is_error, "{tool:?}");
-    let task_id = cron_task_id_from_tool_result(&tool);
+    let task_id =
+        super::seed_session_cron_task(&server, &session_id, "*/5 * * * *", "tick", true).await;
     server
         .call_method(
             "cron.trigger",
@@ -1131,24 +1116,39 @@ async fn should_write_a_user_rename_to_state_json_immediately() {
         .await
         .unwrap();
 
-    // Then the on-disk state.json carries the custom title and flag right
-    // away — the write-through fired on the change itself
-    let state_path = session_dir_under(&tmp, &session_id).join("state.json");
-    let raw = tokio::time::timeout(Duration::from_secs(5), async {
+    // Then the metadata row carries the custom title right away (the
+    // write-through fired on the change itself — ADR-006: the row is the
+    // durable record; no turn has to settle first). The custom-title
+    // FLAG is a TS-only state.json field the row does not model, so the
+    // scope metadata stays its carrier (asserted through the live view
+    // below — the row's title write-through is the durable half).
+    let record = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let Ok(raw) = std::fs::read_to_string(&state_path)
-                && raw.contains("User's own title")
+            if let Some(record) = server
+                .session_manager()
+                .metadata_store()
+                .get(&SessionId::new(&session_id))
+                .await
+                && record.title == "User's own title"
             {
-                return raw;
+                return record;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("state.json must carry the user rename without a settling turn");
-    let state: serde_json::Value =
-        serde_json::from_str(&raw).expect("state.json must be valid JSON");
-    assert!(state["is_custom_title"].as_bool().unwrap_or(false));
+    .expect("the metadata row must carry the user rename without a settling turn");
+    let _ = record;
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session stays live");
+    assert!(
+        session.metadata().await.is_custom_title,
+        "the custom-title flag rides the scope metadata"
+    );
+    let _ = &tmp;
 }
 
 /// Given a fresh untitled session, when the first turn runs, then the

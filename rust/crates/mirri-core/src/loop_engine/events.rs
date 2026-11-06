@@ -49,10 +49,16 @@ pub enum LiveEvent {
     /// arguments), so a live consumer can show what the tool was invoked
     /// with before the result arrives — the same field the TS protocol's
     /// `tool.call.started` carries.
+    ///
+    /// `started_at` is the wall-clock start in epoch milliseconds, taken at
+    /// the moment this event is emitted (ADR-7: the server is the timing
+    /// authority, and the window begins at dispatch — approval waiting is
+    /// not part of a tool call's elapsed time).
     ToolCallStarted {
         tool_name: String,
         tool_call_id: String,
         args: serde_json::Value,
+        started_at: u64,
     },
     /// A tool call completed (result is available, success or error).
     /// `tool_name` rides along so a consumer that missed the started event
@@ -61,11 +67,16 @@ pub enum LiveEvent {
     /// output (text or structured parts — the wire `tool.result` output
     /// field, the same shape the TS protocol carries, so a live consumer
     /// renders the result without waiting for a snapshot reload).
+    ///
+    /// `duration_ms` is the dispatch-to-completion elapsed time measured
+    /// from the matching `started_at` (ADR-7: server-authoritative, so it
+    /// excludes approval waiting and is independent of client clocks).
     ToolCallCompleted {
         tool_call_id: String,
         tool_name: String,
         is_error: bool,
         output: crate::tool::ToolOutput,
+        duration_ms: u64,
     },
     /// An incremental update from a running tool call (streamed stdout,
     /// progress percent, status text, or a custom payload).

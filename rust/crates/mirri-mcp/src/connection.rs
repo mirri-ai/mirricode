@@ -881,6 +881,21 @@ impl McpConnectionManager {
 
         self.notify_listeners(name.to_string(), McpConnectionState::Pending);
 
+        // Re-check registration immediately before dialling: a `remove` that
+        // landed while this attempt was closing the old client unregisters
+        // the entry, and dialling anyway sends a request to a server the
+        // manager no longer holds (the reconnect loop then exits on its next
+        // pass, but the dead request has already gone out).
+        let still_registered = {
+            let connections = self.connections.read().await;
+            connections.contains_key(name)
+        };
+        if !still_registered {
+            return Err(McpError::ConnectionFailed(format!(
+                "MCP server '{name}' was unregistered during the reconnect"
+            )));
+        }
+
         // Perform fresh connect.
         let result = Self::do_connect(&conn_arc, self.oauth_token_dir.as_deref()).await;
 
@@ -1189,6 +1204,19 @@ impl McpConnectionManager {
                 delay = std::cmp::min(delay.mul_f64(backoff.factor), backoff.cap);
             }
         });
+    }
+
+    /// Whether an auto-reconnect loop is still registered for `name`.
+    ///
+    /// A loop removes its own bookkeeping the moment it returns, so this is
+    /// the observable "the loop has exited" signal — what a test needs when
+    /// it must distinguish "no further attempts after this point" from "an
+    /// attempt that was already in flight when the server went away".
+    pub fn is_auto_reconnect_active(&self, name: &str) -> bool {
+        self.auto_reconnect_gens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(name)
     }
 
     /// Remove this loop's generation bookkeeping when it owns the entry.

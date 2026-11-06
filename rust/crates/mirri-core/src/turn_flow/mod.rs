@@ -44,6 +44,7 @@ pub use wait_registry::{
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::activity_view::TurnEndReason;
 use crate::cancel::CancelToken;
@@ -119,6 +120,10 @@ pub struct TurnEndResult {
     pub usage: LlmUsage,
     /// Wall-clock duration in milliseconds.
     pub duration_ms: u64,
+    /// Wall-clock completion instant (Unix epoch milliseconds) — the
+    /// authoritative "completed at" timestamp. Independent of `duration_ms`
+    /// (monotonic measurement); never derived from it (ADR-011 / glossary T11).
+    pub ended_at: u64,
     /// Whether the turn was blocked by a hook.
     ///
     /// When the `before_step` hook blocks a step (returns `block: true`),
@@ -142,6 +147,13 @@ pub struct TurnEndResult {
 /// When multiple locks must be held simultaneously, they must be acquired
 /// in this order to prevent deadlock:
 ///
+/// ADR-021's approval-wait hook: `true` = the turn just parked on an
+/// approval the user has not answered (the run's record flips to
+/// `WaitingApproval`); `false` = the wait is over (the record flips back
+/// to `Running`). Fired on EVERY exit of the ask's wait — including
+/// cancellation — so a stale `WaitingApproval` can never outlive its ask.
+pub type ApprovalWaitHook = std::sync::Arc<dyn Fn(bool) + Send + Sync>;
+
 /// 1. `TurnFlow` (outer mutex in `embedded_server.rs`)
 /// 2. `compaction` (Arc<Mutex<FullCompaction>>)
 /// 3. `steer_buffer` (Arc<Mutex<SteerBuffer>>)
@@ -391,6 +403,23 @@ pub struct TurnFlow {
     /// nor inject a listing into the wrong context. `None` (the default)
     /// keeps every turn reminder-free.
     pending_skill_reminder: Option<crate::scope::session_scope::PendingSkillReminder>,
+    /// The origin of the NEXT turn this flow runs (ADR-001 / S4): set by
+    /// the turn-dispatching host before the turn (`Cron` on the cron
+    /// injection path, inherited by spawned subagent flows), and reset to
+    /// `Interactive` at the top of `run_one_turn_inner` — the same
+    /// per-turn reset discipline `wait_registry` follows, so a turn that
+    /// ends abnormally (panic, cancel) cannot leak its origin into the
+    /// next turn.
+    turn_origin: crate::permission::TurnOriginContext,
+    /// V15's asked-ops ledger (stage-2 D.2): the permission outcomes the
+    /// turn's authorize site produced — each entry `{ tool, decision,
+    /// reason }` (which operation, what result). Reset at the top of each
+    /// turn; the cron run spawner drains it into the RunRecord on settle.
+    asked_ops: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    /// ADR-021: the run-level approval-wait hook the cron spawner wires
+    /// (workspace runs only) — see [`ApprovalWaitHook`]. `None` for
+    /// interactive turns and session-timer fires (no RunRecord to flip).
+    approval_wait_hook: Option<ApprovalWaitHook>,
 }
 
 impl TurnFlow {
@@ -442,6 +471,9 @@ impl TurnFlow {
             wait_registry: Arc::new(WaitRegistry::new()),
             cache_root_id: None,
             pending_skill_reminder: None,
+            turn_origin: crate::permission::TurnOriginContext::default(),
+            asked_ops: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            approval_wait_hook: None,
         }
     }
 
@@ -871,6 +903,64 @@ impl TurnFlow {
         registry
     }
 
+    /// The origin of the turn this flow is about to run (S4 / ADR-001):
+    /// set by the dispatching host (`Cron` on the cron injection path)
+    /// or inherited from the spawning flow (subagent propagation), read
+    /// into the turn's hooks config, and reset at the top of
+    /// `run_one_turn_inner`.
+    pub fn turn_origin(&self) -> crate::permission::TurnOriginContext {
+        self.turn_origin.clone()
+    }
+
+    /// Set the origin of the next turn this flow runs (S4 / ADR-001).
+    pub fn set_turn_origin(&mut self, origin: crate::permission::TurnOriginContext) {
+        self.turn_origin = origin;
+    }
+
+    /// Wire the run-level approval-wait hook (ADR-021 — the cron run
+    /// spawner's face; see [`ApprovalWaitHook`]). The hook rides the hooks
+    /// config of every turn this flow runs.
+    pub fn set_approval_wait_hook(&mut self, hook: ApprovalWaitHook) {
+        self.approval_wait_hook = Some(hook);
+    }
+
+    /// The flow's asked-ops ledger handle (V15): the authorize site's
+    /// per-turn record of permission outcomes (which operation, what
+    /// result). Hosts that need the trace (the workspace cron run spawner)
+    /// clone this handle and drain it after the turn.
+    pub fn asked_ops_handle(
+        &self,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>> {
+        std::sync::Arc::clone(&self.asked_ops)
+    }
+
+    /// Drain the asked-ops ledger (V15): empty it and return the entries
+    /// collected so far. Called by the run spawner at the turn's settle —
+    /// the record's `asked_ops` slot.
+    pub fn take_asked_ops(&self) -> Vec<serde_json::Value> {
+        std::mem::take(
+            &mut *self
+                .asked_ops
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        )
+    }
+
+    /// Share another flow's asked-ops ledger (V15 / D.2 review m3): the
+    /// subagent/swarm host calls this at spawn so a cron-fired turn's
+    /// delegated members record into the SAME ledger the run spawner
+    /// drains — a member's refused operation lands in the RunRecord
+    /// instead of vanishing into the member's own (never-read) ledger.
+    /// The per-turn reset in `run_one_turn_inner` clears the shared
+    /// ledger at the MAIN flow's turn start only, so the drain at settle
+    /// still sees the members' entries collected during the turn.
+    pub fn share_asked_ops(
+        &mut self,
+        ledger: std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    ) {
+        self.asked_ops = ledger;
+    }
+
     /// Replace the activity fold with a fresh (ready, empty) tracker and
     /// return it.
     ///
@@ -1182,6 +1272,19 @@ impl TurnFlow {
             .await;
         }
 
+        // S4 / ADR-001: snapshot the dispatch-set origin and reset the
+        // slot to Interactive IMMEDIATELY (top of the turn, the
+        // reset_wait_registry discipline) — a turn that ends through any
+        // path (panic, cancellation, error) leaves the slot clean for
+        // the next dispatch, so an origin can never leak across turns.
+        let turn_origin = std::mem::take(&mut self.turn_origin);
+        // V15 (stage-2 D.2): the asked-ops ledger starts each turn clean —
+        // a turn that ends abnormally cannot leak its trace into the next
+        // (the same reset discipline `turn_origin` follows).
+        {
+            let mut ledger = self.asked_ops.lock().unwrap_or_else(|e| e.into_inner());
+            ledger.clear();
+        }
         let turn_id = self.allocate_turn_id();
         self.active_turn_id = Some(turn_id);
         self.activity.on_turn_started(turn_id, origin.clone());
@@ -1405,6 +1508,10 @@ impl TurnFlow {
                 steps: 0,
                 usage: LlmUsage::default(),
                 duration_ms,
+                ended_at: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
                 blocked_by_prompt_hook: true,
             });
         }
@@ -1426,6 +1533,7 @@ impl TurnFlow {
                 live_ref,
                 self.cache_root_id.clone(),
                 wait_registry,
+                turn_origin,
             )
             .await;
 
@@ -1489,6 +1597,10 @@ impl TurnFlow {
                     steps: turn_result.steps,
                     usage: turn_result.usage,
                     duration_ms,
+                    ended_at: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64,
                     blocked_by_prompt_hook: false,
                 })
             }
@@ -1542,6 +1654,10 @@ impl TurnFlow {
                     steps: 0,
                     usage: LlmUsage::default(),
                     duration_ms,
+                    ended_at: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64,
                     blocked_by_prompt_hook: false,
                 })
             }
@@ -1558,6 +1674,10 @@ impl TurnFlow {
                     steps: 0,
                     usage: LlmUsage::default(),
                     duration_ms,
+                    ended_at: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64,
                     blocked_by_prompt_hook: true,
                 })
             }
@@ -1672,6 +1792,7 @@ impl TurnFlow {
         live_callback: Option<&LiveEventCallback>,
         cache_root_id: Option<String>,
         wait_registry: Arc<WaitRegistry>,
+        turn_origin: crate::permission::TurnOriginContext,
     ) -> EngineResult<TurnResult> {
         let deduper = Arc::new(Mutex::new(ToolCallDeduplicator::new()));
 
@@ -1995,6 +2116,23 @@ impl TurnFlow {
                 // pushes live undo checkpoints for real-user-input steers —
                 // the memory-side mirror of the reducer's fold rule.
                 todo_list: self.todo_list.clone(),
+                turn_origin: turn_origin.clone(),
+                // V15 (stage-2 D.2): the flow's asked-ops ledger rides the
+                // hooks config — the authorize site records every
+                // non-approved outcome into it. D.2 m3: the ledger HANDLE
+                // rides alongside so the tool-executor boundary can share
+                // it into subagent spawns.
+                asked_ops_ledger: Some(std::sync::Arc::clone(&self.asked_ops)),
+                asked_ops_recorder: Some(std::sync::Arc::new({
+                    let ledger = std::sync::Arc::clone(&self.asked_ops);
+                    move |entry: serde_json::Value| {
+                        ledger
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(entry);
+                    }
+                })),
+                approval_wait_hook: self.approval_wait_hook.clone(),
                 ..TurnFlowHooksConfig::default()
             };
 
@@ -2336,4 +2474,84 @@ fn render_skill_catalog_refresh_reminder(catalog: &crate::skill::SkillCatalog) -
             .to_string();
     }
     format!("Skill catalog updated. {listing}")
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod turn_origin_tests {
+    use super::*;
+
+    /// A minimal flow for the origin-discipline tests — no services wired.
+    fn flow() -> TurnFlow {
+        TurnFlow::new(TurnFlowConfig::default())
+    }
+
+    #[test]
+    fn should_default_to_interactive_when_a_flow_is_created() {
+        // Given a fresh flow, the origin slot starts Interactive — every
+        // existing flow (main, subagent, standalone tests) sees no change.
+        assert_eq!(flow().turn_origin(), crate::permission::TurnOriginContext::Interactive);
+    }
+
+    #[test]
+    fn should_expose_the_cron_origin_when_the_dispatch_sets_it() {
+        // Given a flow whose dispatch set a Cron origin
+        let mut f = flow();
+        f.set_turn_origin(crate::permission::TurnOriginContext::Cron {
+                        reject_asks: true,
+            workspace: false,
+            readonly: false,
+            task_id: "cron-1".to_string(),
+        });
+
+        // Then the getter exposes it verbatim (the subagent host and the
+        // cron driver read it here before the turn runs).
+        assert_eq!(
+            f.turn_origin(),
+            crate::permission::TurnOriginContext::Cron {
+                                reject_asks: true,
+                workspace: false,
+                readonly: false,
+                task_id: "cron-1".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn should_reset_the_origin_slot_when_the_turn_takes_it() {
+        // The top-of-turn snapshot (S4) drains the slot: `run_one_turn_inner`
+        // calls `std::mem::take` so the slot is Interactive again even while
+        // the turn that consumed the Cron origin is still running — and
+        // stays Interactive on every exit path (the take happens before any
+        // fallible step). This pins the discipline directly: after the
+        // snapshot, the slot is clean.
+        let mut f = flow();
+        f.set_turn_origin(crate::permission::TurnOriginContext::Cron {
+                        reject_asks: true,
+            workspace: false,
+            readonly: false,
+            task_id: "cron-2".to_string(),
+        });
+
+        // The snapshot is the first statement of the turn body — modeled
+        // here by the same take the turn performs.
+        let taken = std::mem::take(&mut f.turn_origin);
+
+        // Then the taken value is the dispatch-set origin…
+        assert_eq!(
+            taken,
+            crate::permission::TurnOriginContext::Cron {
+                                reject_asks: true,
+                workspace: false,
+                readonly: false,
+                task_id: "cron-2".to_string()
+            }
+        );
+        // …and the slot is back to Interactive for the next dispatch —
+        // no path through the turn can leak the origin onward.
+        assert_eq!(f.turn_origin(), crate::permission::TurnOriginContext::Interactive);
+    }
 }

@@ -392,7 +392,7 @@ async fn install_github(
 
     let clone_url = format!("https://github.com/{repo}.git");
 
-    let mut clone = tokio::process::Command::new("git");
+    let mut clone = mirri_os::new_tokio_command("git");
     clone.arg("clone").arg(&clone_url).arg(target_dir);
 
     let output = clone.output().await.map_err(|e| {
@@ -410,7 +410,7 @@ async fn install_github(
 
     // If a commit/branch/tag is specified, check it out.
     if let Some(ref_name) = commit {
-        let mut checkout = tokio::process::Command::new("git");
+        let mut checkout = mirri_os::new_tokio_command("git");
         checkout
             .arg("checkout")
             .arg(ref_name)
@@ -474,7 +474,7 @@ async fn install_github(
 /// Run `git rev-parse HEAD` inside a repository and return the trimmed,
 /// lowercased SHA.
 async fn git_rev_parse_head(repo_dir: &Path) -> PluginResult<String> {
-    let output = tokio::process::Command::new("git")
+    let output = mirri_os::new_tokio_command("git")
         .arg("rev-parse")
         .arg("HEAD")
         .current_dir(repo_dir)
@@ -574,7 +574,10 @@ pub fn extract_zip(buffer: &[u8], dest_dir: &Path) -> PluginResult<PathBuf> {
         let mut entry = archive
             .by_index(index)
             .map_err(|e| PluginError::InstallFailed(format!("Failed to open zip: {e}")))?;
-        let file_name = entry.name().to_string();
+        let file_name = entry
+            .name()
+            .map_err(|e| PluginError::InstallFailed(format!("Failed to open zip: {e}")))?
+            .into_owned();
         let mode = entry.unix_mode();
         let dest_path = resolve_zip_entry_path(&dest_dir_resolved, &file_name).ok_or_else(|| {
             PluginError::InstallFailed(format!(

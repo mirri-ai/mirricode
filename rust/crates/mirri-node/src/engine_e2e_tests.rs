@@ -646,8 +646,16 @@ async fn should_pin_the_shared_home_to_the_negotiated_root_when_the_registry_is_
             .await
             .expect("the other bucket's session is created");
         // The one-time reconcile converges both rows into the shared index.
+        // `workspace.list` is a whitelisted read-face (ADR-003 c: it waits
+        // for the census only, never the reconcile), so the seeding pass
+        // drives a route of the full-settlement class instead —
+        // `workspace.get` is a read that settles the whole startup
+        // housekeeping before it answers.
         seeder
-            .call_method("workspace.list", serde_json::json!({}))
+            .call_method(
+                "workspace.get",
+                serde_json::json!({ "workspaceId": other_key }),
+            )
             .await
             .expect("the seeding pass's first RPC succeeds");
         (

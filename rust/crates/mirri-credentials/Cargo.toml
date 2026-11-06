@@ -16,4 +16,5 @@ mirri-os = { path = "../mirri-os" }
 mirri-core = { path = "../mirri-core" }
 
 [dev-dependencies]
+mirri-test-support = { path = "../mirri-test-support" }
 tempfile = "3"

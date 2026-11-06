@@ -112,3 +112,10 @@
 | 跨域提案 P-028（恢复会话时未消费任务结果的主动提示）与本域同族，落点在 turn-scheduling 提案登记表，实施时需对齐 | `docs/specs/proposals.md` P-028 |
 | 引擎目标门：一切引擎行为变更落 rust core（TS 引擎已退役） | 根 `AGENTS.md`「Engine-target gate」 |
 | 原子写基建（0600 临时文件 + rename）与私目录基建已有，哨兵文件应复用 | `rust/crates/mirri-persistence`（`write_file_atomically`） |
+
+## 8. 启动检查的性能现状（快照 2026-11-03）
+
+- 启动检查 `run_startup_recovery_check`（`rust/crates/mirri-embedded/src/embedded_server/recovery_handlers.rs:265-359`）在首个业务 RPC 前内联结算（`mod.rs:5620`）。
+- 异常路径的推断 `infer_abnormal_interruptions`（`recovery_handlers.rs:393-`）与补录 `backfill_abnormal_closures`（`:521-`）是**两趟独立的全量扫描**：各自 `registered_workspace_managers()`（`:368-386`，每次调用重走 `ensure_built`）→ `list_all_sessions(true)` → 逐会话 `scan_open_turn`；`scan_open_turn`（`mirri-core/src/session/recovery_scan.rs:54-`）经 `migrate_records_in_memory` 整文件读入逐行解析（含 .gz 解压）。推断阶段对持久收口臂会话另有 `scan_interrupted_closure` 第二次整文件读——命中会话最多完整读三次（open-turn 扫描 + closure 扫描 + 补录重扫），无时间窗预过滤。
+- 架构文档 §1.3 声明「从尾部向前扫描，成本天然有界（多数会话末尾几条即见 turn.ended）」，实现为整文件前向解析——与该声明偏离（设计未规定前向/后向的实现形状，成本"有界"的前提是尾部短路，现状无短路）。
+- 已知剩余成本（本批不收窄）：`list_all_sessions` 的磁盘全枚举逐会话读 `state.json`（`mirri-core/src/session/manager/mod.rs:1773-1849`、`persistence.rs:625-660`）；`registered_workspace_managers` 每次调用的重复 `ensure_built` 走查。

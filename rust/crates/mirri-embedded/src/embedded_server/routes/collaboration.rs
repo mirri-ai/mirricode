@@ -10,10 +10,12 @@ pub(super) const ROUTES: &[Route] = &[
         method: "collaboration.enter",
         aliases: &["enterCollaboration"],
         handler: |server, params| Box::pin(server.dispatch_enter_collaboration(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "collaboration.exit",
         aliases: &["exitCollaboration"],
         handler: |server, params| Box::pin(server.dispatch_exit_collaboration(params)),
+        settlement: Route::SETTLES,
     },
 ];

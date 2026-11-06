@@ -224,6 +224,45 @@ pub trait PermissionPolicy: Send + Sync {
     fn evaluate(&self, ctx: &PermissionPolicyContext) -> PermissionPolicyResult;
 }
 
+/// Where the current turn was initiated from (stage-1 batch-1, S4 /
+/// ADR-001) — the plumb-through that lets the policy chain tell a
+/// cron-fired turn apart from an interactive one.
+///
+/// An additive pipeline: policies that do not read the field behave
+/// exactly as before. `Clone` only (the `Cron` variant carries a
+/// `task_id` `String`; copy would need an allocation anyway and this
+/// context is built once per tool call — performance-insensitive).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum TurnOriginContext {
+    /// A user-initiated (interactive) turn — the default for every
+    /// existing flow.
+    #[default]
+    Interactive,
+    /// A turn injected by a cron task firing.
+    ///
+    /// - `reject_asks` — the task's permission mode expands to the legacy
+    ///   ask-deny posture: an ask is rejected with a reroute receipt
+    ///   BEFORE any wait (ADR-002). Batch 2 (A4): only pre-batch-2 records
+    ///   carry that posture; `manual` tasks instead leave the ask pending
+    ///   in the execution session's approval channel (A13), and `yolo`
+    ///   tasks never reach an ask at all.
+    /// - `readonly` — the retired read-only option's record (still
+    ///   enforced for old rows).
+    /// - `workspace` — `true` = a WORKSPACE task run (the execution-session
+    ///   shape: nobody watches that session's chat); `false` = a session
+    ///   timer's fire (the user is in that session). Batch 2 (A4);
+    ///   ADR-021 folded the former `unattended` bit into this field (they
+    ///   were always equal in production).
+    Cron {
+        #[allow(clippy::struct_field_names)]
+        readonly: bool,
+        /// See the variant docs.
+        reject_asks: bool,
+        workspace: bool,
+        task_id: String,
+    },
+}
+
 /// Context for policy evaluation.
 pub struct PermissionPolicyContext<'a> {
     pub tool_name: &'a str,
@@ -241,6 +280,12 @@ pub struct PermissionPolicyContext<'a> {
     /// tool or when DNS resolution failed (policies then Pass — the
     /// provider-layer enforcement still refuses private targets).
     pub net_class: Option<(crate::tools::net_class::NetClass, Vec<std::net::IpAddr>)>,
+    /// The turn's origin (ADR-001 / S4): `Interactive` for user turns,
+    /// `Cron { .. }` for cron-fired turns. Injected by
+    /// the turn-flow authorize path from the flow's `turn_origin` slot
+    /// (the same plumb-through pattern `net_class` uses). Policies that
+    /// do not read it are unaffected.
+    pub turn_origin: crate::permission::TurnOriginContext,
 }
 
 /// Policy evaluation result.
@@ -265,6 +310,13 @@ pub enum PermissionPolicyResult {
         /// Headless/no-approver translation must REJECT, not auto-approve
         /// (SDR-007 d: no user present ⇒ no private-network fetch).
         deny_when_unattended: bool,
+        /// No translation path may auto-approve this ask (stage-2 B1 /
+        /// ADR-013 e): a `never_auto_approve` ask — the cron propose
+        /// channel's approval — must be checked BEFORE the headless
+        /// auto-approve branch and every mode-based auto-approval; the
+        /// outcome is always presented (wait) or rejected, never
+        /// `Approved`. Defaults to `false` (ordinary asks are unaffected).
+        never_auto_approve: bool,
     },
     /// No opinion — fall through to next policy.
     Pass,
@@ -273,6 +325,26 @@ pub enum PermissionPolicyResult {
 // ---------------------------------------------------------------------------
 // PermissionManager
 // ---------------------------------------------------------------------------
+
+/// The unified cron ask-deny receipt (ADR-002 / SDR-002 D.2, stage-1
+/// batch-1 S6; ADR-021 renamed it off the retired `unattended` concept):
+/// every `Ask` landing on a workspace cron run carrying the legacy
+/// ask-deny posture — reverse-RPC path and headless/sync path alike — is
+/// rejected with THIS text, so the model always receives the same reroute
+/// guidance. The receipt is a tool failure, never a turn failure: the turn
+/// continues and the model reroutes in the same turn.
+pub const CRON_ASK_DENY_MESSAGE: &str = "该定时任务运行声明了「问询即拒」（旧记录姿态），需要用户问询的操作不可用\
+（该操作需要审批而当前运行的记录声明了问询即拒）。请改用不需要用户问询的方式完成该步骤，\
+或请用户调整任务的权限模式后重新运行，或放弃该步骤并在回执中说明。";
+
+/// The unified ReadOnly write-class refusal (ADR-015 / stage-2 D-M2): a
+/// read-only-postured cron turn refuses every tool that does not declare
+/// the read-only capability category. Same receipt family as
+/// [`CRON_ASK_DENY_MESSAGE`] — a tool failure the model can reroute
+/// around in the same turn, never a turn failure.
+pub const READONLY_TOOL_DENY_MESSAGE: &str = "本任务处于只读观察模式，写类操作不可用\
+（该工具不属于只读能力类别）。请改用只读工具（Read / Grep / Glob 等）完成该步骤，\
+或放弃该步骤并在回执中说明。";
 
 /// The permission manager — owns the policy chain and rule store.
 ///
@@ -511,6 +583,7 @@ impl PermissionManager {
             reason: Some("No policy decided".into()),
             grant_dir: None,
             deny_when_unattended: false,
+            never_auto_approve: false,
         }
     }
 
@@ -518,6 +591,8 @@ impl PermissionManager {
     /// [`LoopHooks`](crate::hooks::LoopHooks) interface).
     ///
     /// When the policy chain returns `Ask`:
+    /// - A `never_auto_approve` ask is never translated to `Approved`
+    ///   (stage-2 B1): in headless mode it is blocked instead.
     /// - If `headless == true`: translates to `Approved` (programmatic mode —
     ///   the host is expected to have its own approval flow or has opted into
     ///   auto-approval).
@@ -535,9 +610,32 @@ impl PermissionManager {
             },
             PermissionPolicyResult::Ask {
                 deny_when_unattended,
+                never_auto_approve,
                 ..
             } => {
-                if deny_when_unattended {
+                // B1 (stage-2 §9.3 / ADR-013 e): a never-auto-approve ask is
+                // intercepted BEFORE every auto-approval translation —
+                // headless or not, no path may resolve it to `Approved`. A
+                // headless caller (no approver) gets the same rejection the
+                // disconnect window prescribes (wait-or-deny, never approve).
+                if never_auto_approve && self.headless {
+                    AuthorizeToolResult::Blocked {
+                        reason: "该提议审批需要真实用户决策，任何自动应答路径都不可代批（headless 无审批面）。\
+请等待用户通过审批面处理。"
+                            .to_string(),
+                    }
+                } else if matches!(
+                    ctx.turn_origin,
+                    TurnOriginContext::Cron {
+                        workspace: true,
+                        reject_asks: true,
+                        ..
+                    }
+                ) {
+                    AuthorizeToolResult::Blocked {
+                        reason: CRON_ASK_DENY_MESSAGE.to_string(),
+                    }
+                } else if deny_when_unattended {
                     // SDR-007 d: an ask that gates a private-network fetch
                     // must never be auto-approved — with no user present
                     // there is nobody to legitimately approve it, so it
@@ -628,6 +726,12 @@ impl PermissionManager {
 /// and `PermissionRequest` / `PermissionResult` are observation-only events.
 fn create_default_policies(services: &PermissionServices) -> Vec<Box<dyn PermissionPolicy>> {
     vec![
+        // Review M1 (C2 / stage-2 B1 / ADR-013 e): the CreateScheduledTask
+        // ask sits FIRST — before every deny/approve policy — because the
+        // creation approval is structurally never-auto-approvable;
+        // ordering it after the mode policies would let Auto/Yolo approve
+        // it first.
+        Box::new(policies::CreateScheduledTaskNeverAutoApprovePolicy),
         Box::new(policies::AgentSwarmExclusiveDenyPolicy::new(
             services.swarm_mode.clone(),
         )),
@@ -641,6 +745,10 @@ fn create_default_policies(services: &PermissionServices) -> Vec<Box<dyn Permiss
         // private-network fetch, and no mode can approve a metadata endpoint.
         Box::new(policies::PrivateNetworkFetchDenyPolicy),
         Box::new(policies::PrivateNetworkFetchAskPolicy),
+        // SDR-006 / S8: the cron budget gate sits after the private-network
+        // gates and BEFORE the mode approvals — no permission mode can
+        // silently approve an over-gate (or uncapped) cron creation.
+        Box::new(policies::AgentCronBudgetGatePolicy),
         Box::new(policies::AutoModeApprovePolicy),
         Box::new(policies::SessionApprovalHistoryPolicy),
         Box::new(policies::UserConfiguredAskPolicy),
@@ -667,20 +775,20 @@ fn create_default_policies(services: &PermissionServices) -> Vec<Box<dyn Permiss
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::tools::net_class::NetClass;
 
     /// The owned inputs a policy context borrows from (built once per test,
     /// no leaks — the context borrows only within the test's scope).
-    struct CtxBundle {
-        args: serde_json::Value,
-        display: ToolInputDisplay,
-        cancel: CancelToken,
+    pub(super) struct CtxBundle {
+        pub(super) args: serde_json::Value,
+        pub(super) display: ToolInputDisplay,
+        pub(super) cancel: CancelToken,
     }
 
     impl CtxBundle {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             Self {
                 args: serde_json::Value::Null,
                 display: ToolInputDisplay::Generic {
@@ -710,6 +818,7 @@ mod tests {
                 session_approvals,
                 cancel: &self.cancel,
                 net_class: None,
+                turn_origin: Default::default(),
             }
         }
     }
@@ -844,6 +953,7 @@ mod tests {
             session_approvals: approvals,
             cancel: &bundle.cancel,
             net_class: None,
+            turn_origin: Default::default(),
         }
     }
 
@@ -967,6 +1077,7 @@ mod tests {
                 session_approvals: &approvals,
                 cancel: &bundle.cancel,
                 net_class: None,
+                turn_origin: Default::default(),
             };
             match manager.evaluate(&ctx) {
                 PermissionPolicyResult::Ask {
@@ -1047,6 +1158,7 @@ mod tests {
                 session_approvals: &self.approvals,
                 cancel: &bundle.cancel,
                 net_class,
+                turn_origin: Default::default(),
             }
         }
     }
@@ -1180,6 +1292,7 @@ mod tests {
             session_approvals: &approvals,
             cancel: &bundle.cancel,
             net_class: Some((NetClass::Askable, vec![ip("10.0.0.1")])),
+            turn_origin: Default::default(),
         };
         assert!(matches!(
             manager.evaluate(&ctx),
@@ -1234,10 +1347,320 @@ mod tests {
             session_approvals: &HashSet::new(),
             cancel: &bundle.cancel,
             net_class: Some((NetClass::Askable, vec![ip("10.0.0.1")])),
+            turn_origin: Default::default(),
         };
         assert!(matches!(
             manager.evaluate(&ctx),
             PermissionPolicyResult::Deny { .. }
         ));
+    }
+
+    /// Given the PRODUCTION default policy chain (not a synthetic
+    /// single-policy chain), when a CreateScheduledTask call is evaluated
+    /// in every mode, then the chain answers a never-auto-approve Ask —
+    /// no mode policy (Auto/Yolo), no session-approval memory, no
+    /// default-approve list consumes it first (review M1: the production
+    /// trigger point produces the bit).
+    #[test]
+    fn should_answer_a_never_auto_approve_ask_for_create_scheduled_task_in_every_mode_via_the_production_chain()
+     {
+        for mode in [
+            PermissionMode::Manual,
+            PermissionMode::Auto,
+            PermissionMode::Yolo,
+        ] {
+            let manager = PermissionManager::new(mode, vec![]);
+            let bundle = CtxBundle::new();
+            let rules = manager.effective_rules();
+            let ctx = PermissionPolicyContext {
+                tool_name: "CreateScheduledTask",
+                tool_call_id: "call-create",
+                args: &bundle.args,
+                approval_rule: "CreateScheduledTask",
+                display: &bundle.display,
+                accesses: &[],
+                mode,
+                rules: &rules,
+                session_approvals: &HashSet::new(),
+                cancel: &bundle.cancel,
+                net_class: None,
+                turn_origin: TurnOriginContext::Interactive,
+            };
+            match manager.evaluate(&ctx) {
+                PermissionPolicyResult::Ask {
+                    never_auto_approve, ..
+                } => assert!(
+                    never_auto_approve,
+                    "the production chain carries the never-auto-approve bit in {mode:?}"
+                ),
+                other => panic!("the production chain decided {other:?} in {mode:?}"),
+            }
+        }
+    }
+
+    /// Given the headless no-callback window, when the translated ask
+    /// carries the never-auto-approve bit (the production
+    /// CreateScheduledTask ask's shape), then the outcome is blocked (M1's
+    /// translation arm)
+    /// — rejected, never auto-approved.
+    #[test]
+    fn should_block_a_never_auto_approve_ask_in_the_headless_translation() {
+        struct ProposalAskPolicy;
+        impl PermissionPolicy for ProposalAskPolicy {
+            fn name(&self) -> &str {
+                "proposal-ask"
+            }
+            fn evaluate(&self, _ctx: &PermissionPolicyContext) -> PermissionPolicyResult {
+                PermissionPolicyResult::Ask {
+                    reason: Some("workspace scheduled task creation".to_string()),
+                    grant_dir: None,
+                    deny_when_unattended: false,
+                    never_auto_approve: true,
+                }
+            }
+        }
+        let mut manager = PermissionManager::new(PermissionMode::Yolo, vec![]);
+        manager.policies = vec![Box::new(ProposalAskPolicy)];
+        manager.set_headless(true);
+        let bundle = CtxBundle::new();
+        let rules = manager.effective_rules();
+        let ctx = PermissionPolicyContext {
+            tool_name: "CreateScheduledTask",
+            tool_call_id: "call-create",
+            args: &bundle.args,
+            approval_rule: "CreateScheduledTask",
+            display: &bundle.display,
+            accesses: &[],
+            mode: PermissionMode::Yolo,
+            rules: &rules,
+            session_approvals: &HashSet::new(),
+            cancel: &bundle.cancel,
+            net_class: None,
+            turn_origin: TurnOriginContext::Interactive,
+        };
+        match manager.before_tool_call(&ctx) {
+            AuthorizeToolResult::Blocked { reason } => assert!(
+                reason.contains("真实用户决策"),
+                "the headless translation names the human-decision requirement: {reason}"
+            ),
+            other => panic!("the headless translation approved: {other:?}"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C2 / stage-2 batch 4b — the never-auto-approve posture's 12-cell matrix
+// (§9.3 B1: three permission modes × two headless states × three turn
+// origins; a creation approval's outcome is one of 呈面等待 / 断连等待 /
+// 拒绝 — never Approved).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod never_auto_approve_matrix_tests {
+    use super::*;
+
+    /// The creation-approval ask (the shape the CreateScheduledTask channel
+    /// emits): a plain ask carrying the never-auto-approve bit.
+    fn creation_ask(never: bool) -> PermissionPolicyResult {
+        PermissionPolicyResult::Ask {
+            reason: Some("workspace scheduled task creation".to_string()),
+            grant_dir: None,
+            deny_when_unattended: false,
+            never_auto_approve: never,
+        }
+    }
+
+    /// One cell of the matrix: a manager in the given mode (with the given
+    /// headless posture), evaluating the proposal ask under the given turn
+    /// origin. Returns the BEFORE-translation policy outcome plus the
+    /// translated authorize result.
+    fn cell(
+        mode: PermissionMode,
+        headless: bool,
+        turn_origin: TurnOriginContext,
+    ) -> (PermissionPolicyResult, AuthorizeToolResult) {
+        // A manager whose chain is exactly one policy returning the ask —
+        // the matrix judges the TRANSLATION layer (mode × presence), which
+        // must not consult any other policy.
+        struct CreationAskPolicy;
+        impl PermissionPolicy for CreationAskPolicy {
+            fn name(&self) -> &str {
+                "creation-ask"
+            }
+            fn evaluate(&self, _ctx: &PermissionPolicyContext) -> PermissionPolicyResult {
+                creation_ask(true)
+            }
+        }
+        let mut manager = PermissionManager::new(mode, vec![]);
+        manager.policies = vec![Box::new(CreationAskPolicy)];
+        if headless {
+            manager.set_headless(true);
+        }
+        let bundle = super::tests::CtxBundle::new();
+        let approvals = HashSet::new();
+        let rules = manager.effective_rules();
+        let ctx = PermissionPolicyContext {
+            tool_name: "CreateScheduledTask",
+            tool_call_id: "call-1",
+            args: &bundle.args,
+            approval_rule: "CreateScheduledTask",
+            display: &bundle.display,
+            accesses: &[],
+            mode,
+            rules: &rules,
+            session_approvals: &approvals,
+            cancel: &bundle.cancel,
+            net_class: None,
+            turn_origin,
+        };
+        let policy = manager.evaluate(&ctx);
+        let translated = manager.before_tool_call(&ctx);
+        (policy, translated)
+    }
+
+    /// [`Self::cell`] takes the origin the caller builds, so this matrix
+    /// fixes ONE origin shape for every cell — the pre-batch-2
+    /// `reject_asks: true, workspace: false` record (the field's original
+    /// values; the matrix predates the A4 three-mode split).
+    ///
+    /// **Ownership has moved**: the real A4 property — which of the three
+    /// task modes parks / allows / rejects an ask under a WORKSPACE run's
+    /// origin (`workspace: true`, `reject_asks` derived from
+    /// `PermissionMode::posture()`) — is pinned by the hooks-layer matrix
+    /// `turn_flow::hooks::should_route_an_ask_by_the_task_mode_when_the_run_is_unattended`
+    /// (its `a4_cell` fixture drives a real `TurnFlowHooks` with a wired
+    /// gate). Do NOT mirror the A4
+    /// attributes here: a second copy would only drift out of sync with the
+    /// hooks-layer authority. This matrix keeps its narrower claim — the
+    /// TRANSLATION layer never auto-approves a never-auto-approve ask.
+    ///
+    /// The three translate outcomes it allows: presented-waiting
+    /// (blocked-with-approval-required = the ask reached the presented
+    /// channel), disconnect-wait (headless + never → blocked with the
+    /// never-auto-approve receipt), or rejection (unattended deny). The
+    /// assertion is that NO cell lands on `Approved`.
+    #[test]
+    fn should_never_translate_a_never_auto_approve_ask_to_approved_in_any_matrix_cell() {
+        for mode in [
+            PermissionMode::Manual,
+            PermissionMode::Auto,
+            PermissionMode::Yolo,
+        ] {
+            for headless in [false, true] {
+                for origin in [
+                    TurnOriginContext::Interactive,
+                    TurnOriginContext::Cron {
+                        reject_asks: true,
+                        workspace: false,
+                        readonly: false,
+                        task_id: "t".to_string(),
+                    },
+                    TurnOriginContext::Cron {
+                        reject_asks: true,
+                        workspace: true,
+                        readonly: false,
+                        task_id: "t".to_string(),
+                    },
+                ] {
+                    let (policy, translated) = cell(mode, headless, origin.clone());
+                    // The policy chain's verdict stays an Ask (the mode
+                    // policies never got to approve it — the chain is the
+                    // single proposal-ask policy).
+                    assert!(
+                        matches!(policy, PermissionPolicyResult::Ask { .. }),
+                        "policy outcome changed: {mode:?} {origin:?}"
+                    );
+                    // The translated outcome is never Approved — the
+                    // never-auto-approve bit holds in every cell.
+                    assert!(
+                        !matches!(translated, AuthorizeToolResult::Approved { .. }),
+                        "cell approved a never-auto-approve ask: mode={mode:?} \
+                         headless={headless} origin={origin:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The B1 special (V16c): a headless translation (the "yolo/auto + the
+    /// user present but the client disconnected" window) must reject a
+    /// never-auto-approve ask — the exact branch that auto-approves
+    /// ordinary asks must not consume the proposal approval.
+    #[test]
+    fn should_reject_a_never_auto_approve_ask_when_headless_even_in_auto_or_yolo_mode() {
+        for mode in [PermissionMode::Auto, PermissionMode::Yolo] {
+            let (_, translated) = cell(mode, true, TurnOriginContext::Interactive);
+            match translated {
+                AuthorizeToolResult::Blocked { reason } => assert!(
+                    reason.contains("真实用户决策"),
+                    "the never-auto-approve receipt names the human-decision \
+                     requirement: {reason}"
+                ),
+                other => panic!("headless {mode:?} cell translated to {other:?}"),
+            }
+        }
+    }
+
+    /// An ordinary headless ask (no never-auto-approve bit) in auto mode
+    /// still auto-approves — the bit's presence, not the branch, is what
+    /// changed (the control cell keeps the pre-4b behavior).
+    #[test]
+    fn should_still_auto_approve_an_ordinary_ask_in_headless_mode() {
+        struct OrdinaryAskPolicy;
+        impl PermissionPolicy for OrdinaryAskPolicy {
+            fn name(&self) -> &str {
+                "ordinary-ask"
+            }
+            fn evaluate(&self, _ctx: &PermissionPolicyContext) -> PermissionPolicyResult {
+                creation_ask(false)
+            }
+        }
+        let mut manager = PermissionManager::new(PermissionMode::Auto, vec![]);
+        manager.policies = vec![Box::new(OrdinaryAskPolicy)];
+        manager.set_headless(true);
+        let bundle = super::tests::CtxBundle::new();
+        let approvals = HashSet::new();
+        let rules = manager.effective_rules();
+        let ctx = PermissionPolicyContext {
+            tool_name: "Bash",
+            tool_call_id: "call-1",
+            args: &bundle.args,
+            approval_rule: "Bash",
+            display: &bundle.display,
+            accesses: &[],
+            mode: PermissionMode::Auto,
+            rules: &rules,
+            session_approvals: &approvals,
+            cancel: &bundle.cancel,
+            net_class: None,
+            turn_origin: TurnOriginContext::Interactive,
+        };
+        assert!(matches!(
+            manager.before_tool_call(&ctx),
+            AuthorizeToolResult::Approved { .. }
+        ));
+    }
+
+    /// An unattended cron turn rejects the proposal ask too (the "无人"
+    /// column): structurally nobody can approve — the never-auto-approve
+    /// bit rides the same rejection the ask-deny posture applies.
+    #[test]
+    fn should_reject_a_never_auto_approve_ask_on_an_unattended_cron_turn() {
+        let (_, translated) = cell(
+            PermissionMode::Yolo,
+            false,
+            TurnOriginContext::Cron {
+                reject_asks: true,
+                workspace: true,
+                readonly: false,
+                task_id: "t".to_string(),
+            },
+        );
+        match translated {
+            AuthorizeToolResult::Blocked { reason } => assert!(
+                reason.contains("问询即拒"),
+                "the legacy ask-deny rejection lands: {reason}"
+            ),
+            other => panic!("unattended cell translated to {other:?}"),
+        }
     }
 }

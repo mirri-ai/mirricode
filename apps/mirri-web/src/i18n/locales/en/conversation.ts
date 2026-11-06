@@ -33,6 +33,8 @@ export default {
   working: 'Working…',
   /** Live-ticking label while a turn streams ("Working for 12s"). */
   workingFor: 'Working for {duration}',
+  /** Latest running tool call beside the working moon ("bash · 12s"). */
+  workingTool: '{name} · {duration}',
   noTextOutput: 'No text output — click to see the work log',
   loadOlder: 'Load earlier messages',
   loadingOlder: 'Loading earlier messages…',
@@ -41,7 +43,7 @@ export default {
     title: 'Turn token usage',
     model: 'Model',
     cacheHit: 'Cache hit',
-    input: 'Input',
+    input: 'Uncached input',
     cacheRead: 'Cache read',
     cacheWrite: 'Cache write',
     output: 'Output',

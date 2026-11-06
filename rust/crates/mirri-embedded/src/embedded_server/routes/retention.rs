@@ -21,6 +21,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "retention.list",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_retention_list(params)),
+        settlement: Route::SETTLES,
     },
     // The header counters plus the four per-tier delete estimates
     // (30/90/180/365 — the product constant set). Task 9: serve
@@ -29,6 +30,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "retention.stats",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_retention_stats(params)),
+        settlement: Route::SETTLES,
     },
     // Compress one session immediately. Task 9: the retention engine's
     // compress path (directory lock + revalidation + atomic swap).
@@ -36,6 +38,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "retention.compressNow",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_retention_compress_now(params)),
+        settlement: Route::SETTLES,
     },
     // Single-session delete. Task 9: the unified delete executor
     // (directory-then-index-row, blob-ledger attachment reclamation).
@@ -43,6 +46,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "retention.delete",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_retention_delete(params)),
+        settlement: Route::SETTLES,
     },
     // The tier-button batch delete (older_than_days ∈ 30/90/180/365,
     // validated against the constant set). Task 9: the same executor,
@@ -51,6 +55,7 @@ pub(super) const ROUTES: &[Route] = &[
         method: "retention.deleteTiered",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_retention_delete_tiered(params)),
+        settlement: Route::SETTLES,
     },
     // The resolved [retention] knobs — final shape today (a config
     // snapshot read; the same resolve_retention the periodic task will
@@ -59,5 +64,6 @@ pub(super) const ROUTES: &[Route] = &[
         method: "retention.getPolicy",
         aliases: &[],
         handler: |server, params| Box::pin(server.dispatch_retention_get_policy(params)),
+        settlement: Route::SETTLES,
     },
 ];

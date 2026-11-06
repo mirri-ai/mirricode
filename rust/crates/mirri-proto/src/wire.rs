@@ -235,6 +235,12 @@ pub enum WireOp {
             skip_serializing_if = "Option::is_none"
         )]
         duration_ms: Option<u64>,
+        #[serde(
+            rename = "endedAtMs",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        ended_at: Option<u64>,
     },
 
     // ── Goal domain ────────────────────────────────────────────────────
@@ -631,13 +637,62 @@ pub enum WireOp {
     #[serde(rename = "cron.delete")]
     CronDelete { ids: Vec<String> },
 
+    /// Record the session's cumulative count of one-shot cron tasks created
+    /// from cron-lineage turns (SDR-106 A.6b, stage-1 batch-1 S9). The count
+    /// is ABSOLUTE (idempotent on replay — the reducer takes the max) and
+    /// travels as its own write-before-mutate op ahead of the matching
+    /// `cron.add`, so a crash between the two can only OVER-count, never
+    /// under-count (an under-count would over-admit lineage creations).
+    ///
+    /// New op variant (R1): single-repo same-version releases — a same-log
+    /// reader/writer of a different version is NOT promised downgrade
+    /// compatibility for this variant.
+    #[serde(rename = "cron.lineage_created")]
+    CronLineageCreated {
+        /// The session's lineage one-shot creation count AFTER this op.
+        #[serde(rename = "count")]
+        count: u32,
+    },
     /// Update the cursor (last-fired timestamp) for a cron task.
+    ///
+    /// `fireCount` (stage-1 batch-1, S2) carries the task's post-fire
+    /// delivery count — stamped by the core's check_due at the same lock
+    /// as the cursor advance, so the max_fires verdict and the delivery
+    /// stay atomic across a crash. Optional: ops written before this batch
+    /// carry no key (an unbudgeted task never counts).
     #[serde(rename = "cron.cursor")]
     CronCursor {
         id: String,
         #[serde(rename = "lastFiredAt")]
         last_fired_at: u64,
+        #[serde(
+            rename = "fireCount",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        fire_count: Option<u32>,
     },
+    /// Hold a fired cron prompt on the task side (C.4 held-fires-on-close,
+    /// stage-1 batch-2): `check_due` already advanced the cursor and
+    /// published `cron.fired`, but the session was busy — the fire waits
+    /// in the task table until an idle tick (or a resume after close).
+    /// The payload is the [`CronFire`] serde shape. Same-task holds merge
+    /// (coalescedCount adds) at the reducer and the manager.
+    ///
+    /// New op variant (R1): single-repo same-version releases — a same-log
+    /// reader/writer of a different version is NOT promised downgrade
+    /// compatibility for this variant (the `CronLineageCreated` precedent).
+    #[serde(rename = "cron.held")]
+    CronHeldAdd { task: serde_json::Value },
+    /// Clear a held cron fire for a task id (C.4): written after the held
+    /// fire was successfully injected (write-before-inject's settle) or
+    /// when the task was deleted / purged. The reducer removes the held
+    /// entry with a matching id.
+    ///
+    /// New op variant (R1): same single-repo same-version rule as
+    /// [`WireOp::CronHeldAdd`].
+    #[serde(rename = "cron.held_clear")]
+    CronHeldClear { id: String },
 
     // ── Interaction domain ─────────────────────────────────────────────
     /// Request user interaction (question, confirmation, etc.).

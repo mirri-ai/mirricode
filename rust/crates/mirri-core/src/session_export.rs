@@ -286,6 +286,10 @@ pub struct SessionExporter {
     /// Filesystem provider backing the export reads and the zip write
     /// (zero-IO T13c-2; the engine default is `LocalSyncFs`).
     fs: Arc<dyn SyncFs>,
+    /// The metadata store port (ADR-006: the row is the metadata source of
+    /// truth) — the manifest's title/activity facts read the row first.
+    /// `None` (the standalone constructors) keeps the state.json fallback.
+    metadata_store: Option<Arc<dyn crate::session::metadata_port::MetadataStorePort>>,
 }
 
 impl SessionExporter {
@@ -319,6 +323,7 @@ impl SessionExporter {
             home_dir: mirri_home.into(),
             user_home: None,
             fs,
+            metadata_store: None,
         }
     }
 
@@ -329,7 +334,21 @@ impl SessionExporter {
             home_dir: user_home.join(".mirri-code"),
             user_home: Some(user_home),
             fs,
+            metadata_store: None,
         }
+    }
+
+    /// Builder: inject the metadata store port (ADR-006) — the export
+    /// manifest's title/activity facts read the metadata ROW first, the
+    /// `state.json` re-read only for row-less sessions. The embedded
+    /// export dispatch passes the server's port; the standalone
+    /// constructors keep the state.json fallback.
+    pub fn with_metadata_store(
+        mut self,
+        store: Arc<dyn crate::session::metadata_port::MetadataStorePort>,
+    ) -> Self {
+        self.metadata_store = Some(store);
+        self
     }
 
     /// Compute the session directory path for a given session id.
@@ -339,12 +358,22 @@ impl SessionExporter {
     /// `<home>/sessions/`. The v3 root is consulted first — both for the
     /// flat form (`<root>/<session_id>/`) and the TS bucketed form
     /// (`<root>/<bucket>/<session_id>/`) — with the legacy root as the
-    /// pre-migration-era fallback. The v3 flat path is returned when
-    /// neither root has the session so the caller's NotFound error names the
-    /// canonical location.
+    /// pre-migration-era fallback. The workspace-local form
+    /// (`<home>/.mirri/v3_sessions/`, the direct-constructor engine whose
+    /// home IS its workspace root) is the third probe — the home-injected
+    /// test servers write exactly there. The v3 flat path is returned
+    /// when no root has the session so the caller's NotFound error names
+    /// the canonical location.
     fn session_dir(&self, session_id: &str) -> PathBuf {
         let v3_root = self.home_dir.join(V3_SESSIONS_SUBDIR);
         if let Some(dir) = self.find_session_dir_in_root(&v3_root, session_id) {
+            return dir;
+        }
+        let workspace_local_root = self
+            .home_dir
+            .join(".mirri")
+            .join(V3_SESSIONS_SUBDIR);
+        if let Some(dir) = self.find_session_dir_in_root(&workspace_local_root, session_id) {
             return dir;
         }
         let legacy_root = self.home_dir.join(SESSIONS_SUBDIR);
@@ -510,7 +539,7 @@ impl SessionExporter {
 
         // Build the manifest.
         let (session_first_activity, session_last_activity, title) =
-            self.extract_session_metadata(&session_dir);
+            self.extract_session_metadata(&session_dir, &payload.session_id);
 
         let manifest = ExportSessionManifest {
             session_id: payload.session_id.clone(),
@@ -620,11 +649,30 @@ impl SessionExporter {
     }
 
     /// Extract metadata (first activity, last activity, title) from the
-    /// session's `state.json` file, if present.
+    /// session's metadata ROW when a store was injected (ADR-006: the row
+    /// is the metadata source of truth), falling back to the session
+    /// directory's `state.json` for row-less sessions (the migration
+    /// window's legacy shape — and the standalone constructors' only
+    /// source).
     fn extract_session_metadata(
         &self,
         session_dir: &Path,
+        session_id: &str,
     ) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>, Option<String>) {
+        // The row-first arm. The exporter itself is fully synchronous (the
+        // zip assembly blocks through std-flavoured IO), so the port's
+        // async `get` bridges through the blocking executor — the same
+        // single-quick-call posture the port's own doc prescribes.
+        if let Some(store) = &self.metadata_store
+            && let Some(record) = futures::executor::block_on(
+                store.get(&crate::scope::SessionId::new(session_id)),
+            )
+        {
+            let first_activity = Some(record.created_at);
+            let last_activity = Some(record.updated_at);
+            let title = (!record.title.is_empty()).then_some(record.title);
+            return (first_activity, last_activity, title);
+        }
         let state_path = session_dir.join("state.json");
         let Ok(contents) = self.fs.read_text(&state_path) else {
             return (None, None, None);
@@ -703,7 +751,7 @@ mod tests {
         let file = fs::File::open(path).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
         (0..archive.len())
-            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
             .collect()
     }
 
@@ -1424,7 +1472,7 @@ mod tests {
         let cursor = std::io::Cursor::new(bytes);
         let mut archive = zip::ZipArchive::new(cursor).unwrap();
         let mut names: Vec<String> = (0..archive.len())
-            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
             .collect();
         names.sort();
         assert_eq!(
@@ -1568,4 +1616,119 @@ mod tests {
         // Then the pre-migration-era fallback finds the session
         assert_eq!(result.manifest.title.as_deref(), Some("legacy session"));
     }
+
+
+/// Given a session whose metadata ROW exists (an injected store) but whose
+/// directory carries NO `state.json` (the post-ADR-006 shape), when the
+/// session is exported, then the manifest's title and activity stamps come
+/// from the ROW — the row is the metadata source of truth (existence check
+/// 7/11 migrates to the metadata row); a row-less session keeps the
+/// state.json fallback.
+#[test]
+fn should_read_the_manifest_facts_from_the_metadata_row_when_state_json_is_missing() {
+    // Given an exporter with an in-memory metadata store carrying the
+    // session's row, and a session directory with only a wire log
+    let home = TempDir::new().unwrap();
+    make_session_dir(&home, "sess-row-only", &[("wire.jsonl", "line1\n")]);
+    let store: Arc<dyn crate::session::metadata_port::MetadataStorePort> = Arc::new(
+        crate::session::metadata_port::InMemoryMetadataStore::new(),
+    );
+    let updated = DateTime::parse_from_rfc3339("2025-06-02T11:30:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    futures::executor::block_on(store.apply(
+        &crate::scope::SessionId::new("sess-row-only"),
+        "wd_export_test",
+        crate::session::metadata_port::MetadataPatch {
+            title: Some("Row-backed session".to_string()),
+            updated_at: Some(updated),
+            ..Default::default()
+        },
+    ))
+    .unwrap();
+
+    let exporter = SessionExporter::with_mirri_home(home.path())
+        .with_metadata_store(Arc::clone(&store));
+    let payload = ExportSessionPayload {
+        session_id: "sess-row-only".into(),
+        output_path: None,
+        include_global_log: None,
+        include_desktop_log: None,
+        version: "1.0.0".into(),
+        desktop_version: None,
+        install_source: None,
+        shell_env: None,
+    };
+
+    // When exporting
+    let result = exporter.export(payload, None).unwrap();
+
+    // Then the manifest carries the ROW's facts (no state.json existed to
+    // read — the fallback alone would have answered nothing)
+    assert_eq!(result.manifest.title.as_deref(), Some("Row-backed session"));
+    // The row's created_at is store-stamped on the inserting apply (the
+    // port's output-only rule) — assert it EXISTS, not a fixture value.
+    assert!(
+        result.manifest.session_first_activity.is_some(),
+        "the row's store-stamped created_at is the first activity"
+    );
+    let last = result
+        .manifest
+        .session_last_activity
+        .expect("the row's updated_at is the last activity");
+    assert_eq!(last.timestamp(), updated.timestamp());
+}
+
+/// Given a session whose ROW and `state.json` DISAGREE (a stale state
+/// document left behind after the row was written), when the session is
+/// exported through an injected store, then the manifest carries the ROW's
+/// facts — the row wins over the legacy document, never the reverse.
+#[test]
+fn should_prefer_the_row_over_a_stale_state_json_when_both_exist() {
+    // Given a session directory whose state.json claims the OLD title,
+    // and a row carrying the NEW one
+    let home = TempDir::new().unwrap();
+    make_session_dir(
+        &home,
+        "sess-conflict",
+        &[
+            (
+                "state.json",
+                "{\"title\":\"stale state title\",\"created_at\":\"2024-01-01T00:00:00Z\",\"updated_at\":\"2024-01-01T00:00:00Z\"}",
+            ),
+            ("wire.jsonl", "line1\n"),
+        ],
+    );
+    let store: Arc<dyn crate::session::metadata_port::MetadataStorePort> = Arc::new(
+        crate::session::metadata_port::InMemoryMetadataStore::new(),
+    );
+    futures::executor::block_on(store.apply(
+        &crate::scope::SessionId::new("sess-conflict"),
+        "wd_export_test",
+        crate::session::metadata_port::MetadataPatch {
+            title: Some("the row's title".to_string()),
+            ..Default::default()
+        },
+    ))
+    .unwrap();
+
+    let exporter =
+        SessionExporter::with_mirri_home(home.path()).with_metadata_store(store);
+    let payload = ExportSessionPayload {
+        session_id: "sess-conflict".into(),
+        output_path: None,
+        include_global_log: None,
+        include_desktop_log: None,
+        version: "1.0.0".into(),
+        desktop_version: None,
+        install_source: None,
+        shell_env: None,
+    };
+
+    // When exporting
+    let result = exporter.export(payload, None).unwrap();
+
+    // Then the manifest carries the ROW's title
+    assert_eq!(result.manifest.title.as_deref(), Some("the row's title"));
+}
 }

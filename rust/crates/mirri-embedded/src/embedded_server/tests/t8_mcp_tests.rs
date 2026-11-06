@@ -761,29 +761,30 @@ async fn restart_mock_mcp_http_server(url: &str) {
 /// runs as the first engine call, then the response returns immediately —
 /// the lazy-connect spawn never blocks the session (the S2 fix pinned).
 #[tokio::test]
-#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the crate home lock across the async body
+#[allow(clippy::await_holding_lock)] // the hermetic $HOME pin holds the workspace env lock across the async body
 async fn should_return_session_create_immediately_when_the_mcp_server_is_slow() {
     let (home, workspace) = layered_mcp_fixture(
         json!({}),
         Some(json!({"slow": {"command": "sleep", "args": ["3"]}})),
     );
-    // Pin an isolated $HOME: the lazy skill-watcher mount reads
-    // `~/.agents/skills` and an un-pinned real home (a large skill tree)
-    // would make the first call's awaited mount dominate the elapsed
-    // budget — the pin keeps the timing assertion about the MCP connect
-    // only, and the test hermetic against the machine's state.
+    // Pin an isolated $HOME: the engine still reads `~/.agents/skills`
+    // during assembly, and an un-pinned real home (a large skill tree)
+    // would make the workspace build dominate the elapsed budget — the
+    // pin keeps the timing assertion about the MCP connect only, and the
+    // test hermetic against the machine's state. (The skill WATCHER no
+    // longer mounts here at all — SDR-011 moved mounting to the hosts.)
     let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
-    let _home_lock = crate::bootstrap::test_env::home_lock();
+    let _home_lock = env::lock();
     let previous_home = std::env::var_os("HOME");
     // SAFETY: held for the rest of the test; restored by the guard's
-    // drop while the crate home lock is still held.
+    // drop while the workspace env lock is still held.
     unsafe { std::env::set_var("HOME", isolated_home.path()) };
     struct RestoreHome(Option<std::ffi::OsString>);
     impl Drop for RestoreHome {
         fn drop(&mut self) {
-            // SAFETY: the pre-test value; the crate home lock (still
+            // SAFETY: the pre-test value; the workspace env lock (still
             // alive in the test body by drop order) serializes the
-            // write.
+            // write (env_lock held).
             match self.0.take() {
                 Some(value) => unsafe { std::env::set_var("HOME", value) },
                 None => unsafe { std::env::remove_var("HOME") },

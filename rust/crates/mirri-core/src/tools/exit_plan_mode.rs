@@ -118,6 +118,12 @@ impl Tool for ExitPlanModeTool {
         })
     }
 
+    /// ADR-015 (stage-2 D-M2): the read-only capability category —
+    /// observation only, no side effects the ReadOnly posture must gate.
+    fn readonly(&self) -> bool {
+        true
+    }
+
     fn resolve_execution(&self, input: serde_json::Value) -> EngineResult<ToolExecution> {
         // Validate optional `options` array before building the execution plan.
         let options = match input.get("options") {
@@ -369,6 +375,7 @@ mod tests {
             tool_call_id: "test-call".to_string(),
             cancel: crate::cancel::CancelToken::default(),
             progress: crate::tool::ToolProgressHandle::default(),
+            turn_origin: Default::default(),
         };
         execute(ctx).await
     }

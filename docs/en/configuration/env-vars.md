@@ -2,10 +2,15 @@
 
 Mirri Code uses environment variables to control a small number of runtime behaviors — relocating the data directory, turning off telemetry, and temporarily switching models without touching the config file.
 
-::: warning Important: API keys are configured here only as a fallback
-Credential variables such as `MIRRI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` are **not** the primary way to configure credentials — the `api_key` / `base_url` fields in `config.toml`, and the `[providers.<name>.env]` sub-table, come first. They are read automatically from the shell environment only as the last step of the resolution chain: an unset field with no `env` sub-table entry falls back to the exported variable of the provider type (e.g. `export MIRRI_API_KEY=xxx` gives a `kimi`-type provider its key).
+::: warning Important: API keys are configured here only as the credential store / env sub-table key names
+Credential variables such as `MIRRI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` are **not** read from the shell environment — the engine uses only explicitly configured credentials (#186). Credentials come from two places: the credential store managed by the UI (Settings → Providers), and the `[providers.<name>.env]` sub-table in `config.toml` — the key names below are the ones the `env` sub-table expects for each provider type. If you previously relied on `export ANTHROPIC_API_KEY=xxx` in the shell, migrate by moving the key into the sub-table:
 
-The `MIRRICODE_MODEL_*` family is a separate, explicit channel that always reads credentials from the shell — see [Define a model from environment variables](#define-a-model-from-environment-variables-mirricode-model).
+```toml
+[providers.anthropic.env]
+ANTHROPIC_API_KEY = "YOUR_API_KEY"
+```
+
+The `MIRRICODE_MODEL_*` family is a separate, explicit channel that still reads its credentials from the shell — see [Define a model from environment variables](#define-a-model-from-environment-variables-mirricode-model).
 
 For background, see [Config overrides: provider credentials](./overrides.md#provider-credentials).
 :::
@@ -38,14 +43,12 @@ Switch models temporarily without modifying `config.toml` — when `MIRRICODE_MO
 
 ## Provider credential key names
 
-The key names below are used in the `[providers.<name>.env]` sub-table of `config.toml` as the second step of the resolution chain for `api_key` / `base_url` (after the direct field). The same key names are also read from the shell environment as the third and last step — so a conventionally named exported variable, such as `MIRRI_API_KEY` for a `kimi`-type provider, is picked up automatically when neither the field nor the sub-table entry is set.
-
-This design lets you keep familiar key name conventions while centralizing secret management in the config file; the same names then serve as the shell fallback for types that have a conventional variable:
+The key names below are what each provider type expects for its credentials inside the `[providers.<name>.env]` sub-table of `config.toml` — the explicit configuration tier the engine resolves (after the credential store). They are **not** read from the shell environment: a conventionally named exported variable such as `MIRRI_API_KEY` is picked up only when written into the sub-table:
 
 ```toml
-[providers.kimi]
-api_key = "sk-xxx"
-base_url = "https://api.mirricode.com/coding/v1"
+[providers.kimi.env]
+MIRRI_API_KEY = "sk-xxx"
+MIRRI_BASE_URL = "https://api.mirricode.com/coding/v1"
 ```
 
 Key names per provider:
@@ -62,7 +65,7 @@ Key names per provider:
 | `GOOGLE_GEMINI_BASE_URL` | Google GenAI | `https://generativelanguage.googleapis.com/v1beta` |
 
 ::: warning
-`vertexai` is recognized by the TypeScript engine only — the rust engine rejects it at connection time. `GOOGLE_APPLICATION_CREDENTIALS` (path to a service account JSON file) is the only exception that goes through the system environment variable mechanism — it is read by the Google SDK directly via the standard ADC flow, and the CLI does not participate. All other key names take effect through the `[providers.<name>.env]` sub-table and the corresponding shell fallback.
+`vertexai` is recognized by the TypeScript engine only — the rust engine rejects it at connection time. `GOOGLE_APPLICATION_CREDENTIALS` (path to a service account JSON file) is the only exception that goes through the system environment variable mechanism — it is read by the Google SDK directly via the standard ADC flow, and the CLI does not participate. All other key names take effect only through the `[providers.<name>.env]` sub-table (the credential store being the other tier).
 :::
 
 For the full provider type and field reference, see [Providers and models](./providers.md).
@@ -131,7 +134,7 @@ Switches that control the behavior of subsystems such as telemetry, background t
 | `MIRRICODE_MODEL_THINKING_EFFORT` | Force a specific thinking effort on the wire (`thinking.effort`), bypassing the model's declared `support_efforts`; applies to the `mirri` provider only, and only while Thinking is on | An effort value, e.g. `max` |
 | `MIRRICODE_MODEL_THINKING_KEEP` | Preserved-thinking passthrough; on `kimi` sent as `thinking.keep`, on `anthropic` (Claude and Mirri's Anthropic-compatible mode) sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API); overrides `[thinking] keep` (which defaults to `"all"`); only injected while Thinking is on | A value the API accepts, e.g. `all`; an off-value (`false`/`0`/`no`/`off`/`none`/`null`) disables it |
 | `MIRRICODE_NO_AUTO_UPDATE` | Fully disable the update preflight — no check, background install, or prompt. Legacy alias `MIRRICODE_CLI_NO_AUTO_UPDATE` is also honored | Truthy: `1`/`true`/`yes`/`on` |
-| `MIRRICODE_DISABLE_CRON` | Disable the scheduled-task tool (`CronCreate` rejects new schedules; existing tasks do not fire) | `1` to disable |
+| `MIRRICODE_DISABLE_CRON` | Disable the scheduled-task tools (`SetTimer` and `CreateScheduledTask` reject new schedules; existing tasks do not fire) | `1` to disable |
 
 ## Diagnostic logs
 

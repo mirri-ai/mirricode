@@ -1,3 +1,4 @@
+// layer: T1
 //! Unit tests for the extended [`MockLlm`]: per-character token streaming
 //! with pacing, never-respond mode, and mid-stream cancellation observation.
 //!
@@ -125,11 +126,13 @@ async fn should_stop_streaming_early_when_cancel_token_fires() {
     let drain = tokio::spawn(drain_stream(stream));
 
     // When the caller cancels while deltas are still flowing
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    assert!(
-        mock.delta_yield_count() >= 2,
-        "deltas started flowing before the cancellation"
-    );
+    mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(5),
+        Duration::from_millis(1),
+        || (mock.delta_yield_count() >= 2).then_some(()),
+    )
+    .await
+    .expect("deltas must start flowing before the cancellation");
     cancel.cancel();
     let events = drain.await.expect("drain task completes");
 

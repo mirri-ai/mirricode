@@ -45,6 +45,7 @@ anyhow = { workspace = true }
 reqwest = { workspace = true }
 
 [dev-dependencies]
+mirri-test-support = { path = "../mirri-test-support" }
 tempfile = "3"
 mirri-test-harness = { path = "../mirri-test-harness" }
 mirri-mcp = { path = "../mirri-mcp" }
@@ -52,6 +53,9 @@ jsonschema = { workspace = true }
 # The W9 shared-home pinning test seeds the home's session index rows the
 # way a busy multi-engine home carries them.
 mirri-session-index = { path = "../mirri-session-index" }
+# The ADR-006 Task 8 legacy-cron adoption test reads the child's
+# `cron-index.db` directly (the ACP surface exposes no cron RPC).
+mirri-cron-index = { path = "../mirri-cron-index" }
 chrono = { workspace = true }
 # The stdio smoke test's local Anthropic SSE endpoint (F-P5a-1): the same
 # HTTP mock the engine's provider tests use, serving the scripted SSE turn

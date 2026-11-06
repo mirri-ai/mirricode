@@ -500,6 +500,30 @@ describe('toAgentMember (ADR-010 ③ 统一派生)', () => {
   });
 });
 
+describe('toAgentMember narrative fields (ADR-011 ②)', () => {
+  it('should carry the task narrative segments onto the member unchanged', () => {
+    // Given a task whose narrative interleaves thinking and text segments
+    const segments = [
+      { id: 's0', kind: 'thinking' as const, text: 'planning', seq: 0 },
+      { id: 's1', kind: 'text' as const, text: 'Calling Read: a.ts', seq: 1 },
+    ];
+    const task = { ...baseSubagentTask(), segments } as AppTask;
+
+    // Then the member carries the segments for the panel to normalize
+    expect(toAgentMember(task).segments).toEqual(segments);
+  });
+
+  it('should leave the member without narrative fields when the task has none', () => {
+    // Given a snapshot-restored task with no segments (the retired legacy
+    // single-field accumulation no longer provides a fallback)
+    const task: AppTask = { ...baseSubagentTask() };
+
+    // Then the member degrades honestly — the panel falls back through
+    // outputLines / summary until the journal read lands
+    expect(toAgentMember(task).segments).toBeUndefined();
+  });
+});
+
 describe('messagesToTurns (model-switch divider)', () => {
   function assistantTextMessage(id: string, text: string): AppMessage {
     return message({ id, role: 'assistant', content: [{ type: 'text', text }] });
@@ -597,6 +621,47 @@ describe('messagesToTurns (mid-turn reload: transcript + in-flight seed)', () =>
     // And the seed's volatile progress lines survive the fold
     expect(assistant.tools?.[0]?.output).toEqual(['Implement F6 closing batch']);
   });
+
+  it('should keep the seed started anchor on a running tool card after a mid-tool reload', () => {
+    // Given a reload mid-tool: the persisted transcript row holds the running
+    // step with no start stamp, and the in-flight seed replays the same step
+    // carrying the live start anchor
+    const transcriptRow = message({
+      id: 'msg-7',
+      role: 'assistant',
+      promptId: 'turn-2',
+      content: [
+        {
+          type: 'toolUse',
+          toolCallId: 'call-2',
+          toolName: 'Task',
+          input: { prompt: 'Implement F6 closing batch' },
+        },
+      ],
+    });
+    const seededCopy = message({
+      id: 'msg-seed',
+      role: 'assistant',
+      promptId: 'turn-2',
+      content: [
+        {
+          type: 'toolUse',
+          toolCallId: 'call-2',
+          toolName: 'Task',
+          input: { prompt: 'Implement F6 closing batch' },
+          startedAtMs: 1000,
+        },
+      ],
+    });
+
+    // When the turns are projected
+    const turns = messagesToTurns([transcriptRow, seededCopy], []);
+
+    // Then the folded card keeps the seed's anchor so the live timer still runs
+    const tool = turns[0]?.tools?.[0];
+    expect(tool?.status).toBe('running');
+    expect(tool?.startedAtMs).toBe(1000);
+  });
 });
 
 describe('messagesToTurns (turn duration)', () => {
@@ -641,6 +706,312 @@ describe('messagesToTurns (turn duration)', () => {
 
     expect(turns).toHaveLength(1);
     expect(turns[0]?.durationMs).toBe(27996);
+  });
+
+  it('should take endedAt from the authoritative row field when present', () => {
+    // Given a completed assistant turn whose run-end row carries the
+    // engine's completion instant (the read face's endedAtMs stamp)
+    const last = message({
+      id: 'msg-1',
+      role: 'assistant',
+      promptId: 'turn-3',
+      content: [{ type: 'text', text: 'final report' }],
+      durationMs: 60_000,
+      endedAt: '2026-09-12T00:03:00.000Z',
+    });
+
+    // When the transcript turns are projected
+    const turns = messagesToTurns([last], []);
+
+    // Then the turn's endedAt is the row field verbatim — not createdAt +
+    // durationMs (which would land 60s earlier)
+    expect(turns[0]?.endedAt).toBe('2026-09-12T00:03:00.000Z');
+  });
+
+  it('should not fabricate endedAt from createdAt plus durationMs when the row field is absent', () => {
+    // Given an assistant turn whose row carries a createdAt and a measured
+    // duration but no engine completion instant (older engine)
+    const last = message({
+      id: 'msg-1',
+      role: 'assistant',
+      promptId: 'turn-3',
+      content: [{ type: 'text', text: 'final report' }],
+      durationMs: 60_000,
+    });
+
+    // When the transcript turns are projected
+    const turns = messagesToTurns([last], []);
+
+    // Then no endedAt is invented — the footer renders no timestamp
+    expect(turns[0]?.endedAt).toBeUndefined();
+  });
+
+  it('should not fall back to the last row createdAt for endedAt when the row field is absent', () => {
+    // Given an assistant turn whose rows carry no measured duration and no
+    // completion instant (an aborted or legacy transcript)
+    const solo = message({
+      id: 'msg-1',
+      role: 'assistant',
+      promptId: 'turn-4',
+      content: [{ type: 'text', text: 'reply' }],
+    });
+
+    // When the transcript turns are projected
+    const turns = messagesToTurns([solo], []);
+
+    // Then endedAt stays absent rather than borrowing the row's createdAt
+    expect(turns[0]?.endedAt).toBeUndefined();
+  });
+
+  it('should anchor endedAt on the final row of a multi-row group, not the first', () => {
+    // Given a turn that arrived as several assistant rows — only the final
+    // one carries the completion instant
+    const first = message({
+      id: 'msg-1',
+      role: 'assistant',
+      promptId: 'turn-5',
+      content: [{ type: 'text', text: 'intermediate' }],
+      createdAt: '2026-09-12T00:00:00.000Z',
+    });
+    const last = message({
+      id: 'msg-2',
+      role: 'assistant',
+      promptId: 'turn-5',
+      content: [{ type: 'text', text: 'final report' }],
+      createdAt: '2026-09-12T00:02:00.000Z',
+      durationMs: 30_000,
+      endedAt: '2026-09-12T00:02:30.000Z',
+    });
+
+    // When the transcript turns are projected
+    const turns = messagesToTurns([first, last], []);
+
+    // Then endedAt is the last row's engine instant
+    expect(turns[0]?.endedAt).toBe('2026-09-12T00:02:30.000Z');
+  });
+
+  it('should anchor endedAt on the last duplicate row even when a resync copy is deduped', () => {
+    // Given two assistant messages with the same promptId and identical
+    // content — the second is a duplicate resync copy the grouping drops —
+    // and only it carries the completion instant (the original row's endedAt
+    // is absent, so the tracker must adopt the later row's)
+    const original = message({
+      id: 'msg-1',
+      role: 'assistant',
+      promptId: 'turn-6',
+      content: [{ type: 'text', text: 'final report' }],
+      createdAt: '2026-09-12T00:00:00.000Z',
+    });
+    const duplicate = message({
+      id: 'msg-2',
+      role: 'assistant',
+      promptId: 'turn-6',
+      content: [{ type: 'text', text: 'final report' }],
+      createdAt: '2026-09-12T00:05:00.000Z',
+      endedAt: '2026-09-12T00:05:10.000Z',
+    });
+
+    // When the transcript turns are projected
+    const turns = messagesToTurns([original, duplicate], []);
+
+    // Then the turn renders its reply once (the duplicate is dropped) and
+    // endedAt anchors on the LAST row's instant — the tracking survives
+    // the dedup drop
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.text).toBe('final report');
+    expect(turns[0]?.endedAt).toBe('2026-09-12T00:05:10.000Z');
+  });
+});
+
+describe('messagesToTurns (tool-call timing)', () => {
+  it('should show server duration on the tool card when the result carries it', () => {
+    // Given an assistant message with a toolUse (with startedAtMs) followed
+    // by a tool result carrying durationMs
+    const row = message({
+      id: 'msg-1',
+      role: 'assistant',
+      promptId: 'turn-1',
+      content: [
+        { type: 'toolUse', toolCallId: 'call-1', toolName: 'bash', input: {}, startedAtMs: 1000 },
+        { type: 'toolResult', toolCallId: 'call-1', output: 'done', durationMs: 12_345 },
+      ],
+    });
+
+    // When the transcript turns are projected on an idle session
+    const turns = messagesToTurns([row], [], undefined, false);
+
+    // Then the tool card shows the server-measured duration
+    const tool = turns[0]?.blocks?.find((b) => b.kind === 'tool')?.tool;
+    expect(tool?.status).toBe('ok');
+    expect(tool?.timing).toBe('12.3s');
+  });
+
+  it('should keep timing unset when the result carries no duration', () => {
+    // Given a result from an older engine that stamps no durationMs
+    const row = message({
+      id: 'msg-1',
+      role: 'assistant',
+      promptId: 'turn-1',
+      content: [
+        { type: 'toolUse', toolCallId: 'call-1', toolName: 'bash', input: {}, startedAtMs: 1000 },
+        { type: 'toolResult', toolCallId: 'call-1', output: 'done' },
+      ],
+    });
+
+    // When the transcript turns are projected
+    const turns = messagesToTurns([row], [], undefined, false);
+
+    // Then the card settles without a fabricated timing
+    const tool = turns[0]?.blocks?.find((b) => b.kind === 'tool')?.tool;
+    expect(tool?.status).toBe('ok');
+    expect(tool?.timing).toBeUndefined();
+  });
+
+  it('should keep startedAtMs on a running tool card for the live timer', () => {
+    // Given an in-flight assistant message with a toolUse carrying startedAtMs
+    const row = message({
+      id: 'msg-1',
+      role: 'assistant',
+      promptId: 'turn-1',
+      content: [
+        { type: 'toolUse', toolCallId: 'call-1', toolName: 'bash', input: {}, startedAtMs: 1000 },
+      ],
+    });
+
+    // When the transcript turns are projected on a live session
+    const turns = messagesToTurns([row], [], undefined, true);
+
+    // Then the running card keeps the anchor for the live timer
+    const tool = turns[0]?.blocks?.find((b) => b.kind === 'tool')?.tool;
+    expect(tool?.status).toBe('running');
+    expect(tool?.startedAtMs).toBe(1000);
+  });
+
+  it('should freeze a dangling tool timing at the turn end when the turn is interrupted', () => {
+    // Given a turn that ended (the run-end row's wall clock is 10s after the
+    // tool started) while its tool never got a result — the interrupted case
+    const startIso = '2026-09-12T00:00:00.000Z';
+    const startMs = Date.parse(startIso);
+    const row = message({
+      id: 'msg-1',
+      role: 'assistant',
+      promptId: 'turn-1',
+      content: [
+        { type: 'toolUse', toolCallId: 'call-1', toolName: 'bash', input: {}, startedAtMs: startMs },
+      ],
+      createdAt: startIso,
+      endedAt: '2026-09-12T00:00:10.000Z',
+    });
+
+    // When the transcript turns are projected on an idle session (the turn
+    // is over, the tool is dangling)
+    const turns = messagesToTurns([row], [], undefined, false);
+
+    // Then the card settles with the real waited span, anchored on the turn
+    // end — not on render time
+    const tool = turns[0]?.blocks?.find((b) => b.kind === 'tool')?.tool;
+    expect(tool?.status).toBe('ok');
+    expect(tool?.timing).toBe('10.0s');
+  });
+
+  it('should not fabricate a frozen timing when the turn end is unknown', () => {
+    // Given a dangling tool whose turn carries no wall-clock end (an old
+    // transcript with no run-end row)
+    const row = message({
+      id: 'msg-1',
+      role: 'assistant',
+      promptId: 'turn-1',
+      content: [
+        { type: 'toolUse', toolCallId: 'call-1', toolName: 'bash', input: {}, startedAtMs: 1000 },
+      ],
+      createdAt: '',
+    });
+
+    // When the transcript turns are projected
+    const turns = messagesToTurns([row], [], undefined, false);
+
+    // Then the card settles but shows no invented duration
+    const tool = turns[0]?.blocks?.find((b) => b.kind === 'tool')?.tool;
+    expect(tool?.status).toBe('ok');
+    expect(tool?.timing).toBeUndefined();
+  });
+
+  it('should not freeze a dangling tool on the synthetic createdAt timeline', () => {
+    // Given a reloaded transcript whose run-end row carries only a createdAt
+    // (the read face synthesizes it as session base time + row position — not
+    // a real message instant), no live turn-ended stamp and no duration
+    const row = message({
+      id: 'msg-1',
+      role: 'assistant',
+      promptId: 'turn-1',
+      content: [
+        { type: 'toolUse', toolCallId: 'call-1', toolName: 'bash', input: {}, startedAtMs: 1000 },
+      ],
+      createdAt: '2026-09-12T00:05:00.000Z',
+    });
+
+    // When the transcript turns are projected on an idle session
+    const turns = messagesToTurns([row], [], undefined, false);
+
+    // Then the card settles without a duration — the synthetic clock must not
+    // become a freeze anchor (US3.8: missing timing is not displayed)
+    const tool = turns[0]?.blocks?.find((b) => b.kind === 'tool')?.tool;
+    expect(tool?.status).toBe('ok');
+    expect(tool?.timing).toBeUndefined();
+  });
+
+  it('should freeze a dangling tool on createdAt plus the measured duration', () => {
+    // Given a reloaded transcript whose run-end row carries the measured turn
+    // duration — createdAt + durationMs is then a trustworthy turn end
+    const startIso = '2026-09-12T00:00:00.000Z';
+    const startMs = Date.parse(startIso);
+    const row = message({
+      id: 'msg-1',
+      role: 'assistant',
+      promptId: 'turn-1',
+      content: [
+        { type: 'toolUse', toolCallId: 'call-1', toolName: 'bash', input: {}, startedAtMs: startMs },
+      ],
+      createdAt: startIso,
+      durationMs: 10_000,
+    });
+
+    // When the transcript turns are projected on an idle session
+    const turns = messagesToTurns([row], [], undefined, false);
+
+    // Then the interrupted tool freezes at the waited span
+    const tool = turns[0]?.blocks?.find((b) => b.kind === 'tool')?.tool;
+    expect(tool?.status).toBe('ok');
+    expect(tool?.timing).toBe('10.0s');
+  });
+
+  it('should keep the interrupted-tool freeze anchor when endedAt is authoritative', () => {
+    // Given a turn whose authoritative endedAt differs from the synthetic
+    // createdAt + durationMs sum (createdAt is the reload face's invented
+    // timeline, durationMs a measured span — only endedAt is a real instant)
+    const startIso = '2026-09-12T00:00:00.000Z';
+    const startMs = Date.parse(startIso);
+    const row = message({
+      id: 'msg-1',
+      role: 'assistant',
+      promptId: 'turn-1',
+      content: [
+        { type: 'toolUse', toolCallId: 'call-1', toolName: 'bash', input: {}, startedAtMs: startMs },
+      ],
+      createdAt: '2026-09-12T00:00:00.000Z',
+      durationMs: 30_000,
+      endedAt: '2026-09-12T00:00:12.000Z',
+    });
+
+    // When the transcript turns are projected on an idle session
+    const turns = messagesToTurns([row], [], undefined, false);
+
+    // Then the dangling tool's card freezes on the authoritative instant (not
+    // the createdAt + durationMs sum) and the footer carries the same instant
+    const tool = turns[0]?.blocks?.find((b) => b.kind === 'tool')?.tool;
+    expect(tool?.status).toBe('ok');
+    expect(tool?.timing).toBe('12.0s');
+    expect(turns[0]?.endedAt).toBe('2026-09-12T00:00:12.000Z');
   });
 });
 

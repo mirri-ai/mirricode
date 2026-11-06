@@ -1728,6 +1728,53 @@ impl TaskManager {
         self.get(&prefixed).is_some().then_some(prefixed)
     }
 
+    /// Resolve an id the UI holds onto a registered task id.
+    ///
+    /// The web/desktop subagent surfaces (the supervision panel, the chat
+    /// dock, `useDetailPanel::stopPanelMember`) key their rows by **agent
+    /// id**, while the `task.cancel` / `task.stop` wire faces address tasks
+    /// by their `task-<uuid>` id. The two differ for every Agent-kind task:
+    /// a background subagent's started event lets the client learn the task
+    /// id, but a foreground swarm member never publishes one, and a row
+    /// rebuilt from the snapshot roster carries no link at all — so a stop
+    /// from the panel arrived at the wire as `agent-…` and answered "task
+    /// not found".
+    ///
+    /// An exact task id passes through unchanged. Otherwise the Agent-kind
+    /// task whose `agent_id` matches resolves: a non-terminal row wins (a
+    /// resumed agent can hold several), then the most recently created one,
+    /// so a stop on an already-settled member stays an idempotent success
+    /// instead of a not-found error. `None` for anything else — the fallback
+    /// never invents a match.
+    pub fn resolve_agent_task_id(&self, id: &str) -> Option<String> {
+        let tasks = self
+            .tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if tasks.contains_key(id) {
+            return Some(id.to_string());
+        }
+        let mut candidates: Vec<&AgentTask> = tasks
+            .values()
+            .filter(|task| {
+                matches!(
+                    &task.kind,
+                    TaskKind::Agent {
+                        agent_id: Some(agent_id),
+                        ..
+                    } if agent_id == id
+                )
+            })
+            .collect();
+        candidates.sort_by(|a, b| {
+            a.status
+                .is_terminal()
+                .cmp(&b.status.is_terminal())
+                .then_with(|| b.created_at.cmp(&a.created_at))
+        });
+        candidates.first().map(|task| task.id.clone())
+    }
+
     /// Get task output, with a preview when the retained output is truncated.
     ///
     /// Returns `None` for unknown task ids. The preview shows the first and
@@ -2448,6 +2495,107 @@ mod tests {
             manager.resolve_id("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
             None
         );
+    }
+
+    /// Given a session with a running agent-kind task, when the agent id the
+    /// web subagent rows are keyed by is resolved, then the tracked task id
+    /// comes back — the panel's stop path addresses tasks by that id.
+    #[test]
+    fn should_resolve_the_task_id_when_given_the_agent_id_of_an_agent_task() {
+        let manager = TaskManager::new();
+        let agent_id = "agent-7d1a".to_string();
+        let task_id = manager.register(
+            TaskKind::Agent {
+                agent_id: Some(agent_id.clone()),
+                subagent_type: Some("explore".to_string()),
+                parent_tool_call_id: Some("call-1".to_string()),
+                swarm_index: Some(0),
+                model: None,
+            },
+            "agent: explore".into(),
+            SESSION.into(),
+        );
+
+        assert_eq!(manager.resolve_agent_task_id(&agent_id), Some(task_id));
+    }
+
+    /// Given a settled agent-kind task and a later running row for the same
+    /// agent (a resume), when the agent id is resolved, then the running row
+    /// wins — a stop must reach live work, not a finished row.
+    #[test]
+    fn should_prefer_the_running_row_when_an_agent_holds_several_tasks() {
+        let manager = TaskManager::new();
+        let agent_id = "agent-resumed".to_string();
+        let kind = TaskKind::Agent {
+            agent_id: Some(agent_id.clone()),
+            subagent_type: None,
+            parent_tool_call_id: None,
+            swarm_index: None,
+            model: None,
+        };
+        let first = manager.register(kind.clone(), "first run".into(), SESSION.into());
+        manager.complete(&first, 0);
+        let second = manager.register(kind, "second run".into(), SESSION.into());
+
+        assert_eq!(manager.resolve_agent_task_id(&agent_id), Some(second));
+    }
+
+    /// Given only a settled agent-kind task, when its agent id is resolved,
+    /// then that terminal row still resolves — stopping an already-finished
+    /// member must stay an idempotent no-op, not "task not found".
+    #[test]
+    fn should_resolve_a_terminal_task_when_the_agent_has_no_running_row() {
+        let manager = TaskManager::new();
+        let agent_id = "agent-done".to_string();
+        let task_id = manager.register(
+            TaskKind::Agent {
+                agent_id: Some(agent_id.clone()),
+                subagent_type: None,
+                parent_tool_call_id: None,
+                swarm_index: None,
+                model: None,
+            },
+            "agent: done".into(),
+            SESSION.into(),
+        );
+        manager.complete(&task_id, 0);
+
+        assert_eq!(manager.resolve_agent_task_id(&agent_id), Some(task_id));
+    }
+
+    /// Given ids that address nothing, when they are resolved, then no match
+    /// is invented — the agent fallback never fabricates a task.
+    #[test]
+    fn should_return_none_when_the_id_is_neither_a_task_nor_an_agent_id() {
+        let manager = TaskManager::new();
+        manager.register(
+            TaskKind::Process {
+                command: None,
+                dispatcher: None,
+            },
+            "build".into(),
+            SESSION.into(),
+        );
+
+        assert_eq!(manager.resolve_agent_task_id("agent-absent"), None);
+        assert_eq!(manager.resolve_agent_task_id(""), None);
+    }
+
+    /// Given a registered task id, when it is resolved through the agent-id
+    /// face, then it passes through unchanged (the exact id always wins).
+    #[test]
+    fn should_pass_a_task_id_through_unchanged_when_resolving_an_agent_id() {
+        let manager = TaskManager::new();
+        let task_id = manager.register(
+            TaskKind::Process {
+                command: None,
+                dispatcher: None,
+            },
+            "build".into(),
+            SESSION.into(),
+        );
+
+        assert_eq!(manager.resolve_agent_task_id(&task_id), Some(task_id));
     }
 
     #[test]

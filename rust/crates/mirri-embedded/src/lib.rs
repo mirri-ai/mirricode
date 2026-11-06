@@ -30,6 +30,7 @@
 //! implements a single trait injectable into either engine.
 
 pub mod bootstrap;
+pub mod cron_persistence;
 pub mod embedded_server;
 pub mod llm_factory;
 pub mod model_catalog;

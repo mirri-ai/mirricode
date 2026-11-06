@@ -1,3 +1,4 @@
+// layer: T1
 //! Self-tests for `mirri-test-harness`: every test boots a real
 //! `mirri-server` (see [`common::TestServer`]) and drives it through
 //! [`HttpHarness`], exercising the same black-box surface a cross-backend

@@ -3,10 +3,9 @@
 //! Task 2, scenarios 1–7).
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 
+use crate::migration::{SKIPPED_GUIDANCE, dry_run_config_api_keys, migrate_config_api_keys};
 use crate::store::{CredentialStore, CredentialValue};
-use crate::migration::{dry_run_config_api_keys, migrate_config_api_keys, SKIPPED_GUIDANCE};
 
 fn write_config(home: &std::path::Path, text: &str) -> PathBuf {
     let cfg = home.join("config.toml");
@@ -14,10 +13,8 @@ fn write_config(home: &std::path::Path, text: &str) -> PathBuf {
     cfg
 }
 
-/// Serializes tests that mutate process environment variables (edition
-/// 2024 makes `set_var` unsafe; same discipline as mirri-core's flags
-/// tests).
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+// Env-mutating tests serialize on the workspace-wide env lock
+// (mirri-test-support).
 
 /// Scenario 1: no config file at all — an empty report, no error, and
 /// the store stays empty (nothing to migrate).
@@ -71,7 +68,12 @@ fn should_clean_residual_config_key_without_duplicating_store_entry() {
     );
     let store = CredentialStore::open(home.path()).unwrap();
     store
-        .set("openai", CredentialValue::Key { key: "sk-existing".into() })
+        .set(
+            "openai",
+            CredentialValue::Key {
+                key: "sk-existing".into(),
+            },
+        )
         .unwrap();
 
     let report = migrate_config_api_keys(&store, &cfg).unwrap();
@@ -113,8 +115,8 @@ fn should_not_migrate_env_derived_key_when_config_has_no_field() {
     let home = tempfile::tempdir().unwrap();
     let cfg = write_config(home.path(), "[providers.ci]\ntype = \"openai\"\n");
     let store = CredentialStore::open(home.path()).unwrap();
-    let _env_guard = ENV_LOCK.lock().unwrap();
-    // SAFETY: guarded by ENV_LOCK; the test process is single-threaded at
+    let _env_guard = mirri_test_support::env::lock();
+    // SAFETY: guarded by the workspace env lock; the test process is single-threaded at
     // this point and no other test reads this variable concurrently.
     unsafe { std::env::set_var("OPENAI_API_KEY", "sk-from-env") };
 
@@ -127,7 +129,11 @@ fn should_not_migrate_env_derived_key_when_config_has_no_field() {
     assert!(report.migrated.is_empty());
     assert!(report.cleaned.is_empty());
     assert!(store.read_all().is_empty());
-    assert!(std::fs::read_to_string(&cfg).unwrap().contains("[providers.ci]"));
+    assert!(
+        std::fs::read_to_string(&cfg)
+            .unwrap()
+            .contains("[providers.ci]")
+    );
 }
 
 /// Scenario 6 (E.5): dry run parses the same way but writes nothing — the
@@ -176,7 +182,11 @@ fn should_reap_hand_re_added_key_on_subsequent_migration() {
     assert!(report.migrated.is_empty());
     assert_eq!(report.cleaned, vec!["openai"]);
     assert_eq!(store.reveal("openai").unwrap(), "sk-old");
-    assert!(!std::fs::read_to_string(&cfg).unwrap().contains("sk-readded"));
+    assert!(
+        !std::fs::read_to_string(&cfg)
+            .unwrap()
+            .contains("sk-readded")
+    );
 }
 
 /// Extra: the camelCase `apiKey` spelling in the raw config is cleaned
@@ -242,9 +252,7 @@ fn should_report_each_skipped_provider_with_manual_handling_guidance() {
 
     assert_eq!(report.skipped.len(), 2, "both malformed ids are skipped");
     for id in &report.skipped {
-        let guidance = format!(
-            "provider credential '{id}' {SKIPPED_GUIDANCE}"
-        );
+        let guidance = format!("provider credential '{id}' {SKIPPED_GUIDANCE}");
         assert!(
             guidance.contains(id.as_str()),
             "the guidance names the skipped provider: {guidance}"

@@ -106,6 +106,9 @@ pub fn journal_target(op: &WireOp) -> JournalTarget {
         WireOp::CronAdd { .. } => JournalTarget::Session,
         WireOp::CronDelete { .. } => JournalTarget::Session,
         WireOp::CronCursor { .. } => JournalTarget::Session,
+        WireOp::CronLineageCreated { .. } => JournalTarget::Session,
+        WireOp::CronHeldAdd { .. } => JournalTarget::Session,
+        WireOp::CronHeldClear { .. } => JournalTarget::Session,
         WireOp::InteractionRequest { .. } => JournalTarget::Session,
         WireOp::InteractionResolved { .. } => JournalTarget::Session,
         WireOp::CollaborationStart { .. } => JournalTarget::Session,
@@ -212,6 +215,8 @@ mod tests {
             ("cron.add", JournalTarget::Session),
             ("cron.delete", JournalTarget::Session),
             ("cron.cursor", JournalTarget::Session),
+            ("cron.held", JournalTarget::Session),
+            ("cron.held_clear", JournalTarget::Session),
             ("interaction.request", JournalTarget::Session),
             ("interaction.resolved", JournalTarget::Session),
             ("collaboration.start", JournalTarget::Session),
@@ -272,6 +277,8 @@ mod tests {
             "cron.add" => serde_json::json!({"task": {}}),
             "cron.delete" => serde_json::json!({"ids": []}),
             "cron.cursor" => serde_json::json!({"id": "", "lastFiredAt": 0}),
+            "cron.held" => serde_json::json!({"task": {}}),
+            "cron.held_clear" => serde_json::json!({"id": ""}),
             "interaction.request" => {
                 serde_json::json!({"id": "", "kind": "", "request": {}})
             }

@@ -17,7 +17,7 @@ The `type` field in the `providers` table determines which protocol implementati
 
 All providers communicate with models in streaming mode by default. Capabilities such as thinking, vision, and tool use are matched automatically by model name prefix — you typically do not need to declare them manually.
 
-**Credential priority**: `api_key` direct field > `[providers.<name>.env]` sub-table key > the provider type's conventional shell environment variable > if none is set, startup fails with an error. `base_url` follows the same chain, ending in the provider type's built-in default URL. Some provider types (such as `vertexai`) have no conventional environment variable, so the chain ends earlier for them — see [Config overrides: provider credentials](./overrides.md#provider-credentials).
+**Credential priority**: the credential store (managed by Settings → Providers) > the provider type's conventional key in the `[providers.<name>.env]` sub-table > if neither is set, startup fails with an error. Shell environment variables are **not** consulted. `base_url` follows the same chain — the `base_url` field, then the `*_BASE_URL` key in the `env` sub-table — ending in the provider type's built-in default URL (first-party providers only; every other provider must configure one explicitly). Some provider types (such as `vertexai`) have no conventional key, so the chain ends earlier for them — see [Config overrides: provider credentials](./overrides.md#provider-credentials).
 
 ## `/provider` — interactive provider management
 
@@ -119,7 +119,7 @@ type = "google-genai"
 api_key = "xxxxx"
 ```
 
-To route through a Gemini-compatible proxy or gateway, set `base_url` (or the `GOOGLE_GEMINI_BASE_URL` env var); when omitted, the SDK default `https://generativelanguage.googleapis.com` is used.
+To route through a Gemini-compatible proxy or gateway, set `base_url` (or the `GOOGLE_GEMINI_BASE_URL` key in the provider's `env` sub-table); when omitted, the SDK default `https://generativelanguage.googleapis.com` is used.
 
 > Give the **host root only**. The Google GenAI SDK appends the API version and path itself (e.g. `/v1beta/models/<model>:generateContent`), so a trailing `/v1beta` would produce a doubled `/v1beta/v1beta/…`.
 
@@ -153,7 +153,7 @@ GOOGLE_CLOUD_LOCATION = "us-central1"
 gcloud auth application-default login   # one-time authentication
 ```
 
-To route Vertex requests through a custom (e.g. proxied) endpoint, set `base_url` (or the `GOOGLE_VERTEX_BASE_URL` env var); when omitted, the SDK default regional `*-aiplatform.googleapis.com` host is used. As with `google-genai`, give the host root only — the SDK appends `/v1beta1/publishers/google/models/…` itself.
+To route Vertex requests through a custom (e.g. proxied) endpoint, set `base_url` (or the `GOOGLE_VERTEX_BASE_URL` key in the provider's `env` sub-table); when omitted, the SDK default regional `*-aiplatform.googleapis.com` host is used. As with `google-genai`, give the host root only — the SDK appends `/v1beta1/publishers/google/models/…` itself.
 
 ## OAuth and credential injection
 

@@ -59,7 +59,9 @@ async fn should_write_sessions_under_v3_root_when_manager_creates() {
         .unwrap();
 
     // Then the session directory lands under .mirri/v3_sessions/<bucket>/<id>
-    // (the bucketed TS-parity layout, now rooted at the v3 segment)
+    // (the bucketed TS-parity layout, now rooted at the v3 segment), and
+    // the metadata ROW exists (ADR-006: the row is the create path's
+    // durable record — state.json no longer lands with a fresh create).
     let bucket = encode_work_dir_key(tmp.path());
     let session_dir = tmp
         .path()
@@ -68,11 +70,14 @@ async fn should_write_sessions_under_v3_root_when_manager_creates() {
         .join(&bucket)
         .join(session.id().as_str());
     assert!(
-        session_dir.join("state.json").exists(),
+        session_dir.join("wire.jsonl").exists(),
         "the session must persist under {} (got bucket {bucket})",
         session_dir.display()
     );
-    assert!(session_dir.join("wire.jsonl").exists());
+    assert!(
+        !session_dir.join("state.json").exists(),
+        "a fresh create writes the row, not state.json (ADR-006)"
+    );
 
     // And nothing lands under the legacy TS-era `.mirri/sessions` root —
     // cross-engine session sharing is physically impossible
@@ -482,6 +487,7 @@ async fn should_restore_session_approvals_when_resuming_session() {
         session_approvals: &approvals,
         cancel: &cancel,
         net_class: None,
+        turn_origin: Default::default(),
     };
     match pm.evaluate(&ctx) {
         crate::permission::PermissionPolicyResult::Approve { .. } => {}
@@ -1591,22 +1597,22 @@ async fn should_persist_created_sessions_under_the_workspace_bucket_with_work_di
         .join(&bucket)
         .join(session.id().as_str());
     assert!(
-        session_dir.join("state.json").exists(),
+        session_dir.join("wire.jsonl").exists(),
         "the session must persist under {} (got bucket {bucket})",
         session_dir.display()
     );
-    assert!(session_dir.join("wire.jsonl").exists());
 
-    // And the state records the session's workDir (the workspace cwd)
-    let loaded = manager
-        .persistence()
-        .load_state(session.id())
+    // And the row's cwd records the session's workDir (the workspace cwd) —
+    // ADR-006: the metadata row, not state.json, is the durable record.
+    let record = manager
+        .metadata_store()
+        .get(session.id())
         .await
-        .unwrap();
+        .expect("the created session's row exists");
     assert_eq!(
-        loaded.work_dir.as_deref(),
+        record.cwd.as_deref(),
         Some(tmp.path().to_string_lossy().as_ref()),
-        "the created session must record its workDir"
+        "the created session's row must record its workDir"
     );
 }
 
@@ -1699,9 +1705,10 @@ async fn should_create_nothing_on_disk_when_a_session_is_created_lazily() {
 }
 
 /// Given a lazily created session whose ops were recorded after creation,
-/// when it is materialized, then `state.json` + `wire.jsonl` appear and
-/// the buffered ops flush in their original record order — the
-/// materialized wire log is byte-equivalent to an eagerly created one's.
+/// when it is materialized, then `wire.jsonl` appears (the metadata ROW
+/// landed at creation — ADR-006's "创建即写行") and the buffered ops flush
+/// in their original record order — the materialized wire log is
+/// byte-equivalent to an eagerly created one's.
 #[tokio::test]
 async fn should_write_the_buffered_ops_in_order_when_materializing_a_lazy_session() {
     let (manager, tmp) = make_manager();
@@ -1736,7 +1743,9 @@ async fn should_write_the_buffered_ops_in_order_when_materializing_a_lazy_sessio
         .join("sessions")
         .join(&bucket)
         .join(session.id().as_str());
-    assert!(session_dir.join("state.json").is_file());
+    // ADR-006: the materialize write is ROW-first — no state.json lands
+    // (the row landed at creation); only the wire log appears on disk.
+    assert!(!session_dir.join("state.json").is_file());
     assert!(session_dir.join("wire.jsonl").is_file());
     // The Metadata envelope (recorded at create) precedes the
     // ConfigUpdate recorded after it — the buffer flushed in order.
@@ -1800,7 +1809,7 @@ async fn should_not_carry_cron_tasks_when_forking_a_session() {
             "tick".into(),
             source.id().as_str().to_string(),
             true,
-            None,
+            crate::cron::CronCreateOptions::default(),
         )
         .await
         .unwrap();
@@ -2006,6 +2015,7 @@ async fn write_fork_pipeline_source(manager: &SessionManager, session_id: &Sessi
                 reason: "completed".to_string(),
                 error: None,
                 duration_ms: None,
+                ended_at: None,
             })
             .await
             .unwrap();
@@ -2552,6 +2562,7 @@ async fn should_replay_a_flushed_user_steer_row_field_identical_to_the_live_appe
             reason: "completed".to_string(),
             error: None,
             duration_ms: None,
+            ended_at: None,
         })
         .await
         .unwrap();
@@ -3104,9 +3115,11 @@ async fn should_not_touch_the_source_wire_log_when_forking() {
 // F3 — state.json lineage minting: forked_from, custom metadata merge
 // -------------------------------------------------------------------------
 
-/// Given a fork, When the fork's `state.json` is read back from disk,
-/// Then it carries `forkedFrom` pointing at the source session id (the
-/// lineage the v2 state.json records and the TS client surfaces).
+/// Given a fork, When the fork's metadata is read back, Then it carries
+/// the source lineage — `forkedFrom` pointing at the source session id
+/// (the lineage the fork's scope metadata records and a later fork's
+/// inheritance read consumes; ADR-006: state.json is no longer written
+/// by the create path, so the live scope is the read-back surface).
 #[tokio::test]
 async fn should_mint_forked_from_lineage_in_state_json_when_forking() {
     let (manager, _tmp) = make_manager();
@@ -3131,19 +3144,11 @@ async fn should_mint_forked_from_lineage_in_state_json_when_forking() {
         .await
         .unwrap();
 
-    let state_path = manager.persistence().state_path(fork.id());
-    let raw = tokio::fs::read_to_string(&state_path)
-        .await
-        .expect("the fork's state.json must exist on disk");
-    let state: serde_json::Value = serde_json::from_str(&raw).expect("state.json is valid JSON");
-    let forked_from = state
-        .get("forked_from")
-        .or_else(|| state.get("forkedFrom"))
-        .and_then(|v| v.as_str());
+    let state = fork.metadata().await;
     assert_eq!(
-        forked_from,
+        state.forked_from.as_deref(),
         Some(source.id().as_str()),
-        "the fork's state.json must record the source lineage, got: {raw}"
+        "the fork's metadata must record the source lineage"
     );
 }
 
@@ -3174,7 +3179,10 @@ async fn should_mint_source_id_as_cache_root_when_forking_a_root_session() {
         .await
         .unwrap();
 
-    let state = manager.persistence.load_state(forked.id()).await.unwrap();
+    // Then the fork's lineage is read back from the fork's own live scope
+    // (ADR-006: `cache_root_id` is not a row column; the fork create wrote
+    // it into the scope metadata, the row does not carry it).
+    let state = forked.metadata().await;
     assert_eq!(state.cache_root_id.as_deref(), Some(source.id().as_str()));
 }
 
@@ -3214,18 +3222,22 @@ async fn should_inherit_chain_root_as_cache_root_when_forking_a_forked_session()
         .await
         .unwrap();
 
-    let state = manager.persistence.load_state(leaf.id()).await.unwrap();
+    // Read back from the live scope (ADR-006: lineage is not a row column).
+    let state = leaf.metadata().await;
     assert_eq!(state.cache_root_id.as_deref(), Some(root.id().as_str()));
 }
 
-/// Given a fork whose source `state.json` cannot be loaded, When it is
-/// forked, Then the target's `cache_root_id` stays `None` — no panic, no
-/// fallback mint on an unreadable source.
+/// Given a fork whose source carries no cache root of its own (the
+/// default scope metadata), When it is forked, Then the target's
+/// `cache_root_id` records the source as the root — and a source whose
+/// metadata carries an explicit root propagates it (no `None`-mint from
+/// an unreadable state, which ADR-006 made unreachable: the fork pipeline
+/// requires a live source, whose scope metadata is always readable).
 #[tokio::test]
 async fn should_leave_cache_root_absent_when_source_state_is_unreadable() {
     let (manager, _tmp) = make_manager();
     let source = manager
-        .create_session(SessionMetadata::default(), SessionScopeConfig::default())
+        .create_session_lazy(SessionMetadata::default(), SessionScopeConfig::default())
         .await
         .unwrap();
     source
@@ -3235,10 +3247,13 @@ async fn should_leave_cache_root_absent_when_source_state_is_unreadable() {
         )
         .await
         .unwrap();
-    let state_path = manager.persistence().state_path(source.id());
-    tokio::fs::remove_file(&state_path)
-        .await
-        .expect("the source's state.json must exist to be deleted");
+    // The lazy create wrote a ROW (ADR-006) and no state.json — the
+    // persisted document the old test deleted no longer exists to delete.
+    assert!(
+        !manager.persistence().state_path(source.id()).exists(),
+        "a lazy create writes the row, not state.json"
+    );
+    assert!(manager.metadata_store().exists(source.id()).await);
 
     let target = manager
         .fork_session(
@@ -3249,8 +3264,11 @@ async fn should_leave_cache_root_absent_when_source_state_is_unreadable() {
         .await
         .unwrap();
 
-    let state = manager.persistence.load_state(target.id()).await.unwrap();
-    assert!(state.cache_root_id.is_none());
+    // The live source has no cache root, so the source itself is the
+    // root (resolve_fork_cache_root's contract) — never `None`-minted
+    // from a metadata-less source.
+    let state = target.metadata().await;
+    assert_eq!(state.cache_root_id.as_deref(), Some(source.id().as_str()));
 }
 
 /// Given a `state.json` that predates the fork feature (no `forkedFrom`
@@ -3352,18 +3370,24 @@ async fn should_merge_source_custom_with_fork_metadata_when_forking() {
         .await
         .unwrap();
 
-    let fork_state_path = manager.persistence().state_path(fork.id());
-    let raw = tokio::fs::read_to_string(&fork_state_path).await.unwrap();
-    let state: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    let custom = state.get("custom").expect("the fork must carry custom");
+    // Then the fork's metadata carries the merged custom dict (source base
+    // + fork override, `goal` dropped on both sides) — read back from the
+    // live scope (ADR-006: the create path writes the row, not
+    // state.json, and `custom` is not a row column).
+    let state = fork.metadata().await;
+    let custom = state
+        .custom
+        .as_ref()
+        .map(|map| serde_json::Value::Object(map.clone()))
+        .unwrap_or(serde_json::Value::Null);
     assert_eq!(
         custom,
-        &serde_json::json!({
+        serde_json::json!({
             "theme": "dark",
             "shared": "from-fork",
             "origin": "fork"
         }),
-        "custom must be source-base + fork-override with goal dropped on both sides, got: {raw}"
+        "custom must be source-base + fork-override with goal dropped on both sides"
     );
 }
 
@@ -3435,6 +3459,7 @@ async fn write_member_journal(
             reason: "completed".to_string(),
             error: None,
             duration_ms: None,
+            ended_at: None,
         })
         .await
         .unwrap();
@@ -3505,6 +3530,7 @@ async fn write_f5_member_source(manager: &SessionManager, session_id: &SessionId
         reason: "completed".to_string(),
         error: None,
         duration_ms: None,
+        ended_at: None,
     })
     .await
     .unwrap();
@@ -3536,6 +3562,7 @@ async fn write_f5_member_source(manager: &SessionManager, session_id: &SessionId
         reason: "completed".to_string(),
         error: None,
         duration_ms: None,
+        ended_at: None,
     })
     .await
     .unwrap();
@@ -3834,12 +3861,13 @@ async fn should_not_mint_an_agents_manifest_when_the_source_has_none() {
         .await
         .unwrap();
 
+    // ADR-006: a source without a manifest writes NO state.json at all —
+    // the manifest-less fork keeps a row-only footprint (the agents
+    // document is minted only when there is a manifest to carry).
     let state_path = manager.persistence().state_path(fork.id());
-    let raw = tokio::fs::read_to_string(&state_path).await.unwrap();
-    let state: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert!(
-        state.get("agents").is_none(),
-        "a source without an agents manifest must not mint one in the fork, got: {raw}"
+        !state_path.exists(),
+        "a source without an agents manifest must not mint a state.json in the fork"
     );
 }
 
@@ -3933,11 +3961,13 @@ async fn should_land_exactly_the_expected_entities_in_the_forks_directory() {
         }
     }
     entities.sort();
+    // ADR-006: state.json is no longer part of a created fork's on-disk
+    // inventory — the metadata row (the store) carries what it held, the
+    // directory carries only the body (wire logs + blobs).
     let expected = vec![
         "agents/agent-f5-alpha/wire.jsonl",
         "agents/agent-f5-beta/wire.jsonl",
         "blobs/cccccccccccccccccccccccccccccccccccccccc",
-        "state.json",
         "wire.jsonl",
     ];
     assert_eq!(
@@ -3992,6 +4022,7 @@ async fn write_duplicate_ridden_log(manager: &SessionManager, session_id: &Sessi
                 reason: "completed".to_string(),
                 error: None,
                 duration_ms: Some(n * 100),
+                ended_at: None,
             })
             .await
             .unwrap();
@@ -4074,6 +4105,7 @@ async fn should_seed_past_dangling_brackets_when_aborted_ordinals_exceed_the_end
                 reason: "completed".to_string(),
                 error: None,
                 duration_ms: None,
+                ended_at: None,
             })
             .await
             .unwrap();
@@ -4417,4 +4449,469 @@ async fn should_resume_successfully_after_the_restore_path_decompresses() {
             .await
             .is_some()
     );
+}
+
+// -----------------------------------------------------------------------
+// ADR-006 — the metadata row is the source of truth (write-order
+// reversal: row first, wire log second; creation writes the row)
+// -----------------------------------------------------------------------
+
+/// A recording [`MetadataStorePort`] double: every call appends one entry
+/// to the shared journal, in arrival order. The write-order tests assert
+/// on the journal's sequence, not on the store's state.
+#[derive(Default)]
+struct RecordingMetadataStore {
+    calls: std::sync::Mutex<Vec<(SessionId, String)>>,
+}
+
+impl RecordingMetadataStore {
+    fn apply_calls(&self) -> Vec<String> {
+        self.calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(id, _)| id.as_str().to_string())
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::session::metadata_port::MetadataStorePort for RecordingMetadataStore {
+    async fn exists(&self, _session_id: &SessionId) -> bool {
+        false
+    }
+
+    async fn get(
+        &self,
+        _session_id: &SessionId,
+    ) -> Option<crate::session::metadata_port::SessionMetadataRecord> {
+        None
+    }
+
+    async fn apply(
+        &self,
+        session_id: &SessionId,
+        workspace_id: &str,
+        _touched: crate::session::metadata_port::MetadataPatch,
+    ) -> Result<(), crate::session::metadata_port::MetadataStoreError> {
+        self.calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((session_id.clone(), workspace_id.to_string()));
+        Ok(())
+    }
+
+    async fn delete(
+        &self,
+        _session_id: &SessionId,
+    ) -> Result<(), crate::session::metadata_port::MetadataStoreError> {
+        Ok(())
+    }
+
+    async fn apply_seed(
+        &self,
+        _session_id: &SessionId,
+        _workspace_id: &str,
+        _record: crate::session::metadata_port::SessionMetadataRecord,
+    ) -> Result<(), crate::session::metadata_port::MetadataStoreError> {
+        Ok(())
+    }
+
+    async fn list_ids(&self, _workspace_id: &str) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+/// Given a lazily created (unmaterialized) session wired to a metadata
+/// store that records call order, when the session materializes, then the
+/// metadata row write happens BEFORE the wire log exists — "row present,
+/// body absent" is the legal just-created state (ADR-006 decision b), and
+/// a crash between the two steps leaves a row, never a logless orphan.
+///
+/// The order is observed indirectly: the recording store's `apply`
+/// answers only after the row entry lands, and by then the wire log must
+/// NOT exist yet (the manager creates it strictly after `apply` returns).
+#[tokio::test]
+async fn should_write_row_before_creating_wire_log_when_session_materializes() {
+    // A store whose `apply` observes the wire log's existence at the exact
+    // moment it runs (the moment the write-order question is about).
+    struct OrderProbingStore {
+        wire_log_path: std::sync::Mutex<Option<std::path::PathBuf>>,
+        saw_log_during_apply: std::sync::Mutex<bool>,
+    }
+    #[async_trait::async_trait]
+    impl MetadataStorePort for OrderProbingStore {
+        async fn exists(&self, _session_id: &SessionId) -> bool {
+            false
+        }
+        async fn get(
+            &self,
+            _session_id: &SessionId,
+        ) -> Option<crate::session::metadata_port::SessionMetadataRecord> {
+            None
+        }
+        async fn apply(
+            &self,
+            _session_id: &SessionId,
+            _workspace_id: &str,
+            _touched: crate::session::metadata_port::MetadataPatch,
+        ) -> Result<(), crate::session::metadata_port::MetadataStoreError> {
+            let path = self.wire_log_path.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let saw = path.as_ref().is_some_and(|p| p.exists());
+            *self.saw_log_during_apply.lock().unwrap_or_else(|e| e.into_inner()) = saw;
+            Ok(())
+        }
+        async fn delete(
+            &self,
+            _session_id: &SessionId,
+        ) -> Result<(), crate::session::metadata_port::MetadataStoreError> {
+            Ok(())
+        }
+        async fn apply_seed(
+            &self,
+            _session_id: &SessionId,
+            _workspace_id: &str,
+            _record: crate::session::metadata_port::SessionMetadataRecord,
+        ) -> Result<(), crate::session::metadata_port::MetadataStoreError> {
+            Ok(())
+        }
+        async fn list_ids(&self, _workspace_id: &str) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    let (manager, tmp) = make_manager();
+    let probe = Arc::new(OrderProbingStore {
+        wire_log_path: std::sync::Mutex::new(None),
+        saw_log_during_apply: std::sync::Mutex::new(false),
+    });
+    let manager = manager.with_metadata_store(Arc::clone(&probe) as Arc<_>);
+    let session = manager
+        .create_session_lazy(SessionMetadata::default(), SessionScopeConfig::default())
+        .await
+        .unwrap();
+    *probe
+        .wire_log_path
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(manager.persistence().wire_log_path(session.id()));
+
+    // When the session materializes (the first send's trigger)
+    let materialized = manager.materialize_session(session.id()).await.unwrap();
+    assert!(materialized, "the lazy session materializes");
+
+    // Then the row write ran while the wire log did not yet exist.
+    assert!(
+        !*probe.saw_log_during_apply.lock().unwrap_or_else(|e| e.into_inner()),
+        "the metadata row must be written BEFORE the wire log is created"
+    );
+    // And after materialization both exist (the log's creation followed).
+    assert!(manager.persistence().wire_log_path(session.id()).exists());
+    let _ = tmp;
+}
+
+/// Given a lazily created session wired to a recording store, when nothing
+/// further happens, then the metadata ROW exists (SDR-004 as rewritten by
+/// ADR-006: creation is the first `apply` — "创建即写行") while no session
+/// directory or wire log does — the never-conversed session's row carries
+/// `last_prompt: None`, which the listing's `exclude_empty` filter owns.
+#[tokio::test]
+async fn should_create_row_even_when_never_conversed() {
+    let (manager, _tmp) = make_manager();
+    let store = Arc::new(RecordingMetadataStore::default());
+    let manager = manager.with_metadata_store(Arc::clone(&store) as Arc<_>);
+    let session = manager
+        .create_session_lazy(SessionMetadata::default(), SessionScopeConfig::default())
+        .await
+        .unwrap();
+
+    // Then the row was written at creation (the recording journal proves
+    // the apply fired even though this store's `exists` is hard-wired
+    // false — the row's existence is the default store's job, below).
+    assert_eq!(
+        store.apply_calls(),
+        vec![session.id().as_str().to_string()],
+        "creation is the first apply; a never-conversed session HAS a row"
+    );
+
+    // And the physical artifacts still defer (SDR-004's lazy body): no
+    // directory, no wire log — the row is the only durable trace, and its
+    // empty `last_prompt` is the `exclude_empty` filter's business.
+    assert!(!manager.persistence().wire_log_path(session.id()).exists());
+    assert!(!session.wire_log_installed().await);
+
+    // And against a REAL store (the in-memory implementation), the row is
+    // queryable and listed — the listing input carries the never-conversed
+    // session, whose empty `last_prompt` the `exclude_empty` filter owns.
+    let (manager, _tmp) = make_manager();
+    let manager = manager.with_metadata_store(Arc::new(
+        crate::session::metadata_port::InMemoryMetadataStore::new(),
+    ) as Arc<_>);
+    let session = manager
+        .create_session_lazy(SessionMetadata::default(), SessionScopeConfig::default())
+        .await
+        .unwrap();
+    assert!(
+        manager.metadata_store().exists(session.id()).await,
+        "the row exists for a never-conversed session"
+    );
+    assert_eq!(
+        manager
+            .metadata_store()
+            .list_ids(&manager.metadata_workspace_id())
+            .await,
+        vec![session.id().as_str().to_string()],
+        "the workspace listing input carries the never-conversed session's row"
+    );
+}
+
+/// Given an eagerly created session, when it converses, then its row's
+/// `last_prompt` carries the freshest user input through the materialize
+/// path's full-field patch (the listing's `exclude_empty` input stays
+/// honest), and the row (not state.json) is the durable metadata record
+/// the restart-replay would read back.
+#[tokio::test]
+async fn should_carry_last_prompt_in_the_row_when_a_lazy_session_materializes() {
+    let (manager, _tmp) = make_manager();
+    let manager = manager.with_metadata_store(Arc::new(
+        crate::session::metadata_port::InMemoryMetadataStore::new(),
+    ) as Arc<_>);
+    let session = manager
+        .create_session_lazy(
+            SessionMetadata {
+                title: "row-first".to_string(),
+                ..SessionMetadata::default()
+            },
+            SessionScopeConfig::default(),
+        )
+        .await
+        .unwrap();
+    // The send path's scope-layer stamp (the real send flow stamps
+    // last_prompt before materializing — replicated here directly).
+    session
+        .update_metadata(|metadata| {
+            metadata.last_prompt = Some("hello row".to_string());
+        })
+        .await;
+
+    let materialized = manager.materialize_session(session.id()).await.unwrap();
+    assert!(materialized);
+
+    // Then the row carries the materialize-time snapshot: the title and
+    // the last prompt the scope layer held at the moment of the write.
+    let record = manager
+        .metadata_store()
+        .get(session.id())
+        .await
+        .expect("the row exists after materialization");
+    assert_eq!(record.title, "row-first");
+    assert_eq!(record.last_prompt.as_deref(), Some("hello row"));
+    assert_eq!(
+        record.cwd.as_deref(),
+        Some(_tmp.path().to_string_lossy().as_ref()),
+        "the row's cwd carries the workspace-rooted workDir"
+    );
+}
+
+/// Given a session whose metadata ROW exists (a real in-memory store) but
+/// whose `state.json` was never written (the post-ADR-006 create shape),
+/// When the session is resumed, Then the resume reads the row — the row is
+/// the metadata source of truth — and the resumed session's title, tags, and
+/// recency match the row's record (existence check 2/11 migrates to the
+/// metadata row).
+#[tokio::test]
+async fn should_resume_the_row_metadata_when_state_json_is_missing() {
+    // Given a manager wired to a REAL metadata store, a wire log on disk,
+    // and NO state.json (the row-only session shape ADR-006 creates)
+    let (manager, tmp) = make_manager();
+    let manager = manager.with_metadata_store(Arc::new(
+        crate::session::metadata_port::InMemoryMetadataStore::new(),
+    ) as Arc<_>);
+    let session_id = SessionId::new("row-only-resume");
+    let session_dir = manager.persistence().session_dir(&session_id);
+    tokio::fs::create_dir_all(&session_dir).await.unwrap();
+    let mut log = JsonlAppendLog::create(&wire_log_of(&manager, &session_id))
+        .await
+        .unwrap();
+    log.append(&WireOp::Metadata {
+        protocol_version: None,
+        created_at: None,
+    })
+    .await
+    .unwrap();
+    log.append(&model_record_op()).await.unwrap();
+    drop(log);
+    assert!(
+        !manager.persistence().state_path(&session_id).exists(),
+        "the fixture must not write state.json"
+    );
+    // Seed the row the way every write path does: one apply. The title is
+    // a REAL derived title (not a placeholder) so the resume's custom-title
+    // derivation can be asserted too.
+    let created = chrono::Utc::now() - chrono::Duration::hours(2);
+    let updated = chrono::Utc::now() - chrono::Duration::hours(1);
+    manager
+        .metadata_store()
+        .apply(
+            &session_id,
+            &manager.metadata_workspace_id(),
+            MetadataPatch {
+                title: Some("row-derived title".to_string()),
+                tags: Some(vec!["row".to_string(), "resume".to_string()]),
+                updated_at: Some(updated),
+                cwd: Some(Some(tmp.path().to_string_lossy().into_owned())),
+                last_prompt: Some(Some("the seeded prompt".to_string())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    // When the session is resumed
+    let session = manager.resume_session(&session_id).await.unwrap();
+
+    // Then the resumed scope carries the ROW's metadata — never defaults,
+    // never a panic on the absent state.json
+    let metadata = session.metadata().await;
+    assert_eq!(metadata.title, "row-derived title");
+    assert!(metadata.is_custom_title, "a derived title must survive as custom");
+    assert_eq!(metadata.updated_at, updated);
+    let mut resumed_tags = metadata.tags.iter().cloned().collect::<Vec<_>>();
+    resumed_tags.sort();
+    assert_eq!(resumed_tags, vec!["resume".to_string(), "row".to_string()]);
+    assert_eq!(metadata.last_prompt.as_deref(), Some("the seeded prompt"));
+    assert_eq!(
+        metadata.work_dir.as_deref(),
+        Some(tmp.path().to_string_lossy().as_ref())
+    );
+    let _ = created;
+}
+
+/// Given a row whose `updated_at` predates `created_at` (the replay-backfill
+/// inversion the window-keeper's created_at-stamping produces), When the
+/// session resumes from the row, Then the resume keeps both stamps verbatim
+/// — no panic, no silent normalization (the inversion is the documented
+/// accepted trade-off, restore.rs's ledger-open note).
+#[tokio::test]
+async fn should_keep_the_rows_stamps_verbatim_when_created_at_lags_updated_at() {
+    let (manager, _tmp) = make_manager();
+    let manager = manager.with_metadata_store(Arc::new(
+        crate::session::metadata_port::InMemoryMetadataStore::new(),
+    ) as Arc<_>);
+    let session_id = SessionId::new("row-stamps-verbatim");
+    let session_dir = manager.persistence().session_dir(&session_id);
+    tokio::fs::create_dir_all(&session_dir).await.unwrap();
+    let mut log = JsonlAppendLog::create(&wire_log_of(&manager, &session_id))
+        .await
+        .unwrap();
+    log.append(&WireOp::Metadata {
+        protocol_version: None,
+        created_at: None,
+    })
+    .await
+    .unwrap();
+    log.append(&model_record_op()).await.unwrap();
+    drop(log);
+
+    // Seed through the store so the in-memory row's output-only created_at
+    // is stamped NOW while updated_at is the historical replay value.
+    let historical = chrono::Utc::now() - chrono::Duration::days(30);
+    manager
+        .metadata_store()
+        .apply(
+            &session_id,
+            &manager.metadata_workspace_id(),
+            MetadataPatch {
+                title: Some("inverted".to_string()),
+                updated_at: Some(historical),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    // When the session resumes
+    let session = manager.resume_session(&session_id).await.unwrap();
+
+    // Then both stamps are the row's, verbatim
+    let metadata = session.metadata().await;
+    assert_eq!(metadata.updated_at, historical);
+    assert!(
+        metadata.created_at > historical,
+        "the store-stamped created_at stays the later stamp (the accepted inversion)"
+    );
+}
+
+/// The wire-log path helper the row-only resume fixtures share.
+fn wire_log_of(manager: &SessionManager, session_id: &SessionId) -> std::path::PathBuf {
+    manager.persistence().wire_log_path(session_id)
+}
+
+
+// ---------------------------------------------------------------------------
+// Pin writes (SDR-016/017, ADR-006 Task 15)
+// ---------------------------------------------------------------------------
+
+async fn pin_test_manager() -> (SessionManager, Arc<SessionId>) {
+    let (manager, _tmp) = make_manager();
+    let manager = manager.with_metadata_store(Arc::new(
+        crate::session::metadata_port::InMemoryMetadataStore::new(),
+    ) as Arc<_>);
+    let session = manager
+        .create_session(SessionMetadata::default(), SessionScopeConfig::default())
+        .await
+        .unwrap();
+    let id = Arc::new(session.id().clone());
+    (manager, id)
+}
+
+/// Given a session, When it is pinned with a color, Then the row carries
+/// the trio and  stays untouched (a pin is not usage —
+/// SDR-004/014).
+#[tokio::test]
+async fn should_pin_without_refreshing_recency() {
+    let (manager, id) = pin_test_manager().await;
+    let before = manager.metadata_store().get(&id).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+    manager.set_pin(&id, Some(mirri_proto::PinColor::Blue)).await.unwrap();
+
+    let row = manager.metadata_store().get(&id).await.unwrap();
+    assert!(row.pinned);
+    assert!(row.pinned_at.is_some());
+    assert_eq!(row.pin_color.as_deref(), Some("blue"));
+    assert_eq!(
+        row.updated_at, before.updated_at,
+        "a pin must not refresh updated_at (SDR-004)"
+    );
+}
+
+/// Given a pinned session, When it is pinned again, Then pinned_at keeps
+/// the original moment (the idempotent sort key).
+#[tokio::test]
+async fn should_not_refresh_pinned_at_on_repeated_pin() {
+    let (manager, id) = pin_test_manager().await;
+    manager.set_pin(&id, None).await.unwrap();
+    let first = manager.metadata_store().get(&id).await.unwrap().pinned_at;
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+    manager.set_pin(&id, Some(mirri_proto::PinColor::Red)).await.unwrap();
+
+    let row = manager.metadata_store().get(&id).await.unwrap();
+    assert_eq!(row.pinned_at, first, "the original pin moment survives");
+    assert_eq!(row.pin_color.as_deref(), Some("red"), "the color follows the request");
+}
+
+/// Given a pinned session with a color, When it is unpinned, Then the
+/// whole trio clears.
+#[tokio::test]
+async fn should_clear_the_trio_when_unpinned() {
+    let (manager, id) = pin_test_manager().await;
+    manager.set_pin(&id, Some(mirri_proto::PinColor::Green)).await.unwrap();
+
+    manager.clear_pin(&id).await.unwrap();
+
+    let row = manager.metadata_store().get(&id).await.unwrap();
+    assert!(!row.pinned);
+    assert!(row.pinned_at.is_none());
+    assert!(row.pin_color.is_none());
 }

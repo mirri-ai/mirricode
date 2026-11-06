@@ -387,6 +387,40 @@ describe('WsRpcApi listMessages (rust message.list wire → app shape)', () => {
     // Then the app message degrades honestly — no fabricated metadata
     expect(page.items[0]?.metadata).toBeUndefined();
   });
+
+  it('should map a row endedAtMs into an ISO endedAt when listing messages', async () => {
+    // Given an assistant read-face row carrying the engine's completion
+    // instant (epoch ms, stamped on the turn's last assistant row)
+    const { api, call } = createApi();
+    call.mockResolvedValue({
+      messages: [
+        { id: 'msg-0', role: 'assistant', content: 'done', agentId: 'main', endedAtMs: 1_730_000_000_000 },
+      ],
+      hasMore: false,
+    });
+
+    // When listing the session's messages
+    const page = await api.listMessages('session-1');
+
+    // Then the app message carries the same instant as an ISO string — the
+    // footer's timestamp on a reloaded transcript
+    expect(page.items[0]?.endedAt).toBe(new Date(1_730_000_000_000).toISOString());
+  });
+
+  it('should leave endedAt undefined when a read-face row carries no endedAtMs', async () => {
+    // Given an assistant row from an engine that predates the field
+    const { api, call } = createApi();
+    call.mockResolvedValue({
+      messages: [{ id: 'msg-0', role: 'assistant', content: 'done', agentId: 'main', durationMs: 1200 }],
+      hasMore: false,
+    });
+
+    // When listing the session's messages
+    const page = await api.listMessages('session-1');
+
+    // Then no endedAt is fabricated (the footer renders no timestamp)
+    expect(page.items[0]?.endedAt).toBeUndefined();
+  });
 });
 
 describe('WsRpcApi addProvider (createProvider alignment on the rust backend)', () => {
@@ -641,6 +675,7 @@ describe('toAppSnapshot (rust session.snapshot wire → app shape)', () => {
             name: 'Bash',
             args: { command: 'ls' },
             last_progress: { kind: 'stdout', text: 'file.txt' },
+            started_at_ms: 1730000000000,
           },
         ],
       },
@@ -662,6 +697,7 @@ describe('toAppSnapshot (rust session.snapshot wire → app shape)', () => {
       name: 'Bash',
       args: { command: 'ls' },
       lastProgress: { kind: 'stdout', text: 'file.txt' },
+      startedAtMs: 1730000000000,
     });
     expect(app.inFlightTurn!.promptId).toBeUndefined();
   });

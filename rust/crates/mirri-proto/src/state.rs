@@ -60,6 +60,19 @@ pub struct AgentState {
     /// in place.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cron_tasks: Vec<serde_json::Value>,
+    /// The session's cumulative count of one-shot cron tasks created from
+    /// cron-lineage turns (SDR-106 A.6b / S9) — folded from
+    /// `cron.lineage_created` ops as a max (absolute, idempotent).
+    #[serde(default)]
+    pub cron_lineage_one_shot_created: u32,
+    /// Held cron fires (C.4, stage-1 batch-2) — fired prompts waiting for
+    /// an idle target agent, stored on the task side so they survive a
+    /// session close and redeliver on resume. One entry per task id (the
+    /// reducer merges same-task holds by adding coalescedCount);
+    /// `cron.held_clear` removes an entry. Raw JSON like `cron_tasks` so
+    /// one bad record never fails the replay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cron_held: Vec<serde_json::Value>,
     /// Tool-activation state derived from the tools/profile wire ops
     /// (`tools.set_active_tools`, `tools.reset_active_tools`,
     /// `tools.register_user_tool`, `tools.unregister_user_tool`, and the
@@ -121,6 +134,8 @@ impl AgentState {
             plan_mode: None,
             plan_text: None,
             cron_tasks: Vec::new(),
+            cron_lineage_one_shot_created: 0,
+            cron_held: Vec::new(),
             tools: ToolsState::default(),
             profile_name: None,
             model: None,

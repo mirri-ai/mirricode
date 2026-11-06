@@ -251,8 +251,10 @@ pub struct AcpHandler {
     /// bridges (cloned into their closures).
     client_capabilities: Arc<std::sync::Mutex<Option<Value>>>,
     /// The working directory each pooled engine is rooted at (engine
-    /// pointer → cwd): the per-session cwd `session/list` reports and the
-    /// `<cwd>/.mirri/v3_sessions/<id>` directory `session/delete` removes.
+    /// pointer → cwd): the per-session cwd `session/list` reports; the
+    /// session's persisted directory lives under the ENGINE's home
+    /// (`<home>/v3_sessions/<bucket>/<id>` — ADR-006), reached through
+    /// the engine's own persistence, not this cwd map.
     /// Recorded by the pool mint ([`Self::engine_for_cwd`]) and by the
     /// production serve loop for the default engine ([
     /// `Self::remember_engine_cwd`]); test-injected engines stay unknown
@@ -1293,10 +1295,10 @@ impl AcpHandler {
     /// `session/resume` answers not found. The session's routing entry
     /// leaves with it.
     ///
-    /// The on-disk location is the engine's deterministic layout
-    /// `<engine cwd>/.mirri/v3_sessions/<session_id>/` (what
-    /// `SessionManager::new` roots itself at — the rust engine's own
-    /// storage root, ADR-006-R2); an engine whose cwd the
+    /// The on-disk location is the engine's home-rooted layout
+    /// `<home>/v3_sessions/<bucket>/<session_id>/` (ADR-006: the
+    /// metadata-row world — every engine construct resolves a home);
+    /// an engine whose cwd the
     /// host does not know (a remote engine — its files live server-side)
     /// is warn-dropped from the file removal, never a silent fake
     /// success.
@@ -1869,6 +1871,65 @@ impl AcpHandler {
             .insert(Arc::as_ptr(engine).cast::<()>() as usize, cwd);
     }
 
+    /// Tear the engine pool down: dispose every engine this handler
+    /// dispatches to (the default engine, each per-cwd pool engine, and
+    /// every session-recorded engine — one engine appears in several
+    /// tables, so the set is deduplicated by pointer). Called by the
+    /// serve-loop composition roots once the loop exits (stdin closed —
+    /// the host went away), so each engine's session-scoped MCP overlays
+    /// disconnect and their child processes die with the host connection
+    /// instead of outliving it. Idempotent: the tables are drained
+    /// (`mem::take`), a second call finds nothing left to dispose.
+    ///
+    /// Boundary: an engine swapped out by [`Self::replace_engine`] is not
+    /// collected here — the swap clears the routing tables, so the old
+    /// engine only survives in the callers' `Arc`s (in-flight turns) and
+    /// is never dispatched again. It is a dead remote (or an embedded
+    /// engine with no overlays of its own by then), so leaving it out of
+    /// the dispose set is accepted.
+    pub async fn dispose(&self) {
+        // The engine slot's guard (and each table's) must drop before the
+        // dispose awaits (the future must stay Send). Locks are never held
+        // across an await here.
+        let engines: Vec<Arc<dyn EngineAdapter>> = {
+            let current = self.current_engine();
+            let mut engines = vec![Arc::clone(&current)];
+            let mut seen: HashSet<usize> = [Arc::as_ptr(&current).cast::<()>() as usize].into();
+            let push = |engine: Arc<dyn EngineAdapter>,
+                        engines: &mut Vec<Arc<dyn EngineAdapter>>,
+                        seen: &mut HashSet<usize>| {
+                if seen.insert(Arc::as_ptr(&engine).cast::<()>() as usize) {
+                    engines.push(engine);
+                }
+            };
+            for table in std::mem::take(
+                &mut *self
+                    .cwd_engines
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()),
+            )
+            .into_values()
+            .chain(
+                std::mem::take(
+                    &mut *self
+                        .session_engines
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()),
+                )
+                .into_values(),
+            )
+            {
+                push(table, &mut engines, &mut seen);
+            }
+            engines
+        };
+        for engine in engines {
+            if let Err(error) = engine.dispose().await {
+                tracing::warn!(%error, "engine dispose failed during pool teardown");
+            }
+        }
+    }
+
     /// The recorded cwd of an engine, when known (see [
     /// `Self::remember_engine_cwd`]).
     fn engine_cwd(&self, engine: &Arc<dyn EngineAdapter>) -> Option<PathBuf> {
@@ -1979,9 +2040,25 @@ impl AcpHandler {
             .await
             .map_err(|error| (ERROR_INTERNAL, error.to_string()))?;
         let updates = self.updates.clone();
+        let active_prompts = Arc::clone(&self.active_prompt_sessions);
         tokio::spawn(async move {
             let mut translator = EventTranslator::default();
             while let Some(notification) = events.recv().await {
+                // Refresh the active-session pointer per event (read once
+                // per event, not once per wiring — the pointer must track
+                // the most recently started in-flight prompt session): a
+                // sessionless server-scoped event (the skill-catalog
+                // change) addresses it; with none in flight it drops.
+                let active = active_prompts
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .last()
+                    .cloned();
+                if let Some(id) = active {
+                    translator.set_active_session(&id);
+                } else {
+                    translator.clear_active_session();
+                }
                 if let Some(update) = translator.translate(&notification) {
                     // No listeners is not an error: the update is dropped.
                     let _ = updates.send(update);
@@ -2684,6 +2761,12 @@ struct EventTranslator {
     /// added by `tool.call.delta` / `tool.call.started` and removed by the
     /// terminal `tool.result` (the ids are session-globally unique).
     tool_calls: HashMap<String, TrackedToolCall>,
+    /// The session a sessionless server-scoped event addresses (the
+    /// skill-catalog change has no session id — ADR-013 decision 6 routes
+    /// it to the active session the way the reverse-RPC bridge uses the
+    /// active prompt session; `None` drops the event, the documented
+    /// sessionless semantics).
+    active_session: Option<String>,
 }
 
 /// The tracked state of one in-flight tool call.
@@ -2713,15 +2796,52 @@ fn infer_tool_kind(name: &str) -> &'static str {
 }
 
 impl EventTranslator {
+    /// The session a sessionless server-scoped event addresses: the
+    /// skill-catalog change carries no session id (ADR-013 decision 6)
+    /// and routes to the most recently started in-flight prompt session —
+    /// the same pointer the reverse-RPC bridge's `approval.ask` uses.
+    fn set_active_session(&mut self, session_id: &str) {
+        self.active_session = Some(session_id.to_string());
+    }
+
+    /// Clear the active-session pointer (no in-flight prompt session — a
+    /// sessionless event then drops, the documented semantics).
+    fn clear_active_session(&mut self) {
+        self.active_session = None;
+    }
+
     /// Translate one engine event notification into an ACP `session/update`
     /// notification carrying the official v1 [`SessionUpdate`] vocabulary,
     /// or `None` when the event has no ACP counterpart (see the module
     /// docs of the previous free function — the vocabulary is unchanged;
     /// this adds the per-tool-call state the content-bearing fields need).
     fn translate(&mut self, notification: &JsonRpcNotification) -> Option<JsonRpcNotification> {
-        let event_type = notification.method.strip_prefix("event.")?;
+        // Prefix tolerance: every engine event arrives `event.`-prefixed
+        // except the direct-form `skill.catalogChanged` broadcast (which
+        // rides the same channel unprefixed — see the embedded server's
+        // skill-catalog forwarder).
+        let event_type = notification
+            .method
+            .strip_prefix("event.")
+            .unwrap_or(notification.method.as_str());
         let params = &notification.params;
-        let session_id = params.get("sessionId").and_then(Value::as_str)?;
+        let session_id = match params.get("sessionId").and_then(Value::as_str) {
+            Some(id) => id.to_string(),
+            None => match self.active_session.as_deref() {
+                // Only the skill-catalog event may ride the active-session
+                // fallback (ADR-013 decision 6) — every other sessionless
+                // event keeps the drop semantics, debug-logged per the
+                // ADR's "丢弃并记 debug 日志" requirement.
+                Some(id) if event_type == "skill.catalogChanged" => id.to_string(),
+                _ => {
+                    tracing::debug!(
+                        method = %notification.method,
+                        "dropping sessionless event not eligible for the active-session fallback"
+                    );
+                    return None;
+                }
+            },
+        };
         let update = match event_type {
             // Internal bookkeeping: the user message is visible through
             // `session/prompt` params and has no ACP update counterpart.
@@ -2886,6 +3006,28 @@ impl EventTranslator {
                     "sessionUpdate": "tool_call_update",
                     "toolCallId": tool_call_id,
                     "title": text,
+                })
+            }
+            // The app-level skill-catalog change (ADR-013 decision 6): the
+            // host's notification surface renders the summary; an
+            // agent_message_chunk is the established non-interactive text
+            // carrier (no ACP update vocabulary exists for catalog state).
+            "skill.catalogChanged" => {
+                let count = |key: &str| {
+                    params
+                        .get(key)
+                        .and_then(Value::as_array)
+                        .map_or(0, std::vec::Vec::len)
+                };
+                let text = format!(
+                    "Skills updated: {} added, {} removed, {} changed",
+                    count("added"),
+                    count("removed"),
+                    count("updated")
+                );
+                json!({
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": text},
                 })
             }
             _ => return None,
@@ -3258,9 +3400,46 @@ fn initialize_result(params: &Value) -> Value {
 mod tests {
     use super::*;
 
+    /// A test engine wired exactly like [`AcpHandler::new`] but rooted at
+    /// an isolated Mirri home. The `TempDir` is returned alongside so the
+    /// caller keeps the home alive for the engine's lifetime.
+    fn isolated_engine() -> (Arc<mirri_embedded::EmbeddedServer>, tempfile::TempDir) {
+        let home = tempfile::tempdir().expect("isolated home tempdir");
+        let workspace_root =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let engine = Arc::new(mirri_embedded::EmbeddedServer::for_workspace_root(
+            mirri_core::WorkspaceId::new("embedded"),
+            workspace_root,
+            Some(home.path().to_path_buf()),
+            Vec::new(),
+        ));
+        (engine, home)
+    }
+
+    /// A handler on an isolated Mirri home — the test-suite replacement
+    /// for [`AcpHandler::new`], which would open the ambient
+    /// `~/.mirri-code/session-index.db`.
+    fn new_with_isolated_home() -> (AcpHandler, tempfile::TempDir) {
+        let (engine, home) = isolated_engine();
+        (AcpHandler::with_engine(engine), home)
+    }
+
+    /// Given the tests' engine constructor, When an engine is built, Then
+    /// it is rooted at the isolated temp home and its session index is
+    /// created there — never in the developer's real home directory.
+    #[test]
+    fn should_root_the_test_engine_and_its_session_index_in_an_isolated_home() {
+        let (engine, home) = isolated_engine();
+        assert_eq!(engine.home_dir(), Some(home.path()));
+        assert!(
+            home.path().join("session-index.db").exists(),
+            "the session index must be created inside the isolated home"
+        );
+    }
+
     #[tokio::test]
     async fn should_negotiate_protocol_version_1_when_client_sends_higher_version() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let result = handler
             .handle("initialize", json!({"protocolVersion": 99}))
             .await
@@ -3270,7 +3449,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_respond_with_supported_capabilities_on_initialize() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let result = handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -3301,14 +3480,14 @@ mod tests {
 
     #[tokio::test]
     async fn should_default_to_protocol_version_1_when_client_omits_version() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let result = handler.handle("initialize", json!({})).await.unwrap();
         assert_eq!(result["protocolVersion"], 1);
     }
 
     #[tokio::test]
     async fn should_reject_session_new_when_called_before_initialize() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let (code, message) = handler.handle("session/new", json!({})).await.unwrap_err();
         assert_eq!(code, ERROR_NOT_INITIALIZED);
         assert!(!message.is_empty());
@@ -3316,7 +3495,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_accept_session_prompt_when_initialize_was_negotiated() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -3334,7 +3513,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_reject_session_prompt_when_session_id_is_missing() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -3348,7 +3527,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_return_method_not_found_for_unknown_methods() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let (code, message) = handler
             .handle("unknown/method", json!({}))
             .await
@@ -3406,6 +3585,80 @@ mod tests {
                 "sessionUpdate": "agent_thought_chunk",
                 "content": {"type": "text", "text": "Reasoning"},
             })
+        );
+    }
+
+    /// Given a skill-catalog change notification with no session id, when
+    /// an ACP session is active, then the change is translated into an
+    /// agent_message_chunk update addressed to the active session (the
+    /// host's notification surface renders it; ADR-013 decision 6). With
+    /// no active session the event drops (the translator's existing
+    /// sessionless semantics — documented, not a silent failure).
+    #[tokio::test]
+    async fn should_translate_skill_catalog_changed_into_an_agent_message_chunk() {
+        // Given the skill-catalog change notification (direct form, camelCase)
+        let notification = JsonRpcNotification {
+            method: "skill.catalogChanged".to_string(),
+            params: json!({
+                "workspaceId": "ws-1",
+                "added": ["alpha"],
+                "removed": [],
+                "updated": ["beta"],
+                "trigger": "file",
+            }),
+        };
+
+        // When translated with an active session
+        let mut translator = EventTranslator::default();
+        translator.set_active_session("session-1");
+        let update = translator.translate(&notification);
+
+        // Then it becomes an agent_message_chunk carrying the summary line
+        let update = update.expect("the catalog change must reach the host");
+        assert_eq!(update.method, "session/update");
+        assert_eq!(update.params["sessionId"], "session-1");
+        assert_eq!(update.params["update"]["sessionUpdate"], "agent_message_chunk");
+        let text = update.params["update"]["content"]["text"]
+            .as_str()
+            .expect("text content");
+        assert!(text.contains("1 added") && text.contains("1 changed"), "summary carries counts: {text}");
+    }
+
+    /// Given a skill-catalog change with NO active session, when
+    /// translated, then it drops (None) — the documented sessionless
+    /// semantics, not a silent failure.
+    #[tokio::test]
+    async fn should_drop_the_skill_catalog_change_when_no_session_is_active() {
+        let notification = JsonRpcNotification {
+            method: "skill.catalogChanged".to_string(),
+            params: json!({
+                "workspaceId": "ws-1",
+                "added": ["alpha"],
+                "removed": [],
+                "updated": [],
+                "trigger": "file",
+            }),
+        };
+        let update = EventTranslator::default().translate(&notification);
+        assert!(update.is_none(), "no active session must drop the event");
+    }
+
+    /// Given a sessionless event that is NOT the skill-catalog change
+    /// (e.g. `event.workspace.created` with no sessionId param), when a
+    /// session IS active, then the event still drops — the active-session
+    /// fallback is exclusive to `skill.catalogChanged` (ADR-013 decision 6).
+    #[tokio::test]
+    async fn should_drop_a_sessionless_non_skill_event_even_when_a_session_is_active() {
+        let notification = JsonRpcNotification {
+            method: "event.workspace.created".to_string(),
+            params: json!({"workspaceId": "ws-1"}),
+        };
+        let mut translator = EventTranslator::default();
+        translator.set_active_session("session-1");
+        let update = translator.translate(&notification);
+        assert!(
+            update.is_none(),
+            "the active-session fallback must not catch non-skill sessionless events"
         );
     }
 
@@ -3773,7 +4026,7 @@ mod tests {
     async fn should_answer_method_not_found_when_authenticate_is_called_after_the_login_removal() {
         // Given an initialized handler (the ACP authenticate method left
         // with the managed-login surface)
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -3792,7 +4045,7 @@ mod tests {
     #[tokio::test]
     async fn should_answer_method_not_found_when_logout_is_called_after_the_login_removal() {
         // Given an initialized handler
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -4355,7 +4608,7 @@ mod tests {
     #[tokio::test]
     async fn should_reject_set_mode_when_mode_id_is_unknown() {
         // Given an initialized handler
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -4378,7 +4631,7 @@ mod tests {
     #[tokio::test]
     async fn should_reject_set_mode_when_the_pre_v1_mode_param_is_used() {
         // Given an initialized handler
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -4405,7 +4658,7 @@ mod tests {
     #[tokio::test]
     async fn should_reject_set_mode_when_session_id_is_missing() {
         // Given an initialized handler
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -4424,7 +4677,7 @@ mod tests {
     #[tokio::test]
     async fn should_reject_set_config_option_when_config_id_is_unknown() {
         // Given an initialized handler
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -4447,7 +4700,7 @@ mod tests {
     #[tokio::test]
     async fn should_reject_set_config_option_when_the_pre_v1_name_param_is_used() {
         // Given an initialized handler
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -4474,7 +4727,7 @@ mod tests {
     #[tokio::test]
     async fn should_reject_set_config_option_when_model_value_is_not_a_string() {
         // Given an initialized handler
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         handler
             .handle("initialize", json!({"protocolVersion": 1}))
             .await
@@ -4496,7 +4749,7 @@ mod tests {
     #[tokio::test]
     async fn should_reject_session_close_when_called_before_initialize() {
         // Given a fresh, uninitialized handler
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
 
         // When a session method is called before initialize
         let (code, _) = handler
@@ -4718,7 +4971,7 @@ mod tests {
     /// long streaming turns before any chunk is lost.
     #[test]
     fn should_buffer_the_production_update_capacity_before_reporting_a_lag() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let notification = |seq: i64| JsonRpcNotification {
             method: "session/update".to_string(),
             params: json!({"seq": seq}),
@@ -4774,11 +5027,8 @@ mod tests {
     /// exercises the lag path without pushing a thousand notifications.
     #[test]
     fn should_report_a_lag_at_the_injected_update_capacity() {
-        let handler = AcpHandler::with_engine_pool_and_updates(
-            Arc::new(mirri_embedded::EmbeddedServer::for_cwd()),
-            None,
-            4,
-        );
+        let (engine, _home) = isolated_engine();
+        let handler = AcpHandler::with_engine_pool_and_updates(engine, None, 4);
         let mut updates = handler.subscribe_updates();
         let notification = |seq: i64| JsonRpcNotification {
             method: "session/update".to_string(),
@@ -5102,7 +5352,7 @@ mod tests {
     /// must tolerate cancels that lose the race with the response).
     #[tokio::test]
     async fn should_treat_dollar_cancel_request_for_an_unknown_id_as_a_no_op() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let result = handler
             .handle("$/cancel_request", json!({"requestId": 999}))
             .await
@@ -5116,7 +5366,7 @@ mod tests {
     /// no-op as integer ids — never an invalid-params rejection.
     #[tokio::test]
     async fn should_treat_dollar_cancel_request_for_a_string_request_id_as_a_no_op() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let result = handler
             .handle(
                 "$/cancel_request",
@@ -5170,7 +5420,7 @@ mod tests {
     /// notification form never carries a response either way).
     #[tokio::test]
     async fn should_reject_dollar_cancel_request_when_the_request_id_is_missing() {
-        let handler = AcpHandler::new();
+        let (handler, _home) = new_with_isolated_home();
         let (code, _) = handler
             .handle("$/cancel_request", json!({}))
             .await

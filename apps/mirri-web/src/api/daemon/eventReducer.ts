@@ -26,11 +26,12 @@ import type {
   AppMessageContent,
   AppNotice,
   AppNoticeDetail,
-  AppWarning,
   AppQuestionRequest,
   AppSession,
   AppTask,
+  AppWarning,
   CompactionMarkerMetadata,
+  NarrativeSegment,
 } from '../types';
 import { COMPACTION_MARKER_METADATA_KEY } from '../types';
 import { i18n } from '../../i18n';
@@ -43,12 +44,6 @@ const OPTIMISTIC_USER_MESSAGE_METADATA_KEY = 'mirriWeb.optimisticUserMessage';
  *  background stdout AND subagent progress (legacy "Calling …" lines and
  *  structured step output lines) all use the same 40-line tail retention. */
 const MAX_BACKGROUND_OUTPUT_LINES = 40;
-
-/** ADR-015: the minimum length a chunk must have before the one-shot
- *  post-boundary tail guard may drop it as a replayed duplicate. Short tokens
- *  (blank lines, single words) are far more likely legitimate repeats of
- *  tail-adjacent content than a replay boundary artifact. */
-const MIN_TAIL_DEDUPE_LEN = 16;
 
 /** Skeleton description used by `patchSubagent` in agentEventProjector.ts when
  *  a lifecycle event re-projects a subagent the projector never saw spawn
@@ -344,37 +339,18 @@ function appendToolOutputToMessages(messages: AppMessage[], toolCallId: string, 
 
 /** Fold one `taskProgress` chunk onto its task row. Extracted verbatim from
  *  the reducer's taskProgress case (SDR-003b): the chunk-append semantics
- *  (outputLines/thinking/text concatenation) are unchanged — only the write
+ *  (outputLines / segment text concatenation) are unchanged — only the write
  *  granularity moved to the caller. Returns the SAME task reference when the
  *  chunk is a no-op (dedupe hit), so the caller can skip the map write. */
 function appendTaskProgress(
   task: AppTask,
   event: Extract<AppEvent, { type: 'taskProgress' }>,
 ): AppTask {
-  // Subagent streamed output (assistant.delta) concatenates into a single
-  // growing text block rather than fragmenting each delta into its own
-  // line — the detail panel renders it like a thinking block. Same for
-  // thinking deltas (ADR-009 live narrative's thinking block).
+  // Subagent streamed output (assistant.delta / thinking.delta, ADR-011 ②):
+  // the projector names the segment the chunk belongs to, and the chunk folds
+  // onto THAT segment — the row's narrative lives in the segment list.
   if (task.kind === 'subagent' && (event.kind === 'text' || event.kind === 'thinking')) {
-    // ADR-015: one-shot post-boundary replay guard. Both branches consume
-    // `tailGuard` on the FIRST text/thinking chunk after a boundary; a hit
-    // requires an exact ≥16-char tail repeat, so legitimate steady-state
-    // content is never dropped.
-    if (task.tailGuard === true) {
-      const current = event.kind === 'text' ? (task.text ?? '') : (task.thinking ?? '');
-      if (
-        event.outputChunk.length >= MIN_TAIL_DEDUPE_LEN &&
-        current.length > 0 &&
-        current.endsWith(event.outputChunk)
-      ) {
-        return { ...task, tailGuard: undefined }; // replay of the pre-boundary tail: drop
-      }
-      return event.kind === 'text'
-        ? { ...task, text: (task.text ?? '') + event.outputChunk, tailGuard: undefined }
-        : { ...task, thinking: (task.thinking ?? '') + event.outputChunk, tailGuard: undefined };
-    }
-    if (event.kind === 'text') return { ...task, text: (task.text ?? '') + event.outputChunk };
-    return { ...task, thinking: (task.thinking ?? '') + event.outputChunk };
+    return appendSegmentProgress(task, event);
   }
   const outputLines = task.outputLines ?? [];
   if (outputLines.at(-1) === event.outputChunk) return task;
@@ -387,6 +363,149 @@ function appendTaskProgress(
     // line, which needs the tail, not the history.
     outputLines: lines.slice(-MAX_BACKGROUND_OUTPUT_LINES),
   };
+}
+
+/** Fold a segment-named `taskProgress` chunk onto its target segment (ADR-011
+ *  ②): the row's segments are reducer-owned between taskCreated
+ *  replacements, so the chunk only ever extends the segment the projector
+ *  named. An unknown segment id is a silent no-op — the row keeps its
+ *  reference, so the caller skips the map write entirely. */
+function appendSegmentProgress(
+  task: AppTask,
+  event: Extract<AppEvent, { type: 'taskProgress' }>,
+): AppTask {
+  const segments = task.segments ?? [];
+  const idx = segments.findIndex((s) => s.id === event.segmentId);
+  if (idx === -1) return task; // 未知段 id：no-op（连不上投影层的段，静默丢弃）
+  const seg = segments[idx]!;
+  // 段级一次性尾守卫（ADR-015 d 段化 + ADR-011 ②重复计账不变量）：守卫只由
+  // 「刚携带全量段文本的 taskCreated」武装（投影层铸造，或 mergeSegments 在替换
+  // 路径重武装）；按发射序，其后首个 chunk 必然是该 taskCreated 已折叠的同一个
+  // delta，全量文本必以其结尾——故后缀匹配不设最短长度门槛（旧字段守卫的
+  // MIN_TAIL_DEDUPE_LEN 是内容猜测式去重的保险，随旧路径退役删除；这里的覆盖
+  // 是结构性的，短 token 同样命中）。命中即吞掉；未命中说明该段不在投影层全量
+  // 覆盖范围内，增量照常追加。
+  if (seg.tailGuard === true) {
+    if (seg.text.length > 0 && seg.text.endsWith(event.outputChunk)) {
+      return replaceSeg(task, segments, idx, { ...seg, tailGuard: undefined });
+    }
+    return replaceSeg(task, segments, idx, {
+      ...seg,
+      text: seg.text + event.outputChunk,
+      tailGuard: undefined,
+    });
+  }
+  return replaceSeg(task, segments, idx, { ...seg, text: seg.text + event.outputChunk });
+}
+
+function replaceSeg(
+  task: AppTask,
+  segments: NarrativeSegment[],
+  idx: number,
+  seg: NarrativeSegment,
+): AppTask {
+  const next = [...segments.slice(0, idx), seg, ...segments.slice(idx + 1)];
+  return { ...task, segments: next };
+}
+
+// taskCreated 是全应用最高频事件——无 tombstone 时复用同一个空集，避免每次
+// 调用构造新 Set。
+const EMPTY_TOMBSTONES: ReadonlySet<string> = new Set<string>();
+
+/** Merge the row's surviving segments with a replacement taskCreated's
+ *  projected segment list (ADR-011 ①重连重放).
+ *  `next === undefined`（骨架行不带段）→ 存活段原样保留；`prev === undefined`
+ *  （行上从未有过段）→ 投影层列表原样落入。两者都在时以重放列表为骨架（它携带
+ *  投影层的最新 seq 序）：同 id 段取更长文本并重武装一次性守卫——重放窗口后到达
+ *  的首个增量 chunk 与段内已有尾部精确尾匹配时被 `appendSegmentProgress` 吞掉，
+ *  实现「全量为准、增量不重复计账」；投影层新段（id 不在旧表）原样并入，存活
+ *  独有段（早于重放起点的段）保序排前。
+ *
+ *  `tombstones`（重试截断丢弃的段 id）：投影层不截断自己的段表，重放会把这些
+ *  失败尝试的残段当「新铸段」重新递回来——无论是 next 列表还是存活独有段前置
+ *  路径，命中即过滤。tombstone 是 run-scoped 的：重试截断时记入后随行存活到
+ *  成员终态（taskCreated 替换臂、快照名册合并都会保活），不在边界清空；重试后
+ *  的新段 id 由投影层的 generation 域保证不与旧 tombstone 碰撞，故重连重放的
+ *  同 id 重投不会被误伤。 */
+function mergeSegments(
+  prev: NarrativeSegment[] | undefined,
+  next: NarrativeSegment[] | undefined,
+  tombstones: ReadonlySet<string> = EMPTY_TOMBSTONES,
+): NarrativeSegment[] | undefined {
+  if (next === undefined) return prev;
+  if (prev === undefined) {
+    if (tombstones.size === 0) return next;
+    const adopted = next.filter((s) => !tombstones.has(s.id));
+    return adopted.length === next.length ? next : adopted;
+  }
+  const prevById = new Map(prev.map((s) => [s.id, s] as const));
+  const merged = next
+    .filter((s) => !tombstones.has(s.id))
+    .map((s) => {
+      const old = prevById.get(s.id);
+      if (!old) return s; // 投影层新铸段
+      return s.text.length >= old.text.length
+        ? { ...s, tailGuard: true } // 重放更全：保留重放文本、重武装守卫
+        : { ...old, tailGuard: true }; // 存活更长：保留存活文本、重武装守卫
+    });
+  const nextIds = new Set(next.map((s) => s.id));
+  const kept = prev.filter((s) => !nextIds.has(s.id) && !tombstones.has(s.id)); // 存活独有段（早于重放起点的段）排在前面
+  return kept.length > 0 ? [...kept, ...merged] : merged;
+}
+
+/** Arm the one-shot tail guard on the open (last) segment — the
+ *  `subagentStepBoundary` reducer branch's segment-side re-arm (ADR-011 ① /
+ *  ADR-015 a 段化): a replayed boundary frame must re-arm the surviving
+ *  segment's guard so the replay's first chunk is deduped by the segment
+ *  tail match. Empty list is a reference no-op. */
+function armLastSegment(segments: NarrativeSegment[]): NarrativeSegment[] {
+  if (segments.length === 0) return segments;
+  const idx = segments.length - 1;
+  const last = segments[idx]!;
+  if (last.tailGuard === true) return segments;
+  return [...segments.slice(0, idx), { ...last, tailGuard: true }];
+}
+
+/** Truncate the segment list back to the step-start mark (ADR-011 ① /
+ *  ADR-015 a 段化 retry branch): drop every segment minted after the mark,
+ *  cut the retained open (last) segment's text to its step-start length and
+ *  arm its guard. A mark of zero keeps an empty list; a mark counting MORE
+ *  segments than the live list (already truncated / stale mark) keeps the
+ *  list as-is and only re-arms the open segment — its text was already cut
+ *  to the mark, cutting again would shave legitimate replayed content. */
+function truncateSegmentsToMark(
+  segments: NarrativeSegment[],
+  mark: { count: number; openLen: number },
+): NarrativeSegment[] {
+  if (mark.count > segments.length) return armLastSegment(segments);
+  const kept = segments.slice(0, mark.count);
+  const last = kept.at(-1);
+  if (last === undefined) return kept; // count 0: everything minted in this step is dropped
+  const idx = kept.length - 1;
+  return [
+    ...kept.slice(0, idx),
+    { ...last, text: last.text.slice(0, mark.openLen), tailGuard: true },
+  ];
+}
+
+/** Merge the retry truncation's dropped-segment ids into the row's tombstone
+ *  list (ADR-011 ① fix-2): the projector never truncates its own list, so its
+ *  later taskCreated replays re-adopt the failed attempt's segments —
+ *  `mergeSegments` filters by these tombstones for the member's whole run
+ *  (they are never cleared; the projector's generation-scoped segment ids
+ *  guarantee a post-reset re-mint never collides with an old tombstone). A
+ *  replayed retrying frame that drops nothing (the list is already
+ *  truncated) keeps the existing tombstones; consecutive retries within one
+ *  step accumulate — ids are deduped. */
+function nextTombstones(
+  existing: string[] | undefined,
+  segments: NarrativeSegment[],
+  mark: { count: number; openLen: number } | undefined,
+): string[] | undefined {
+  if (mark === undefined) return existing; // 无记账（跨越 reset 的重放）：不截断不动
+  const dropped = segments.slice(mark.count).map((s) => s.id);
+  if (dropped.length === 0) return existing; // 重放帧无新丢弃：保留既有
+  return Array.from(new Set([...(existing ?? []), ...dropped]));
 }
 
 /** Agent error code → semantic title key under `warnings.agentError`. Codes
@@ -602,7 +721,20 @@ export function reduceAppEvent(
       // without a full reload.
       next.sessions = next.sessions.map((s) =>
         s.id === event.sessionId
-          ? { ...s, title: event.title ?? s.title, lastPrompt: event.lastPrompt ?? s.lastPrompt }
+          ? {
+              ...s,
+              title: event.title ?? s.title,
+              lastPrompt: event.lastPrompt ?? s.lastPrompt,
+              // SDR-016/017: the pin trio patch (the pinned-first re-sort
+              // follows from the reactive sort comparator).
+              ...(event.pinned === undefined
+                ? {}
+                : {
+                    pinned: event.pinned,
+                    pinnedAt: event.pinned ? (event.pinnedAt ?? s.pinnedAt) : undefined,
+                    pinColor: event.pinned ? event.pinColor : undefined,
+                  }),
+            }
           : s,
       );
       break;
@@ -849,6 +981,7 @@ export function reduceAppEvent(
           ...m,
           content: event.content,
           durationMs: event.durationMs ?? m.durationMs,
+          endedAt: event.endedAt ?? m.endedAt,
         };
       });
       // A live TodoList write lands as a toolUse part of an updated assistant
@@ -1041,7 +1174,6 @@ export function reduceAppEvent(
         patched[idx] = {
           ...event.task,
           outputLines: previous.outputLines,
-          text: previous.text,
           // A post-refresh lifecycle event re-projects the task with skeleton
           // metadata; don't let its placeholder clobber the roster-seeded
           // description.
@@ -1062,12 +1194,22 @@ export function reduceAppEvent(
           // ADR-009 live steps ride the projected row; a skeleton
           // re-projection without them must not blank the accumulated steps.
           steps: event.task.steps ?? previous.steps,
-          // ADR-015 / RC-4: the projector's per-delta taskCreated emissions must
-          // not wipe the reducer-owned narrative and bookkeeping fields.
-          thinking: previous.thinking,
-          stepTextLen: previous.stepTextLen,
-          stepThinkLen: previous.stepThinkLen,
-          tailGuard: previous.tailGuard,
+          // ADR-011 ①重连重放：投影态已清时 reducer 段存活——同 id 段保留更长文本
+          // 并重武装守卫（重放首 chunk 由段级尾匹配吞掉）；投影层新段（id 不在旧表）
+          // 原样并入。不用 `??` 直通：重连重放窗口投影层从零重铸段，首个 delta 后的
+          // taskCreated 携带「仅含新段的列表」（非 undefined），`??` 不触发会把存活
+          // 段清空。
+          segments: mergeSegments(
+            previous.segments,
+            event.task.segments,
+            new Set(previous.truncatedSegmentIds ?? []),
+          ),
+          // ADR-011 ①段化：步起点段记账也是 reducer-owned——投影层的逐 delta
+          // taskCreated / 骨架重铸都不携带，替换时保活（否则重试截断失锚）。
+          stepSegMark: previous.stepSegMark,
+          // ADR-011 ① / fix-1: 重试截断的 tombstone 同款保活——投影层不截断
+          // 自己的段表，保活跨 taskCreated 才能在 mergeSegments 里持续拦截。
+          truncatedSegmentIds: previous.truncatedSegmentIds,
           suspendedReason: event.task.suspendedReason ?? previous.suspendedReason,
         };
         next.tasksBySession = { ...next.tasksBySession };
@@ -1104,40 +1246,53 @@ export function reduceAppEvent(
       // Terminal stickiness (ADR-010 ②): a late retrying frame racing the
       // lifecycle event must not truncate a settled member's narrative.
       if (isTerminalStatus(t.status)) break;
+      // ADR-011 ①段化：段轨道的步起点记账与末段守卫状态（N7 no-op 判定）。
+      const segs = t.segments ?? [];
+      const segMarkEqual =
+        t.stepSegMark !== undefined &&
+        t.stepSegMark.count === segs.length &&
+        t.stepSegMark.openLen === (segs.at(-1)?.text.length ?? 0);
+      const lastSegArmed = segs.length === 0 || segs.at(-1)?.tailGuard === true;
       // N7: a non-retry boundary that would only re-commit identical marks onto
       // an already-armed guard is a reference no-op — skip the map write so
       // sibling consumers keep their references (same contract as taskProgress).
-      if (
-        !event.retry &&
-        t.tailGuard === true &&
-        t.stepTextLen === (t.text ?? '').length &&
-        t.stepThinkLen === (t.thinking ?? '').length
-      ) {
+      if (!event.retry && segMarkEqual && lastSegArmed) {
         break;
       }
       const patched = event.retry
         ? {
             ...t,
-            // ADR-015 / L4: with BOTH marks undefined the member's
-            // turn.started was never seen (mid-subscription reconnect) —
-            // truncating via `?? 0` would wipe text/thinking accumulated
-            // across the whole turn while the engine only replays the
-            // current step. Arm the one-shot tail guard instead and keep the
-            // accumulated narrative (宁可多显不可丢失); truncate only when at
-            // least one step-start mark is defined.
-            ...(t.stepTextLen === undefined && t.stepThinkLen === undefined
+            // ADR-011 ① / ADR-015 a 段化：段轨道的重试截断——段表截回步起点
+            // 记账（count），保留的开放段文本截到 openLen 并武装守卫（引擎从
+            // 步起点重放，段级尾匹配吞掉重放首 chunk）。记账未定义（跨越
+            // reset 的重放）时不截断，仅武装末段（宁可多显不可丢失）。段表为空
+            // 的行（旧投影层形状）无段可截。
+            // 被丢弃段的 id 记入 tombstone：投影层不截断自己的段表，其后
+            // taskCreated 携带的全量列表会把这些残段当新铸段递回来，
+            // mergeSegments 按 tombstone 过滤。
+            ...(segs.length === 0
               ? {}
               : {
-                  text: (t.text ?? '').slice(0, t.stepTextLen ?? 0),
-                  thinking: (t.thinking ?? '').slice(0, t.stepThinkLen ?? 0),
+                  segments:
+                    t.stepSegMark === undefined
+                      ? armLastSegment(segs)
+                      : truncateSegmentsToMark(segs, t.stepSegMark),
+                  truncatedSegmentIds: nextTombstones(t.truncatedSegmentIds, segs, t.stepSegMark),
                 }),
-            tailGuard: true,
           }
         : {
             ...t,
-            stepTextLen: (t.text ?? '').length,
-            stepThinkLen: (t.thinking ?? '').length,
-            tailGuard: true,
+            // ADR-011 ①段化：非重试边界记段起点账（段表长度 + 开放段文本
+            // 长度），无截断。投影层在关段时武装新段守卫，reducer 在这里对
+            // 末段重武装——重连重放的 boundary 帧到达时为存活段重新武装守卫
+            // （重放首 chunk 由段级尾匹配吞掉）。
+            stepSegMark: {
+              count: segs.length,
+              openLen: segs.at(-1)?.text.length ?? 0,
+            },
+            ...(segs.length > 0 ? { segments: armLastSegment(segs) } : {}),
+            // fix-2: tombstone 存活整个成员 run，非重试边界不清空——投影层
+            // generation 域段 id 保证 reset 后重铸不碰撞，无需边界清理。
           };
       next.tasksBySession = {
         ...next.tasksBySession,
@@ -1339,6 +1494,12 @@ export function reduceAppEvent(
     case 'workspaceCreated':
     case 'workspaceUpdated':
     case 'workspaceDeleted':
+      break;
+
+    case 'skillCatalogChanged':
+      // Handled before the reducer (the composable's onEvent intercept
+      // refreshes the skill caches + pushes the toast); listed here to
+      // keep the switch exhaustive.
       break;
 
     default: {

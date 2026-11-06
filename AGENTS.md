@@ -17,6 +17,7 @@ Before designing ANY change that touches engine/core behavior, answer FIRST: "wh
 - Before making code changes, read the relevant code and the most recent constraints, and follow the nearest `AGENTS.md` in the directory tree.
 - Keep changes focused. Do not slip in unrelated refactors along the way.
 - When committing, do not add any co-author attribution, and do not reveal the identity of the agent in commit messages, PR descriptions, or any explanatory text.
+- **Local quality checks go through the unified gate entrypoint** `pnpm gate` (`node scripts/gate.mjs`): fast-fail, lightest-first, tests always last. `pnpm gate` (~3s, no compile) → `pnpm gate:rust` (+clippy) → `pnpm gate:full` (everything incl. full test suites). Do not hand-assemble gate commands — the ordering, known-failure ledger, and stage set are owned by `scripts/gate.mjs` (see `rust/AGENTS.md` 统一质量门禁入口 section).
 
 ## Project Map
 
@@ -30,18 +31,11 @@ Before designing ANY change that touches engine/core behavior, answer FIRST: "wh
 
 ## Environment Requirements
 
-- **Node.js**: `>=24.15.0` (from the root `package.json` `engines`; `.nvmrc` is `24.15.0`, used by nvm / fnm / mise to pick the minimum recommended version).
-- **pnpm**: `10.33.0` (from the root `package.json` `packageManager`).
+- **Node.js**: `>=24.22.2` (from the root `package.json` `engines`; `.nvmrc` is `24.22.2`, used by nvm / fnm / mise to pick the minimum recommended version).
+- **pnpm**: `12.16.1`, pinned by every `pnpm/action-setup` step's `version:` input. The root `package.json` deliberately carries **no** `packageManager` field: pnpm 11+ honours it by writing `packageManagerDependencies` into the lockfile, turning `pnpm-lock.yaml` into a two-document YAML file that other tooling reads incorrectly. Bump the workflow pins together when upgrading. The cost is that `corepack enable` no longer provisions pnpm for a fresh clone — install `pnpm@12.16.1` yourself. `package.json`'s `sherif.ignoreRule` suppresses the `root-package-manager-field` rule for that same reason; do not re-add the field to satisfy it.
 - `pnpm install` will fail when the Node version is not satisfied, because `.npmrc` sets `engine-strict=true`.
 
 ## Monorepo Workspace Maintenance
-
-- `pnpm-workspace.yaml` is the source of truth for workspace membership, but `flake.nix` also contains **hardcoded** `workspacePaths` and `workspaceNames` lists.
-- **Whenever you add or remove a workspace package, you MUST update both `pnpm-workspace.yaml` and `flake.nix` — for every package, including leaf / test / e2e packages that nothing depends on.**
-  - `pnpm-workspace.yaml` uses globs (`packages/*`, `apps/*`), so most packages land there automatically; `flake.nix` is fully manual and is where omissions happen.
-  - Missing a path in `flake.nix`'s `workspacePaths` will silently drop files from the Nix build's `src` fileset.
-  - Missing a name in `flake.nix`'s `workspaceNames` will break `pnpmConfigHook` because dependencies for that workspace will not be fetched.
-- The automated "Check flake.nix workspace sync" (`scripts/check-nix-workspace.mjs`) only validates the transitive dependency **closure of its anchor package** (`@mirri-ai/mirri-desktop`). A leaf package outside that closure (e.g. an e2e package nobody imports) slips through even when it is missing from `flake.nix`. A green check is therefore NOT proof that `flake.nix` is fully in sync — keep it updated by hand on every add/remove, do not rely on the check to catch omissions.
 
 ## General Coding Rules
 
@@ -94,17 +88,20 @@ Prefer `should ... when ...` phrasing. Avoid mentioning variable names, function
 
 The CI pipeline has checks that are NOT covered by the local `build.sh` quality gate. When your changes touch the areas below, you MUST verify them before pushing:
 
-- **Nix build** (`nix build .#mirri-code`): Required when modifying:
-  - `flake.nix` (fileset, workspace lists, build logic). The package builds the **rust** `mirri` binary (`mirri-cli` with the SPA embedded via rust-embed) and imports `rust/Cargo.lock` with `importCargoLock`, so no vendor hash is maintained by hand; the JS toolchain only builds `apps/mirri-web`'s SPA.
-  - `rust/scripts/release-package.mjs` (resolves `yazl` from the root `package.json`)
-  - Any package that appears in `flake.nix`'s `workspaceNames`
-  - Nix is **not** a prerequisite; a `pnpm-lock.yaml` / workspace-list change also needs the `pnpmDeps` hash refreshed — see the `nix-pnpm-deps-hash` skill.
+- **Shipped-binary shape** (`ci.yml`'s `build` job): stage the SPA into the rust-embed directory, build `mirri-cli`, start `mirri web` and require the SPA shell on `GET /`. This is the shape the product ships — a change that only proves `pnpm -r run build` works does not cover it.
+- **Release packaging** (`rust/scripts/release-package.mjs`, resolves `yazl` from the root `package.json`).
 
 - **PR title check**: PR titles must follow Conventional Commit style. The `pr-title-checker` workflow validates this on every PR.
 
 - **Test scope**: The root `pnpm test` runs the maintained TypeScript suites — `apps/mirri-web` and `apps/mirri-desktop`. The default run sets `MIRRICODE_E2E_SKIP_RUST=1`: the web e2e suites that drive a real engine binary would otherwise run `cargo build -p mirri-cli` and blow the hook timeout. Run `pnpm test:e2e` (after building `rust/target/debug/mirri`) to exercise them.
 
 - **Rust workspace test/clippy runtime** (measured 2026-10-10, dev workstation, warm incremental build cache): `cargo test --manifest-path rust/Cargo.toml --workspace` takes ~7 minutes wall-clock (~6m44s, mostly compilation; the test bodies themselves finish in seconds), and a follow-up `cargo clippy --workspace --all-targets -- -D warnings` adds ~45 s. A cold cache (`cargo clean`, CI, or many changed crates) is significantly longer. Always run these as background tasks with a timeout of at least 20 minutes; foreground shell calls cap at 300 s and will be killed mid-build. CI runs the same suite and clippy in the `rust-test` job (`.github/workflows/ci.yml`), so a red rust test blocks a PR.
+
+### 测试超时纪律（2026-11-03 确立：盲目给超长测试加超时后沉淀）
+
+- 正常测试应该在 5-6 分钟内完成，10 分钟封顶。超过这个时间，先怀疑：测试 case 写得有问题，或者实现里有 bug（死循环、等待不会到来的事件等）——而不是测试"本来就需要这么久"。
+- 以怀疑的态度排查，禁止无脑加大超时时间。加超时只是掩盖问题。
+- 标准做法：把测试输出重定向到 `.tmp/` 下的临时文件，每隔 1-2 分钟检查一次输出，定位卡在哪里——是某个测试特别耗时需要优化，还是实施本身有 bug。定位到具体卡点后再决策。
 
 ## Release Pipeline (desktop-first)
 

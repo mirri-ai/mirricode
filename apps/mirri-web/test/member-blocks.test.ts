@@ -111,33 +111,46 @@ describe('memberBlocksFromLive', () => {
       arg: 'a.ts',
       status: 'ok',
       outputLines: [],
+      seq: 1,
       ...overrides,
     };
   }
 
-  it('should render structured steps as tool cards followed by the streamed text tail', () => {
-    const blocks = memberBlocksFromLive('Summarizing findings.', [
-      step(),
-      step({ id: 'tc_2', name: 'Bash', arg: 'ls', status: 'running', outputLines: ['a', 'b'] }),
-    ]);
+  it('should interleave narrative segments with tool steps in arrival order', () => {
+    const blocks = memberBlocksFromLive(
+      [
+        { id: 's0', kind: 'thinking', text: 'Pondering.', seq: 0 },
+        { id: 's1', kind: 'text', text: 'Summarizing findings.', seq: 3 },
+      ],
+      [step(), step({ id: 'tc_2', name: 'Bash', arg: 'ls', status: 'running', outputLines: ['a', 'b'], seq: 2 })],
 
-    expect(blocks.map((b) => b.kind)).toEqual(['tool', 'tool', 'text']);
+    );
+
+    expect(blocks.map((b) => b.kind)).toEqual(['thinking', 'tool', 'tool', 'text']);
     if (blocks[1]?.kind === 'tool') {
-      expect(blocks[1].tool.status).toBe('running');
-      expect(blocks[1].tool.output).toEqual(['a', 'b']);
+      expect(blocks[1].tool.status).toBe('ok');
     }
-    if (blocks[2]?.kind === 'text') expect(blocks[2].text).toBe('Summarizing findings.');
+    if (blocks[2]?.kind === 'tool') {
+      expect(blocks[2].tool.status).toBe('running');
+      expect(blocks[2].tool.output).toEqual(['a', 'b']);
+    }
+    if (blocks[3]?.kind === 'text') expect(blocks[3].text).toBe('Summarizing findings.');
   });
 
-  it('should return only tool cards when the member has streamed no text yet', () => {
+  it('should return only tool cards when the member has no segments yet', () => {
     const blocks = memberBlocksFromLive(undefined, [step()]);
     expect(blocks.map((b) => b.kind)).toEqual(['tool']);
   });
 
-  it('should lead with the member reasoning thinking block when present', () => {
-    const blocks = memberBlocksFromLive('Summary.', [step()], 'Pondering the approach.');
-    expect(blocks[0]).toEqual({ kind: 'thinking', thinking: 'Pondering the approach.' });
-    expect(blocks.at(-1)?.kind).toBe('text');
+  it('should merge adjacent same-kind segments into one block when nothing separates them', () => {
+    const blocks = memberBlocksFromLive(
+      [
+        { id: 's0', kind: 'text', text: 'Part one.', seq: 0 },
+        { id: 's1', kind: 'text', text: 'Part two.', seq: 1 },
+      ],
+      [],
+    );
+    expect(blocks).toEqual([{ kind: 'text', text: 'Part one.\nPart two.' }]);
   });
 
   it('should return an empty stream when the live member has produced nothing', () => {

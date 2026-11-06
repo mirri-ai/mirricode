@@ -7,6 +7,9 @@ description = "SQLite session/workspace index for the rust engine — the sessio
 
 [dependencies]
 mirri-persistence = { path = "../mirri-persistence" }
+mirri-core = { path = "../mirri-core" }
+async-trait = "0.1"
+tokio = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -88,6 +88,10 @@ export interface WireSession {
   pending_interaction?: 'none' | 'approval' | 'question';
   last_turn_reason?: 'completed' | 'cancelled' | 'failed' | 'stalled' | 'interrupted';
   archived: boolean;
+  /** SDR-016/017 pin trio — optional for older servers. */
+  pinned?: boolean;
+  pinned_at?: string;
+  pin_color?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray';
   /** Whether the session's wire log is gzip-compressed on disk (the
    *  session-retention domain's shape verdict — the "已压缩" badge's input).
    *  Optional: older engines omit it and the client maps it to false. */
@@ -848,6 +852,8 @@ export interface WireInFlightToolCall {
     text?: string;
     percent?: number;
   };
+  /** Server-stamped epoch-ms tool start (ADR-7); omitted by older engines. */
+  started_at_ms?: number;
 }
 
 export interface WireInFlightTurn {

@@ -86,6 +86,9 @@ const emit = defineEmits<{
   select: [id: string];
   rename: [id: string, title: string];
   archive: [id: string];
+  /** SDR-016/017: pin with an optional color; unpin clears the trio. */
+  pin: [id: string, color?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray'];
+  unpin: [id: string];
 }>();
 
 // Inline rename
@@ -145,6 +148,18 @@ function onDocClick(e: MouseEvent): void {
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape' && arming.value) disarm();
 }
+// SDR-016/017: the seven-color preset (macOS folder labels).
+const PIN_COLORS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'] as const;
+type PinColor = (typeof PIN_COLORS)[number];
+const paletteOpen = ref(false);
+function togglePalette(): void {
+  paletteOpen.value = !paletteOpen.value;
+}
+function pickColor(color: PinColor): void {
+  emit('pin', props.session.id, color);
+  paletteOpen.value = false;
+}
+
 function armArchive(e: Event): void {
   e.stopPropagation();
   if (arming.value) {
@@ -189,6 +204,14 @@ if (typeof window !== 'undefined') {
           @blur="commitRename"
         />
         <span v-else class="t" @dblclick.stop="startRename">{{ session.title }}</span>
+        <!-- SDR-016/017: the pin badge — the macOS folder-label dot. -->
+        <Tooltip v-if="session.pinned" :text="t('sidebar.pinned')">
+          <span
+            class="pin-dot"
+            :class="[`pin-${session.pinColor ?? 'gray'}`]"
+            data-test-id="session-pin-dot"
+          />
+        </Tooltip>
       </div>
 
       <!-- Pending tags — coloured per kind, shown even when the row isn't
@@ -296,6 +319,30 @@ if (typeof window !== 'undefined') {
             <Icon name="close" size="sm" />
           </IconButton>
         </Tooltip>
+        <!-- SDR-016/017: the pin toggle — a pinned row un-pins in one
+             click; an unpinned row opens the seven-color palette (pick a
+             color = pin with it; the bare pin entry pins colorless). -->
+        <Tooltip v-if="!renaming" :text="session.pinned ? t('sidebar.unpin') : t('sidebar.pin')">
+          <IconButton
+            class="pin-btn"
+            size="sm"
+            :label="session.pinned ? t('sidebar.unpin') : t('sidebar.pin')"
+            data-test-id="session-pin-btn"
+            @click.stop="session.pinned ? emit('unpin', session.id) : togglePalette()"
+          >
+            <Icon name="pushpin" size="sm" />
+          </IconButton>
+        </Tooltip>
+        <span v-if="paletteOpen" class="pin-palette" data-test-id="session-pin-palette">
+          <button
+            v-for="color in PIN_COLORS"
+            :key="color"
+            class="pin-sw"
+            :class="`pin-${color}`"
+            :aria-label="t('sidebar.pinColor', { color })"
+            @click.stop="pickColor(color)"
+          />
+        </span>
         <Tooltip v-if="!renaming" :text="arming ? t('sidebar.archiveConfirmInline') : t('sidebar.archive')">
           <IconButton
             ref="archiveBtnRef"
@@ -443,4 +490,52 @@ if (typeof window !== 'undefined') {
 }
 .sessions .se .rename-input { border-radius: var(--radius-sm); font-family: var(--sans); }
 .sessions .se .arc { border-radius: var(--radius-sm); }
+
+/* SDR-016/017: the pin badge — the macOS folder-label dot. */
+.sessions .se .pin-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  margin-left: 6px;
+  align-self: center;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+.sessions .se .pin-red { background: #e5484d; }
+.sessions .se .pin-orange { background: #e0821c; }
+.sessions .se .pin-yellow { background: #cb9a10; }
+.sessions .se .pin-green { background: #2fb46a; }
+.sessions .se .pin-blue { background: #3e85f5; }
+.sessions .se .pin-purple { background: #9a5cd0; }
+.sessions .se .pin-gray { background: #8b929e; }
+.sessions .se .pin-btn { border-radius: var(--radius-sm); }
+
+/* The seven-color palette popover. */
+.sessions .se .pin-palette {
+  position: absolute;
+  right: 4px;
+  top: 100%;
+  z-index: 30;
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  border-radius: var(--radius-md);
+  background: var(--bg-2, var(--color-bg-2, #2a2a30));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+.sessions .se .pin-sw {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+.sessions .se .pin-sw.pin-red { background: #e5484d; }
+.sessions .se .pin-sw.pin-orange { background: #e0821c; }
+.sessions .se .pin-sw.pin-yellow { background: #cb9a10; }
+.sessions .se .pin-sw.pin-green { background: #2fb46a; }
+.sessions .se .pin-sw.pin-blue { background: #3e85f5; }
+.sessions .se .pin-sw.pin-purple { background: #9a5cd0; }
+.sessions .se .pin-sw.pin-gray { background: #8b929e; }
 </style>

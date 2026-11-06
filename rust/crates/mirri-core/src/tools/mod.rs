@@ -20,9 +20,8 @@ pub mod ask_user;
 pub mod bash;
 pub mod collaboration;
 pub mod create_goal;
-pub mod cron_create;
-pub mod cron_delete;
-pub mod cron_list;
+pub mod create_scheduled_task;
+pub mod set_timer;
 pub mod edit;
 pub mod enter_plan_mode;
 pub mod exit_plan_mode;
@@ -58,9 +57,8 @@ pub use collaboration::{
     CollaborationStartTool, CollaborationTerminateTool,
 };
 pub use create_goal::CreateGoalTool;
-pub use cron_create::CronCreateTool;
-pub use cron_delete::CronDeleteTool;
-pub use cron_list::CronListTool;
+pub use create_scheduled_task::{CreateScheduledTaskTool, ScheduledTaskCreator, ScheduledTaskDraft};
+pub use set_timer::SetTimerTool;
 pub use edit::EditTool;
 pub use enter_plan_mode::EnterPlanModeTool;
 pub use exit_plan_mode::ExitPlanModeTool;
@@ -206,7 +204,7 @@ pub struct BuiltinToolServices {
     ///
     /// When `Some`, the tool is registered. When `None`, it is not.
     pub fetch_url_provider: Option<Arc<dyn FetchUrlProvider>>,
-    /// The session ID, baked into [`CronCreateTool`] so the model never
+    /// The session ID, baked into [`SetTimerTool`] so the model never
     /// supplies it.
     pub session_id: String,
     /// The owning agent's id — the dispatcher attribution background task
@@ -257,6 +255,17 @@ pub struct BuiltinToolServices {
     /// `MIRRI_AGENT_SWARM_MAX_ITEMS` env override at call time on top of
     /// this value.
     pub max_swarm_items: Option<u32>,
+    /// The workspace id the session's `CreateScheduledTask` tool binds its
+    /// drafts to (ADR-014: the proposing session's runtime workspace — the host
+    /// binds it, the model never chooses). `None` (core-only agents,
+    /// tests) keeps the tool unregistered (no workspace face to create
+    /// into).
+    pub workspace_id: Option<String>,
+    /// The host-side creation registration seam (C2): registers the
+    /// approval gate entry and issues the fire-and-forget
+    /// `approval.ask`. `None` keeps `CreateScheduledTask` in its pure
+    /// form (the draft rides the tool output).
+    pub scheduled_task_creator: Option<Arc<dyn create_scheduled_task::ScheduledTaskCreator>>,
 }
 
 impl std::fmt::Debug for BuiltinToolServices {
@@ -287,6 +296,8 @@ impl std::fmt::Debug for BuiltinToolServices {
             .field("subagent_timeout", &self.subagent_timeout)
             .field("question_channel_wait", &self.question_channel_wait)
             .field("max_swarm_items", &self.max_swarm_items)
+            .field("workspace_id", &self.workspace_id)
+            .field("scheduled_task_creator", &self.scheduled_task_creator.is_some())
             .finish()
     }
 }
@@ -357,13 +368,28 @@ pub fn register_builtin_tools(tool_manager: &mut ToolManager, services: &Builtin
     tool_manager.register_builtin(Arc::new(TaskStopTool::new(Arc::clone(&services.tasks))));
     tool_manager.register_builtin(Arc::new(TaskOutputTool::new(Arc::clone(&services.tasks))));
 
-    // Cron tools
-    tool_manager.register_builtin(Arc::new(CronCreateTool::new(
-        Arc::clone(&services.cron),
-        services.session_id.clone(),
-    )));
-    tool_manager.register_builtin(Arc::new(CronDeleteTool::new(Arc::clone(&services.cron))));
-    tool_manager.register_builtin(Arc::new(CronListTool::new(Arc::clone(&services.cron))));
+    // Scheduling tools (cron-improvement batch 1)
+    // ADR-006 / E.4: the disable switch is read once here (restart-time
+    // semantics — clearing it requires a restart) and injected into the
+    // tools: creation is refused and lists report the disabled state.
+    let cron_scheduling_disabled = crate::cron::scheduling_disabled_from_env();
+    tool_manager.register_builtin(Arc::new(
+        SetTimerTool::new(Arc::clone(&services.cron), services.session_id.clone())
+            .with_scheduling_disabled(cron_scheduling_disabled),
+    ));
+    // C2 / ADR-022: the workspace-creation face — registered only when the
+    // host bound a workspace id AND a creator (the embedded server's
+    // registry-backed implementation); core-only agents keep the tool out
+    // of their table.
+    if let (Some(workspace_id), Some(creator)) =
+        (services.workspace_id.clone(), services.scheduled_task_creator.clone())
+    {
+        tool_manager.register_builtin(Arc::new(
+            crate::tools::create_scheduled_task::CreateScheduledTaskTool::new(workspace_id)
+                .with_creator(creator)
+                .with_scheduling_disabled(cron_scheduling_disabled),
+        ));
+    }
 
     // Goal tools
     tool_manager.register_builtin(Arc::new(
@@ -497,9 +523,8 @@ pub const BUILTIN_TOOL_NAMES: &[&str] = &[
     "CollaborationStart",
     "CollaborationTerminate",
     "CreateGoal",
-    "CronCreate",
-    "CronDelete",
-    "CronList",
+    "CreateScheduledTask",
+    "SetTimer",
     "Edit",
     "EnterPlanMode",
     "ExitPlanMode",
@@ -578,11 +603,13 @@ pub const BUILTIN_TOOL_CATALOG: &[(&str, &str)] = &[
         "Create a new session goal describing the work toward an outcome.",
     ),
     (
-        "CronCreate",
-        "Schedule a cron task that injects a prompt at the given times.",
+        "CreateScheduledTask",
+        "Create a workspace scheduled task, always requiring user approval.",
     ),
-    ("CronDelete", "Remove a cron task by id."),
-    ("CronList", "List all registered cron tasks."),
+    (
+        "SetTimer",
+        "Set a one-shot timer that injects a message into the current session after a delay.",
+    ),
     ("Edit", "Replace an exact substring in a file."),
     (
         "EnterPlanMode",

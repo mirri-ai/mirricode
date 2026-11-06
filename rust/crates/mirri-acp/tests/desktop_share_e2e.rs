@@ -1,3 +1,4 @@
+// layer: T2
 //! End-to-end desktop runtime sharing tests (design 14, Task 8): a real
 //! in-process `mirri-server` on an ephemeral port, a temp `MIRRICODE_HOME`
 //! carrying a faked `server/desktop-state.json` + `server.token` (exactly
@@ -8,7 +9,7 @@
 //!
 //! The probe itself (`probe_desktop_server`) reads `MIRRICODE_HOME` from
 //! the process environment, so every test that exercises the probe (or the
-//! handler's re-probe path) runs under `ENV_LOCK` (the process env is
+//! handler's re-probe path) runs under the workspace env lock (the process env is
 //! global; parallel tests would race) and `--test-threads=1` (the runner
 //! default for this file — see the run instruction in the plan).
 //!
@@ -22,7 +23,7 @@
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use mirri_acp::AcpHandler;
@@ -43,16 +44,11 @@ use tempfile::TempDir;
 /// test passes in isolation.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Serializes every test in this file that mutates process environment
-/// variables (`MIRRICODE_HOME` for the probe / token reads,
-/// `MIRRI_ACP_*` for the resolution chain). `std::env::set_var` is
-/// `unsafe` in edition 2024 and the environment is process-global, so all
-/// env-touching tests hold this lock for their whole body and restore the
-/// previous values on exit.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+// Env-mutating tests serialize on the workspace-wide env lock
+// (mirri-test-support); the old file-local ENV_LOCK was converged onto it.
 
 /// Saves the current value of one environment variable and restores it on
-/// drop (paired with `ENV_LOCK`, mirroring the discipline of the
+/// drop (paired with the env lock, mirroring the discipline of the
 /// `desktop_probe` unit tests).
 struct EnvGuard {
     name: &'static str,
@@ -62,7 +58,7 @@ struct EnvGuard {
 impl EnvGuard {
     fn new(name: &'static str) -> Self {
         let saved = std::env::var_os(name);
-        // SAFETY: ENV_LOCK held for the whole test; restored in Drop; no
+        // SAFETY: workspace env lock held for the whole test; restored in Drop; no
         // other thread reads or writes this variable concurrently.
         unsafe { std::env::remove_var(name) };
         Self { name, saved }
@@ -88,7 +84,7 @@ impl Drop for EnvGuard {
 /// Guard every environment variable the desktop-sharing chain reads, so a
 /// test body starts from a clean slate (no leaked `MIRRI_ACP_*` or
 /// `MIRRICODE_HOME` from the surrounding process). The test must already
-/// hold [`ENV_LOCK`].
+/// hold the env lock.
 struct TestEnv {
     _home: EnvGuard,
     _remote_engine: EnvGuard,
@@ -111,10 +107,11 @@ impl TestEnv {
     }
 }
 
-/// Take [`ENV_LOCK`] for the whole test body. Returns a guard that must
-/// stay alive until the test's environment-dependent section ends.
+/// Take the workspace-wide env lock for the whole test body. Returns a
+/// guard that must stay alive until the test's environment-dependent
+/// section ends.
 fn acquire_env_lock() -> std::sync::MutexGuard<'static, ()> {
-    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    mirri_test_support::env::lock()
 }
 
 /// The mock LLM's canned reply — one scripted turn is enough to prove the
@@ -594,7 +591,7 @@ async fn live_desktop(fixture: DesktopShareFixture) -> LiveDesktop {
 /// cwd creates the session ON THE SERVER (visible through the server's
 /// own session manager), and the probe's engine is a RemoteAdapter.
 #[tokio::test]
-#[allow(clippy::await_holding_lock)] // ENV_LOCK serializes process-env mutation by design
+#[allow(clippy::await_holding_lock)] // the workspace env lock serializes process-env mutation by design
 async fn should_put_the_remote_engine_in_the_slot_when_the_probe_finds_the_server() {
     let _env_lock = acquire_env_lock();
     let env = TestEnv::clean();
@@ -639,7 +636,7 @@ async fn should_put_the_remote_engine_in_the_slot_when_the_probe_finds_the_serve
 /// engine and the assistant's reply streams to the ACP update relay as
 /// official `agent_message_chunk` session/update notifications.
 #[tokio::test]
-#[allow(clippy::await_holding_lock)] // ENV_LOCK serializes process-env mutation by design
+#[allow(clippy::await_holding_lock)] // the workspace env lock serializes process-env mutation by design
 async fn should_relay_the_servers_turn_events_to_the_acp_update_stream() {
     let _env_lock = acquire_env_lock();
     let env = TestEnv::clean();
@@ -683,7 +680,7 @@ async fn should_relay_the_servers_turn_events_to_the_acp_update_stream() {
 /// then the request errors with the "not registered" message, and the
 /// server holds no session (no misrouted sandbox was created).
 #[tokio::test]
-#[allow(clippy::await_holding_lock)] // ENV_LOCK serializes process-env mutation by design
+#[allow(clippy::await_holding_lock)] // the workspace env lock serializes process-env mutation by design
 async fn should_reject_session_new_when_the_cwd_is_not_a_registered_workspace() {
     let _env_lock = acquire_env_lock();
     let env = TestEnv::clean();
@@ -729,7 +726,7 @@ async fn should_reject_session_new_when_the_cwd_is_not_a_registered_workspace() 
 /// revived (the server's live set stays empty of it) — OwnSessionsOnly
 /// must not resurrect untouched persisted sessions.
 #[tokio::test]
-#[allow(clippy::await_holding_lock)] // ENV_LOCK serializes process-env mutation by design
+#[allow(clippy::await_holding_lock)] // the workspace env lock serializes process-env mutation by design
 async fn should_not_revive_untouched_persisted_sessions() {
     let _env_lock = acquire_env_lock();
     let env = TestEnv::clean();
@@ -803,7 +800,7 @@ async fn should_not_revive_untouched_persisted_sessions() {
 /// the server comes BACK the degraded host still does not re-probe (the
 /// degrade is one-way; a session-addressed call answers NotConnected).
 #[tokio::test]
-#[allow(clippy::await_holding_lock)] // ENV_LOCK serializes process-env mutation by design
+#[allow(clippy::await_holding_lock)] // the workspace env lock serializes process-env mutation by design
 async fn should_degrade_to_the_embedded_engine_once_when_the_reprobe_fails() {
     let _env_lock = acquire_env_lock();
     let env = TestEnv::clean();
@@ -906,7 +903,7 @@ async fn should_degrade_to_the_embedded_engine_once_when_the_reprobe_fails() {
 /// TCP connection was attempted (the state file is the only anchor; its
 /// absence costs exactly one failed read).
 #[tokio::test]
-#[allow(clippy::await_holding_lock)] // ENV_LOCK serializes process-env mutation by design
+#[allow(clippy::await_holding_lock)] // the workspace env lock serializes process-env mutation by design
 async fn should_fall_back_to_embedded_with_zero_probe_side_effects_when_no_desktop_state_exists() {
     let _env_lock = acquire_env_lock();
     let env = TestEnv::clean();
@@ -995,7 +992,7 @@ async fn should_fall_back_to_embedded_with_zero_probe_side_effects_when_no_deskt
 /// touch-to-subscribed on the NEW connection (the shared home's
 /// restore-on-demand serves it).
 #[tokio::test]
-#[allow(clippy::await_holding_lock)] // ENV_LOCK serializes process-env mutation by design
+#[allow(clippy::await_holding_lock)] // the workspace env lock serializes process-env mutation by design
 async fn should_touch_to_subscribe_pre_kill_sessions_after_a_successful_reprobe() {
     let _env_lock = acquire_env_lock();
     let env = TestEnv::clean();
@@ -1084,7 +1081,7 @@ async fn should_touch_to_subscribe_pre_kill_sessions_after_a_successful_reprobe(
 /// connect itself must succeed with the AllSessions semantics —
 /// byte-compatible with the pre-design-14 forced remote).
 #[tokio::test]
-#[allow(clippy::await_holding_lock)] // ENV_LOCK serializes process-env mutation by design
+#[allow(clippy::await_holding_lock)] // the workspace env lock serializes process-env mutation by design
 async fn should_connect_directly_when_the_explicit_remote_engine_env_is_set() {
     let _env_lock = acquire_env_lock();
     let env = TestEnv::clean();

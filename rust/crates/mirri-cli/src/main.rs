@@ -258,12 +258,22 @@ async fn serve(
     // process addresses exactly one instance directory.
     let lifecycle_root = mirri_persistence::lifecycle::lifecycle_root(&mirri_home);
     let instance_id = format!("{}-{}", port, chrono::Utc::now().timestamp_millis().max(0));
-    let engine: Arc<dyn mirri_transport::adapter::EngineAdapter> =
-        Arc::new(EmbeddedServer::from_parts(parts).with_lifecycle(
+    let engine: Arc<dyn mirri_transport::adapter::EngineAdapter> = {
+        let server = EmbeddedServer::from_parts(parts).with_lifecycle(
             lifecycle_root.clone(),
             port,
             instance_id.clone(),
-        ));
+        );
+        // SDR-011: the skill watchers are the SERVE HOST's explicit mount —
+        // one process, a handful of workspaces, `skillHotReload`'s off
+        // path (env / config) still honored inside the mount pass. The
+        // engine itself no longer mounts on dispatcher calls (the retired
+        // lazy pass made every engine construction register
+        // FSEventStreams — see SDR-011's background for the test-binary
+        // starvation that motivated the inversion).
+        server.mount_skill_watchers();
+        Arc::new(server)
+    };
 
     // W7 multi-root watcher inputs: every REGISTERED workspace root (the
     // registry the funnel restored) — bound here, before the routing seam
@@ -513,9 +523,13 @@ async fn serve(
     if launch_browser {
         spawn_browser(&web_ui_url);
     }
-    mirri_server::serve(http_listener, ipc_path, state, web_dir)
-        .await
-        .context("server exited with an error")?;
+    let result = mirri_server::serve(http_listener, ipc_path, state, web_dir).await;
+    // The serve loop is over: dispose the engine so its session-scoped
+    // MCP overlays disconnect and their child processes die with the
+    // server (issue #193) — then propagate the serve result. A dispose
+    // failure only logs; it must not mask the serve error.
+    let _ = engine.dispose().await;
+    result.context("server exited with an error")?;
     tracing::info!("server shut down cleanly");
     Ok(())
 }
@@ -794,7 +808,7 @@ fn spawn_browser(url: &str) {
         tracing::warn!("cannot open the browser on this platform; open {url} manually");
         return;
     };
-    match tokio::process::Command::new(program).arg(url).spawn() {
+    match mirri_os::new_tokio_command(program).arg(url).spawn() {
         Ok(mut child) => {
             // Reap the opener so it does not linger as a zombie.
             tokio::spawn(async move {

@@ -14,6 +14,7 @@ use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 
 use crate::path_access::PathAccess;
+use crate::process::new_tokio_command;
 
 /// Maximum stdout size we will read from ripgrep before killing the process.
 ///
@@ -377,7 +378,7 @@ async fn run_ripgrep(
     args: &[String],
     rg_cwd: Option<&std::path::Path>,
 ) -> anyhow::Result<(Vec<u8>, bool)> {
-    let mut cmd = tokio::process::Command::new(resolve_rg_path());
+    let mut cmd = new_tokio_command(&resolve_rg_path().to_string_lossy());
     cmd.args(args);
     if let Some(dir) = rg_cwd {
         cmd.current_dir(dir);
@@ -759,8 +760,8 @@ async fn search_with_ripgrep(params: &SearchParams) -> anyhow::Result<SearchResu
     // files/count × exclude_line_pattern cannot be answered by rg's own
     // --files-with-matches/--count-matches (they know nothing of the exclude
     // filter) — force the --json path and merge per-file afterwards.
-    let exclude_forced_json = params.output_mode.to_lowercase() != "content"
-        && params.exclude_line_pattern.is_some();
+    let exclude_forced_json =
+        params.output_mode.to_lowercase() != "content" && params.exclude_line_pattern.is_some();
     let (mut args, mode) = build_args(params);
     if exclude_forced_json {
         // build_args already pushed the mode flag first; strip it so the
@@ -823,12 +824,8 @@ async fn search_with_ripgrep(params: &SearchParams) -> anyhow::Result<SearchResu
                 (m, t, tr, excluded_matches)
             }
             "count" => {
-                let (m, t, tr) = parse_count_matches(
-                    &output,
-                    &roots,
-                    params.head_limit,
-                    params.offset,
-                )?;
+                let (m, t, tr) =
+                    parse_count_matches(&output, &roots, params.head_limit, params.offset)?;
                 (m, t, tr, excluded_matches)
             }
             _ => {
@@ -981,10 +978,13 @@ fn collect_json_entries(
     roots: &RootContext,
     exclude_line_pattern: Option<&str>,
 ) -> anyhow::Result<(Vec<SearchMatch>, usize, bool, usize)> {
-    let exclude = exclude_line_pattern.map(regex::Regex::new).transpose().map_err(|e| {
-        let pattern = exclude_line_pattern.unwrap_or_default();
-        anyhow::anyhow!("Grep failed: invalid exclude_line_pattern '{pattern}': {e}")
-    })?;
+    let exclude = exclude_line_pattern
+        .map(regex::Regex::new)
+        .transpose()
+        .map_err(|e| {
+            let pattern = exclude_line_pattern.unwrap_or_default();
+            anyhow::anyhow!("Grep failed: invalid exclude_line_pattern '{pattern}': {e}")
+        })?;
     let text = String::from_utf8_lossy(output);
     let mut entries: Vec<SearchMatch> = Vec::new();
     let mut excluded_matches = 0usize;
@@ -1155,9 +1155,16 @@ fn parse_files_with_matches(
     offset: usize,
     exclude_line_pattern: Option<&str>,
 ) -> anyhow::Result<(Vec<SearchMatch>, usize, bool)> {
-    if let Some(pattern) = exclude_line_pattern.map(regex::Regex::new).transpose().map_err(|e| {
-        anyhow::anyhow!("Grep failed: invalid exclude_line_pattern '{pattern}': {e}", pattern = exclude_line_pattern.unwrap_or_default())
-    })? {
+    if let Some(pattern) = exclude_line_pattern
+        .map(regex::Regex::new)
+        .transpose()
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Grep failed: invalid exclude_line_pattern '{pattern}': {e}",
+                pattern = exclude_line_pattern.unwrap_or_default()
+            )
+        })?
+    {
         // Unreachable in practice (see doc comment); treated as "no filter"
         // so the plain files listing still answers.
         drop(pattern);
@@ -1294,12 +1301,10 @@ mod tests {
 
     use super::*;
 
-    /// Serializes tests that mutate the process-global `PATH` variable (used
-    /// to control which `rg` executable subprocess spawning can find).
-    /// Async-aware because the guard must span the `.await` on the rg spawn —
-    /// releasing early would let another test rewrite `PATH` mid-spawn.
-    static ENV_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
-        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+    // Tests that mutate the process-global `PATH` variable serialize on the
+    // workspace-wide async env lock: the guard must span the `.await` on the
+    // rg spawn — releasing early would let another test rewrite `PATH`
+    // mid-spawn (16-test-execution-strategy.md §4.2 rule 8).
 
     /// Replaces `PATH` for the duration of a test and restores it on drop.
     struct PathGuard {
@@ -1409,7 +1414,7 @@ exit 0
     #[tokio::test]
     async fn should_return_error_naming_ripgrep_when_rg_is_missing_from_path() {
         // Given a PATH that cannot contain any `rg` binary
-        let _lock = ENV_LOCK.lock().await;
+        let _lock = mirri_test_support::env::async_lock().await;
         let empty_bin = tempfile::tempdir().unwrap();
         let _path_guard = PathGuard::set(empty_bin.path());
         // And no cached rg under the fallback home (a machine-level
@@ -1444,7 +1449,7 @@ exit 0
     #[tokio::test]
     async fn should_use_the_cached_rg_binary_when_path_misses_and_cache_exists() {
         // Given a fake rg installed under the MIRRICODE_HOME bin cache
-        let _lock = ENV_LOCK.lock().await;
+        let _lock = mirri_test_support::env::async_lock().await;
         let home = tempfile::tempdir().unwrap();
         install_fake_rg(home.path());
         let _home_guard = MirriHomeGuard::set(home.path());
@@ -1475,7 +1480,7 @@ exit 0
     #[tokio::test]
     async fn should_return_parsed_matches_when_rg_is_available_on_path() {
         // Given a fake rg that emits one JSON match, placed first on PATH
-        let _lock = ENV_LOCK.lock().await;
+        let _lock = mirri_test_support::env::async_lock().await;
         let tmp = tempfile::tempdir().unwrap();
         let _path_guard = prepend_to_path(&install_fake_rg(tmp.path()));
 
@@ -1511,7 +1516,7 @@ exit 0
     async fn should_run_rg_from_the_search_root_when_a_glob_filter_is_active() {
         // Given a fake rg that reports its own cwd and emits a ./relative
         // record path, placed first on PATH
-        let _lock = ENV_LOCK.lock().await;
+        let _lock = mirri_test_support::env::async_lock().await;
         let tmp = tempfile::tempdir().unwrap();
         let _path_guard = prepend_to_path(&install_custom_rg(tmp.path(), FAKE_RG_CWD_SCRIPT));
 
@@ -1551,7 +1556,7 @@ exit 0
     async fn should_keep_the_legacy_invocation_when_no_glob_filter_is_active() {
         // Given a fake rg that emits an absolute-path match keyed on the
         // search directory passed as its last CLI argument
-        let _lock = ENV_LOCK.lock().await;
+        let _lock = mirri_test_support::env::async_lock().await;
         let tmp = tempfile::tempdir().unwrap();
         let _path_guard = prepend_to_path(&install_fake_rg(tmp.path()));
 
@@ -1580,7 +1585,7 @@ exit 0
 
     #[tokio::test]
     async fn should_drop_excluded_matches_and_orphan_context_lines() {
-        let _lock = ENV_LOCK.lock().await;
+        let _lock = mirri_test_support::env::async_lock().await;
         // Given a file with matches on lines 2(skip)/3(keep)/8(keep) searched
         // with -C 2, producing windows over lines 1-5 and 6-10
         let tmp = tempfile::tempdir().unwrap();
@@ -1610,13 +1615,19 @@ exit 0
         // And keep@8's before-context (lines 6-7) survives while skip@2's
         // window line 1 is an orphan and is dropped
         let lines: Vec<u64> = r.matches.iter().map(|m| m.line_number).collect();
-        assert!(lines.contains(&6) && lines.contains(&7), "-B context must survive: {lines:?}");
-        assert!(!lines.contains(&1), "skip's orphan context must be dropped: {lines:?}");
+        assert!(
+            lines.contains(&6) && lines.contains(&7),
+            "-B context must survive: {lines:?}"
+        );
+        assert!(
+            !lines.contains(&1),
+            "skip's orphan context must be dropped: {lines:?}"
+        );
     }
 
     #[tokio::test]
     async fn should_count_limit_and_total_by_matches_not_context_lines() {
-        let _lock = ENV_LOCK.lock().await;
+        let _lock = mirri_test_support::env::async_lock().await;
         // Given a file with 20 alternating hit/noise line pairs — 20 matches
         // each with 1 after-context line
         let tmp = tempfile::tempdir().unwrap();
@@ -1638,13 +1649,17 @@ exit 0
 
         // Then the budget counts only actual matches, not context lines, and
         // total_matches counts matches across the whole result set
-        assert_eq!(r.matches.iter().filter(|m| m.is_match).count(), 3, "budget by match count");
+        assert_eq!(
+            r.matches.iter().filter(|m| m.is_match).count(),
+            3,
+            "budget by match count"
+        );
         assert_eq!(r.total_matches, 20, "total counts matches only");
     }
 
     #[tokio::test]
     async fn should_keep_real_line_numbers_when_line_numbers_is_false() {
-        let _lock = ENV_LOCK.lock().await;
+        let _lock = mirri_test_support::env::async_lock().await;
         // Given a file whose only match is on line 2, searched with
         // line_numbers=false
         let tmp = tempfile::tempdir().unwrap();
@@ -1668,7 +1683,7 @@ exit 0
 
     #[tokio::test]
     async fn should_apply_exclude_line_pattern_in_files_mode() {
-        let _lock = ENV_LOCK.lock().await;
+        let _lock = mirri_test_support::env::async_lock().await;
         // Given two files where a.txt's only match is excluded and b.txt has
         // a kept match
         let tmp = tempfile::tempdir().unwrap();
@@ -1698,7 +1713,7 @@ exit 0
 
     #[tokio::test]
     async fn should_report_how_many_matches_the_exclude_line_pattern_dropped() {
-        let _lock = ENV_LOCK.lock().await;
+        let _lock = mirri_test_support::env::async_lock().await;
         // Given a file with 3 matches, one of which the exclude pattern drops
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("a.txt"), "keep\nskip\nkeep\n").unwrap();
@@ -1722,7 +1737,7 @@ exit 0
 
     #[tokio::test]
     async fn should_report_zero_excluded_matches_when_no_exclude_line_pattern_is_set() {
-        let _lock = ENV_LOCK.lock().await;
+        let _lock = mirri_test_support::env::async_lock().await;
         // Given a plain search with no exclude pattern
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("a.txt"), "keep\nkeep\n").unwrap();
@@ -1745,7 +1760,7 @@ exit 0
 
     #[tokio::test]
     async fn should_report_excluded_matches_when_files_mode_drops_a_whole_file() {
-        let _lock = ENV_LOCK.lock().await;
+        let _lock = mirri_test_support::env::async_lock().await;
         // Given two files with hits, where a.txt's hits are ALL excluded
         // (session-61a0ff40 shape: files × exclude forces the --json merge)
         let tmp = tempfile::tempdir().unwrap();
@@ -1840,9 +1855,7 @@ exit 0
         let hit = which_exists_on_path_with(
             &[PathBuf::from("C:/tools")],
             "rg",
-            &|candidate: &Path| {
-                candidate.extension().map(|e| e == "exe").unwrap_or(false)
-            },
+            &|candidate: &Path| candidate.extension().map(|e| e == "exe").unwrap_or(false),
             true, // windows
         );
         assert!(hit, "the name.exe candidate must satisfy the Windows probe");
@@ -1856,9 +1869,7 @@ exit 0
         let hit = which_exists_on_path_with(
             &[PathBuf::from("/opt/tools")],
             "rg",
-            &|candidate: &Path| {
-                candidate.extension().map(|e| e == "exe").unwrap_or(false)
-            },
+            &|candidate: &Path| candidate.extension().map(|e| e == "exe").unwrap_or(false),
             false, // unix
         );
         assert!(!hit, "the plain name must be the only Unix candidate");
@@ -1881,7 +1892,10 @@ exit 0
     #[test]
     fn should_keep_the_plain_name_for_the_cached_rg_candidate_on_unix() {
         let cached = cached_rg_path_with(|| Some(PathBuf::from("/home/u")), false);
-        assert_eq!(cached, Some(PathBuf::from("/home/u").join("bin").join("rg")));
+        assert_eq!(
+            cached,
+            Some(PathBuf::from("/home/u").join("bin").join("rg"))
+        );
     }
 }
 

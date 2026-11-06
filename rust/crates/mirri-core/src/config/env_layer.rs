@@ -377,7 +377,13 @@ impl ServerConfig {
             env_var_non_empty("MIRRICODE_MODEL_PROVIDER_TYPE", get_env).as_deref(),
         )?;
 
-        // Base URL: explicit value, or default for the provider type.
+        // Base URL: the explicit value, else the type's first-party
+        // official endpoint (#184: openai / anthropic / google-genai keep
+        // their sanctioned defaults; a type with none is the engine-side
+        // first-party set — `base_url: None` would fall to the factory's
+        // clear missing-base-url error for non-first-party providers, and
+        // the allowed-type list only admits the three first-party types
+        // today, so this never synthesizes a baseless provider).
         let base_url = env_var_non_empty("MIRRICODE_MODEL_BASE_URL", get_env)
             .or_else(|| default_base_url_for_type(&provider_type));
 
@@ -689,15 +695,15 @@ fn parse_provider_type_env(raw: Option<&str>) -> EngineResult<String> {
     }
 }
 
-/// Return the default base URL for a provider type, if one exists.
-///
-/// Only `"openai"` has a default base URL (`https://api.openai.com/v1`);
-/// `"anthropic"` and `"google-genai"` use their SDK defaults (return `None`).
-///
-/// Mirrors the TypeScript `DEFAULT_BASE_URL` in `config/env-model.ts`.
+/// The first-party default base URL for a provider type — the official
+/// endpoints whose implicit use is sanctioned (a user picking openai /
+/// anthropic / google-genai without a URL is legitimate; every other
+/// provider must configure one explicitly, #184).
 fn default_base_url_for_type(provider_type: &str) -> Option<String> {
     match provider_type {
         "openai" => Some("https://api.openai.com/v1".to_string()),
+        "anthropic" => Some("https://api.anthropic.com/v1".to_string()),
+        "google-genai" => Some("https://generativelanguage.googleapis.com/v1beta".to_string()),
         _ => None,
     }
 }

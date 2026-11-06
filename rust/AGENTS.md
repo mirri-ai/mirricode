@@ -3,6 +3,19 @@
 本目录是 rust 引擎 workspace。硬契约如下，任何任务开始前先读：
 rust 引擎还在开发中，很多功能可能还不成熟甚至是错误的。
 
+## 统一质量门禁入口（本地 agent 必用，防漂移）
+
+一切本地质量检查**先走 `pnpm gate`**（`node scripts/gate.mjs`），不要自己拼各门禁命令——顺序、已知失败记账、fast-fail 都在入口里统一维护：
+
+- `pnpm gate` — 快速面（~3 秒，无编译无测试）：service-naming → nix-workspace → sherif → zero-io → spawn → test-hygiene，轻→重 fail-fast。
+- `pnpm gate:rust` — 快速面 + clippy（分钟级）。
+- `pnpm gate:full` — 全套：typecheck → lint → clippy → **rust 全量测试（最重，永远最后）** → TS 测试。
+- `node scripts/gate.mjs --list` — 查看全部阶段与顺序。
+- 退出码：0 = 全绿；2 = 通过但有已知失败（`gate.mjs` 的 KNOWN_FAILURES 记账，见下方）；1 = 新失败（fast-fail 中止）。
+- **agent 作业纪律**：改完代码先 `pnpm gate`（秒级），过了再按需 `gate:rust` / `gate:full`；全量测试只在批次收尾跑，不在每步迭代跑。
+- 新增门禁时：加进 `scripts/gate.mjs` 的 STAGES（按耗时插入合适位置），不要另开入口。
+- **KNOWN_FAILURES 是债务不是许可证**：清单里的失败必须带 owner 注记与 TODO(remove) 条款，债务清偿后立即删除条目。
+
 ## 架构契约（违反即返工）
 
 1. **契约事实源链**：RPC 方法面的唯一事实源是 `crates/mirri-proto/src/rpc/registry.rs` 注册表，经 `authoritative-methods.tsv` ⇄ EMB 路由表 ⇄ NAPI ⇄ contract-e2e fixture 五环节联动。任何方法面变更必须全链同步，缺一环就是漂移。
@@ -19,9 +32,46 @@ rust 引擎还在开发中，很多功能可能还不成熟甚至是错误的。
 ## 质量门禁（本地 + CI）
 
 - `cargo test --workspace` 全绿 + `cargo clippy --workspace --all-targets -- -D warnings` 零告警
+- RustSec/许可/来源门禁：`cargo deny --manifest-path Cargo.toml check`（配置 `rust/deny.toml`，CI job `rust-deny`）；漏洞类告警在 CI 中直接失败，`deny.toml` 的 `ignore` 列表新增条目必须带 reason 与移除期限
+- Windows 交叉编译验证用 `cargo xwin check --target x86_64-pc-windows-msvc`（裸 `cargo check --target x86_64-pc-windows-msvc` 会因 aws-lc/lzma 的 C 依赖缺 MSVC 头而失败，与本仓代码无关）
 - mirri-core zero-IO 守卫：`node rust/scripts/check-zero-io.mjs`（根 `pnpm gate:rust-zero-io`）0 命中 exit 0
 - 受影响 TS 包 `pnpm typecheck` + vitest；测试命名 Given-When-Then
 - changeset 用 gen-changesets skill；major 需用户确认
+
+## 测试铁律（违反 = 返工；源自 `docs/specs/rust-core-design/16-test-execution-strategy.md` §4）
+
+### 测试分层（唯一允许的层级定义，设计 §4.1；命名裁决 SDR-016.2：用 T0–T3 前缀，与 TUI 规范的 L1–L4 分层无关）
+
+| 层 | 名称 | 位置 | 职责 | 并行安全 | 速度预算 |
+|---|---|---|---|---|---|
+| T0 | 单元测试 | `src/` 内 `#[cfg(test)]` | 纯逻辑：reducer、解析、纯函数。禁止 IO、禁止真实时间、禁止环境变量读写 | 天然可并行 | 单测 ≤5s |
+| T1 | 组件集成测试 | `tests/` 目录 | 单 crate 内组件协作，使用注入的假件（Fake FS / 暂停时钟 / MockLlm） | 必须可并行 | 单测 ≤5s |
+| T2 | 服务级集成测试 | `tests/` 目录（server/embedded 等） | 起真实服务实例（随机端口 + 私有 HOME），验证协议行为 | 必须可并行 | 单测 ≤30s |
+| T3 | 真实二进制 e2e | `#[ignore]` gated 或独立命令 | 真实网络/真实 LLM/真实子进程链路 | 显式串行/手动触发 | 不设预算（不进全量门禁） |
+
+- **层级判定规则**：一个测试属于哪层，取决于它**需要什么真实资源**。需要假件即可覆盖的归 T0/T1；需要真实进程/端口的归 T2；需要真实外部网络的归 T3。T3 不参与 `cargo test --workspace` 默认门禁，仅 `--ignored` 或专用命令触发。
+- **层级声明**：每个测试模块（`mod` 或文件）头部必须携带 `// layer: T<n>` 注释标签（如 `// layer: T1`）。新测试缺标签不得进入评审；存量缺标签由 baseline 白名单豁免，R3 移动批回填。
+
+### 隔离契约（八条，设计 §4.2）
+
+1. **环境变量**：T0/T1 禁止读写进程环境变量。需要环境语义的代码必须经注入式解析（`resolve_*_from` 模式），测试传值而非改环境。T2 如确需设置环境变量（如真子进程需要），必须：(a) 只作用于自己 spawn 的子进程命令（`Command::env`），(b) 若必须 `set_var`，则使用**全 workspace 唯一**的 `env::lock()` 守卫并覆盖最小变量集合。
+2. **HOME / 目录**：所有测试的文件足迹必须落在 `tempfile::tempdir()`（或等价一次性目录）内。禁止读写真实 `~` 下任何路径。需要 HOME 语义的，注入 `home_dir` 参数或使用隔离的 fake home 目录。
+3. **端口**：一切监听必须 `127.0.0.1:0` 随机分配，禁止硬编码端口。客户端侧对端口冲突需有重试容忍。
+4. **时间**：T0/T1 禁止真实等待（`thread::sleep` / 固定 `tokio::time::sleep`）。异步测试默认 `start_paused`；需要推进时间用 `tokio::time::advance`。轮询等待一律用带 deadline 的 `wait_for_*` helper（禁止对象是测试代码内的**裸固定 sleep**，helper 内部 ≤50ms 步进机制除外），禁止裸固定 sleep 充当同步原语。
+5. **网络**：默认门禁测试禁止真实外网。HTTP 一律 wiremock / 本地 listener。
+6. **数据库 / 锁**：测试用 db 文件与锁文件必须在 tempdir 内。
+7. **工作目录**：测试不得假设 CWD 可写；不得在真实 CWD 下留痕。
+8. **锁与异步**：`env::lock()` 为同步 Mutex，**禁止跨 `.await` 持锁**（多线程 runtime 下线程饥饿死锁风险）。需要异步上下文内改环境的，在进入异步块前完成 set/restore，或改为子进程级注入（`Command::env`）。
+
+### 机械守卫与速度预算
+
+- 新测试必须声明层级（`// layer: T<n>` 模块头标签），按上表判定。T3 必须 `#[ignore]`。
+- 新测试必须满足全部八条隔离契约，方可进入评审。
+- 需要环境变量语义 → 注入式优先；确需 `set_var` → `mirri-test-support::env::lock()` + 最小集合 + 不跨 await。
+- 存量测试不满足隔离契约的，按 ROADMAP 分批迁移，不阻塞新贡献（baseline 白名单：`rust/scripts/test-hygiene-baseline.json`）。
+- **主门禁**：`node rust/scripts/check-test-hygiene.mjs`（挂 `pnpm gate:rust-test-hygiene`，与 zero-io 守卫同级别）——扫 test cfg 内裸 `std::env::set_var`/`remove_var`、裸 `thread::sleep`、`tests/` 文件缺 `// layer:` 标签；行内 `// hygiene-allow: <reason>` 豁免。clippy `disallowed-methods` 因全局作用域无法限定 test cfg（会误伤生产合法 `set_var`），仅作为 ROADMAP 增量项（SDR-016.3）。
+- 速度预算：单测试 ≤5s（T0/T1）/ ≤30s（T2）；全量 workspace ≤7min（热缓存口径）。超预算的测试须拆分或降层（改用假件）。
+- 每个测试 crate 维护共享 `tests/common/` 模块；新增测试搭建代码必须进 common，不得在各测试文件内重复。
 
 ## Shell 工具超时规则（防后台任务被误杀）
 

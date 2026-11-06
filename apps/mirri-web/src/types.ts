@@ -1,6 +1,6 @@
 // apps/mirri-web/src/types.ts
 
-import type { AgentStep, AppSuspendedReason, EchoedFileReference, SearchFilesResult } from './api/types';
+import type { AgentStep, AppSuspendedReason, EchoedFileReference, NarrativeSegment, SearchFilesResult } from './api/types';
 import type { SortableSessionRow } from './lib/sessionSorting';
 
 export type { SearchFilesResult };
@@ -130,7 +130,12 @@ export interface ToolCall {
   name: string; // e.g. 'read' | 'bash'
   arg: string; // e.g. '· src/api/client.ts'
   status: ToolStatus;
-  timing?: string; // e.g. '12ms'
+  /** Display string for the call's elapsed time, e.g. '12ms' — the server's
+   *  measured duration once the result carries one, or the span frozen when
+   *  an interrupted turn settled the card (ADR-7). */
+  timing?: string;
+  /** Server-stamped epoch-ms start (ADR-7) — live timer anchor while running. */
+  startedAtMs?: number;
   output?: string[]; // shown line by line when expanded
   media?: ToolMedia;
   defaultExpanded?: boolean;
@@ -178,12 +183,11 @@ export interface AgentMember {
   prompt?: string;
   summary?: string;
   outputLines?: string[];
-  /** The subagent's concatenated live output (assistant deltas) — grows in the
-   *  detail panel like a thinking block. */
-  text?: string;
-  /** The member's concatenated live reasoning (thinking deltas) — the live
-   *  narrative's leading thinking block (ADR-009). */
-  thinking?: string;
+  /** The member's arrival-ordered live narrative segments (ADR-011 ①): one per
+   *  uninterrupted text/thinking run, so reasoning and output keep their true
+   *  interleaving with the tool steps. Absent on legacy-engine /
+   *  snapshot-restored rows — the panel degrades to tool cards until settle. */
+  segments?: NarrativeSegment[];
   /** The member's structured live tool steps (ADR-009) — rendered as tool
    *  cards in the panel's narrative area. */
   steps?: AgentStep[];
@@ -257,6 +261,20 @@ export type ApprovalBlock = ApprovalBlockCommon &
         options?: { label: string; description?: string }[];
       }
     | { kind: 'goal'; objective: string; completionCriterion?: string }
+    | {
+        kind: 'scheduled_task';
+        cron: string;
+        timezone?: string;
+        workspaceId: string;
+        permissionMode?: string;
+        model?: string;
+        effort?: string;
+        title?: string;
+        prompt: string;
+        recurring: boolean;
+        maxFires?: number;
+        reason?: string;
+      }
     | { kind: 'generic'; summary: string }
   );
 
@@ -352,6 +370,13 @@ export interface ChatTurn {
   createdAt?: string;
   /** Client-side measured duration from turn.started to turn.ended (ms). */
   durationMs?: number;
+  /** End-of-turn instant (ISO) — the live path's wall-clock stamp on the
+   *  run-end message, else the run-end message's createdAt plus the measured
+   *  durationMs when known, else the run-end createdAt. The footer renders it
+   *  as the local-time "report sent at" stamp with a timezone label.
+   *  Reloaded transcripts carry no real per-message wall clock (the wire has
+   *  none there), so the stamp intentionally stays absent on that path. */
+  endedAt?: string;
   /** The prompt id the daemon attributed this turn's messages to — the
    *  messagesToTurns grouping key. Keyed into the client-side projector's
    *  usage records by the per-turn usage pill. Absent for snapshot-loaded

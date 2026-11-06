@@ -42,7 +42,14 @@ import type {
   AppConfig,
   AppConfigProvider,
   AppCatalogProvider,
+  AppCronInterval,
+  AppCronPreview,
+  AppCronTaskEdit,
+  AppCronRun,
   AppCronTask,
+  AppCronTaskInput,
+  AppCronSessionGroup,
+  AppCronWorkspaceGroup,
   AppApprovalRequest,
   AppPermissionRule,
   AppPermissionRuleDecision,
@@ -186,6 +193,10 @@ interface RpcSessionView {
   /** W5 — the engine's SessionView reports the honest archive state;
    *  older builds omit it and map to false. */
   archived?: boolean;
+  /** SDR-016/017 pin trio — optional for older servers. */
+  pinned?: boolean;
+  pinnedAt?: string;
+  pinColor?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray';
   /** Session-retention Task 10 — the engine's SessionView carries the
    *  compression shape verdict (persisted rows only; a live session is
    *  never compressed). Older builds omit it and map to false. */
@@ -312,6 +323,11 @@ interface RpcWireMessage {
    *  "Worked for X" pill as the live one (absent on older engines /
    *  turns without a duration). */
   durationMs?: number;
+  /** The engine-authoritative instant (epoch ms) the turn completed, stamped
+   *  on the SAME last assistant row as `durationMs` — the read-face twin of
+   *  the live `turn.ended` event's `endedAtMs`, so a restored transcript shows
+   *  the footer's timestamp (absent on older engines / turns without one). */
+  endedAtMs?: number;
   /** Provenance (`{"origin": {"kind": ...}}`, TS toProtocolMessage parity) —
    *  the transcript filter keys on `metadata.origin.kind` to hide
    *  system-injected user turns (injections, compaction summaries, …). */
@@ -470,6 +486,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
       onStateChange: (connected: boolean) => {
         this.handlers?.onConnectionChange(connected);
         this.terminalSinks?.onConnectionChange?.(connected);
+        if (connected) this.subscribeSkillCatalog();
       },
       onError: (code: number, message: string, fatal: boolean) => {
         if (code === AUTH_UNAUTHORIZED_CODE) {
@@ -485,6 +502,29 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     // unregistered method would be answered method-not-found, stalling the
     // turn. Cards emitted before connectEvents are buffered instead.
     this.installAskHandlers();
+  }
+
+  /** ADR-013 decision 2: subscribe to the app-level skill-catalog change
+   *  broadcast. Connection-local like the serve wire's mcp.subscribe; runs
+   *  on every completed handshake (reconnects re-subscribe — the server's
+   *  subscription dies with the connection). The server's handler is
+   *  idempotent for repeat subscriptions on one connection (re-ack only).
+   *  Old backends answer method-not-found — the silent degradation the
+   *  spec mandates; any other failure is also non-fatal (the next
+   *  reconnect retries). */
+  private subscribeSkillCatalog(): void {
+    void this.client
+      .call('skill.subscribe', {})
+      .catch((error: unknown) => {
+        if (
+          error instanceof JsonRpcCallError &&
+          error.code === -32601 /* method-not-found: old backend */
+        ) {
+          return;
+        }
+        // Transport hiccup between handshake and subscribe — the next
+        // reconnect's onStateChange(true) retries; never surface this.
+      });
   }
 
   /** Register the engine reverse-RPC ask handlers on the transport. The
@@ -668,6 +708,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
       includeArchive?: boolean;
       archivedOnly?: boolean;
       excludeEmpty?: boolean;
+      pinnedOnly?: boolean;
     },
   ): Promise<Page<AppSession>> {
     // W5 unseal — the engine's `session.list` now carries the v2 filter
@@ -685,6 +726,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     if (input?.includeArchive !== undefined) params['include_archive'] = input.includeArchive;
     if (input?.archivedOnly !== undefined) params['archived_only'] = input.archivedOnly;
     if (input?.busy !== undefined) params['busy'] = input.busy;
+    if (input?.pinnedOnly !== undefined) params['pinned_only'] = input.pinnedOnly;
     if (input?.beforeId !== undefined) params['before_id'] = input.beforeId;
     if (input?.afterId !== undefined) params['after_id'] = input.afterId;
     if (input?.pageSize !== undefined) params['page_size'] = input.pageSize;
@@ -1203,11 +1245,41 @@ export class WsRpcApi implements Partial<MirriWebApi> {
       // synthesized empty session id (or none at all) and must NOT clobber
       // the last-session pointer the approval/question ask routing reads.
       if (event.sessionId === undefined) {
-        if (!event.type.startsWith('event.workspace.')) return;
+        const isServerScoped =
+          event.type.startsWith('event.workspace.') || event.type === 'skill.catalogChanged';
+        if (!isServerScoped) return;
       } else if (event.sessionId !== '') {
         this.lastSessionId = event.sessionId;
       }
       this.dropParkedAskForResolution(event);
+      // ADR-013 decision 2: skill.catalogChanged is projected at the bridge
+      // (the workspace-lifecycle precedent — sessionless server-scoped
+      // frames bypass the agent projector entirely).
+      if (event.type === 'skill.catalogChanged') {
+        const fields = (event.payload ?? {}) as Record<string, unknown>;
+        const strings = (v: unknown): readonly string[] =>
+          Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+        const workspaceId = typeof fields['workspaceId'] === 'string' ? fields['workspaceId'] : '';
+        const trigger = ['file', 'config', 'plugin', 'manual'].includes(
+          String(fields['trigger']),
+        )
+          ? (String(fields['trigger']) as 'file' | 'config' | 'plugin' | 'manual')
+          : 'file';
+        if (workspaceId !== '') {
+          handlers.onEvent(
+            {
+              type: 'skillCatalogChanged',
+              workspaceId,
+              added: strings(fields['added']),
+              removed: strings(fields['removed']),
+              updated: strings(fields['updated']),
+              trigger,
+            },
+            { sessionId: '', seq: 0 },
+          );
+        }
+        return;
+      }
       const appEvents = routeRpcEventToAppEvents(this.projector, event);
       const seq = event.seq ?? 0;
       // The server-scoped events carry the empty session id — the
@@ -1690,6 +1762,21 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     return { active: null, queued: [] };
   }
 
+  async pinSession(
+    sessionId: string,
+    color?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray',
+  ): Promise<void> {
+    // SDR-016/017: `session.pin` writes the pin trio through the metadata
+    // row — the kolor noResult wire spelling is JSON null.
+    const params: Record<string, unknown> = { session_id: sessionId };
+    if (color !== undefined) params['color'] = color;
+    await this.client.call('session.pin', params);
+  }
+
+  async unpinSession(sessionId: string): Promise<void> {
+    await this.client.call('session.unpin', { session_id: sessionId });
+  }
+
   async steerPrompts(
     sessionId: string,
     promptIds: string[],
@@ -1869,6 +1956,29 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     };
   }
 
+  /** `skill.reload` — the manual rescan face (ADR-013 decision 5). The
+   *  response's per-workspace counts and watcher status back the panel's
+   *  in-place result; the button does NOT listen to the event channel for
+   *  its own feedback (the RPC response is the feedback). */
+  async reloadSkills(): Promise<Array<{ workspaceId: string; added: number; removed: number; updated: number; watching: boolean }>> {
+    const result = await this.client.call<{
+      workspaces?: Array<{
+        workspace_id?: unknown;
+        added?: unknown;
+        removed?: unknown;
+        updated?: unknown;
+        watching?: unknown;
+      }>;
+    }>('skill.reload', {});
+    return (result?.workspaces ?? []).map((w) => ({
+      workspaceId: typeof w.workspace_id === 'string' ? w.workspace_id : '',
+      added: typeof w.added === 'number' ? w.added : 0,
+      removed: typeof w.removed === 'number' ? w.removed : 0,
+      updated: typeof w.updated === 'number' ? w.updated : 0,
+      watching: w.watching === true,
+    }));
+  }
+
   async readSkillContent(
     skillName: string,
     sessionId?: string,
@@ -1997,6 +2107,208 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     // absent envelope degrades to the honest empty list.
     const result = await this.client.call<RpcCronTaskList | null>('cron.list', { sessionId });
     return (result?.tasks ?? []).map(toAppCronTask);
+  }
+
+  async listAllCronTasks(): Promise<{
+    sessions: AppCronSessionGroup[];
+    workspaces: AppCronWorkspaceGroup[];
+    disabled: boolean;
+  }> {
+    // The aggregated cross-session view (E.5 / V8a): every task-bearing
+    // session in one answer — no session needs to be open.
+    const result = await this.client.call<RpcCronTaskListAll | null>('cron.listAll', {});
+    return {
+      sessions: (result?.sessions ?? []).map((group) => ({
+        sessionId: group.sessionId,
+        title: group.title,
+        open: group.open,
+        tasks: group.tasks.map(toAppCronTask),
+      })),
+      // Stage-2 E.1/V23: the workspace groups — tasks that fire while the
+      // service runs, grouped per workspace.
+      workspaces: (result?.workspaces ?? []).map((group) => ({
+        workspaceId: group.workspaceId,
+        tasks: group.tasks.map(toAppCronTask),
+      })),
+      disabled: result?.disabled ?? false,
+    };
+  }
+
+  /** Create a workspace cron task (stage-2 D.0c 用户直建): origin 'user'
+   * server-side, any fire budget, the posture + concurrency postures ride
+   * the same `cron.add` call's workspace arm. */
+  async createWorkspaceCronTask(
+    workspaceId: string,
+    input: AppCronTaskInput,
+  ): Promise<AppCronTask> {
+    const result = await this.client.call<RpcCronAddResult | null>('cron.add', {
+      workspaceId,
+      ...(input.interval
+        ? {}
+        : { cron: input.cron ?? '' }),
+      ...(input.interval ? { interval: input.interval } : {}),
+      prompt: input.prompt,
+      recurring: input.recurring,
+      ...(input.timezone ? { timezone: input.timezone } : {}),
+      ...(input.maxFires !== undefined ? { maxFires: input.maxFires } : {}),
+      ...(input.permissionMode ? { permissionMode: input.permissionMode } : {}),
+      ...(input.concurrency ? { concurrency: input.concurrency } : {}),
+      ...(input.title ? { title: input.title } : {}),
+      ...(input.endsAt ? { endsAt: input.endsAt } : {}),
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
+      ...(input.workdir ? { workdir: input.workdir } : {}),
+    });
+    if (!result?.taskId) {
+      throw new Error('cron.add did not confirm the created workspace task');
+    }
+    return toAppCronTask({ ...result, id: result.taskId });
+  }
+
+  /** `cron.preview` (form batch 6, ADR-017; A5 adds the past): the next
+   *  `count` ideal occurrences of a schedule (cron expression or interval)
+   *  plus the theoretical PAST one, computed by the same kernel the
+   *  scheduler runs — the form's timeline face. */
+  async previewCronSchedule(
+    schedule: { cron?: string; interval?: AppCronInterval },
+    options?: { timezone?: string; count?: number; anchor?: number },
+  ): Promise<AppCronPreview> {
+    const result = await this.client.call<{
+      occurrences?: number[];
+      previousT0?: number | null;
+    } | null>(
+      'cron.preview',
+      {
+        ...(schedule.interval
+          ? { interval: schedule.interval }
+          : { cron: schedule.cron ?? '' }),
+        ...(options?.timezone ? { timezone: options.timezone } : {}),
+        ...(options?.count !== undefined ? { count: options.count } : {}),
+        ...(options?.anchor !== undefined ? { anchor: options.anchor } : {}),
+      },
+    );
+    return {
+      occurrences: result?.occurrences ?? [],
+      previousT0: result?.previousT0 ?? null,
+    };
+  }
+
+  async deleteWorkspaceCronTask(
+    workspaceId: string,
+    taskId: string,
+  ): Promise<{ deleted: true; taskId: string }> {
+    const result = await this.client.call<{ deleted: boolean; task_id: string }>('cron.delete', {
+      workspaceId,
+      taskId,
+    });
+    if (result?.deleted !== true) {
+      throw new Error(`cron.delete did not confirm the removal of task ${taskId}`);
+    }
+    return { deleted: true, taskId: result.task_id ?? taskId };
+  }
+
+  async triggerWorkspaceCronTask(
+    workspaceId: string,
+    taskId: string,
+  ): Promise<{ triggered: true; taskId: string }> {
+    const result = await this.client.call<{ triggered: boolean; task_id: string }>('cron.trigger', {
+      workspaceId,
+      taskId,
+    });
+    if (result?.triggered !== true) {
+      throw new Error(`cron.trigger did not confirm the run of task ${taskId}`);
+    }
+    return { triggered: true, taskId: result.task_id ?? taskId };
+  }
+
+  /** `cron.update` (A9): edit a workspace task in place — identity and run
+   *  history survive, the next fire is recomputed server-side. The
+   *  workspace is not part of the payload (an edit never moves a task). */
+  async updateWorkspaceCronTask(
+    workspaceId: string,
+    taskId: string,
+    edit: AppCronTaskEdit,
+  ): Promise<AppCronTask> {
+    const result = await this.client.call<RpcCronTask | null>('cron.update', {
+      workspaceId,
+      taskId,
+      ...(edit.title !== undefined ? { title: edit.title } : {}),
+      ...(edit.prompt !== undefined ? { prompt: edit.prompt } : {}),
+      ...(edit.cron !== undefined ? { cron: edit.cron } : {}),
+      ...(edit.interval !== undefined ? { interval: edit.interval } : {}),
+      ...(edit.timezone !== undefined ? { timezone: edit.timezone } : {}),
+      ...(edit.endsAt !== undefined ? { endsAt: edit.endsAt } : {}),
+      ...(edit.maxFires !== undefined ? { maxFires: edit.maxFires } : {}),
+      ...(edit.model !== undefined ? { model: edit.model } : {}),
+      ...(edit.effort !== undefined ? { effort: edit.effort } : {}),
+      ...(edit.permissionMode !== undefined ? { permissionMode: edit.permissionMode } : {}),
+    });
+    if (!result?.id) {
+      throw new Error(`cron.update did not confirm the edit of task ${taskId}`);
+    }
+    return toAppCronTask(result);
+  }
+
+  /** `cron.pause` / `cron.resume` (A9): one shared projection — both answer
+   *  the updated task row. */
+  private async setWorkspaceCronPaused(
+    method: 'cron.pause' | 'cron.resume',
+    workspaceId: string,
+    taskId: string,
+  ): Promise<AppCronTask> {
+    const result = await this.client.call<RpcCronTask | null>(method, { workspaceId, taskId });
+    if (!result?.id) {
+      throw new Error(`${method} did not confirm task ${taskId}`);
+    }
+    return toAppCronTask(result);
+  }
+
+  /** Stop a workspace task firing, keeping its identity and history (A9). */
+  async pauseWorkspaceCronTask(workspaceId: string, taskId: string): Promise<AppCronTask> {
+    return this.setWorkspaceCronPaused('cron.pause', workspaceId, taskId);
+  }
+
+  /** Resume a paused workspace task from the next future occurrence (A9). */
+  async resumeWorkspaceCronTask(workspaceId: string, taskId: string): Promise<AppCronTask> {
+    return this.setWorkspaceCronPaused('cron.resume', workspaceId, taskId);
+  }
+
+  /** `cron.runs.list` — one workspace task's run records (C.2/V12). */
+  async listCronRuns(workspaceId: string, taskId: string): Promise<AppCronRun[]> {
+    const result = await this.client.call<{ runs: RpcCronRun[] } | null>('cron.runs.list', {
+      workspaceId,
+      taskId,
+    });
+    return (result?.runs ?? []).map((run) => ({
+      runId: run.runId,
+      status: run.status,
+      startedAt: run.startedAt,
+      endedAt: run.endedAt,
+      durationMs: run.durationMs,
+      usage: run.usage,
+      sessionRef: run.sessionRef,
+      skipReason: run.skipReason,
+      askedOps: run.askedOps,
+      trigger: run.trigger ?? null,
+      scheduledAt: run.scheduledAt ?? null,
+      launchDelayMs: run.launchDelayMs ?? null,
+    }));
+  }
+
+  /** `cron.run.open` — the explicit-open path (B.2/C.4, ADR-008):
+   * materialize the lazy execution session, idempotent. */
+  async openCronRun(
+    workspaceId: string,
+    sessionId: string,
+  ): Promise<{ sessionId: string; materialized: boolean }> {
+    const result = await this.client.call<{ sessionId: string; materialized: boolean } | null>(
+      'cron.run.open',
+      { workspaceId, sessionId },
+    );
+    return {
+      sessionId: result?.sessionId ?? sessionId,
+      materialized: result?.materialized ?? false,
+    };
   }
 
   async deleteCronTask(
@@ -3458,6 +3770,10 @@ function toAppSession(view: RpcSessionView): AppSession {
     // neutral values, which map onto the same defaults as before.
     busy: view.busy === true,
     archived: view.archived === true,
+    // SDR-016/017 pin trio — defensive against older engines.
+    pinned: view.pinned === true,
+    pinnedAt: view.pinnedAt ?? undefined,
+    pinColor: view.pinColor ?? undefined,
     // The retention compression verdict — the sidebar "已压缩" badge and the
     // fork-entry gate's input (older engine builds answer false).
     compressed: view.compressed === true,
@@ -3584,6 +3900,9 @@ export function toAppMessage(wire: RpcWireMessage, sessionId: string): AppMessag
     // row position the live path stamps, so a restored transcript renders
     // the same "Worked for X" pill as the live one.
     durationMs: wire.durationMs,
+    // Engine-authoritative end-of-turn instant, backfilled on the turn's
+    // last assistant row (read-face twin of the live event's endedAtMs).
+    endedAt: wire.endedAtMs !== undefined ? new Date(wire.endedAtMs).toISOString() : undefined,
     // Provenance rides through so the transcript filter can hide
     // system-injected user turns (metadata.origin.kind).
     metadata: wire.metadata,
@@ -3731,6 +4050,8 @@ interface RpcInFlightTurn {
       text?: string;
       percent?: number;
     };
+    /** Server-stamped epoch-ms tool start (ADR-7); omitted by older engines. */
+    started_at_ms?: number;
   }>;
   current_prompt_id?: string;
   /** The running turn's real start time (epoch-ms), stamped by the rust
@@ -4175,7 +4496,9 @@ interface RpcDetachedTaskInfo {
 }
 
 /** `cron.list` row (B6; timestamps are epoch ms, `nextFireAt` absent once a
- *  one-shot has fired). */
+ *  one-shot has fired). The stage-1 batch-3 scheduling fields are optional
+ *  for pre-batch tolerance; the stage-2 fields (scope, concurrency,
+ *  deliveryCondition) ride the same tolerance — absent on older rows. */
 interface RpcCronTask {
   id: string;
   cron: string;
@@ -4186,13 +4509,74 @@ interface RpcCronTask {
   createdAt: number;
   lastFiredAt?: number | null;
   nextFireAt?: number | null;
+  origin?: 'user' | 'agent' | 'agent_approved';
+  maxFires?: number;
+  fireCount?: number;
+  scope?: { kind: 'session' | 'workspace'; sessionId?: string; workspaceId?: string };
+  permissionMode?: 'manual' | 'auto' | 'yolo';
+  concurrency?: 'skip' | 'queue';
+  paused?: boolean;
+  deliveryCondition?: string;
+  // Form batch 6: the task-form fields + the residency-state projections.
+  title?: string;
+  endsAt?: string | null;
+  interval?: AppCronInterval | null;
+  model?: string | null;
+  effort?: string | null;
+  workdir?: string | null;
+  nextTwoFires?: number[] | null;
+  lastRunFromRuns?: number | null;
 }
 
-/** `cron.list` result (B6): the session's task rows under the `{tasks: [...]}`
- *  envelope (the rust CronTasksResult — same envelope family as
- *  RpcPermissionRuleList). */
+/** `cron.runs.list` row (stage-2 4b, C.2): one run's record — status,
+ *  timing, usage (the D-M6 summary rides `usage.summary`), the execution
+ *  session ref, and the V15 asked-ops trace. */
+interface RpcCronRun {
+  runId: string;
+  status: 'running' | 'succeeded' | 'failed' | 'rejected' | 'skipped' | 'waiting_approval';
+  startedAt: string;
+  endedAt?: string | null;
+  durationMs?: number | null;
+  usage?: { summary?: string } | null;
+  sessionRef?: string | null;
+  skipReason?: string | null;
+  askedOps?: Array<{ tool: string; decision: string; reason?: string }>;
+  trigger?: 'scheduled' | 'run_now' | 'queue_drain' | null;
+  scheduledAt?: number | null;
+  launchDelayMs?: number | null;
+}
+
+/** `cron.add` ack (stage-1 batch-3, E.1): the created task echoed back —
+ * the same field set as the `cron.list` row, keyed `taskId`. */
+interface RpcCronAddResult extends RpcCronTask {
+  taskId: string;
+}
+
+/** `cron.listAll` result (E.5 / V8a): one group per task-bearing session
+ * (live or persisted), each with the honest open flag, plus the honest
+ * scheduling-disabled flag (E.4 layer 3). */
+interface RpcCronTaskListAll {
+  sessions: Array<{
+    sessionId: string;
+    title: string;
+    open: boolean;
+    tasks: RpcCronTask[];
+  }>;
+  workspaces?: Array<{
+    workspaceId: string;
+    tasks: RpcCronTask[];
+  }>;
+  disabled: boolean;
+}
+
+/** `cron.list` result (B6): the session's task rows under the
+ *  `{tasks: [...], disabled: boolean}` envelope (the rust CronTasksResult —
+ *  same envelope family as RpcPermissionRuleList). `disabled` is always
+ *  present: `true` means `MIRRICODE_DISABLE_CRON=1` was set at server start
+ *  (ADR-006 / E.4 — tasks are listed but will not fire). */
 interface RpcCronTaskList {
   tasks: RpcCronTask[];
+  disabled: boolean;
 }
 
 /** `approval.listRules` / `approval.addRule` / `approval.removeRule`'s shared
@@ -4257,6 +4641,7 @@ export function toAppSnapshot(snapshot: RpcSnapshot, sessionId: string): AppSess
               args: tool.args,
               description: tool.description,
               lastProgress: tool.last_progress,
+              startedAtMs: tool.started_at_ms,
             })),
             promptId: snapshot.in_flight_turn.current_prompt_id,
             startedAtMs: snapshot.in_flight_turn.current_turn_started_at,
@@ -4616,6 +5001,38 @@ function toAppCronTask(task: RpcCronTask): AppCronTask {
     createdAt: task.createdAt,
     lastFiredAt: task.lastFiredAt,
     nextFireAt: task.nextFireAt,
+    origin: task.origin,
+    // The wire serialises an uncapped task as `maxFires: null` — absent here.
+    maxFires: task.maxFires ?? undefined,
+    fireCount: task.fireCount,
+    // Stage-2 (E.1/E.2): the scope + the honest delivery condition — the
+    // panel's workspace grouping and the dual-caliber labeling consume
+    // these; absent on pre-stage-2 rows (session tasks keep their shape).
+    ...(task.scope
+      ? {
+          scope:
+            task.scope.kind === 'workspace'
+              ? { kind: 'workspace' as const, workspaceId: task.scope.workspaceId ?? '' }
+              : { kind: 'session' as const, sessionId: task.scope.sessionId ?? '' },
+        }
+      : {}),
+    ...(task.permissionMode ? { permissionMode: task.permissionMode } : {}),
+    ...(task.concurrency ? { concurrency: task.concurrency } : {}),
+    ...(task.paused ? { paused: true } : {}),
+    ...(task.deliveryCondition ? { deliveryCondition: task.deliveryCondition } : {}),
+    // Form batch 6: the task-form fields (a `null` title passes through —
+    // the untitled label is the UI's i18n fallback, review m6) and the
+    // residency-state projections.
+    ...(task.title !== undefined && task.title !== null ? { title: task.title } : {}),
+    ...(task.endsAt !== undefined && task.endsAt !== null ? { endsAt: task.endsAt } : {}),
+    ...(task.interval ? { interval: task.interval } : {}),
+    ...(task.model ? { model: task.model } : {}),
+    ...(task.effort ? { effort: task.effort } : {}),
+    ...(task.workdir ? { workdir: task.workdir } : {}),
+    ...(task.nextTwoFires ? { nextTwoFires: task.nextTwoFires } : {}),
+    ...(task.lastRunFromRuns !== undefined && task.lastRunFromRuns !== null
+      ? { lastRunFromRuns: task.lastRunFromRuns }
+      : {}),
   };
 }
 

@@ -149,6 +149,10 @@ pub struct SwarmBatchOptions {
     /// The requeue backoff base (test seam to shorten real waits; defaults
     /// to [`RATE_LIMIT_RETRY_BASE_MS`]).
     pub retry_base_ms: Option<u64>,
+    /// The spawning turn's origin (S5 / ADR-001, M1): every spawned member's
+    /// `SpawnRequest` inherits it, so a cron-fired turn's swarm subagents
+    /// stay in the `Cron` lineage. Defaults to `Interactive`.
+    pub turn_origin: crate::permission::TurnOriginContext,
     /// Registers every launched member as a tracked [`TaskManager`] task so
     /// `task.list` can observe it and `task.cancel` / `task.stop` can stop
     /// it individually (US5.1 — the parity the single `Agent` delegation's
@@ -288,6 +292,9 @@ pub async fn run_swarm_batch(
     batch_cancel: CancelToken,
     options: SwarmBatchOptions,
 ) -> Vec<SwarmRunResult> {
+    // S5 / ADR-001 (M1): the spawning turn's origin — every spawned member
+    // inherits it (the Agent tool's propagation, the swarm edition).
+    let turn_origin = options.turn_origin.clone();
     let total = tasks.len();
     let mut pending: VecDeque<TaskState> = tasks
         .into_iter()
@@ -435,6 +442,11 @@ pub async fn run_swarm_batch(
                         swarm_index: Some(state.task.swarm_index),
                         swarm_item: state.task.item.clone(),
                         suppress_rate_limit_failure_event: true,
+                        // S5 / ADR-001 (M1): the member inherits the
+                        // spawning turn's origin — a cron-fired turn's
+                        // swarm subagent stays in the Cron lineage (the
+                        // same propagation the Agent tool applies).
+                        turn_origin: turn_origin.clone(),
                     }),
                     SwarmTaskKind::Resume { agent_id } => host.resume(ResumeRequest {
                         agent_id: agent_id.clone(),
@@ -1444,7 +1456,7 @@ mod tests {
                             // in-flight when member 0's rate limit settles,
                             // so the requeue branch (not the only-unfinished
                             // verdict) runs.
-                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: scenario pacing (virtual clock — keeps this member observably in-flight when member 0's rate limit settles, so the requeue branch runs)
                             Ok(SubagentCompletion::from_text("ok"))
                         }
                     }),
@@ -1701,7 +1713,7 @@ mod tests {
                     // The failure settles after the cancellation but does
                     // not watch the token — the exact race shape.
                     Box::pin(async move {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: scenario pacing (virtual clock — the failure settles AFTER the cancellation: the exact race shape under test)
                         Err(SubagentError::RateLimited(
                             "HTTP 429: too many requests".into(),
                         ))
@@ -1797,7 +1809,7 @@ mod tests {
                     request.profile_name,
                     request.model,
                     Box::pin(async move {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: scenario pacing (virtual clock — member work time the concurrency shrink measures against)
                         active.fetch_sub(1, Ordering::SeqCst);
                         if entered.load(Ordering::SeqCst) {
                             peak_after.fetch_max(0, Ordering::SeqCst);
@@ -1827,7 +1839,7 @@ mod tests {
                     "coder".into(),
                     None,
                     Box::pin(async move {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: scenario pacing (virtual clock — member work time the concurrency shrink measures against)
                         active.fetch_sub(1, Ordering::SeqCst);
                         if entered.load(Ordering::SeqCst) {
                             peak_after.fetch_max(0, Ordering::SeqCst);
@@ -2398,7 +2410,7 @@ mod tests {
                     // Member 0's first attempt: 1s of real budget consumed,
                     // then the rate limit.
                     Box::pin(async move {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        tokio::time::sleep(Duration::from_secs(1)).await; // hygiene-allow: scenario pacing (virtual clock — member 0's 1s of consumed budget before the rate limit)
                         Err(SubagentError::RateLimited(
                             "HTTP 429: too many requests".into(),
                         ))
@@ -2691,7 +2703,7 @@ mod tests {
                                 _ = cancel.cancelled() => {
                                     return Err(SubagentError::Cancelled);
                                 }
-                                _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                                _ = tokio::time::sleep(Duration::from_millis(50)) => { // hygiene-allow: scenario pacing (virtual clock — silent-member work ticks; only advancing members feed the watchdog)
                                     if release.load(Ordering::SeqCst) {
                                         return Ok(SubagentCompletion::from_text("done"));
                                     }

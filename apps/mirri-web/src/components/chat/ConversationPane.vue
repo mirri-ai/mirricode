@@ -217,6 +217,12 @@ const activeWorkspaceLabel = computed(() => {
   return w?.name ?? props.workspaceName ?? '';
 });
 
+/** Workspace display names by id — the approval card names the workspace a
+ *  scheduled task will land in (never a bare id). */
+const workspaceNameById = computed<Record<string, string>>(() =>
+  Object.fromEntries((props.workspaces ?? []).map((ws) => [ws.id, ws.name])),
+);
+
 const hasWorkspaces = computed(() => (props.workspaces?.length ?? 0) > 0);
 
 const visibleWorkspaces = computed(() =>
@@ -1619,6 +1625,7 @@ defineExpose({ loadComposerForEdit, focusComposer, focusApproval, showStaleFileR
         v-if="!(turns.length === 0 && !sessionLoading)"
         :ref="bindChatDock"
         :style="chatDockStyle"
+        :workspace-names="workspaceNameById"
         :session-id="sessionId"
         :usage="sessionUsage"
         :turn-failure="turnFailure ?? []"

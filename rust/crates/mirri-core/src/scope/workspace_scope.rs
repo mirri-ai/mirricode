@@ -142,6 +142,25 @@ impl WorkspaceScope {
         candidates
     }
 
+    /// The scratch-build twin of [`Self::default_skill_root_paths`] with the
+    /// home injected (the `resolve_*_from` convention of `mirri-os/src/home.rs`):
+    /// tests pass the fake home directly instead of pinning `$HOME`.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    fn default_skill_root_paths_from(
+        &self,
+        home_dir: Option<&Path>,
+    ) -> Vec<(PathBuf, SkillSource)> {
+        let mut candidates = vec![
+            (self.cwd.join(".agents/skills"), SkillSource::Project),
+            (self.cwd.join(".mirri-code/skills"), SkillSource::Project),
+        ];
+        if let Some(home) = home_dir {
+            candidates.push((home.join(".agents/skills"), SkillSource::User));
+        }
+        candidates
+    }
+
     /// Every skill root directory this workspace's catalog can be
     /// re-discovered from — the watcher's listen-set source (ADR-010
     /// decision 1). See [`Self::skill_root_paths`] for the channel
@@ -253,8 +272,25 @@ impl WorkspaceScope {
         &self,
         id: SessionId,
         metadata: SessionMetadata,
+        config: SessionScopeConfig,
+        tasks_dir: Option<PathBuf>,
+    ) -> EngineResult<Arc<SessionScope>> {
+        self.create_session_with_root(id, metadata, config, tasks_dir, self.cwd.clone())
+            .await
+    }
+
+    /// The [`Self::create_session_with_config`] variant that roots the
+    /// session's file-tool sandbox at an explicit directory instead of the
+    /// workspace cwd (the workspace cron run spawner's task-workdir face,
+    /// ADR-019 / VU14 review Major 3). The caller owns validating the
+    /// directory stays inside the workspace root.
+    pub async fn create_session_with_root(
+        &self,
+        id: SessionId,
+        metadata: SessionMetadata,
         mut config: SessionScopeConfig,
         tasks_dir: Option<PathBuf>,
+        workspace_root: PathBuf,
     ) -> EngineResult<Arc<SessionScope>> {
         let mut sessions = self.sessions.write().await;
         if sessions.contains_key(&id) {
@@ -286,7 +322,7 @@ impl WorkspaceScope {
             metadata,
             config,
             Arc::clone(&self.skills),
-            Some(self.cwd.clone()),
+            Some(workspace_root),
             tasks_dir,
         ));
         sessions.insert(id, Arc::clone(&session));
@@ -331,7 +367,21 @@ pub struct SkillRootChannel {
 /// The user brand dir is NOT here — the workspace scope does not know the
 /// Mirri home; the assembly layer's replay carries it (see
 /// `apply_skill_discovery`).
+///
+/// Reads `$HOME` for the user channel (see [`default_skill_root_channels_from`]
+/// for the injectable variant tests use to avoid process-env races).
 pub fn default_skill_root_channels(cwd: &Path) -> Vec<SkillRootChannel> {
+    default_skill_root_channels_from(cwd, std::env::var_os("HOME"))
+}
+
+/// The pure resolver behind [`default_skill_root_channels`], parameterised
+/// over the home directory so the user channel is testable without mutating
+/// the process environment (the `resolve_*_from` convention of
+/// `mirri-os/src/home.rs`): `home_dir: None` yields no user channel.
+pub fn default_skill_root_channels_from(
+    cwd: &Path,
+    home_dir: Option<std::ffi::OsString>,
+) -> Vec<SkillRootChannel> {
     let mut channels = vec![
         SkillRootChannel {
             source: SkillSource::Project,
@@ -342,7 +392,7 @@ pub fn default_skill_root_channels(cwd: &Path) -> Vec<SkillRootChannel> {
             dir: cwd.join(".mirri-code/skills"),
         },
     ];
-    if let Some(home) = std::env::var_os("HOME") {
+    if let Some(home) = home_dir {
         channels.push(SkillRootChannel {
             source: SkillSource::User,
             dir: Path::new(&home).join(".agents/skills"),
@@ -403,23 +453,6 @@ mod tests {
     use crate::WorkspaceTrustLevel;
     use crate::hook_engine::{HookDef, HookEventType};
     use crate::permission::PermissionMode;
-
-    /// Serializes every test that mutates or reads the `HOME` environment
-    /// variable: a plain `#[test]` race between two HOME-mutating tests
-    /// leaks one test's fake home into another's workspace construction
-    /// (the parallel-test hazard the fake-home convention documents).
-    ///
-    /// There is exactly ONE lock object for this: a second guard function
-    /// with its own `static` would let a test holding one run concurrently
-    /// with a test holding the other, which is the same race wearing a
-    /// different name. Every HOME pin — empty tempdir or populated home —
-    /// takes this lock and holds it across the whole pin window.
-    fn home_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        LOCK.get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
 
     fn make_workspace(config: WorkspaceScopeConfig) -> WorkspaceScope {
         WorkspaceScope::new(
@@ -653,16 +686,11 @@ mod tests {
         // to another temp dir that also has no skills.
         let tmp = tempfile::tempdir().expect("temp dir");
         let fake_home = tempfile::tempdir().expect("fake home temp dir");
-        // HOME pin: serialize via the crate-wide lock (every HOME reader
-        // takes it, so an empty pin is not lock-free either).
-        let _guard = home_lock();
-        let saved_home = std::env::var_os("HOME");
-        // SAFETY: This test only verifies that a workspace with no skills
-        // produces an empty catalog. Setting HOME to a temp dir is the only
-        // way to prevent discovering the real user's skills.
-        unsafe {
-            std::env::set_var("HOME", fake_home.path());
-        }
+        // HOME pin via EnvGuard: it takes the workspace-wide env lock and
+        // restores the previous HOME (set or unset) on drop — an
+        // originally-unset HOME does not leak the pin either.
+        let mut home = mirri_test_support::env::EnvGuard::new();
+        home.set("HOME", fake_home.path().to_str().expect("utf-8 path"));
 
         // When a workspace is created
         let workspace = WorkspaceScope::new(
@@ -671,15 +699,9 @@ mod tests {
             WorkspaceScopeConfig::default(),
         );
 
-        // Restore HOME (an originally-unset HOME must not leak the pin)
-        match saved_home {
-            Some(home) => unsafe {
-                std::env::set_var("HOME", home);
-            },
-            None => unsafe {
-                std::env::remove_var("HOME");
-            },
-        }
+        // Drop the pin (restoring HOME) before the assertions, so a failing
+        // assert below cannot leak the fake home into sibling tests.
+        drop(home);
 
         // Then the skill catalog is empty (but not in an error state)
         assert!(workspace.skills().list().is_empty());
@@ -690,13 +712,9 @@ mod tests {
         let tmp = tempfile::tempdir().expect("temp dir");
         // Pin HOME to an empty tempdir so only the project-root skill counts
         // (mirrors the fake-home convention of the empty-catalog test above).
-        // HOME pin: serialize via the crate-wide lock.
-        let _guard = home_lock();
+        let mut home = mirri_test_support::env::EnvGuard::new();
         let fake_home = tempfile::tempdir().expect("fake home temp dir");
-        let saved_home = std::env::var_os("HOME");
-        unsafe {
-            std::env::set_var("HOME", fake_home.path());
-        }
+        home.set("HOME", fake_home.path().to_str().expect("utf-8 path"));
         let skills_dir = tmp.path().join(".agents/skills/re-greet");
         std::fs::create_dir_all(&skills_dir).expect("create skill dir");
         std::fs::write(skills_dir.join("SKILL.md"), "# Re\n").expect("write SKILL.md");
@@ -708,20 +726,13 @@ mod tests {
         let discovered_at_birth = workspace.skills().list().len();
 
         // When the catalog is cleared and the default roots are replayed,
-        // restore HOME first so a failing assert below cannot leak the
-        // fake home into sibling tests.
+        // drop the pin (restoring HOME) before the asserts below so a
+        // failure cannot leak the fake home into sibling tests.
         workspace.skills().clear();
         workspace.discover_default_skill_roots();
         let rediscovered = workspace.skills().get("re-greet").is_some();
         let rediscovered_len = workspace.skills().list().len();
-        match saved_home {
-            Some(home) => unsafe {
-                std::env::set_var("HOME", home);
-            },
-            None => unsafe {
-                std::env::remove_var("HOME");
-            },
-        }
+        drop(home);
 
         // Then the same skill set is rediscovered
         assert_eq!(discovered_at_birth, 1);
@@ -745,20 +756,17 @@ mod tests {
         std::fs::write(skills_dir.join("SKILL.md"), "# Dup\n").expect("write SKILL.md");
         // brand dir absent — fine, discovery skips missing dirs
 
-        // Non-empty HOME pin: hold the crate lock across the whole window.
-        let _guard = home_lock();
-        let previous_home = std::env::var_os("HOME");
-        unsafe { std::env::set_var("HOME", home.path()) };
+        // Non-empty HOME pin: EnvGuard holds the workspace env lock and
+        // restores the previous HOME on drop.
+        let mut home_pin = mirri_test_support::env::EnvGuard::new();
+        home_pin.set("HOME", home.path().to_str().expect("utf-8 path"));
         // When a workspace is created with cwd == $HOME (the collision case)
         let workspace = WorkspaceScope::new(
             WorkspaceId::new("ws-home-collision"),
             home.path().to_path_buf(),
             WorkspaceScopeConfig::default(),
         );
-        match previous_home {
-            Some(value) => unsafe { std::env::set_var("HOME", value) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
+        drop(home_pin);
 
         // Then the skill is present exactly once, labeled User
         let skill = workspace
@@ -784,18 +792,14 @@ mod tests {
         let link = link_parent.path().join("linked-ws");
         std::os::unix::fs::symlink(home.path(), &link).expect("symlink");
 
-        let _guard = home_lock();
-        let previous_home = std::env::var_os("HOME");
-        unsafe { std::env::set_var("HOME", home.path()) };
+        let mut home_pin = mirri_test_support::env::EnvGuard::new();
+        home_pin.set("HOME", home.path().to_str().expect("utf-8 path"));
         let workspace = WorkspaceScope::new(
             WorkspaceId::new("ws-symlink"),
             link,
             WorkspaceScopeConfig::default(),
         );
-        match previous_home {
-            Some(value) => unsafe { std::env::set_var("HOME", value) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
+        drop(home_pin);
 
         let skill = workspace
             .skills()
@@ -858,14 +862,11 @@ mod tests {
     /// listen for their creation).
     #[test]
     fn should_return_all_four_candidate_roots_when_collecting_skill_root_paths() {
-        let _guard = home_lock();
+        let mut home_pin = mirri_test_support::env::EnvGuard::new();
         let tmp = tempfile::tempdir().expect("temp dir");
         let fake_home = tempfile::tempdir().expect("fake home");
         let mirri_home = tempfile::tempdir().expect("mirri home");
-        let saved_home = std::env::var_os("HOME");
-        unsafe {
-            std::env::set_var("HOME", fake_home.path());
-        }
+        home_pin.set("HOME", fake_home.path().to_str().expect("utf-8 path"));
 
         let workspace = WorkspaceScope::new(
             WorkspaceId::new("ws-roots"),
@@ -873,11 +874,7 @@ mod tests {
             WorkspaceScopeConfig::default(),
         );
         let roots = workspace.skill_root_paths(Some(mirri_home.path()));
-        if let Some(home) = saved_home {
-            unsafe {
-                std::env::set_var("HOME", home);
-            }
-        }
+        drop(home_pin);
 
         let expected = vec![
             tmp.path().join(".agents/skills"),
@@ -900,12 +897,9 @@ mod tests {
     /// under the same root stay separate.
     #[test]
     fn should_deduplicate_when_two_channels_resolve_to_the_same_directory() {
-        let _guard = home_lock();
+        let mut home_pin = mirri_test_support::env::EnvGuard::new();
         let tmp = tempfile::tempdir().expect("temp dir");
-        let saved_home = std::env::var_os("HOME");
-        unsafe {
-            std::env::set_var("HOME", tmp.path());
-        }
+        home_pin.set("HOME", tmp.path().to_str().expect("utf-8 path"));
 
         let workspace = WorkspaceScope::new(
             WorkspaceId::new("ws-dedupe"),
@@ -913,11 +907,7 @@ mod tests {
             WorkspaceScopeConfig::default(),
         );
         let roots = workspace.skill_root_paths(Some(tmp.path()));
-        if let Some(home) = saved_home {
-            unsafe {
-                std::env::set_var("HOME", home);
-            }
-        }
+        drop(home_pin);
 
         // The project `.agents/skills` and the user `~/.agents/skills`
         // resolve to the SAME directory (cwd == HOME); the dedupe keeps
@@ -954,13 +944,10 @@ mod tests {
     /// and the mirri-home channel still yields its path.
     #[test]
     fn should_skip_the_user_channel_when_home_is_unset() {
-        let _guard = home_lock();
+        let mut home_pin = mirri_test_support::env::EnvGuard::new();
         let tmp = tempfile::tempdir().expect("temp dir");
         let mirri_home = tempfile::tempdir().expect("mirri home");
-        let saved_home = std::env::var_os("HOME");
-        unsafe {
-            std::env::remove_var("HOME");
-        }
+        home_pin.remove("HOME");
 
         let workspace = WorkspaceScope::new(
             WorkspaceId::new("ws-no-home"),
@@ -968,11 +955,7 @@ mod tests {
             WorkspaceScopeConfig::default(),
         );
         let roots = workspace.skill_root_paths(Some(mirri_home.path()));
-        if let Some(home) = saved_home {
-            unsafe {
-                std::env::set_var("HOME", home);
-            }
-        }
+        drop(home_pin);
 
         assert_eq!(
             roots,
@@ -980,6 +963,88 @@ mod tests {
                 tmp.path().join(".agents/skills"),
                 tmp.path().join(".mirri-code/skills"),
                 mirri_home.path().join("skills"),
+            ]
+        );
+    }
+
+    // ===== Injectable home resolution (16-test-execution-strategy §4.2:
+    // production HOME reads reachable from lib test targets expose a
+    // `resolve_*_from` variant so tests pass the value instead of pinning
+    // the process env) =====
+
+    /// Given an injected fake home, when the default-root channel list is
+    /// built, then the user channel points under that home — no process-env
+    /// mutation involved.
+    #[test]
+    fn should_use_the_injected_home_for_the_user_channel_when_resolving_from_a_fake_home() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let fake_home = tempfile::tempdir().expect("fake home");
+
+        let channels = default_skill_root_channels_from(
+            tmp.path(),
+            Some(std::ffi::OsString::from(fake_home.path())),
+        );
+
+        assert_eq!(
+            channels
+                .iter()
+                .map(|c| (c.dir.clone(), c.source))
+                .collect::<Vec<_>>(),
+            vec![
+                (tmp.path().join(".agents/skills"), SkillSource::Project),
+                (tmp.path().join(".mirri-code/skills"), SkillSource::Project),
+                (fake_home.path().join(".agents/skills"), SkillSource::User),
+            ]
+        );
+    }
+
+    /// Given no injected home, when the default-root channel list is built,
+    /// then only the two project channels appear.
+    #[test]
+    fn should_omit_the_user_channel_when_no_home_is_injected() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+
+        let channels = default_skill_root_channels_from(tmp.path(), None);
+
+        assert_eq!(
+            channels
+                .iter()
+                .map(|c| (c.dir.clone(), c.source))
+                .collect::<Vec<_>>(),
+            vec![
+                (tmp.path().join(".agents/skills"), SkillSource::Project),
+                (tmp.path().join(".mirri-code/skills"), SkillSource::Project),
+            ]
+        );
+    }
+
+    /// Given a workspace with an injected fake home, when the default-root
+    /// candidate list is built from it, then the user candidate points under
+    /// that home.
+    #[test]
+    fn should_use_the_injected_home_for_the_user_candidate_when_resolving_from_a_fake_home() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let fake_home = tempfile::tempdir().expect("fake home");
+        let workspace = WorkspaceScope::new(
+            WorkspaceId::new("ws-injected-home"),
+            tmp.path().to_path_buf(),
+            WorkspaceScopeConfig::default(),
+        );
+
+        let candidates = workspace.default_skill_root_paths_from(Some(fake_home.path()));
+
+        assert_eq!(
+            candidates,
+            vec![
+                (
+                    tmp.path().join(".agents/skills"),
+                    SkillSource::Project,
+                ),
+                (
+                    tmp.path().join(".mirri-code/skills"),
+                    SkillSource::Project,
+                ),
+                (fake_home.path().join(".agents/skills"), SkillSource::User),
             ]
         );
     }

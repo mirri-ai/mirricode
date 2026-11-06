@@ -229,6 +229,7 @@ export function assistantTurnRenderPlan(
     finalText: folded && isRunEnd ? runFinalText({ turns: runTurns, startIndex: start, endIndex: end }) : '',
     durationMs: last.durationMs,
     createdAt: last.createdAt,
+    endedAt: last.endedAt,
     visible: isRunStart || isRunEnd || !folded,
   };
 }
@@ -255,6 +256,8 @@ export interface AssistantTurnRenderPlan {
   durationMs: number | undefined;
   /** The run-end turn's createdAt (header relative time). */
   createdAt: string | undefined;
+  /** The run-end turn's endedAt — the footer's "report sent at" stamp. */
+  endedAt: string | undefined;
   /** True when the turn emits DOM at all. Folded runs render only their first
    *  and last turn; hidden middle turns are skipped. */
   visible: boolean;

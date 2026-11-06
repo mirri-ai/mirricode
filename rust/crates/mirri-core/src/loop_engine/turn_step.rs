@@ -768,6 +768,13 @@ async fn finalize_step(
         // `dispatchToolCall` publishes `tool.call.started` and records the
         // loop event with the effective args).
         let mut tool_call_events: Vec<LoopEvent> = Vec::new();
+        // ADR-7: dispatch→result window per tool call (epoch-ms). Local to this
+        // step: the map is written by the dispatch closure and read by the
+        // completion arm below; ids are unique within a step (same lifecycle
+        // assumption as the `names` map).
+        let tool_start_ms: Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+            Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let starts = Arc::clone(&tool_start_ms);
         let mut dispatch_tool_call = |record: &crate::tool_registry::DispatchedToolCall<'_>| {
             let event = LoopEvent::ToolCall {
                 step_id: step_id.clone(),
@@ -781,10 +788,16 @@ async fn finalize_step(
                 .append_loop_event(event.clone());
             tool_call_events.push(event);
             if let Some(cb) = live_callback {
+                let now = crate::session::gates::now_ms();
+                starts
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(record.tool_call_id.to_string(), now);
                 cb(LiveEvent::ToolCallStarted {
                     tool_name: record.tool_name.to_string(),
                     tool_call_id: record.tool_call_id.to_string(),
                     args: record.args.clone(),
+                    started_at: now,
                 });
             }
         };
@@ -862,6 +875,11 @@ async fn finalize_step(
                 }
                 // Emit live event so the UI can show "tool completed".
                 if let Some(cb) = live_callback {
+                    let started = starts
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(tool_call_id.as_str())
+                        .unwrap_or_else(crate::session::gates::now_ms);
                     cb(LiveEvent::ToolCallCompleted {
                         tool_call_id: tool_call_id.clone(),
                         tool_name: names
@@ -871,6 +889,7 @@ async fn finalize_step(
                             .to_string(),
                         is_error: result.is_error,
                         output: result.output.clone(),
+                        duration_ms: crate::session::gates::now_ms().saturating_sub(started),
                     });
                 }
             }

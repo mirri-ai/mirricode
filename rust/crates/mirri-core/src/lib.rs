@@ -161,7 +161,7 @@ pub use context_memory::{
     CompactionInput, ContextMemory, LoopEvent, project, select_compaction_user_messages,
 };
 pub use context_size::{ContextSize, ContextSizeTracker, normalize_slice_index};
-pub use cron::{CronError, CronManager, CronTask};
+pub use cron::{CronCreateOptions, CronError, CronManager, CronTask, TaskOrigin};
 pub use error::{EngineError, EngineResult, ErrorCode};
 pub use flags::{
     FLAG_GLOBAL_ENV, FlagDef, FlagRegistry, FlagSource, FlagState, FlagSurface,
@@ -221,6 +221,7 @@ pub use scope::{
     ScopeTree, SessionId, SessionMetadata, SessionScope, SessionScopeConfig, SessionWireLog,
     SkillRootChannel, UsageInitialState, WorkspaceId, WorkspaceScope, WorkspaceScopeConfig,
     WorkspaceTrustLevel, dedupe_skill_roots, default_skill_root_channels,
+    default_skill_root_channels_from,
 };
 pub use session::event_projection;
 pub use session::{

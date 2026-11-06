@@ -102,12 +102,11 @@ timeout = 5
 
 `providers` 表的每一项定义一个 API 供应商，以唯一名称为 key。引擎构建连接时，API 密钥按以下顺序解析：
 
-1. 供应商配置项里的 `api_key` 字段（非空值立即生效）；
+1. 该供应商在凭证存储里的活跃条目（由 UI 管理——设置 → 供应商，或 TUI 里的 `/provider`）；
 2. 否则回落到 `[providers.<name>.env]` 子表里该类型惯用的键名——`type = "anthropic"` 读 `ANTHROPIC_API_KEY`，`openai` / `openai_responses` 读 `OPENAI_API_KEY`，`google` / `google-genai` 读 `GOOGLE_API_KEY`，`kimi` 读 `MIRRI_API_KEY`；
-3. 否则再从 shell 环境读取同名的惯用变量；
-4. 都没有时，启动报错，错误信息会写明期望的变量名。部分类型（如 `vertexai`）没有惯用变量，解析链会提前结束。
+3. 两者都没有时，启动报错，给出明确的配置错误。shell 环境变量不会被隐式读取——如果你之前依赖 `export ANTHROPIC_API_KEY=xxx`，请把密钥迁进 `env` 子表（或凭证存储）。
 
-`base_url` 遵循同样的链路：先读配置字段，再读 `env` 子表里同名的惯用键，再读同名的 shell 环境变量（`ANTHROPIC_BASE_URL`、`OPENAI_BASE_URL`、`GOOGLE_GEMINI_BASE_URL`、`MIRRI_BASE_URL`），最后用类型内置默认端点。
+`base_url` 遵循同样的链路：先读 `base_url` 配置字段，再读 `env` 子表里同名的惯用键（`ANTHROPIC_BASE_URL`、`OPENAI_BASE_URL`、`GOOGLE_GEMINI_BASE_URL`、`MIRRI_BASE_URL`），最后用类型内置默认端点——仅限一方供应商；其他供应商必须显式配置 base URL。
 
 完整的优先级规则详见[配置覆盖](./overrides.md#供应商凭证)。
 
@@ -117,12 +116,12 @@ timeout = 5
 | `api_key` | `string` | 否 | API 密钥，明文写在配置文件里 |
 | `base_url` | `string` | 否 | API 基础 URL |
 | `oauth` | `table` | 否 | OAuth 凭据引用（`storage`、`key` 两个字段），通常由 CLI 管理，无需手写 |
-| `env` | `table<string, string>` | 否 | 传给供应商适配器的额外键值对；值支持 `${VAR}` 展开。供应商惯用的键名（如 `MIRRI_API_KEY`）同时作为 `api_key` / `base_url` 的凭证回退来源——见下文 |
+| `env` | `table<string, string>` | 否 | 传给供应商适配器的额外键值对；值支持 `${VAR}` 展开。供应商惯用的键名（如 `MIRRI_API_KEY`）同时作为 `api_key` / `base_url` 的凭证来源——见下文 |
 | `custom_headers` | `table<string, string>` | 否 | 每次请求附加的自定义 HTTP 头 |
 | `removed_model_ids` | `array<string>` | 否 | 上游模型 id 的黑名单；模型目录刷新不会重新加回在此列出的模型 |
 | `media_file_refs` | `boolean` | 否 | 仅 `anthropic` 供应商。允许通过供应商的 Files API 上传图片并以 file id 引用，替代 base64 内联；默认为 `true` |
 
-**`env` 子表**：可以把供应商惯用的键名（如 `MIRRI_API_KEY`）写在 `[providers.<name>.env]` 里，作为 `api_key` / `base_url` 解析链的第二步。子表本身只从配置文件读取，不会修改 shell 环境：
+**`env` 子表**：可以把供应商惯用的键名（如 `MIRRI_API_KEY`）写在 `[providers.<name>.env]` 里——凭证存储没有活跃条目时，引擎从这里读取 `api_key` / `base_url`（显式配置层）。子表本身只从配置文件读取，不会修改 shell 环境：
 
 ```toml
 [providers.kimi.env]
@@ -130,7 +129,7 @@ MIRRI_API_KEY = "sk-xxx"
 MIRRI_BASE_URL = "https://api.moonshot.ai/v1"
 ```
 
-优先级：`api_key` 字段 > `env` 子表键 > 该供应商类型惯用的 shell 环境变量 > 全部缺失时启动报错。`base_url` 的解析链相同，最后一步是内置默认 URL 而非报错。
+优先级：凭证存储 > `env` 子表键 > 两者都没有时启动报错（明确的配置错误）。`base_url` 的解析链相同，最后一步是内置默认 URL（仅一方供应商）而非报错。
 
 ## `models`
 

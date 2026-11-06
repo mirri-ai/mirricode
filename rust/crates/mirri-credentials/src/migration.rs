@@ -23,7 +23,6 @@ use crate::store::{CredentialStore, CredentialValue};
 pub const SKIPPED_GUIDANCE: &str =
     "not migrated and no longer takes part in credential resolution; handle it manually";
 
-
 /// Outcome of a migration pass. In [`dry_run_config_api_keys`] the
 /// `migrated` field is reused as the "would migrate" list (E.5).
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -51,7 +50,10 @@ pub fn migrate_config_api_keys(
     let Some(plan) = parse_targets(config_path)? else {
         return Ok(MigrationReport::default());
     };
-    let MigrationPlan { mut config, targets } = plan;
+    let MigrationPlan {
+        mut config,
+        targets,
+    } = plan;
     let mut report = MigrationReport::default();
     let mut dirty = false;
     for (id, api_key) in targets {

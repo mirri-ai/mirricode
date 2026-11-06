@@ -42,6 +42,7 @@ use std::sync::{Arc, Mutex};
 
 use globset::Glob;
 
+use crate::cron::AGENT_CRON_FIRE_GATE;
 use crate::plan::PlanManager;
 use crate::swarm::SwarmModeService;
 use crate::tool::{AccessKind, AccessOperation, ToolInputDisplay};
@@ -71,7 +72,10 @@ const DEFAULT_APPROVE_TOOLS: &[&str] = &[
     "TodoList",
     "TaskList",
     "TaskOutput",
-    "CronList",
+    // C1: the one-shot session timer is the model's own self-timing
+    // turf — a fired turn setting the NEXT timer (the capped
+    // set-next-timer-at-fire pattern) must not need a human in the loop.
+    "SetTimer",
     "WebSearch",
     "FetchURL",
     "Agent",
@@ -382,6 +386,129 @@ fn fetch_host_from_ctx(ctx: &PermissionPolicyContext) -> Option<String> {
         .and_then(crate::tools::net_class::host_of_url)
 }
 
+/// The model-created cron task budget gate (SDR-006 / D-M8, stage-1
+/// batch-1 S8, migrated to SetTimer by cron-improvement C1): a timer
+/// whose declared fire budget (recurring `max_fires`, or 1 for a
+/// one-shot) exceeds [`AGENT_CRON_FIRE_GATE`], or that declares no cap
+/// at all, cannot pass silently through any permission mode — a small
+/// budget (<= gate, or one-shot) is the model's legitimate self-timing
+/// home turf and passes; above it:
+/// - an answerable posture (Manual / Yolo) ASKS — the user can approve
+///   or reject the plan and its budget;
+/// - Auto mode is DENIED (spec A.2a: the auto posture DENIES over-gate
+///   creations — deliberately NOT auto-approving; the receipt carries
+///   the gate value, why retrying at this posture cannot reach a higher
+///   budget, and the reroute paths);
+/// - a cron-fired turn is DENIED (no user present can approve).
+///
+/// `SetTimer` is one-shot by construction (delay + message only — the
+/// recurring/max_fires arms cannot be declared at all), so every call
+/// rides the one-shot budget (1) and PASSES; the gate is kept for the
+/// mechanical defense family (a future budget-bearing timer shape
+/// inherits the same posture).
+/// Non-`SetTimer` tools pass — the gate judges only the declared
+/// budget of the timer call.
+pub struct AgentCronBudgetGatePolicy;
+
+impl PermissionPolicy for AgentCronBudgetGatePolicy {
+    fn name(&self) -> &str {
+        "agent-cron-budget-gate"
+    }
+    fn evaluate(&self, ctx: &PermissionPolicyContext) -> PermissionPolicyResult {
+        if ctx.tool_name != "SetTimer" {
+            return PermissionPolicyResult::Pass;
+        }
+        // The declared budget: a one-shot fires once by construction; a
+        // recurring task's budget is its declared `max_fires` — `None`
+        // means unbounded (the most dangerous shape).
+        let recurring = ctx
+            .args
+            .get("recurring")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let declared = ctx
+            .args
+            .get("max_fires")
+            .or_else(|| ctx.args.get("maxFires"))
+            .and_then(serde_json::Value::as_u64);
+
+        // m3: `recurring=false` + a declared `max_fires` is a caller bug
+        // (`add`'s validation rejects it) — deny here, whatever the
+        // origin, so a Manual user is never asked to approve a doomed
+        // call.
+        if !recurring && declared.is_some() {
+            return PermissionPolicyResult::Deny {
+                reason: Some("agent-cron-budget-gate:one-shot-with-budget".to_string()),
+                message: Some(
+                    "一次性任务无此参数（one-shot 恰好触发一次，max_fires 仅适用于循环任务）"
+                        .to_string(),
+                ),
+            };
+        }
+
+        let budget = if recurring { declared } else { Some(1) };
+
+        // Within the gate (or a one-shot): pass — the mode policies
+        // downstream decide the rest as for any tool.
+        let within_gate = budget.is_some_and(|budget| budget <= AGENT_CRON_FIRE_GATE as u64);
+        if within_gate {
+            return PermissionPolicyResult::Pass;
+        }
+
+        // Over the gate or unbounded: split by answerable posture.
+        let plan = ctx
+            .args
+            .get("cron")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        match ctx.turn_origin {
+            crate::permission::TurnOriginContext::Cron { workspace: true, .. } => {
+                PermissionPolicyResult::Deny {
+                    reason: Some("agent-cron-budget-gate:workspace-run".to_string()),
+                    message: Some(agent_cron_gate_denial(declared)),
+                }
+            }
+            _ => match ctx.mode {
+                PermissionMode::Manual | PermissionMode::Yolo => {
+                    PermissionPolicyResult::Ask {
+                        reason: Some(format!(
+                            "SetTimer budget gate: plan '{plan}' declares {} — \
+                             over the unattended-safe gate of {AGENT_CRON_FIRE_GATE} \
+                             fires (or no cap); approve to allow the full budget",
+                            declared
+                                .map(|max| format!("{max} fires"))
+                                .unwrap_or_else(|| "no cap".to_string())
+                        )),
+                        grant_dir: None,
+                        deny_when_unattended: true,
+                        never_auto_approve: false,
+                    }
+                }
+                PermissionMode::Auto => PermissionPolicyResult::Deny {
+                    reason: Some("agent-cron-budget-gate:auto-mode".to_string()),
+                    message: Some(agent_cron_gate_denial(declared)),
+                },
+            },
+        }
+    }
+}
+
+/// The over-gate denial receipt (spec A.2a three elements): the gate
+/// value, why this posture cannot reach a higher budget by retrying, and
+/// the reroute paths.
+fn agent_cron_gate_denial(declared: Option<u64>) -> String {
+    format!(
+        "SetTimer 拒绝：声明的触发预算（{}）超过无人审批安全门槛 {AGENT_CRON_FIRE_GATE} 次\
+         （或未声明上限）。当前执行姿态下更高预算不可达成，重试不会改变该结果。\
+         改道路径：创建符合门槛（≤ {AGENT_CRON_FIRE_GATE} 次或一次性）的任务并告知用户，\
+         或请用户从管理面直接创建。",
+        declared
+            .map(|max| format!("{max} 次"))
+            .unwrap_or_else(|| "无上限".to_string())
+    )
+}
+
 /// First three IP addresses joined by commas, ` (+N)` when more than three.
 fn summarize_ips(ips: &[std::net::IpAddr]) -> String {
     let head = ips
@@ -459,6 +586,7 @@ impl PermissionPolicy for PrivateNetworkFetchAskPolicy {
             )),
             grant_dir: None,
             deny_when_unattended: true,
+            never_auto_approve: false,
         }
     }
 }
@@ -525,6 +653,7 @@ impl PermissionPolicy for UserConfiguredAskPolicy {
                         .or_else(|| Some(format!("Ask rule: {}", rule.pattern))),
                     grant_dir: None,
                     deny_when_unattended: false,
+                    never_auto_approve: false,
                 };
             }
         }
@@ -578,6 +707,7 @@ impl PermissionPolicy for ExitPlanModeReviewAskPolicy {
                 reason: Some("plan-review".into()),
                 grant_dir: None,
                 deny_when_unattended: false,
+                never_auto_approve: false,
             };
         }
         PermissionPolicyResult::Pass
@@ -602,6 +732,7 @@ impl PermissionPolicy for GoalStartReviewAskPolicy {
                 reason: Some("goal-start".into()),
                 grant_dir: None,
                 deny_when_unattended: false,
+                never_auto_approve: false,
             };
         }
         PermissionPolicyResult::Pass
@@ -646,6 +777,7 @@ impl PermissionPolicy for SensitiveFileAccessAskPolicy {
                     reason: Some("sensitive-file".into()),
                     grant_dir: None,
                     deny_when_unattended: false,
+                    never_auto_approve: false,
                 };
             }
         }
@@ -672,6 +804,7 @@ impl PermissionPolicy for GitControlPathAccessAskPolicy {
                     reason: Some("git-control-path".into()),
                     grant_dir: None,
                     deny_when_unattended: false,
+                    never_auto_approve: false,
                 };
             }
         }
@@ -740,6 +873,7 @@ impl PermissionPolicy for SwarmModeAgentSwarmApprovePolicy {
                 reason: Some("swarm-mode-agent-swarm".into()),
                 grant_dir: None,
                 deny_when_unattended: false,
+                never_auto_approve: false,
             };
         }
         PermissionPolicyResult::Pass
@@ -852,11 +986,13 @@ impl PermissionPolicy for WorkspaceBoundaryPolicy {
                 reason: Some("outside-sandbox path rule".into()),
                 grant_dir: Some(grant_dir),
                 deny_when_unattended: false,
+                never_auto_approve: false,
             },
             None => PermissionPolicyResult::Ask {
                 reason: Some("the path is outside the workspace sandbox".into()),
                 grant_dir: Some(grant_dir),
                 deny_when_unattended: false,
+                never_auto_approve: false,
             },
         }
     }
@@ -932,6 +1068,7 @@ impl PermissionPolicy for GitCwdWriteApprovePolicy {
                     reason: Some("git-cwd-write".into()),
                     grant_dir: None,
                     deny_when_unattended: false,
+                    never_auto_approve: false,
                 };
             }
         }
@@ -943,6 +1080,33 @@ impl PermissionPolicy for GitCwdWriteApprovePolicy {
 // Policy 19: fallback → ask
 // ---------------------------------------------------------------------------
 
+/// `CreateScheduledTask` never auto-approves in ANY mode (C2 / stage-2
+/// B1 / ADR-013 e / review M1's production wiring): the workspace-task
+/// creation is the agent-raised, human-judged channel — the approval ask
+/// it raises carries `never_auto_approve: true`, so no mode policy
+/// (Auto/Yolo), no session-approval memory, no default-approve list, and
+/// no headless translation may resolve it to `Approved`. Sits FIRST in
+/// the chain (before every auto-approve policy) so the decision is
+/// structural, not mode-dependent: the outcome is always a presented
+/// ask (a connected human answers) or a rejection (nobody can).
+pub struct CreateScheduledTaskNeverAutoApprovePolicy;
+impl PermissionPolicy for CreateScheduledTaskNeverAutoApprovePolicy {
+    fn name(&self) -> &str {
+        "create-scheduled-task-never-auto-approve"
+    }
+    fn evaluate(&self, ctx: &PermissionPolicyContext) -> PermissionPolicyResult {
+        if ctx.tool_name == "CreateScheduledTask" {
+            return PermissionPolicyResult::Ask {
+                reason: Some("workspace scheduled task creation requires user approval".into()),
+                grant_dir: None,
+                deny_when_unattended: false,
+                never_auto_approve: true,
+            };
+        }
+        PermissionPolicyResult::Pass
+    }
+}
+
 pub struct FallbackAskPolicy;
 impl PermissionPolicy for FallbackAskPolicy {
     fn name(&self) -> &str {
@@ -953,6 +1117,7 @@ impl PermissionPolicy for FallbackAskPolicy {
             reason: Some("fallback".into()),
             grant_dir: None,
             deny_when_unattended: false,
+            never_auto_approve: false,
         }
     }
 }
@@ -967,6 +1132,213 @@ mod tests {
     use crate::tool::ToolAccess;
 
     use super::*;
+
+    // ------------------------------------------------------------------
+    // AgentCronBudgetGatePolicy (stage-1 batch-1, S8 / SDR-006)
+    // ------------------------------------------------------------------
+
+    /// Owned gate-test bundle (the context borrows only within the owning
+    /// scope).
+    struct GateBundle {
+        args: serde_json::Value,
+        display: ToolInputDisplay,
+        cancel: CancelToken,
+        approvals: HashSet<String>,
+    }
+
+    fn gate_bundle() -> GateBundle {
+        GateBundle {
+            args: serde_json::json!({ "cron": "* * * * *", "recurring": true }),
+            display: ToolInputDisplay::Generic { summary: "cron".into() },
+            cancel: CancelToken::new(),
+            approvals: HashSet::new(),
+        }
+    }
+
+    fn gate_ctx(
+        bundle: &GateBundle,
+        mode: PermissionMode,
+        turn_origin: crate::permission::TurnOriginContext,
+    ) -> PermissionPolicyContext<'_> {
+        PermissionPolicyContext {
+            tool_name: "SetTimer",
+            tool_call_id: "gate-call",
+            args: &bundle.args,
+            approval_rule: "SetTimer",
+            display: &bundle.display,
+            accesses: &[],
+            mode,
+            rules: &[],
+            session_approvals: &bundle.approvals,
+            cancel: &bundle.cancel,
+            net_class: None,
+            turn_origin,
+        }
+    }
+
+    #[test]
+    fn should_pass_every_set_timer_call_through_the_gate_in_every_posture() {
+        // C1: SetTimer's schema is delay+message only — the call IS a
+        // one-shot with budget 1 by construction, so the gate passes it
+        // in every mode and turn origin (the model's legitimate
+        // self-timing home turf).
+        let interactive = crate::permission::TurnOriginContext::Interactive;
+        let unattended_cron = crate::permission::TurnOriginContext::Cron {
+            workspace: true,
+            reject_asks: true,
+            readonly: false,
+            task_id: "cron-g".to_string(),
+        };
+        for mode in [
+            PermissionMode::Manual,
+            PermissionMode::Auto,
+            PermissionMode::Yolo,
+        ] {
+            for origin in [&interactive, &unattended_cron] {
+                let mut bundle = gate_bundle();
+                // The SetTimer args carry neither recurring nor
+                // max_fires.
+                bundle.args.as_object_mut().unwrap().remove("recurring");
+                bundle.args.as_object_mut().unwrap().remove("max_fires");
+                let ctx = gate_ctx(&bundle, mode, (*origin).clone());
+                assert!(
+                    matches!(
+                        AgentCronBudgetGatePolicy.evaluate(&ctx),
+                        PermissionPolicyResult::Pass
+                    ),
+                    "SetTimer passes the gate: mode={mode:?} origin={origin:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn should_still_deny_a_declared_recurring_budget_shape_on_the_gate() {
+        // The mechanical guard (kept for callers that still send the
+        // legacy shape — e.g. a future budget-bearing timer): a declared
+        // recurring budget over the gate still asks an answerable
+        // posture and denies Auto, exactly as before. The legacy shape
+        // cannot be produced by SetTimer's schema; this pins the gate's
+        // arithmetic, not a product face.
+        let mut bundle = gate_bundle();
+        bundle.args["recurring"] = serde_json::json!(true);
+        bundle.args.as_object_mut().unwrap().remove("max_fires");
+        let interactive = crate::permission::TurnOriginContext::Interactive;
+        let ctx = gate_ctx(&bundle, PermissionMode::Manual, interactive.clone());
+        assert!(matches!(
+            AgentCronBudgetGatePolicy.evaluate(&ctx),
+            PermissionPolicyResult::Ask { .. }
+        ));
+        let ctx = gate_ctx(&bundle, PermissionMode::Auto, interactive);
+        assert!(matches!(
+            AgentCronBudgetGatePolicy.evaluate(&ctx),
+            PermissionPolicyResult::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn should_deny_a_one_shot_with_a_declared_budget_before_any_approval() {
+        // m3: `recurring=false` + a declared `max_fires` is a caller bug
+        // (`add`'s validation rejects it) — the gate denies it up front so
+        // a Manual user never approves a doomed call. Interactive turns
+        // included: the shape is invalid regardless of lineage.
+        let mut bundle = gate_bundle();
+        bundle.args["recurring"] = serde_json::json!(false);
+        bundle.args["max_fires"] = serde_json::json!(2);
+        let ctx = gate_ctx(
+            &bundle,
+            PermissionMode::Manual,
+            crate::permission::TurnOriginContext::Interactive,
+        );
+        match AgentCronBudgetGatePolicy.evaluate(&ctx) {
+            PermissionPolicyResult::Deny { message, .. } => {
+                let message = message.expect("denial carries a message");
+                assert!(
+                    message.contains("一次性任务无此参数"),
+                    "the one-shot-with-budget receipt: {message}"
+                );
+            }
+            other => panic!("expected Deny, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn should_pass_when_a_cron_lineage_turn_creates_a_one_shot_task() {
+        // The A.6a cross cell: a cron-fired turn creating a ONE-SHOT passes
+        // the gate (budget 1) — the lineage defense (S9) is a separate
+        // check, not the budget gate's business.
+        let mut bundle = gate_bundle();
+        bundle.args["recurring"] = serde_json::json!(false);
+        bundle.args.as_object_mut().unwrap().remove("max_fires");
+        let ctx = gate_ctx(
+            &bundle,
+            PermissionMode::Manual,
+            crate::permission::TurnOriginContext::Cron {
+                workspace: true,
+                reject_asks: true,
+                readonly: false,
+                task_id: "cron-l1".to_string(),
+            },
+        );
+
+        assert!(matches!(
+            AgentCronBudgetGatePolicy.evaluate(&ctx),
+            PermissionPolicyResult::Pass
+        ));
+    }
+
+    #[test]
+    fn should_pass_when_the_tool_is_not_cron_create() {
+        // A non-SetTimer tool never hits the gate.
+        let args = serde_json::json!({ "command": "ls" });
+        let display = ToolInputDisplay::Generic { summary: "ls".into() };
+        let cancel = CancelToken::new();
+        let ctx = PermissionPolicyContext {
+            tool_name: "Bash",
+            tool_call_id: "gate-call",
+            args: &args,
+            approval_rule: "Bash",
+            display: &display,
+            accesses: &[],
+            mode: PermissionMode::Manual,
+            rules: &[],
+            session_approvals: &HashSet::new(),
+            cancel: &cancel,
+            net_class: None,
+            turn_origin: crate::permission::TurnOriginContext::Interactive,
+        };
+
+        assert!(matches!(
+            AgentCronBudgetGatePolicy.evaluate(&ctx),
+            PermissionPolicyResult::Pass
+        ));
+    }
+
+    #[test]
+    fn should_carry_the_three_receipt_elements_when_denying_over_gate() {
+        // The denial receipt names the gate value, says retrying at this
+        // posture cannot reach a higher budget, and offers the reroute
+        // paths (spec A.2a / D-M8).
+        let bundle = gate_bundle();
+        let ctx = gate_ctx(
+            &bundle,
+            PermissionMode::Auto,
+            crate::permission::TurnOriginContext::Interactive,
+        );
+
+        match AgentCronBudgetGatePolicy.evaluate(&ctx) {
+            PermissionPolicyResult::Deny { message, .. } => {
+                let message = message.expect("denial carries a message");
+                assert!(message.contains('3'), "the gate value: {message}");
+                assert!(
+                    message.contains("不可达成"),
+                    "posture cannot reach a higher budget: {message}"
+                );
+                assert!(message.contains("改道"), "reroute paths: {message}");
+            }
+            other => panic!("expected Deny, got {other:?}"),
+        }
+    }
 
     #[test]
     fn should_treat_env_files_as_sensitive_when_path_is_env_file() {
@@ -1045,6 +1417,7 @@ mod tests {
             session_approvals: &HashSet::new(),
             cancel: &cancel,
             net_class: None,
+            turn_origin: Default::default(),
         };
         policy.evaluate(&ctx)
     }
@@ -1088,6 +1461,7 @@ mod tests {
             session_approvals: &approvals,
             cancel: &cancel,
             net_class,
+            turn_origin: Default::default(),
         };
         policy.evaluate(&ctx)
     }
@@ -1416,7 +1790,7 @@ mod tests {
         let plan = Arc::new(PlanManager::new());
         plan.enter("Explore".to_string()).unwrap();
         let policy = PlanModeGuardDenyPolicy::new(Some(plan));
-        for tool in ["Write", "Edit", "Bash", "TaskStop", "CronCreate", "Agent"] {
+        for tool in ["Write", "Edit", "Bash", "TaskStop", "SetTimer", "Agent"] {
             let result = evaluate(&policy, tool, &[]);
             assert!(
                 matches!(result, PermissionPolicyResult::Deny { .. }),
@@ -1593,6 +1967,7 @@ mod tests {
             session_approvals: &HashSet::new(),
             cancel: &cancel,
             net_class: None,
+            turn_origin: Default::default(),
         };
         assert!(matches!(
             manager.evaluate(&ctx),
@@ -1630,6 +2005,7 @@ mod tests {
             session_approvals: &std::collections::HashSet::new(),
             cancel: &cancel,
             net_class: None,
+            turn_origin: Default::default(),
         };
 
         match manager.evaluate(&ctx) {
@@ -1673,6 +2049,7 @@ mod tests {
             session_approvals: &std::collections::HashSet::new(),
             cancel: &cancel,
             net_class: None,
+            turn_origin: Default::default(),
         };
 
         match manager.evaluate(&ctx) {
@@ -1711,6 +2088,7 @@ mod tests {
             session_approvals: &HashSet::new(),
             cancel: &cancel,
             net_class: None,
+            turn_origin: Default::default(),
         };
         // The plan-mode guard passes for read tools; DefaultToolApprovePolicy
         // then approves.
@@ -1753,6 +2131,7 @@ mod tests {
             session_approvals: &HashSet::new(),
             cancel: &cancel,
             net_class: None,
+            turn_origin: Default::default(),
         };
         assert!(matches!(
             manager.evaluate(&ctx),
@@ -1787,6 +2166,7 @@ mod tests {
             session_approvals: &HashSet::new(),
             cancel: &cancel,
             net_class: None,
+            turn_origin: Default::default(),
         };
         policy.evaluate(&ctx)
     }

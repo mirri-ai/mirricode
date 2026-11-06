@@ -1,3 +1,4 @@
+// layer: T2
 //! End-to-end conformance tests for the `mirri-acp` binary.
 //!
 //! Each test spawns the real binary as a child process and drives it over
@@ -68,23 +69,33 @@ impl AcpProcess {
         mirri_home: tempfile::TempDir,
         extra_env: &[(&str, &str)],
     ) -> Self {
+        Self::spawn_dirs_with_config(workspace_dir, mirri_home, extra_env, None)
+            .await
+    }
+
+    /// [`Self::spawn_dirs`] with the conformance home's `config.toml` seed
+    /// overridden — the real-provider streaming test pins the anthropic
+    /// provider's credentials and base URL into the env sub-table (the
+    /// explicit-configuration tier the engine resolves after #186 retired
+    /// the shell env fallback), so the wiremock server's URL must be part
+    /// of the seed itself.
+    async fn spawn_dirs_with_config(
+        workspace_dir: tempfile::TempDir,
+        mirri_home: tempfile::TempDir,
+        extra_env: &[(&str, &str)],
+        config_seed: Option<&str>,
+    ) -> Self {
         // The conformance home's config seed: the embedded session-create
         // chain requires a resolvable model (spec 11 R4 — no built-in
         // fallback), so every conformant `session/new` (which carries no
         // model parameter) needs a `default_model` configured. The
         // `conformance-default-model` alias entry makes the default a real
         // `[models]` alias — the M1 resolution face (spec 11 ADR-004: no
-        // bare-name environment fallback), with the provider credentials
-        // still injected through the env (ANTHROPIC_API_KEY /
-        // ANTHROPIC_BASE_URL — the provider resolution layer the config
-        // alias reads, orthogonal to model resolution). The `gpt-4o` alias
-        // entry is what the set-model conformance tests switch to
-        // (`agent.setModel` accepts configured aliases only). An explicit
-        // test fixture seed, exactly what a real user's config.toml would
-        // carry.
-        std::fs::write(
-            mirri_home.path().join("config.toml"),
-            "default_model = \"conformance-default-model\"\n\n\
+        // bare-name environment fallback). The `gpt-4o` alias entry is what
+        // the set-model conformance tests switch to (`agent.setModel`
+        // accepts configured aliases only). An explicit test fixture seed,
+        // exactly what a real user's config.toml would carry.
+        let default_seed = "default_model = \"conformance-default-model\"\n\n\
              [providers.anthropic]\n\
              type = \"anthropic\"\n\n\
              [models.\"conformance-default-model\"]\n\
@@ -94,7 +105,10 @@ impl AcpProcess {
              [models.\"gpt-4o\"]\n\
              provider = \"anthropic\"\n\
              model = \"gpt-4o\"\n\
-             max_context_size = 128000\n",
+             max_context_size = 128000\n";
+        std::fs::write(
+            mirri_home.path().join("config.toml"),
+            config_seed.unwrap_or(default_seed),
         )
         .expect("the seeded config.toml must be writable");
         // `HOME` must be isolated too: the MCP global layer is discovered
@@ -137,10 +151,17 @@ impl AcpProcess {
         }
     }
 
-    /// The child's workspace root (where the engine persists `.mirri/`
-    /// session state) — assertions about on-disk removal read from here.
+    /// The child's workspace root (the engine's pinned workspace — the
+    /// ADR-006 home-rooted sessions live under the home, no longer here).
     fn workspace_root(&self) -> &std::path::Path {
         self._workspace_dir.path()
+    }
+
+    /// The child's isolated Mirri home (where the ADR-006 engine roots
+    /// `v3_sessions/` and `session-index.db`) — assertions about on-disk
+    /// session persistence read from here.
+    fn mirri_home(&self) -> &std::path::Path {
+        self._mirri_home.path()
     }
 
     /// Write one newline-delimited line to the child's stdin.
@@ -517,12 +538,12 @@ async fn should_delete_created_session_when_session_delete_called() {
     let mut acp = AcpProcess::spawn().await;
     let session_id = initialize_and_create_session(&mut acp).await;
     converse_created_session(&mut acp, &session_id).await;
-    // The session persists under the per-workspace bucket (Phase 2: the TS
-    // layout `<sessions>/<wd_…>/<id>/`, keyed off the workspace root) —
-    // SDR-004 (W5): materialized by the first user input, not the create.
+    // The session persists under the home's per-workspace bucket
+    // (ADR-006: `<home>/v3_sessions/<wd_…>/<id>/`, keyed off the
+    // workspace root) — SDR-004 (W5): materialized by the first user
+    // input, not the create.
     let session_dir = acp
-        .workspace_root()
-        .join(".mirri")
+        .mirri_home()
         .join("v3_sessions")
         .join(mirri_core::encode_work_dir_key(acp.workspace_root()))
         .join(&session_id);
@@ -845,7 +866,7 @@ async fn should_not_spawn_the_real_homes_mcp_servers_when_the_conformance_child_
     // `connect_all` for every discovered MCP server; the process spawns
     // land asynchronously after the response, so sample the child's
     // descendants over a window instead of checking once.
-    for _ in 0..10 {
+    for _ in 0..5 {
         let output = tokio::process::Command::new("pgrep")
             .arg("-P")
             .arg(acp.child_id.to_string())
@@ -859,7 +880,7 @@ async fn should_not_spawn_the_real_homes_mcp_servers_when_the_conformance_child_
              home's MCP servers leaked into the conformance child — check the \
              HOME isolation in AcpProcess::spawn"
         );
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: real-io absence sample (pgrep over a spawned child's descendants — no in-process observable exists)
     }
 }
 
@@ -927,6 +948,11 @@ async fn should_keep_the_negotiated_roots_listing_clean_when_the_shared_home_reg
                 archived_at: None,
                 compressed: false,
                 compressed_at: None,
+                pinned: false,
+                pinned_at: None,
+                pin_color: None,
+                last_used_at: None,
+                pre_compressed_size: None,
             })
             .expect("the foreign index row is seeded");
     }
@@ -2065,9 +2091,17 @@ impl OverlayHarness {
             .expect("initialize must succeed");
     }
 
+    /// Dispose the handler's engine pool — the host tearing its engines
+    /// down (stdin closed). The pool teardown must settle promptly: no
+    /// overlay's child process may keep the process alive.
+    async fn shutdown(&self) {
+        self.handler.dispose().await;
+    }
+
     /// One v1 stdio `mcpServers` entry for the echo server with the given
     /// tool name (v1 stdio has no `type` field — it is identified by
-    /// absence).
+    /// absence). With `pid_file`, the fixture reports its own pid through
+    /// that file (see [`Self::wait_for_child_exit`]).
     fn echo_server(tool_name: &str) -> Value {
         json!({
             "name": "echo",
@@ -2075,6 +2109,50 @@ impl OverlayHarness {
             "args": [tool_name],
             "env": [],
         })
+    }
+
+    /// The `mcpServers` entry variant whose fixture writes its own pid into
+    /// `pid_file` — the observation point for the dispose-regression test:
+    /// the manager's tables cannot prove the child died, only the OS can.
+    fn echo_server_with_pid_file(tool_name: &str, pid_file: &std::path::Path) -> Value {
+        json!({
+            "name": "echo",
+            "command": ECHO_MCP_BIN,
+            "args": [tool_name, pid_file.to_str().expect("pid file path is utf-8")],
+            "env": [],
+        })
+    }
+
+    /// Wait until the pid recorded by the fixture is gone — the child was
+    /// killed and reaped (a zombie still holding its slot counts as dead:
+    /// it can neither run nor be signaled). Fails the test on timeout.
+    /// This is the reliable witness of a real disconnect: without it the
+    /// tables the assertions read were just cleared by the very teardown
+    /// under test.
+    async fn wait_for_child_exit(pid_file: &std::path::Path) {
+        let pid: i32 = {
+            // The pid file lands before the fixture answers `initialize` —
+            // by the time the overlay reports Connected it already exists.
+            let raw = std::fs::read_to_string(pid_file)
+                .expect("the echo fixture must have written its pid file");
+            raw.trim()
+                .parse()
+                .expect("the pid file must contain a pid")
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let probe = mirri_os::process::probe_process(pid)
+                .expect("probing the fixture pid must not fail");
+            if !probe.alive {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the echo fixture (pid {pid}) is still alive after dispose — \
+                 the overlay's child process outlived the host connection"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// Poll the engine's overlay for the given session until the named
@@ -2210,6 +2288,10 @@ async fn should_connect_overlay_mcp_tools_into_the_session() {
         !has_tool_status(&collected, "call_overlay", "failed"),
         "the overlay tool must not have failed: {collected:?}"
     );
+
+    // The teardown must hang no more (issue #193): disposing the pool
+    // settles even with a live overlay.
+    harness.shutdown().await;
 }
 
 /// Given a session with a connected overlay, when the session is closed,
@@ -2396,6 +2478,10 @@ async fn shadow_the_workspace_pool_with_a_same_named_overlay() {
         !names.contains(&"mcp__shared__workspace_tool"),
         "the same-named overlay must shadow the workspace pool's tools: {names:?}"
     );
+
+    // The teardown must hang no more (issue #193): disposing the pool
+    // settles even with a live overlay.
+    harness.shutdown().await;
 }
 
 /// Given two `session/new` requests with different cwds, when both
@@ -2542,6 +2628,59 @@ async fn should_warn_drop_unsupported_transports_and_still_create_the_session() 
         vec!["echo"],
         "only the supported stdio server may be registered (got {names:?})"
     );
+
+    // The teardown must hang no more (issue #193): disposing the pool
+    // settles even with a live overlay.
+    harness.shutdown().await;
+}
+
+/// Given a session with a connected overlay, when the host disposes its
+/// engines (the serve loop exits — stdin closed), then the overlay
+/// teardown settles promptly: the pool dispose returns within the
+/// deadline and the overlay's child process is really gone (killed and
+/// reaped — the OS is the witness, not the engine's own tables).
+#[tokio::test]
+async fn should_complete_overlay_teardown_promptly_when_the_host_disposes_its_engines() {
+    let mock = std::sync::Arc::new(mirri_test_harness::MockLlm::new());
+    let harness = OverlayHarness::new(mock).await;
+    harness.initialize().await;
+    let cwd = tempfile::tempdir().expect("tempdir must be creatable");
+    // The fixture reports its own pid through this file — the observation
+    // point for the post-dispose liveness probe (a connection-table
+    // assertion here would be tautological: the very teardown under test
+    // clears those tables).
+    let pid_file = cwd.path().join("echo.pid");
+
+    let result = harness
+        .handler
+        .handle(
+            "session/new",
+            json!({
+                "cwd": cwd.path().to_str().expect("tempdir path is utf-8"),
+                "mcpServers": [OverlayHarness::echo_server_with_pid_file("echo", &pid_file)],
+            }),
+        )
+        .await
+        .expect("session/new must succeed");
+    let session_id = result["sessionId"]
+        .as_str()
+        .expect("a sessionId")
+        .to_string();
+    let engine = harness.last_engine();
+    OverlayHarness::wait_for_overlay(&engine, &session_id, "echo").await;
+
+    // The dispose must settle within the deadline (a hang here is the
+    // issue #193 symptom: the engine drop leaves the overlay's child
+    // process alive).
+    let disposed = tokio::time::timeout(Duration::from_secs(10), harness.shutdown()).await;
+    assert!(disposed.is_ok(), "the engine pool dispose must settle within 10s");
+
+    // The child process itself must be gone: `dispose`'s disconnect kills
+    // it, so the pid the fixture reported must stop answering the OS
+    // probe. This is the regression signal — dropping the `disconnect_all`
+    // from `dispose` leaves this pid alive and fails here (a hang, or a
+    // leaked child process, is exactly issue #193).
+    OverlayHarness::wait_for_child_exit(&pid_file).await;
 }
 
 /// Given a closed session that had an overlay, when it is loaded again
@@ -2626,6 +2765,10 @@ async fn should_re_register_the_overlay_when_a_closed_session_is_loaded() {
         "the loaded session must route back to its own engine, not mint a new one"
     );
     OverlayHarness::wait_for_overlay(&engine, &session_id, "echo").await;
+
+    // The teardown must hang no more (issue #193): disposing the pool
+    // settles even with a live overlay.
+    harness.shutdown().await;
 }
 
 /// A recording [`EngineAdapter`] wrapper: every `call_method`'s method
@@ -3378,8 +3521,9 @@ async fn should_advertise_the_models_declared_efforts_when_the_thinking_option_i
 
 // ===== L. stdio smoke against the real provider stack =====================
 
-/// Given a child whose provider env points at a local Anthropic-style SSE
-/// endpoint, when a session is prompted, then the assistant's streamed text
+/// Given a child whose anthropic provider's `env` sub-table carries the
+/// credential and a local Anthropic-style SSE endpoint, when a session is
+/// prompted, then the assistant's streamed text
 /// reaches the client as official `agent_message_chunk` session/update
 /// notifications on stdout and the prompt settles with
 /// `stopReason: end_turn` (F-P5a-1: the whole stdio chain is exercised —
@@ -3387,7 +3531,7 @@ async fn should_advertise_the_models_declared_efforts_when_the_thinking_option_i
 /// stdout — through the fully-wired engine's real provider factory,
 /// never a mock seam).
 #[tokio::test]
-async fn should_stream_a_real_provider_turn_over_stdio_when_the_anthropic_env_is_set() {
+async fn should_stream_a_real_provider_turn_over_stdio_when_the_anthropic_env_table_is_set() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -3426,10 +3570,28 @@ async fn should_stream_a_real_provider_turn_over_stdio_when_the_anthropic_env_is
         .await;
 
     let base_url = format!("{}/v1", server.uri());
-    let mut acp = AcpProcess::spawn_env(&[
-        ("ANTHROPIC_API_KEY", "test-key"),
-        ("ANTHROPIC_BASE_URL", base_url.as_str()),
-    ])
+    // The explicit-configuration tier (#186): the shell env fallback is
+    // retired, so the fixture's config seed carries the credential and the
+    // wiremock base URL in the anthropic provider's `env` sub-table —
+    // exactly what a real user's config.toml would declare.
+    let config_seed = format!(
+        "default_model = \"conformance-default-model\"\n\n\
+         [providers.anthropic]\n\
+         type = \"anthropic\"\n\n\
+         [providers.anthropic.env]\n\
+         ANTHROPIC_API_KEY = \"test-key\"\n\
+         ANTHROPIC_BASE_URL = \"{base_url}\"\n\n\
+         [models.\"conformance-default-model\"]\n\
+         provider = \"anthropic\"\n\
+         model = \"conformance-default-model\"\n\
+         max_context_size = 128000\n"
+    );
+    let mut acp = AcpProcess::spawn_dirs_with_config(
+        tempfile::tempdir().expect("tempdir must be creatable"),
+        tempfile::tempdir().expect("tempdir must be creatable"),
+        &[],
+        Some(&config_seed),
+    )
     .await;
 
     let response = acp
@@ -3445,7 +3607,7 @@ async fn should_stream_a_real_provider_turn_over_stdio_when_the_anthropic_env_is
         .await;
     assert!(
         response["error"].is_null(),
-        "session/new must succeed (the provider credentials come from the env): {response}"
+        "session/new must succeed (the provider credentials come from the env sub-table): {response}"
     );
     let session_id = response["result"]["sessionId"]
         .as_str()
@@ -3491,5 +3653,106 @@ async fn should_stream_a_real_provider_turn_over_stdio_when_the_anthropic_env_is
     assert_eq!(
         chunk_text, "Hello world",
         "the streamed deltas must reassemble on the client side"
+    );
+}
+
+// ===== Z. ADR-006 Task 8: the legacy cron manifest adoption ==============
+
+/// Given a pre-ADR-006 workspace-local cron manifest (the no-home ACP
+/// shape: `<workspace>/.mirri/v3_sessions/<bucket>/cron/tasks.json`), when
+/// the ACP host boots (home-injected since ADR-006), then the census-
+/// settled import adopts the tasks into the shared home-level SQLite
+/// `cron-index.db` — observed across a real process boundary by reading
+/// the database the child's engine wrote (the ACP surface exposes no cron
+/// RPC, so the durable store IS the observation point).
+///
+/// The poll is bounded and patient on purpose: the import rides the
+/// startup census settlement (it must not block the first request), so
+/// it legitimately completes shortly AFTER the child answers its first
+/// RPC — a single early read would race the background task.
+#[tokio::test]
+async fn should_import_legacy_cron_tasks_when_acp_engine_boots() {
+    // Given a negotiated workspace carrying a legacy workspace-local
+    // cron manifest, and an isolated home
+    let workspace_dir = tempfile::tempdir().expect("workspace tempdir");
+    let mirri_home = tempfile::tempdir().expect("home tempdir");
+    let bucket = mirri_core::encode_work_dir_key(workspace_dir.path());
+    let manifest_dir = workspace_dir
+        .path()
+        .join(".mirri")
+        .join("v3_sessions")
+        .join(&bucket)
+        .join("cron");
+    std::fs::create_dir_all(&manifest_dir).expect("the legacy cron dir is creatable");
+    std::fs::write(
+        manifest_dir.join("tasks.json"),
+        format!(
+            r#"{{
+                "version": 1,
+                "tasks": [{{
+                    "id": "cron-acp-legacy-1", "cron": "0 9 * * 1-5",
+                    "prompt": "acp legacy patrol", "session_id": "",
+                    "recurring": true, "timezone": "Asia/Tokyo",
+                    "created_at": "2026-11-01T00:00:00.000000000Z",
+                    "last_fired": null, "origin": "user", "scope": "workspace",
+                    "workspaceId": "{bucket}",
+                    "permission_posture": "manual", "permission_mode": "manual",
+                    "paused": false, "title": "ACP legacy task"
+                }}],
+                "runs": {{}}, "proposals": []
+            }}"#
+        ),
+    )
+    .expect("the legacy manifest is seeded");
+
+    // When the child boots and a first ENGINE-bound request settles the
+    // startup housekeeping (the census settlement releases the import
+    // task). `initialize` is answered by the ACP handler itself and never
+    // reaches the engine, so `session/list` is the trigger here.
+    let mut acp = AcpProcess::spawn_dirs(workspace_dir, mirri_home, &[]).await;
+    let response = acp
+        .request(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}"#)
+        .await;
+    assert!(
+        response["error"].is_null(),
+        "initialize must succeed: {response}"
+    );
+    let response = acp
+        .request(r#"{"jsonrpc":"2.0","id":2,"method":"session/list","params":{}}"#)
+        .await;
+    assert!(
+        response["error"].is_null(),
+        "session/list must succeed: {response}"
+    );
+
+    // Then the import adopts the task into the home-level cron index
+    // (bounded poll: the import runs off the request path, completing
+    // shortly after the settlement the first RPC triggered).
+    let index_path = acp.mirri_home().join("cron-index.db");
+    let mut adopted = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        if index_path.is_file()
+            && let Ok(index) = mirri_cron_index::CronIndex::open(&index_path)
+            && let Ok(rows) = index.list_workspace(&bucket)
+            && rows.iter().any(|row| row.id == "cron-acp-legacy-1")
+        {
+            adopted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        adopted,
+        "the legacy workspace-local cron task must land in the home's \
+         cron-index.db within the poll window: {}",
+        index_path.display()
+    );
+
+    // And the workspace-local archive file survives untouched (the
+    // frozen-archive contract: the import reads, never moves).
+    assert!(
+        manifest_dir.join("tasks.json").is_file(),
+        "the frozen workspace-local manifest survives the import"
     );
 }

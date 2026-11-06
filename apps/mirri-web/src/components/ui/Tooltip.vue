@@ -7,11 +7,16 @@
      The bubble is rendered through a body teleport so it escapes ancestor overflow
      clipping, and positioned with flip + viewport clamping. Short text stays on one
      line; long text wraps within `maxWidth` and is clamped to `maxLines` lines with
-     an ellipsis so the bubble never grows too tall. -->
+     an ellipsis so the bubble never grows too tall.
+     `variant="code"` (payload bubbles): monospace, pre-formatted, left-aligned with
+     the trigger, and it grows UPWARD out of the anchor's top edge so a row near the
+     bottom of a long conversation never pushes the bubble underneath it. It is capped
+     at `codeLines` lines; a longer payload scrolls inside the bubble. -->
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 
 type Placement = 'top' | 'bottom' | 'left' | 'right';
+type Variant = 'text' | 'code';
 
 const props = withDefaults(
   defineProps<{
@@ -20,17 +25,27 @@ const props = withDefaults(
     maxWidth?: number;
     /** Clamp the bubble to at most this many lines (with an ellipsis). */
     maxLines?: number;
+    /** `code` renders a monospace payload bubble (see the file header). */
+    variant?: Variant;
+    /** `code` only: bubble height cap, in lines. A longer payload scrolls. */
+    codeLines?: number;
   }>(),
   {
     placement: 'top',
     maxWidth: 280,
     maxLines: 6,
+    variant: 'text',
+    codeLines: 4,
   },
 );
 
 const GAP = 6;
 const MARGIN = 8;
+const LINE_HEIGHT = 1.5;
+const CODE_VPAD = 12; // vertical padding of a payload bubble (.ui-tip__bubble.code)
 const SHOW_DELAY = 150;
+
+const isCode = computed(() => props.variant === 'code');
 
 const trigger = ref<HTMLElement>();
 const bubble = ref<HTMLElement>();
@@ -46,15 +61,23 @@ function position(): void {
   const bub = bubble.value;
   if (!target || !bub) return;
   const r = target.getBoundingClientRect();
-  const bw = bub.offsetWidth;
-  const bh = bub.offsetHeight;
+  const sz = bub.getBoundingClientRect();
+  const bw = sz.width;
+  // A payload bubble's height is its line cap, rebuilt from the stylesheet so no
+  // measuring pass can go stale.
+  const bh = isCode.value ? props.codeLines * lineHeight() + CODE_VPAD : sz.height;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
 
   let place = props.placement;
-  if (place === 'top' && r.top - GAP - bh < MARGIN) place = 'bottom';
+  // Payload bubbles always open upward and grow to `codeLines` above the anchor, so
+  // a row near the bottom of the conversation never covers itself; a payload taller
+  // than that scrolls inside the bubble instead of being cut.
+  if (isCode.value) place = 'top';
+  else if (place === 'top' && r.top - GAP - bh < MARGIN) place = 'bottom';
   else if (place === 'bottom' && r.bottom + GAP + bh > vh - MARGIN) place = 'top';
-  else if (place === 'left' && r.left - GAP - bw < MARGIN) place = 'right';
+
+  if (place === 'left' && r.left - GAP - bw < MARGIN) place = 'right';
   else if (place === 'right' && r.right + GAP + bw > vw - MARGIN) place = 'left';
 
   let top = 0;
@@ -73,14 +96,24 @@ function position(): void {
     left = r.right + GAP;
   }
 
-  left = Math.min(Math.max(left, MARGIN), vw - MARGIN - bw);
-  top = Math.min(Math.max(top, MARGIN), vh - MARGIN - bh);
+  // Payload bubbles align with the row's left edge, not its centre.
+  if (isCode.value) left = r.left;
+
+  left = Math.min(Math.max(left, MARGIN), Math.max(vw - MARGIN - bw, MARGIN));
+  top = Math.min(Math.max(top, MARGIN), Math.max(vh - MARGIN - bh, MARGIN));
 
   bubbleStyle.value = {
     maxWidth: `${props.maxWidth}px`,
     top: `${Math.round(top)}px`,
     left: `${Math.round(left)}px`,
+    ...(isCode.value ? { maxHeight: `${bh}px` } : undefined),
   };
+}
+
+/** One line box of the payload bubble (--text-xs at the 1.5 line-height in the CSS). */
+function lineHeight(): number {
+  const root = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+  return root * 0.75 * LINE_HEIGHT;
 }
 
 function show(): void {
@@ -161,11 +194,12 @@ onBeforeUnmount(() => {
       ref="bubble"
       v-show="open"
       class="ui-tip__bubble"
-      :class="{ positioned }"
-      :style="[bubbleStyle, { '--tip-lines': maxLines }]"
+      :class="{ positioned, code: isCode }"
+      :style="[bubbleStyle, isCode ? undefined : { '--tip-lines': maxLines }]"
       role="tooltip"
     >
-      {{ text }}
+      <span v-if="isCode" class="ui-tip__code">{{ text }}</span>
+      <template v-else>{{ text }}</template>
     </div>
   </Teleport>
 </template>
@@ -193,4 +227,33 @@ onBeforeUnmount(() => {
   transition: opacity var(--duration-fast) var(--ease-out);
 }
 .ui-tip__bubble.positioned { opacity: 1; }
+
+/* Payload bubble: the pre-formatted argument (pretty JSON), capped at `codeLines`
+   lines; the overflow scrolls inside the bubble so every field stays reachable.
+   The bubble never takes pointer events (a hover hint must not trap the cursor),
+   so the bar is drawn thin + always-on — the macOS overlay bar would never appear. */
+.ui-tip__bubble.code {
+  display: block;
+  padding: 6px 9px;
+  font-family: var(--font-mono);
+  line-height: 1.5;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-bg) 45%, transparent) transparent;
+}
+.ui-tip__bubble.code::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.ui-tip__bubble.code::-webkit-scrollbar-thumb {
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-bg) 45%, transparent);
+}
+.ui-tip__code {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  white-space: pre;
+}
 </style>

@@ -2,8 +2,9 @@
 // Member narrative content blocks (supervision ADR-009): the read face behind
 // the detail panel's narrative area. A member's process — live or settled —
 // is normalized into the SAME ordered content-block stream the main
-// transcript renders (thinking / rich text / tool cards), so the panel
-// consumes one model instead of a live text dump plus a flattened history.
+// transcript renders (narrative segments + structured steps: thinking / rich
+// text / tool cards), so the panel consumes one model instead of a live text
+// dump plus a flattened history.
 //
 // Two entry points, one output:
 //   - memberBlocksFromMessages: a settled member's journal (the member-scoped
@@ -13,7 +14,8 @@
 //   - memberBlocksFromLive: the running member's task fields (streamed text +
 //     structured steps accumulated by the event projector).
 import type { AppMessage } from '../api/types';
-import type { AgentStep } from '../api/types';
+import type { AgentStep, NarrativeSegment } from '../api/types';
+import type { AssistantRenderBlock } from '../components/chatTurnRendering';
 import type { ToolCall, TurnBlock } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -44,7 +46,11 @@ export function settledNarrativeBlocks(
  *  become lines, media parts become placeholders). */
 function normalizeOutput(output: unknown): string[] | undefined {
   if (output === null || output === undefined) return undefined;
-  if (typeof output === 'string') return output.split('\n');
+  if (typeof output === 'string') {
+    // '' normalizes to undefined — the live path leaves a step without output
+    // undefined too, so both faces present the same "no output" shape.
+    return output.length > 0 ? output.split('\n') : undefined;
+  }
   if (Array.isArray(output)) {
     const lines: string[] = [];
     for (const part of output) {
@@ -130,9 +136,6 @@ export function memberBlocksFromMessages(messages: AppMessage[]): TurnBlock[] {
         tool.output = normalizeOutput(part.output);
         openTools.delete(part.toolCallId);
       }
-      // Media / file parts are not narrative material — same rule the old
-      // flattening layer applied, kept here (the member's journal, not the
-      // main transcript, decides nothing about upload rendering).
     }
   }
   return blocks;
@@ -143,27 +146,31 @@ export function memberBlocksFromMessages(messages: AppMessage[]): TurnBlock[] {
 // ---------------------------------------------------------------------------
 
 /**
- * The running member's live block stream: the member's reasoning as the
- * leading thinking block, structured steps (accumulated by the event
- * projector) as tool cards, and the streamed text as the trailing rich-text
- * block. Blocks are rebuilt per call — this is a projection, not an
- * accumulation.
- *
- * Live-path ordering is a deliberate degradation (ADR-009 open item): the
- * reducer accumulates all streamed text into one field, so live text renders
- * AFTER the tool cards rather than interleaved where it occurred; the
- * settled journal path restores true happening order.
+ * The running member's live block stream (ADR-011 ①): narrative segments
+ * (the projector mints one per uninterrupted text/thinking run) and structured
+ * steps are merged into ONE seq-ordered entry timeline, so thinking, rich
+ * text and tool cards interleave in true happening order — the same order the
+ * settled journal restores. Blocks are rebuilt per call — this is a
+ * projection, not an accumulation.
  */
 export function memberBlocksFromLive(
-  text: string | undefined,
+  segments: NarrativeSegment[] | undefined,
   steps: AgentStep[] | undefined,
-  thinking?: string,
 ): TurnBlock[] {
-  const blocks: TurnBlock[] = [];
-  const liveThinking = (thinking ?? '').trimEnd();
-  if (liveThinking.length > 0) blocks.push({ kind: 'thinking', thinking: liveThinking });
+  type LiveEntry =
+    | { seq: number; kind: 'text'; text: string }
+    | { seq: number; kind: 'thinking'; text: string }
+    | {
+        seq: number;
+        kind: 'tool';
+        tool: { id: string; name: string; arg: string; status: AgentStep['status']; output?: string[] };
+      };
+
+  const entries: LiveEntry[] = [];
+  for (const seg of segments ?? []) entries.push({ seq: seg.seq, kind: seg.kind, text: seg.text });
   for (const step of steps ?? []) {
-    blocks.push({
+    entries.push({
+      seq: step.seq,
       kind: 'tool',
       tool: {
         id: step.id,
@@ -174,7 +181,76 @@ export function memberBlocksFromLive(
       },
     });
   }
-  const live = (text ?? '').trimEnd();
-  if (live.length > 0) blocks.push({ kind: 'text', text: live });
+  // Single monotonic counter stamps both segments and steps, so one stable
+  // sort restores the member's true happening order.
+  entries.sort((a, b) => a.seq - b.seq);
+
+  const blocks: TurnBlock[] = [];
+  const pushText = (kind: 'text' | 'thinking', value: string): void => {
+    // Empty segments are skipped (the same rule as the journal path); no
+    // trim — segment-granularity merged tail whitespace is content, and a
+    // tool block naturally breaks the merge.
+    if (value.length === 0) return;
+    const last = blocks.at(-1);
+    if (last && last.kind === kind) {
+      if (kind === 'text' && last.kind === 'text') last.text += '\n' + value;
+      else if (kind === 'thinking' && last.kind === 'thinking') last.thinking += '\n' + value;
+      return;
+    }
+    blocks.push(kind === 'text' ? { kind: 'text', text: value } : { kind: 'thinking', thinking: value });
+  };
+
+  for (const entry of entries) {
+    if (entry.kind === 'tool') {
+      blocks.push({ kind: 'tool', tool: entry.tool });
+    } else {
+      pushText(entry.kind, entry.text);
+    }
+  }
   return blocks;
+}
+
+/**
+ * The segment id whose mapped block is the streaming tail (ADR-011 ③): the
+ * last segment after normalization. A text block the tools grew past is
+ * final on the spot (non-last → not streaming); a newly opened segment makes
+ * the last block streaming again. No segments → no streaming anchor.
+ */
+export function liveOpenSegmentId(segments: NarrativeSegment[] | undefined): string | undefined {
+  return segments?.at(-1)?.id;
+}
+
+/**
+ * The member's current text tail — the LAST text segment (ADR-011 ②
+ * activity-line semantics; the single-field accumulation is retired). A
+ * member that has moved on to reasoning has no current text tail
+ * (`undefined`, not the stale earlier output), and a segment that opened but
+ * has not accumulated text yet is not a tail either. No segments — a legacy
+ * engine row or a snapshot-restored one — also yields `undefined`, so
+ * callers fall back through outputLines / summary.
+ */
+export function liveTextTail(segments: NarrativeSegment[] | undefined): string | undefined {
+  const last = segments?.at(-1);
+  return last?.kind === 'text' && last.text.length > 0 ? last.text : undefined;
+}
+
+/**
+ * The MemberFocus streaming decision (ADR-011 ③), as a pure function over the
+ * member's live fields: a render block streams when the member is live, an
+ * open segment exists, and the block IS the last render block — the position
+ * the last segment maps to after normalization. A text block the tools grew
+ * past is final on the spot (non-last → not streaming, so a new tool card
+ * landing never flip-flops it back); a newly opened segment makes the last
+ * block stream again. Tool/tool-stack blocks never stream.
+ */
+export function liveStreamingView(
+  segments: NarrativeSegment[] | undefined,
+  isLive: boolean,
+  renderBlocks: AssistantRenderBlock[],
+): (block: AssistantRenderBlock) => boolean {
+  const openSegId = liveOpenSegmentId(segments);
+  const last = renderBlocks.at(-1);
+  if (!isLive || openSegId === undefined) return () => false;
+  if (!last || last.kind === 'tool' || last.kind === 'tool-stack') return () => false;
+  return (block) => block === last;
 }

@@ -12,15 +12,16 @@
      (ThinkingBlock / Markdown / ToolGroup) instead of a private text dump —
      the task prompt and result render as rich text; the member's process
      renders as ordered thinking / rich-text / tool-card blocks, live from the
-     projector's structured steps + streamed text, settled from the journal
-     read face (both normalized by lib/memberBlocks.ts). -->
+     projector's narrative segments + structured steps interleaved by arrival
+     order (ADR-011 ①), settled from the journal read face (both normalized by
+     lib/memberBlocks.ts). -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { AgentMember, TurnBlock } from '../../types';
 import { suspendedReasonText } from '../../lib/suspendedReason';
 import { createScrollFollow } from '../../lib/scrollFollow';
-import { memberBlocksFromLive, settledNarrativeBlocks } from '../../lib/memberBlocks';
+import { memberBlocksFromLive, liveStreamingView, settledNarrativeBlocks } from '../../lib/memberBlocks';
 import { isMemberLive } from '../../lib/taskStatus';
 import { renderBlockKey, renderBlocksFromBlocks, type AssistantRenderBlock } from '../chatTurnRendering';
 import Markdown from './Markdown.vue';
@@ -60,14 +61,14 @@ const isLive = computed(() => isMemberLive(props.member));
 
 const stoppable = computed(() => isMemberLive(props.member));
 
-// The member's live narrative as content blocks: the reasoning thinking
-// block, structured steps (tool cards) in call order, and the streamed text
-// as the trailing rich-text block (ADR-009 live path). Rebuilt per change —
-// a projection, not state.
+// The member's live narrative as content blocks (ADR-011 ①): narrative
+// segments (one per uninterrupted text/thinking run) and structured steps
+// interleave in true arrival order — same order the settled journal
+// restores. Members without segments (legacy engine / snapshot-restored
+// running rows) render tool cards only — the accepted degradation until
+// settle. Rebuilt per change — a projection, not state.
 const liveBlocks = computed(() =>
-  isLive.value
-    ? memberBlocksFromLive(props.member.text, props.member.steps, props.member.thinking)
-    : [],
+  isLive.value ? memberBlocksFromLive(props.member.segments, props.member.steps) : [],
 );
 
 /** The narrative to render: live blocks while running, the journal's settled
@@ -87,18 +88,11 @@ const renderBlocks = computed<AssistantRenderBlock[]>(() =>
 
 const renderBlockCount = computed(() => renderBlocks.value.length);
 
-/** True when the member is live AND the last block is the streaming text
- *  tail — drives the Markdown streaming flag (typewriter only for the block
- *  that is genuinely growing). */
-const streamingLastText = computed(() => {
-  if (!isLive.value) return false;
-  const last = blocks.value?.at(-1);
-  return last !== undefined && last.kind === 'text';
-});
-
-function isStreamingBlock(block: AssistantRenderBlock): boolean {
-  return streamingLastText.value && block === renderBlocks.value.at(-1) && block.kind === 'text';
-}
+/** ADR-011 ③：流式块 = 归一化末块源自当前开放段——工具追加不翻转，
+ *  末位被工具超越的文本块一次性定态，新段开启才重新进入流式。 */
+const streamingBlockIsOpen = computed(() =>
+  liveStreamingView(props.member.segments, isLive.value, renderBlocks.value),
+);
 
 const bodyEl = ref<HTMLElement | null>(null);
 // Follow the bottom as the narrative grows — but only until the user scrolls
@@ -110,7 +104,7 @@ const follow = createScrollFollow(() => bodyEl.value);
 watch(
   () =>
     renderBlockCount.value +
-    (props.member.text?.length ?? 0) +
+    (props.member.segments?.at(-1)?.text.length ?? 0) +
     (props.member.steps?.length ?? 0) +
     (props.history?.length ?? 0),
   () => void follow.onContentGrow(),
@@ -175,7 +169,7 @@ function onBodyTouch(): void {
       <template v-for="(blk, bi) in renderBlocks" :key="renderBlockKey(blk, bi)">
         <ThinkingBlock v-if="blk.kind === 'thinking'" :text="blk.thinking" mobile :foldable="false" />
         <div v-else-if="blk.kind === 'text' && blk.text" class="msg">
-          <Markdown :text="blk.text" :streaming="isStreamingBlock(blk)" class="mf-md" />
+          <Markdown :text="blk.text" :streaming="streamingBlockIsOpen(blk)" class="mf-md" />
         </div>
         <ToolGroup
           v-else-if="blk.kind === 'tool-stack'"

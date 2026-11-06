@@ -26,19 +26,27 @@ use std::sync::Arc;
 
 use mirri_core::SessionManager;
 use mirri_core::session::recovery_scan::{
-    append_interrupted_closure, scan_interrupted_closure, scan_open_turn, session_is_archived,
+    OpenTurnScan, RecoverySummary, append_interrupted_closure, scan_recovery_summary,
 };
 use mirri_persistence::lifecycle::{self, AbnormalExit, LaunchRecord, RunningSessionEntry};
 use mirri_transport::adapter::EngineError;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::{EmbeddedServer, invalid_params, not_found};
+use super::{EmbeddedServer, invalid_params, log_housekeeping_summary, not_found};
 
 /// The interruption retention window (spec §3 / ADR-006): an interruption
 /// drops out of `recovery.list` once its `interrupted_at` is older than
 /// this — judged lazily at read time, never by a background timer.
 const RETENTION_WINDOW_MS: u64 = 72 * 60 * 60 * 1000;
+
+/// The abnormal arm's time-window tolerance (ADR-011 a): a session log
+/// last modified earlier than `earliest dead instance started_at` minus
+/// this cannot carry any of those instances' unfinished turns. The margin
+/// absorbs filesystem timestamp granularity (whole seconds on some
+/// filesystems) and ordinary clock steps — it only widens the scanned
+/// set, never narrows it.
+const ABNORMAL_WINDOW_GRACE_MS: u64 = 60_000;
 
 /// One interruption entry of the in-process recovery list.
 #[derive(Debug, Clone)]
@@ -72,6 +80,12 @@ pub(super) struct RecoveryState {
     /// boundary). `None` = the real wall clock.
     #[cfg(test)]
     now_override: std::sync::Mutex<Option<u64>>,
+    /// The test observation of the abnormal arm's prefilter: every session
+    /// id the check actually scanned, plus the count it skipped on the
+    /// time window. The prefilter's only effect is "not scanned", so this
+    /// is what a case can assert on.
+    #[cfg(test)]
+    abnormal_scan_observation: std::sync::Mutex<(Vec<String>, usize)>,
 }
 
 // The Task-5 seam is closed: the dispatch faces below are registered in
@@ -84,7 +98,38 @@ impl RecoveryState {
             interruptions: std::sync::RwLock::new(Vec::new()),
             #[cfg(test)]
             now_override: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            abnormal_scan_observation: std::sync::Mutex::new((Vec::new(), 0)),
         }
+    }
+
+    #[cfg(test)]
+    /// Record one scanned candidate session of the abnormal arm.
+    fn record_scanned_session(&self, session_id: &str) {
+        self.abnormal_scan_observation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .0
+            .push(session_id.to_string());
+    }
+
+    #[cfg(test)]
+    /// Record how many sessions the time-window prefilter skipped.
+    fn record_prefilter_skips(&self, skipped: usize) {
+        self.abnormal_scan_observation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .1 = skipped;
+    }
+
+    #[cfg(test)]
+    /// The abnormal arm's observation: (scanned session ids, prefilter
+    /// skips).
+    pub(super) fn abnormal_scan_observation(&self) -> (Vec<String>, usize) {
+        self.abnormal_scan_observation
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// The judge clock: the test override when installed, else the real
@@ -275,6 +320,7 @@ impl EmbeddedServer {
         let Some((root, port, instance)) = self.lifecycle_root.clone() else {
             return;
         };
+        let started = std::time::Instant::now();
         let now = self.recovery.now_ms();
         #[cfg(test)]
         let probe_override = self
@@ -320,8 +366,19 @@ impl EmbeddedServer {
         // default workspace is eagerly built at boot, so
         // `built_runtimes` alone would miss interrupted sessions of
         // non-default workspaces; every registered row is built here).
+        //
+        // Judge and backfill share ONE scan (ADR-011 b): the candidate
+        // pass takes each candidate session's recovery summary exactly
+        // once, the inference consumes those summaries, and the backfill
+        // only re-reads a hit session immediately before writing it
+        // (ADR-008's read-judge-write re-check, now at session
+        // granularity instead of a full rescan). The scan's volume
+        // counters (candidates scanned / sessions skipped by the
+        // time-window prefilter) feed the ADR-003 d settlement summary.
+        let (candidates, skipped_before_window) =
+            self.scan_candidates_for_abnormals(&verdict.abnormal).await;
         for abnormal in &verdict.abnormal {
-            items.extend(self.infer_abnormal_interruptions(abnormal).await);
+            items.extend(infer_abnormal_interruptions(&candidates, abnormal));
         }
 
         // Settle the in-process list BEFORE the backfill writes, so a
@@ -332,11 +389,21 @@ impl EmbeddedServer {
             self.recovery.set_interruptions(items);
         }
 
+        #[cfg(test)]
+        if let Some(hook) = self
+            .recovery_pre_backfill
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            hook();
+        }
+
         // Backfill the synthetic closures (§2.1) — the read-time
         // derivation means the badge survives even when a backfill write
         // fails; a failure logs and moves on (F.4 tolerance).
         for abnormal in &verdict.abnormal {
-            self.backfill_abnormal_closures(abnormal).await;
+            self.backfill_abnormal_closures(&candidates, abnormal).await;
         }
 
         // Consume the judged directories (the atomic rename that makes a
@@ -356,15 +423,27 @@ impl EmbeddedServer {
         if let Err(error) = lifecycle::write_launch(&root, &launch).await {
             tracing::warn!(%error, %instance, "failed to write the lifecycle launch marker");
         }
+        // ADR-003 d observability: one settlement summary with the
+        // elapsed time and the check's volume counters (candidate
+        // sessions scanned, sessions the time-window prefilter skipped).
+        log_housekeeping_summary(
+            "startup recovery check settled",
+            started.elapsed().as_millis() as u64,
+            &[
+                ("candidates", candidates.len()),
+                ("skipped_before_window", skipped_before_window),
+            ],
+        );
     }
 
     /// The registered workspaces' (workspace key, manager) pairs, building
-    /// each runtime on demand (F-02): the inference and backfill must see
+    /// each runtime on demand (F-02): the candidate scan must see
     /// EVERY registered workspace's persisted sessions, not just the ones
     /// already built at boot (only the default workspace is eagerly
     /// built). A build failure logs and skips that workspace — a workspace
     /// whose runtime cannot be built contributes no sessions this boot
-    /// (the same best-effort tolerance the other disk arms carry).
+    /// (the same best-effort tolerance the other disk arms carry). The
+    /// whole startup check calls this exactly once (ADR-011 b).
     fn registered_workspace_managers(&self) -> Vec<(String, Arc<SessionManager>)> {
         let mut pairs = Vec::new();
         for registration in self.registry.registrations() {
@@ -385,193 +464,175 @@ impl EmbeddedServer {
         pairs
     }
 
-    /// The abnormal arm's disk inference (spec §1.3): every session of
-    /// every REGISTERED workspace (built on demand — F-02) whose wire log
-    /// ends in a turn left open by the dead instance. Read-only — the
-    /// backfill writes happen afterwards, keyed by the same scan results
-    /// re-taken there (ADR-008).
-    async fn infer_abnormal_interruptions(&self, abnormal: &AbnormalExit) -> Vec<InterruptionItem> {
-        let mut items = Vec::new();
+    /// The abnormal arm's candidates: every registered workspace's
+    /// sessions (built on demand — F-02) whose wire log was touched inside
+    /// the dead instances' time window, paired with the single recovery
+    /// summary the judge and the backfill share (ADR-011 a + b).
+    ///
+    /// The window is the aggregate minimum over every dead instance
+    /// (`started_at` minus the 60s grace), so an older instance's
+    /// interruptions are never dropped when several instances died. The
+    /// prefilter is pure acceleration: a log untouched since before the
+    /// window cannot carry any of those instances' unfinished turns, and
+    /// the judgement below would exclude it anyway. The
+    /// `registered_workspace_managers` walk happens exactly once for the
+    /// whole check.
+    ///
+    /// Each candidate's log is read exactly once here; the inference
+    /// consumes the summary, and the backfill re-reads only the sessions
+    /// it is about to write. Returns the candidates plus how many
+    /// sessions the time-window prefilter skipped — the ADR-003 d
+    /// observability counters of the startup recovery check.
+    async fn scan_candidates_for_abnormals(
+        &self,
+        abnormals: &[AbnormalExit],
+    ) -> (Vec<AbnormalCandidate>, usize) {
+        let Some(window_floor) = abnormal_window_floor(abnormals) else {
+            return (Vec::new(), 0);
+        };
+        let mut candidates: Vec<AbnormalCandidate> = Vec::new();
+        let mut skipped_before_window = 0usize;
         for (workspace_key, manager) in self.registered_workspace_managers() {
             for info in manager.list_all_sessions(true).await {
-                let session_dir = manager
-                    .persistence()
-                    .session_dir(&mirri_core::SessionId::new(&info.id));
-                if session_is_archived(&session_dir).await {
+                let session_id = mirri_core::SessionId::new(&info.id);
+                // The archived filter reads the ROW (ADR-006): the listing's
+                // `info.archived` already consults the row first (live rows,
+                // metadata rows) and only the legacy state.json scan fills
+                // pre-row sessions — one merged flag, no second probe. A
+                // row-only archived session (post-ADR-006: no state.json was
+                // ever written) is filtered here exactly like a state.json-
+                // archived one.
+                if info.archived {
                     continue;
                 }
+                let session_dir = manager.persistence().session_dir(&session_id);
+                // The time-window prefilter (ADR-011 a): the shape probe
+                // names the log that actually holds the records (a
+                // compressed session has only the `.gz`), and a missing
+                // shape is left to the scan below (its absent-log read).
                 let wire_log_path = session_dir.join("wire.jsonl");
-                // The primary arm: a dangling prompt (§1.3's original
-                // inference).
-                if let Some(scan) = scan_open_turn(&wire_log_path)
-                    .await
-                    .unwrap_or_else(|error| {
-                        tracing::warn!(
-                            %error,
-                            session_id = %info.id,
-                            "failed to scan the wire log tail for interruption inference"
-                        );
-                        None
-                    })
+                if let Some(modified_at) = wire_log_mtime(&session_dir, &wire_log_path).await
+                    && modified_at < window_floor
                 {
-                    // V2's latter half: only prompts that landed AFTER the
-                    // dead instance's launch belong to its lifecycle — an
-                    // older dangling prompt is stale history, not this
-                    // crash.
-                    if scan.prompt_time_ms <= abnormal.started_at {
-                        continue;
-                    }
-                    // D-M6: a pending user question/approval inside the
-                    // dangling bracket means the turn was waiting on the
-                    // USER, not running — not an interruption. The wire
-                    // vocabulary carries
-                    // `interaction.request`/`interaction.resolved`
-                    // (journal-routed but not yet written by any
-                    // production ask path today — the gates live in memory
-                    // only), so the predicate reads the record pair: an
-                    // unresolved request after the prompt skips the
-                    // session. Dormant until asks become journaled; see
-                    // the module doc (requirements B.4).
-                    if has_unresolved_interaction(&session_dir).await {
-                        continue;
-                    }
-                    items.push(InterruptionItem {
-                        session_id: info.id.clone(),
-                        workspace_key: workspace_key.clone(),
-                        title: if info.title.is_empty() {
-                            info.id.clone()
-                        } else {
-                            info.title.clone()
-                        },
-                        interrupted_at: scan.prompt_time_ms,
-                        cause: "service_exit".to_string(),
-                        pending_background_hint: scan.pending_background.then(|| {
-                            "a background task started inside the interrupted turn may have \
-                             finished on its own"
-                                .to_string()
-                        }),
-                        settled: false,
-                    });
+                    skipped_before_window += 1;
                     continue;
                 }
-                // The persistent arm (F-03, spec §2.1 “徽标数据天然跨重
-                // 启”): a PREVIOUS boot of this same lifecycle already
-                // backfilled the interrupted closure, and the server died
-                // again before the user acted — the tail now ends in the
-                // closure with no later prompt, so the open-turn arm sees
-                // nothing. Re-derive the interruption from the closure
-                // itself (ADR-008 read-time derivation: the closure is an
-                // append-only fact; the 72h retention and any later
-                // prompt are judged here at read time).
-                if let Some(closure) = scan_interrupted_closure(&wire_log_path)
-                    .await
-                    .unwrap_or_else(|error| {
-                        tracing::warn!(
-                            %error,
-                            session_id = %info.id,
-                            "failed to scan the wire log tail for interrupted closures"
-                        );
-                        None
-                    })
-                {
-                    // The same lifecycle-window rule: only closures whose
-                    // turn was running inside THIS dead instance's window.
-                    // (The prompt that opened the closed turn is not
-                    // re-derived here — the closure's own end time is the
-                    // interruption moment, and a closure from before the
-                    // instance's launch is an older crash's already-judged
-                    // history, consumed with its own instance directory.)
-                    if closure.time_ms > abnormal.started_at {
-                        items.push(InterruptionItem {
-                            session_id: info.id.clone(),
-                            workspace_key: workspace_key.clone(),
-                            title: if info.title.is_empty() {
-                                info.id.clone()
-                            } else {
-                                info.title.clone()
-                            },
-                            interrupted_at: closure.time_ms,
-                            // The closure's own recorded cause when it
-                            // carries one (the backfill stamps
-                            // "service_exit"), else the abnormal arm's.
-                            cause: closure
-                                .cause
-                                .clone()
-                                .unwrap_or_else(|| "service_exit".to_string()),
-                            // The background hint cannot be re-derived
-                            // from the closure record itself (the
-                            // dangling bracket is closed); the resume
-                            // prompt's check-before-rerun instruction only
-                            // rides the first-boot derivation.
-                            pending_background_hint: None,
-                            settled: false,
-                        });
-                    }
-                }
+                #[cfg(test)]
+                self.recovery.record_scanned_session(&info.id);
+                let Some(summary) =
+                    scan_recovery_summary(&wire_log_path)
+                        .await
+                        .unwrap_or_else(|error| {
+                            tracing::warn!(
+                                %error,
+                                session_id = %info.id,
+                                "failed to scan the wire log tail for interruption inference"
+                            );
+                            None
+                        })
+                else {
+                    continue;
+                };
+                candidates.push(AbnormalCandidate {
+                    workspace_key: workspace_key.clone(),
+                    session_dir,
+                    wire_log_path,
+                    info,
+                    summary,
+                });
             }
         }
-        items
+        #[cfg(test)]
+        self.recovery.record_prefilter_skips(skipped_before_window);
+        if skipped_before_window > 0 {
+            tracing::debug!(
+                skipped = skipped_before_window,
+                candidates = candidates.len(),
+                "time-window prefilter skipped sessions untouched since before the dead instances"
+            );
+        }
+        (candidates, skipped_before_window)
     }
 
     /// Backfill the synthetic `interrupted` closures for the dead
-    /// instance's inferred sessions (§2.1). ADR-008's read-judge-write
-    /// idempotence: the tail is re-scanned immediately before each append
-    /// — if another writer (a racing instance, or the turn genuinely
-    /// ending) already closed the bracket, this one is skipped.
-    async fn backfill_abnormal_closures(&self, abnormal: &AbnormalExit) {
-        for (_workspace_key, manager) in self.registered_workspace_managers() {
-            for info in manager.list_all_sessions(true).await {
-                let session_dir = manager
-                    .persistence()
-                    .session_dir(&mirri_core::SessionId::new(&info.id));
-                if session_is_archived(&session_dir).await {
-                    continue;
-                }
-                // The .gz guard (retention domain, ADR-007): a compressed
-                // session is an at-rest archive — the backfill must not
-                // rewrite it, and the interruption still rides the
-                // in-process list (read-time derivation needs no write).
-                if matches!(
-                    mirri_persistence::probe_compressed(&session_dir),
-                    mirri_persistence::compress::CompressedShape::Compressed
-                ) {
-                    tracing::warn!(
-                        session_id = %info.id,
-                        "skipping interrupted-closure backfill: the session is compressed"
-                    );
-                    continue;
-                }
-                let wire_log_path = session_dir.join("wire.jsonl");
-                let Some(scan) = scan_open_turn(&wire_log_path).await.unwrap_or(None) else {
-                    continue;
-                };
-                if scan.prompt_time_ms <= abnormal.started_at {
-                    continue;
-                }
-                // Resident sessions write through their own recorder (the
-                // session's live writer, never a second file handle racing
-                // it); non-resident ones append to the journal directly.
-                if let Ok(session) = self.resolve_session(&info.id).await {
-                    session
-                        .record_op(mirri_proto::WireOp::TurnEnded {
-                            turn_id: scan.prompt_ordinal,
-                            reason: "interrupted".to_string(),
-                            error: Some(serde_json::json!({
-                                "cause": "service_exit"
-                            })),
-                            duration_ms: None,
-                        })
-                        .await;
-                } else if let Err(error) =
-                    append_interrupted_closure(&wire_log_path, scan.prompt_ordinal, "service_exit")
-                        .await
-                {
-                    tracing::warn!(
-                        %error,
-                        session_id = %info.id,
-                        "failed to backfill the interrupted closure"
-                    );
-                }
+    /// instance's inferred sessions (§2.1), over the summaries the judge
+    /// already took (ADR-011 b).
+    ///
+    /// ADR-008's read-judge-write idempotence: the session is re-scanned
+    /// immediately before its write — if another writer (a racing
+    /// instance, or the turn genuinely ending) already closed the
+    /// bracket, this one is skipped. That re-check is session-granular
+    /// and runs only for a session about to be written.
+    async fn backfill_abnormal_closures(
+        &self,
+        candidates: &[AbnormalCandidate],
+        abnormal: &AbnormalExit,
+    ) {
+        for candidate in candidates {
+            // Only a session whose shared summary showed one of this
+            // instance's turns still open is a write candidate at all.
+            let Some(scanned) = open_turn_left_by(candidate, abnormal) else {
+                continue;
+            };
+            // The .gz guard (retention domain, ADR-007): a compressed
+            // session is an at-rest archive — the backfill must not
+            // rewrite it, and the interruption still rides the
+            // in-process list (read-time derivation needs no write).
+            if matches!(
+                mirri_persistence::probe_compressed(&candidate.session_dir),
+                mirri_persistence::compress::CompressedShape::Compressed
+            ) {
+                tracing::warn!(
+                    session_id = %candidate.info.id,
+                    "skipping interrupted-closure backfill: the session is compressed"
+                );
+                continue;
+            }
+            // The write-time re-check (ADR-008): only a bracket the tail
+            // still shows open is closed here.
+            let rechecked = scan_recovery_summary(&candidate.wire_log_path)
+                .await
+                .unwrap_or(None)
+                .and_then(|fresh| fresh.open_turn);
+            let Some(fresh) = rechecked.filter(|fresh| fresh.prompt_time_ms > abnormal.started_at)
+            else {
+                continue;
+            };
+            // The re-check sees the same dangling prompt (nothing was
+            // appended in between); a different ordinal would mean a
+            // racing writer re-opened the turn, so its closure is left
+            // to that writer.
+            if fresh.prompt_ordinal != scanned.prompt_ordinal {
+                continue;
+            }
+            // Resident sessions write through their own recorder (the
+            // session's live writer, never a second file handle racing
+            // it); non-resident ones append to the journal directly.
+            if let Ok(session) = self.resolve_session(&candidate.info.id).await {
+                session
+                    .record_op(mirri_proto::WireOp::TurnEnded {
+                        turn_id: fresh.prompt_ordinal,
+                        reason: "interrupted".to_string(),
+                        error: Some(serde_json::json!({
+                            "cause": "service_exit"
+                        })),
+                        duration_ms: None,
+                        // Synthetic closure — no real terminal instant.
+                        ended_at: None,
+                    })
+                    .await;
+            } else if let Err(error) = append_interrupted_closure(
+                &candidate.wire_log_path,
+                fresh.prompt_ordinal,
+                "service_exit",
+            )
+            .await
+            {
+                tracing::warn!(
+                    %error,
+                    session_id = %candidate.info.id,
+                    "failed to backfill the interrupted closure"
+                );
             }
         }
     }
@@ -856,40 +917,176 @@ fn graceful_entry(
     }
 }
 
-/// Whether the session's wire log carries an unresolved `interaction.request`
-/// after the last prompt — the D-M6 wait-on-user exclusion's disk predicate.
-///
-/// The `interaction.request` / `interaction.resolved` pair is part of the
-/// wire vocabulary and journal routing, but no production ask path writes
-/// them today (asks live in the in-memory interaction kernel only), so on
-/// current logs this is always `false`. The predicate is kept (and tested
-/// with hand-written records) so the exclusion turns on the moment asks
-/// become journaled — dropping it would silently regress requirements B.4
-/// the day that lands.
-async fn has_unresolved_interaction(session_dir: &std::path::Path) -> bool {
-    use mirri_persistence::migration::migrate_records_in_memory;
-
-    let wire_log_path = session_dir.join("wire.jsonl");
-    let Ok(records) = migrate_records_in_memory(&wire_log_path).await else {
-        return false;
-    };
-    let mut open: Vec<String> = Vec::new();
-    for record in &records {
-        match record.get("type").and_then(Value::as_str) {
-            Some("interaction.request") => {
-                if let Some(id) = record.get("id").and_then(Value::as_str) {
-                    open.push(id.to_string());
-                }
+/// The abnormal arm's disk inference (spec §1.3): the sessions of the
+/// shared candidate scan whose wire log ends in a turn left open by THIS
+/// dead instance (or in the interrupted closure its earlier boot already
+/// backfilled, F-03). Read-only — the summaries were taken by
+/// [`EmbeddedServer::scan_candidates_for_abnormals`], and the backfill
+/// re-checks each write against the disk (ADR-008).
+fn infer_abnormal_interruptions(
+    candidates: &[AbnormalCandidate],
+    abnormal: &AbnormalExit,
+) -> Vec<InterruptionItem> {
+    let mut items = Vec::new();
+    for candidate in candidates {
+        let info = &candidate.info;
+        let title = || {
+            if info.title.is_empty() {
+                info.id.clone()
+            } else {
+                info.title.clone()
             }
-            Some("interaction.resolved") => {
-                if let Some(id) = record.get("id").and_then(Value::as_str) {
-                    open.retain(|open_id| open_id != id);
-                }
-            }
-            _ => {}
+        };
+        // The primary arm: a dangling prompt (§1.3's original inference).
+        // V2's latter half: only prompts that landed AFTER the dead
+        // instance's launch belong to its lifecycle — an older dangling
+        // prompt is stale history, not this crash.
+        if let Some(scan) = open_turn_left_by(candidate, abnormal) {
+            items.push(InterruptionItem {
+                session_id: info.id.clone(),
+                workspace_key: candidate.workspace_key.clone(),
+                title: title(),
+                interrupted_at: scan.prompt_time_ms,
+                cause: "service_exit".to_string(),
+                pending_background_hint: scan.pending_background.then(|| {
+                    "a background task started inside the interrupted turn may have \
+                     finished on its own"
+                        .to_string()
+                }),
+                settled: false,
+            });
+            continue;
+        }
+        // The persistent arm (F-03): re-derive the interruption from the
+        // closure a previous boot left behind (ADR-008 read-time
+        // derivation: the closure is an append-only fact; the 72h
+        // retention and any later prompt are judged here at read time).
+        if let Some(closure) = persistent_closure_left_by(candidate, abnormal) {
+            items.push(InterruptionItem {
+                session_id: info.id.clone(),
+                workspace_key: candidate.workspace_key.clone(),
+                title: title(),
+                interrupted_at: closure.time_ms,
+                // The closure's own recorded cause when it carries one
+                // (the backfill stamps "service_exit"), else the abnormal
+                // arm's.
+                cause: closure
+                    .cause
+                    .clone()
+                    .unwrap_or_else(|| "service_exit".to_string()),
+                // The background hint cannot be re-derived from the
+                // closure record itself (the dangling bracket is closed);
+                // the resume prompt's check-before-rerun instruction only
+                // rides the first-boot derivation.
+                pending_background_hint: None,
+                settled: false,
+            });
         }
     }
-    !open.is_empty()
+    items
+}
+
+/// One abnormal arm candidate: a session inside the dead instances' time
+/// window, with the recovery summary taken from its wire log once
+/// (ADR-011 b — the judgement and the backfill both consume it).
+struct AbnormalCandidate {
+    /// The workspace key (the registry bucket id) the session belongs to.
+    workspace_key: String,
+    /// The session directory (the compressed-shape probe's input).
+    session_dir: std::path::PathBuf,
+    /// The plain wire-log path — the shape-aware readers resolve the `.gz`
+    /// form from the parent directory.
+    wire_log_path: std::path::PathBuf,
+    /// The session's listing row (id, title).
+    info: mirri_core::SessionInfo,
+    /// The single read's result (both arms plus the wait-on-user flag).
+    summary: RecoverySummary,
+}
+
+/// The abnormal arm's time-window floor (ADR-011 a): the earliest dead
+/// instance's launch minus the grace margin. `None` when nothing died —
+/// the caller then has no candidates at all.
+fn abnormal_window_floor(abnormals: &[AbnormalExit]) -> Option<u64> {
+    abnormals
+        .iter()
+        .map(|abnormal| abnormal.started_at)
+        .min()
+        .map(|earliest| earliest.saturating_sub(ABNORMAL_WINDOW_GRACE_MS))
+}
+
+/// The wire log's last-modification time (epoch-ms) under the shape the
+/// directory actually holds, or `None` when neither shape exists.
+///
+/// A metadata failure reads as `None` — the prefilter then declines to
+/// skip, letting the scan decide (a read failure must never be turned
+/// into a silent exclusion).
+async fn wire_log_mtime(
+    session_dir: &std::path::Path,
+    wire_log_path: &std::path::Path,
+) -> Option<u64> {
+    let path = match mirri_persistence::probe_compressed(session_dir) {
+        mirri_persistence::compress::CompressedShape::Compressed => {
+            session_dir.join("wire.jsonl.gz")
+        }
+        _ => wire_log_path.to_path_buf(),
+    };
+    let modified = tokio::fs::metadata(&path).await.ok()?.modified().ok()?;
+    let since_epoch = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    u64::try_from(since_epoch.as_millis()).ok()
+}
+
+/// The abnormal-arm judgement itself, shared by the inference (which
+/// builds the list row) and the backfill (which decides the write): the
+/// dangling turn this dead instance left behind, if any.
+///
+/// The persistent-closure arm shares the same lifecycle window — a
+/// closure that ended after the instance's launch is this instance's
+/// interruption (its earlier boot already backfilled the closure, then
+/// died again before the user acted). Its prompt time stands in for the
+/// open-turn prompt time here: both are compared against the same
+/// `started_at`, so the two arms agree on the window.
+fn open_turn_left_by<'a>(
+    candidate: &'a AbnormalCandidate,
+    abnormal: &AbnormalExit,
+) -> Option<&'a OpenTurnScan> {
+    let summary = &candidate.summary;
+    if let Some(scan) = &summary.open_turn
+        && scan.prompt_time_ms > abnormal.started_at
+    {
+        // D-M6: a pending user question/approval inside the dangling
+        // bracket means the turn was waiting on the USER, not running —
+        // not an interruption. The wire vocabulary carries
+        // `interaction.request`/`interaction.resolved` (journal-routed but
+        // not yet written by any production ask path today), so the
+        // predicate reads the record pair the same single read collected.
+        // Dormant until asks become journaled; see the module doc
+        // (requirements B.4).
+        if summary.unresolved_interaction {
+            return None;
+        }
+        return Some(scan);
+    }
+    None
+}
+
+/// Whether the shared summary shows this dead instance's interrupted
+/// closure in the persistent arm (F-03, spec §2.1 “徽标数据天然跨重
+/// 启”): a previous boot of the same lifecycle already backfilled the
+/// closure, and the server died again before the user acted.
+fn persistent_closure_left_by<'a>(
+    candidate: &'a AbnormalCandidate,
+    abnormal: &AbnormalExit,
+) -> Option<&'a mirri_core::session::recovery_scan::InterruptedClosureScan> {
+    // A dangling prompt is the primary arm's territory; the closure arm
+    // only re-derives from the tail when that ended in the closure.
+    if candidate.summary.open_turn.is_some() {
+        return None;
+    }
+    candidate
+        .summary
+        .persistent_closure
+        .as_ref()
+        .filter(|closure| closure.time_ms > abnormal.started_at)
 }
 
 /// The production liveness probe: a TCP connect against `127.0.0.1:port`

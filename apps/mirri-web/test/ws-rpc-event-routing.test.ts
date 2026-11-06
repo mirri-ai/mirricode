@@ -359,6 +359,9 @@ function createApiWithAnyHandler(): {
   askHandler: (method: string) => (params: unknown) => Promise<unknown>;
 } {
   const spy = vi.spyOn(JsonRpcClient.prototype, 'registerReverseRpc');
+  // A previous test's spy may still hold its registrations (vi.spyOn reuses
+  // an existing spy) — clear them so askHandler below only sees THIS api's.
+  spy.mockClear();
   const api = new WsRpcApi('ws://test.local/api/v1/rpc', 'http://test.local', undefined);
   const client = {
     call: vi.fn(),
@@ -436,6 +439,69 @@ describe('WsRpcApi workspace event routing', () => {
       ([appEvent]) => (appEvent as { type: string }).type === 'approvalRequested',
     );
     expect(askCalls[0][1]).toEqual({ sessionId: 'sess-1', seq: 0 });
+  });
+});
+
+describe('WsRpcApi skill catalog event routing', () => {
+  it('should deliver a skill.catalogChanged notification to the UI as a skillCatalogChanged AppEvent', () => {
+    // Given a WsRpcApi whose transport is a mocked client
+    const { handlers, anyHandler } = createApiWithAnyHandler();
+
+    // When the engine broadcasts the skill catalog change notification
+    anyHandler({
+      type: 'skill.catalogChanged',
+      payload: { workspaceId: 'ws-1', added: ['alpha'], removed: [], updated: ['beta'], trigger: 'file' },
+    });
+
+    // Then the UI handler receives the narrowed skillCatalogChanged AppEvent
+    expect(handlers.onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'skillCatalogChanged',
+        workspaceId: 'ws-1',
+        added: ['alpha'],
+        updated: ['beta'],
+        trigger: 'file',
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('should still update the last-session pointer for session events while routing the sessionless catalog event', () => {
+    // Given a WsRpcApi whose transport is a mocked client
+    const { handlers, anyHandler, askHandler } = createApiWithAnyHandler();
+
+    // When a session-scoped event arrives (setting the last-session pointer)
+    // and the sessionless catalog event follows
+    anyHandler(rpcEvent('event.turn.started', { turnId: 1 }, 'sess-1', 1));
+    anyHandler({ type: 'skill.catalogChanged', payload: { workspaceId: 'ws-1', trigger: 'file' } });
+
+    // Then both are delivered to the UI, and a later approval.ask still
+    // routes to the PREVIOUS session — the catalog event must not clobber
+    // the last-session pointer
+    expect(handlers.onEvent).toHaveBeenCalledTimes(2);
+    const call = askHandler('approval.ask');
+    void call({
+      tool_name: 'bash',
+      tool_call_id: 'call-1',
+      action: 'execute bash',
+      request_id: 'req-1',
+    });
+    const askCalls = (handlers.onEvent as ReturnType<typeof vi.fn>).mock.calls.filter(
+      ([appEvent]) => (appEvent as { type: string }).type === 'approvalRequested',
+    );
+    expect(askCalls[0][1]).toEqual({ sessionId: 'sess-1', seq: 0 });
+  });
+
+  it('should drop malformed skill.catalogChanged payloads instead of surfacing an error', () => {
+    // Given a WsRpcApi whose transport is a mocked client
+    const { handlers, anyHandler } = createApiWithAnyHandler();
+
+    // When the payload carries no usable workspaceId
+    anyHandler({ type: 'skill.catalogChanged', payload: {} });
+
+    // Then no AppEvent reaches the UI and no error surfaces
+    expect(handlers.onEvent).not.toHaveBeenCalled();
+    expect(handlers.onError).not.toHaveBeenCalled();
   });
 });
 

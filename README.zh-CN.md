@@ -101,7 +101,7 @@ Mirri Code 支持 [Agent Client Protocol](https://agentclientprotocol.com/)，AC
 
 ## 本地开发
 
-环境要求：Node.js ≥ 24.15.0，pnpm 10.33.0。
+环境要求：Node.js ≥ 24.22.2，pnpm 12.16.1。
 
 ```sh
 git clone https://github.com/mirri-ai/mirricode.git

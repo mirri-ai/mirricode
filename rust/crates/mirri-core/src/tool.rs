@@ -101,6 +101,30 @@ impl ToolAccess {
     }
 }
 
+/// The structured payload of [`ToolInputDisplay::ScheduledTaskCreate`] —
+/// every parameter of the scheduled task the user is asked to approve.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct ScheduledTaskCreateDisplay {
+    pub cron: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    pub workspace_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub prompt: String,
+    pub recurring: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_fires: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// UI display hint for a tool call.
 ///
 /// The host uses this to render a compact, human-readable summary of what a
@@ -160,6 +184,12 @@ pub enum ToolInputDisplay {
         #[serde(skip_serializing_if = "Option::is_none")]
         completion_criterion: Option<String>,
     },
+    /// A scheduled-task creation the user judges (ADR-022): the full
+    /// parameter set of the task about to be created — the approval card
+    /// renders this as plain language, so every field the user is
+    /// approving travels here (never a one-line summary). Boxed so the
+    /// many-field payload does not inflate every other display variant.
+    ScheduledTaskCreate(Box<ScheduledTaskCreateDisplay>),
     Generic {
         summary: String,
     },
@@ -221,6 +251,11 @@ pub struct ExecutableToolContext {
     /// (ADR-010: the private-network exemption payload). `None` for the
     /// vast majority of calls.
     pub approval_metadata: Option<serde_json::Value>,
+    /// The turn's origin (S5 / ADR-001): carried so the Agent tool can
+    /// forward it into its SpawnRequest — a subagent spawned from a
+    /// cron-fired turn inherits the Cron lineage (the defense line must
+    /// not be bypassable by delegation). `Interactive` default.
+    pub turn_origin: crate::permission::TurnOriginContext,
 }
 
 /// One incremental update emitted by a running tool call, surfaced live to
@@ -380,6 +415,18 @@ pub trait Tool: Send + Sync {
     /// Capability tags (e.g. `"code.explore"`, `"code.read"`).
     fn capabilities(&self) -> &[String] {
         &[]
+    }
+
+    /// The tool's capability category (ADR-015, stage-2 D-M2): read-only
+    /// vs not. A read-only tool only observes state — no file writes, no
+    /// process spawns, no side effects the permission system would have
+    /// to gate; the ReadOnly execution posture (and later plan mode, an
+    /// independent follow-up) refuses every tool that does not declare
+    /// `true` here. Defaults to `false` — an undeclared tool is treated
+    /// as mutating, so a new builtin cannot silently widen the read-only
+    /// surface (the enum-drift defense ADR-002 applies to ask-deny).
+    fn readonly(&self) -> bool {
+        false
     }
 
     /// Whether this tool is deferred (progressive disclosure marker).
@@ -610,6 +657,7 @@ mod tests {
                     tool_call_id: "tc1".to_string(),
                     cancel: CancelToken::new(),
                     progress: ToolProgressHandle::default(),
+                    turn_origin: Default::default(),
                 };
                 let result = execute(ctx).await;
                 assert!(!result.is_error);
@@ -641,6 +689,7 @@ mod tests {
                 let ctx = ExecutableToolContext {
                     approval_metadata: None,
                     wait_registry: None,
+            turn_origin: Default::default(),
                     turn_id: "t1".to_string(),
                     tool_call_id: "tc1".to_string(),
                     cancel: CancelToken::new(),
@@ -688,6 +737,7 @@ mod tests {
                 let ctx = ExecutableToolContext {
                     approval_metadata: None,
                     wait_registry: None,
+            turn_origin: Default::default(),
                     turn_id: "t1".to_string(),
                     tool_call_id: "tc1".to_string(),
                     cancel: CancelToken::new(),
@@ -733,6 +783,7 @@ mod tests {
                 let ctx = ExecutableToolContext {
                     approval_metadata: None,
                     wait_registry: None,
+            turn_origin: Default::default(),
                     turn_id: "t1".to_string(),
                     tool_call_id: "tc1".to_string(),
                     cancel: CancelToken::new(),
@@ -939,6 +990,31 @@ mod tests {
                     completion_criterion: Some("tests green".into()),
                 },
                 serde_json::json!({"kind":"goal_start","objective":"ship it","completion_criterion":"tests green"}),
+            ),
+            (
+                ToolInputDisplay::ScheduledTaskCreate(Box::new(ScheduledTaskCreateDisplay {
+                    cron: "15 10 * * 1-5".into(),
+                    timezone: Some("Asia/Tokyo".into()),
+                    workspace_id: "wd_flat35_workspace_4653096df70d".into(),
+                    permission_mode: Some("manual".into()),
+                    model: None,
+                    effort: None,
+                    title: Some("Pick Up Review".into()),
+                    prompt: "review tickets".into(),
+                    recurring: true,
+                    max_fires: None,
+                    reason: None,
+                })),
+                serde_json::json!({
+                    "kind": "scheduled_task_create",
+                    "cron": "15 10 * * 1-5",
+                    "timezone": "Asia/Tokyo",
+                    "workspace_id": "wd_flat35_workspace_4653096df70d",
+                    "permission_mode": "manual",
+                    "title": "Pick Up Review",
+                    "prompt": "review tickets",
+                    "recurring": true
+                }),
             ),
             (
                 ToolInputDisplay::Generic {

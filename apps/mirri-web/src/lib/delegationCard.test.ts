@@ -235,8 +235,8 @@ describe('event-driven awaiting consumption (P3b)', () => {
       '等待审批中',
     );
 
-    // Then the body falls back to the streamed text — the structured object is
-    // not rendered as "[object Object]"
+    // Then the body stays empty — the structured object is not rendered as
+    // "[object Object]"
     expect(rows[0]?.activity).toBe('等待审批中');
     expect(rows[0]?.body).toBe('');
   });

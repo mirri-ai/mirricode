@@ -241,7 +241,7 @@
 - 验证：V1-V8 全部自动化；真端口 WS JSON-RPC e2e 闭环（`mirri-server/tests/skill_e2e_tests.rs`）；llvm-cov 区域覆盖 94.5–100%（builtin.rs 100%）。
 - 已知留档：发现层默认分支读宿主 `HOME` 的测试密封性问题（测试用非空 explicit skillDirs 封装，产品代码未动，待架构裁决）。
 
-## 11. Rust 引擎侧技能目录刷新现状快照（2026-10-23，随 SDR-008 / ADR-010 首建）
+## 11. Rust 引擎侧技能目录刷新现状快照（2026-10-23，随 SDR-008 / ADR-010 首建；2026-11-01 增补 §11.2 界面闭环断链证据）
 
 > 热更新（US7.2）实现前的 rust 引擎刷新机制现状（file:line 为 2026-10-23 现行代码）。执行状态唯一源为 [skills-ROADMAP.md](skills-ROADMAP.md)。
 
@@ -253,3 +253,20 @@
 - **工具面门控分叉**：rust 的系统提示词清单注入无工具面门控（`render_skills_section` 调用点无 tools 判定，无 Skill 工具的子代理也拿到清单）；TS 的 `skillActiveFor` 在 rust 无对应物（ADR-010 决策 6 披露）。
 - **手动重载入口空白**：rust 侧无任何「重扫技能目录」的用户入口（RPC 面 `skill.list` / `skill.getContent` / `skill.setEnabled` 均为读 / 配置面）。
 - **TS dotfiles 同构隐患（ADR-011 评审留档）**：TS 项目级发现走 `.git` 上溯，用户把主目录做成 git 仓库（dotfiles 管理惯例）时，项目通道与用户通道同样解析到同一目录；TS 冻结不修，rust 侧已按 ADR-011 去重（2026-10-23 留档）。
+
+### 11.2 热更新界面闭环的断链证据（2026-11-01 快照，SDR-010 / ADR-013 实现前）
+
+> ADR-010 引擎侧落地后的消费端现状（file:line 为 2026-11-01 现行代码）。执行状态唯一源见 [skills-ROADMAP.md](skills-ROADMAP.md) §2 G11。
+
+- **实验开关默认关闭且无界面入口**：`skillHotReload` 注册默认值 `false`（`rust/crates/mirri-embedded/src/embedded_server/mod.rs:172-179`，描述文案 "Off by default while the feature settles"）；开关只能在 config.toml `[experimental]` 或 env 层改（`FlagRegistry::enabled` 的 env → config → default 链，`mirri-core/src/flags.rs:203-223`）；web 设置页无任何实验开关面。既有测试按默认关闭密封（`embedded_server/tests.rs:26501`、`:35593` 显式 `skillHotReload = false`；`:42190` 显式开 true）。
+- **web 端不消费 `skill.catalogChanged`**：
+  - 订阅面缺失——ws 客户端连接后只发 `client_hello` 与会话/终端类订阅（`apps/mirri-web/src/api/daemon/ws-rpc-api.ts` 的 `connectEvents`；终端订阅在 `:1153`）；无任何代码调用 `skill.subscribe`（全仓 `apps/` grep 无命中）。serve 侧「连接本地订阅」的既有先例是 `mcp.subscribe`（`rust/crates/mirri-server/src/ws_rpc.rs:916`）。
+  - 事件被路由层丢弃——any-event 路由的会话过滤门（`ws-rpc-api.ts:1206-1211`：无 `sessionId` 且不以 `event.workspace.` 开头的事件直接 return）；`skill.catalogChanged` 无 sessionId、无该前缀，命中丢弃分支。
+  - 投影器词表不认识该事件——`agentEventProjector.ts:2276` 附近的「known but not projected」集合只列 `skill.activated`；无 `skill.catalogChanged` 分支。
+- **协议类型已有 interface、无 zod**——`packages/protocol/src/events.ts:794` 有 `SkillCatalogChangedEvent` TypeScript interface（readonly 字面量类型），但**无 zod schema**（对照 `skill.activated` 在 `:1297` 有 `skillActivatedEventSchema`）；web 侧消费链只缺投影器映射与校验面（ADR-013 决策 7 按需补 zod）。
+- **web 技能清单缓存只首次填充，不随目录变化失效**：`skillsBySession` / `skillsByWorkspace`（`useModelProviderState.ts:108-111`）只被 `loadSkillsForSession` / `loadSkillsForWorkspace`（`:258-277`）写入；调用点两处（会话 sidecar 刷新 `useWorkspaceState.ts:457` 带 hasOwnProperty 守卫、工作区预热 `useMirriWebClient.ts:2685` 同守卫）——守卫保证**每会话/工作区只拉一次**，无失效路径；`refreshSkills()`（`useMirriWebClient.ts:2693-2700`）只被设置页启停后手动调用。composer `/` 菜单的 `skills` computed（`useMirriWebClient.ts:2100-2105`）读该缓存，因此已打开界面看不到目录变化。
+- **SkillsPanel 无重扫入口**：工具栏只有刷新按钮（重新拉 `skill.list`，`SkillsPanel.vue:224`）；无 `skill.reload` 调用（全仓 web grep 无命中）；`MirriWebApi` 接口无 `reloadSkills` 方法（`api/types.ts` 技能方法族 `:1855` 附近）。
+- **serve 端订阅面完整但无消费者**：`skill.subscribe`（`mirri-server/src/ws_rpc.rs:917`、`:1327-1371`）连接本地订阅已实现——引擎 → broadcast → 连接转发链（`state.rs:336-375`）全通，只是没有 web 客户端调用。
+- **引擎事件双通道均已透出**：embedded 侧 per-subscriber 转发（`embedded_server/mod.rs:5616-5644`，`skill.catalogChanged` 直发通知帧）与 serve 侧 `skill.subscribe`（上述）——两个宿主面都在等同一个 web 消费者。
+- **ACP 翻译层不投影该事件**：ADR-010 实施计划留档的开放项（plans/04 末尾 Notes）——ACP 端收到 `skill.catalogChanged` 通知会静默丢弃（无翻译分支）。
+- **手动重载 `skill.reload` RPC 已就绪**（`session_handlers.rs:5850-5900`）：返回每 workspace 的 added/removed/updated 计数与 `watching` 布尔（`SkillReloadWorkspaceResult`）——`watching: false` 即「该 workspace 自动感知未生效」的判定源，界面可直接消费。

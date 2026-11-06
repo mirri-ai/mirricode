@@ -1,3 +1,4 @@
+// layer: T1
 //! Integration tests for `mirri-remote` — the WS-client implementation of
 //! [`EngineAdapter`] — against the REAL `mirri-server` on an ephemeral port.
 //!
@@ -247,6 +248,38 @@ impl ScriptedPeer {
                                 send_json(
                                     &mut sink,
                                     json!({"jsonrpc":"2.0","id":id,"result":{"ok":true}}),
+                                )
+                                .await;
+                            }
+                            (Some("skill.subscribe"), Some(id)) => {
+                                send_json(
+                                    &mut sink,
+                                    json!({"jsonrpc":"2.0","id":id,"result":{"ok":true}}),
+                                )
+                                .await;
+                            }
+                            (Some("test.skill"), Some(id)) => {
+                                // The server's skill-catalog forwarder shape:
+                                // the skill.subscribe acknowledgment, then a
+                                // `skill.catalogChanged` notification.
+                                send_json(
+                                    &mut sink,
+                                    json!({"jsonrpc":"2.0","id":id,"result":{"ok":true}}),
+                                )
+                                .await;
+                                send_json(
+                                    &mut sink,
+                                    json!({
+                                        "jsonrpc": "2.0",
+                                        "method": "skill.catalogChanged",
+                                        "params": {
+                                            "workspaceId": "ws-1",
+                                            "added": ["alpha"],
+                                            "removed": [],
+                                            "updated": ["beta"],
+                                            "trigger": "file",
+                                        },
+                                    }),
                                 )
                                 .await;
                             }
@@ -897,6 +930,48 @@ async fn should_flatten_batched_notifications_when_peer_sends_an_array_frame() {
 }
 
 // ===========================================================================
+// Skill-catalog change forwarding (ADR-013 decision 6, remote mode)
+// ===========================================================================
+
+#[tokio::test]
+async fn should_forward_the_skill_catalog_changed_notification_when_the_server_pushes_it() {
+    // Given a scripted peer whose `test.skill` pushes a direct-form
+    // `skill.catalogChanged` notification, and a connected adapter with an
+    // event subscriber
+    let peer = ScriptedPeer::start().await;
+    let adapter = RemoteAdapter::connect(&peer.url(), None, &["approval", "question"])
+        .await
+        .expect("connect");
+    let mut events = adapter.subscribe_events().await.expect("subscribe_events");
+
+    // When a call trips the peer's catalog-change push
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        adapter.call_method("test.skill", json!({})),
+    )
+    .await
+    .expect("test.skill succeeds")
+    .expect("test.skill succeeds");
+    assert_eq!(result["ok"], true, "the response is correlated by id");
+
+    // Then the skill-catalog change lands on the event stream (the same
+    // surface the ACP forwarder drains), direct-form and unprefixed
+    let notification = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .expect("skill.catalogChanged arrives")
+        .expect("event channel open");
+    assert_eq!(notification.method, "skill.catalogChanged");
+    assert_eq!(notification.params["workspaceId"], "ws-1");
+    assert_eq!(
+        notification.params["added"],
+        json!(["alpha"]),
+        "the full camelCase diff rides along"
+    );
+
+    adapter.dispose().await.expect("dispose succeeds");
+}
+
+// ===========================================================================
 // Dispose & connection death
 // ===========================================================================
 
@@ -1091,9 +1166,14 @@ async fn should_subscribe_on_first_touch_of_an_unsubscribed_session_under_own_se
     assert_eq!(result["id"], "sess-old");
 
     // Then session.subscribe for sess-old was sent BEFORE the call itself
+    // (skill.subscribe rides first — the connect-time catalog subscription)
     assert_eq!(
         peer.method_calls(),
-        vec!["session.subscribe".to_string(), "session.get".to_string()],
+        vec![
+            "skill.subscribe".to_string(),
+            "session.subscribe".to_string(),
+            "session.get".to_string(),
+        ],
         "the touch-subscribe must precede the touched call on the wire"
     );
     assert_eq!(
@@ -1110,6 +1190,7 @@ async fn should_subscribe_on_first_touch_of_an_unsubscribed_session_under_own_se
     assert_eq!(
         peer.method_calls(),
         vec![
+            "skill.subscribe".to_string(),
             "session.subscribe".to_string(),
             "session.get".to_string(),
             "session.get".to_string(),
@@ -1133,14 +1214,15 @@ async fn should_not_subscribe_on_touch_when_the_call_has_no_session_id() {
         .expect("session.list succeeds");
 
     // Then no subscribe was recorded and no touch-subscribe preceded the call
+    // (skill.subscribe rides first — the connect-time catalog subscription)
     assert!(
         peer.subscribe_calls().is_empty(),
         "a call without a session id must not trip a subscribe"
     );
     assert_eq!(
         peer.method_calls(),
-        vec!["session.list".to_string()],
-        "session.list must be the only wire call"
+        vec!["skill.subscribe".to_string(), "session.list".to_string()],
+        "session.list is the only post-connect wire call"
     );
 
     // And an empty-string session id is treated as no addressing either
@@ -1178,9 +1260,11 @@ async fn should_send_unsubscribe_and_clear_tracking_when_unsubscribe_is_called()
         .expect("unsubscribe succeeds");
 
     // Then the server saw session.unsubscribe for that session
+    // (skill.subscribe rides first — the connect-time catalog subscription)
     assert_eq!(
         peer.method_calls(),
         vec![
+            "skill.subscribe".to_string(),
             "session.create".to_string(),
             "session.subscribe".to_string(),
             "session.unsubscribe".to_string(),
@@ -1225,9 +1309,14 @@ async fn should_auto_subscribe_a_forked_session_created_via_fork_session_method(
         vec!["sess-forked".to_string()],
         "forkSession must auto-subscribe the forked session"
     );
+    // (skill.subscribe rides first — the connect-time catalog subscription)
     assert_eq!(
         peer.method_calls(),
-        vec!["forkSession".to_string(), "session.subscribe".to_string()],
+        vec![
+            "skill.subscribe".to_string(),
+            "forkSession".to_string(),
+            "session.subscribe".to_string(),
+        ],
         "the subscribe precedes the caller's completion"
     );
 

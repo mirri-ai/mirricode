@@ -211,7 +211,7 @@ builtin(0) < plugin(5) < extra(10) < user(20) < workspace(30)
 
 ### 7.4 Web
 
-斜杠菜单（命令/技能两组渲染、技能条目以统一技能图标为前缀、选中保留输入框以追加参数）；技能触发符（`$` 及全角等价）唤起纯技能候选（与 `@` 文件提及菜单同构的触发门控），触发位置为光标词首（首位或紧随空白之后），选中后依输入框状态回填——为空时回填规范斜杠命令、已有内容时在光标处插入技能引用链接的芯片（SDR-005/ADR-004）；消息内联引用（芯片）作为输入与呈现的覆盖渲染层（技能芯片用技能图标、命令芯片用命令视觉标识），行内链接为唯一文本事实源，发送时空格收敛为消息文本归一化（共享解析器入口统一处理）；技能清单按会话或工作区懒加载（无会话时预热）；激活为乐观插入（事件流明确不重投影，本地插入为准）；排队场景呈现暂驻消息；设置页含技能管理面板（逐技能启停、技能查看、额外目录编辑）与合并开关；工具标签编辑器将 Skill 工具归入技能组。
+斜杠菜单（命令/技能两组渲染、技能条目以统一技能图标为前缀、选中保留输入框以追加参数）；技能触发符（`$` 及全角等价）唤起纯技能候选（与 `@` 文件提及菜单同构的触发门控），触发位置为光标词首（首位或紧随空白之后），选中后依输入框状态回填——为空时回填规范斜杠命令、已有内容时在光标处插入技能引用链接的芯片（SDR-005/ADR-004）；消息内联引用（芯片）作为输入与呈现的覆盖渲染层（技能芯片用技能图标、命令芯片用命令视觉标识），行内链接为唯一文本事实源，发送时空格收敛为消息文本归一化（共享解析器入口统一处理）；技能清单按会话或工作区懒加载（无会话时预热），懒加载缓存按目录变更事件失效并重拉，事件同时触发非阻断的「技能已更新」提示（ADR-013——热更新前缓存只在会话首次进入时填充一次，目录变化不自动失效）；激活为乐观插入（事件流明确不重投影，本地插入为准）；排队场景呈现暂驻消息；设置页含技能管理面板（逐技能启停、技能查看、额外目录编辑）与合并开关；技能管理面板自带重扫入口（v3 后端限定），重扫结果与自动感知状态就地呈现（ADR-013）；工具标签编辑器将 Skill 工具归入技能组。
 
 ## 8. 变更传播与一致性
 
@@ -532,3 +532,49 @@ Both parsers accept the `builtin://` prefix; the rust catalog resolves `builtin:
 - **影响范围**：rust 核心（`mirri-embedded` 的 `dispatch_list_skills` 投影增加 `plugin` 字段 + rust 单测）；web（`api/types.ts` 的 `AppSkill` 与 `RpcSkill`/`toAppSkill` DTO（WS-RPC 面）、`slashCommands.ts` 的模型与过滤、`SlashMenu.vue` 的徽章渲染 + 前端单测）；i18n 复用既有 `settings.skillsSource*` 键零新增（未知来源原样显示）。冻结 TS 核心包零改动（`client.ts` 的 REST DTO 属冻结遗留路径，不改）。
 
 
+
+### ADR-013 · 2026-11-01 · 热更新的界面闭环（订阅面 + 缓存刷新责任 + 非阻断提示 + 重扫入口 + 默认开启）
+
+- **背景**：SDR-010 / US7.2 界面验收项。ADR-010 落地了引擎侧热更新（watcher → 串行重扫 → diff 门控 → workspace 级广播），但界面闭环断在两端：①自动感知被一个**默认关闭的实验开关**挡住，而该开关没有任何界面入口——用户永远看不到开启的路径；② web 客户端不消费目录变更事件，界面技能清单只在会话/工作区首次进入时填充一次、不随目录变化失效——用户必须重启应用或新开会话才能看到新技能。ACP 翻译层同样未投影该事件（ADR-010 实施计划已留档）。现状证据见 context §11。
+- **决策**：
+  1. **默认开启（FlagDef default = true）**：`skillHotReload` 的注册默认值翻转为开启。关闭通道保留三条既有层（env 覆盖、config `[experimental]` 显式 false、卸载面），网络盘/受限环境用户仍可显式关掉；显式关闭不被移除、不被覆盖（ADR-010 决策 8 的降级诚实面保持）。 watcher 重挂的节流窗口（挂载期为 NAPI 宿主树加载路径上首个 RPC 之前的后台任务）维持现状——默认开启后该窗口从「功能关闭时的常态」变为「短暂的一次性开销」。开关描述文案同步改写（不再是 "Off by default while the feature settles"）。
+  2. **web 消费 `skill.catalogChanged`**：订阅面走连接建立即订阅（`client_hello` 之后随连接本地订阅一并发 `skill.subscribe`，先例为 serve 侧同类的 `mcp.subscribe` 连接本地订阅；重连后重订）；**订阅失败按「后端无此面」降级静默**（老后端），不得因订阅失败破坏连接。消费点在 ws 桥的 any-event 路由层为该事件类型放行（它无 `sessionId`，需与 `event.workspace.*` 同类的例外放行），投影为**应用事件**（`skillCatalogChanged`，负载透传 wire 事件：`{workspaceId, added, removed, updated, trigger}`）。
+  3. **缓存失效范围（workspaceId → 缓存键的映射）**：事件按 workspaceId 分发，失效范围为**该 workspace 下全部已缓存的 session 键 + workspace 键**（`skillsBySession` 按 sessionId 键控，session → workspace 的归属经现有会话数据解析；映射不到 workspace 的已缓存 session 不失效——下一次会话切换的守卫路径保持既有语义）。重拉沿用既有懒加载函数（`loadSkillsForSession` / `loadSkillsForWorkspace`）；**只有至少一个缓存键被填充过（即「已承载技能候选的界面」）才发请求**，界面从未拉取过的 workspace 不发请求（US7.2 验收项的「未承载候选的界面不做请求」）。多窗口共享同一组合式状态缓存，事件只到一次重拉即全窗口生效。设置页的技能管理区块自持独立列表（不走组合式缓存），打开中时监听同一应用事件自刷。
+  4. **非阻断「技能已更新」提示**：`skillCatalogChanged` 应用事件在 web 触发一条**非阻断提示**（既有通知/警告通道的 info 级，含变更摘要——新增/移除/变更计数），用户可关闭；这是 US7.2「收到事件的端必须呈现」在 web/桌面端的落点。技能管理区块打开中时，提示不与面板的就地刷新重复（面板自身的列表变化已可见，提示条仍发——两处语义不同：一处在面板内，一处在全局通知面）。
+  5. **web 重扫入口**：技能管理面板（SkillsPanel）工具栏新增重扫按钮，调 `skill.reload`（无参数）；结果条就地将响应（每个 workspace 的 added/removed/updated 计数，或无变化）与 `watching` 状态（false = 自动感知未生效，ADR-010 R4 的降级诚实面）一起呈现；重扫完成后本地技能列表直接重拉（同一懒加载函数）。按钮 v3 后端限定（与该面板既有的 v3 gate 同层）。**上报通道不重载事件**：重扫按钮发 RPC 拿响应、随后重拉——不订阅事件通道的回声（按钮的反馈来自它自己的响应，事件通道只服务自动感知的被动刷新）。与工具栏既有「刷新」按钮（仅重拉清单，不触发引擎重扫）以文案区分（「刷新」改「重新拉取」或按 i18n 惯例定稿，实施时裁决），避免用户把「刷新」当重扫用。
+  6. **ACP 翻译层投影**：`skill.catalogChanged` 在 ACP 翻译层投影为**会话通知消息**（session-notification 形态，内容含变更摘要行），不投影为 ACP 系统提醒——ACP 宿主界面有自己的通知机制，宿主侧的清单提醒注入不在本期。已连接会话存在时投给该会话；无会话时丢弃并记 debug 日志（这是翻译层既有语义，不是静默失效）。
+  7. **协议类型**：`packages/protocol` 现有 `SkillCatalogChangedEvent` 仅为 TypeScript interface（无 zod schema——对照 `skill.activated` 的既有 zod 面）；web 侧消费按需补 zod schema（事件校验消费走既有 zod 面，避免接口与校验漂移），协议面零语义新增。
+- **关键裁决理由**：
+  - **缓存失效由事件驱动，不在打开菜单时轮询重拉**：打开菜单时同步重拉会给每条 `/` 输入加一次后台请求路径；事件驱动让缓存在变化时刻已经新鲜，菜单打开永远读缓存（与既有懒加载的读路径零冲突）。
+  - **失效范围取「该 workspace 全部已缓存 session 键」而非仅活跃 session**：守卫路径保证切回其他已缓存 session 时不再重拉——若只刷活跃键，切回的 session 仍显旧清单，与「不切换会话」验收的精神冲突；重拉成本是毫秒级清单 RPC，可接受。
+  - **`loadSkillsForSession` 复用而非新拉取面**：清单 RPC（`skill.list`）是既有单一读面；新增任何「只查差量」的面都会把简单重拉复杂化（重扫毫秒级，重拉的负载是已过滤清单，无收益）。
+  - **提示条与缓存刷新绑定同一事件，不分开**：提示是「呈现义务」（US7.2 双通道的界面端通道），缓存刷新是「生效义务」；分离会出现「列表变了但没提示」或「有提示但列表没变」两种撕裂。提示用既有通知通道（info 级、非阻断、可关闭），不新造 toast 基础设施。
+  - **订阅时机的裁决**：`client_hello` 之后订阅一次，而不是每次会话切换重新订阅——事件是 workspace 级的（无 session 绑定），一次订阅覆盖全部会话；重连重订由连接层统一处理。
+  - **web 事件消费放投影器，不直连 WebSocket**：投影器是 web 端协议事件的唯一分类层（agent-core / protocol / control 三分类既有纪律）；为单事件另开旁路会破坏该纪律。
+  - **默认开启前必须先稳**：ADR-010 落地后 watcher 已有完整测试覆盖（触发/重挂/去重/生命周期），且已知限制（网络盘同步重扫阻塞、macOS notify 6 的 SinceNow 盲窗）都不影响正确性只影响延迟，可承担默认开启。
+- **被否决的备选方案**：
+  1. **不订阅事件，打开菜单时每次重拉**——否决：菜单是高频路径，且离开菜单再进入的间隙内变化仍然感知不到（US7.2 验收的「不切换会话」不满足）。
+  2. **web 事件桥允许全部无 session 事件通过**——否决：路由层的会话过滤是既有纪律（无 sessionId 的事件默认不可路由）；为单事件开「允许全部」的口子等于回到投影器分类前的状态。
+  3. **重扫按钮直接调 `skill.reload` 后刷新整页**——否决：刷新页面丢当前 UI 状态（输入框、滚动位置、正在打开的面板），代价与重启应用同级，失去「重扫」的轻量意义。
+  4. **开关默认开启但移除 env 层**——否决：网络盘用户需要 env 级关闭（容器编排无 config 文件可改的场景）；关闭通道是降级诚实的一部分，保留。
+  5. **仅缓存刷新、不发提示条**——否决：US7.2「界面端呈现提示」是显式验收项（「不允许静默吞掉」）；列表悄悄变化与提示缺失会让用户无法区分「热更新生效了」与「我看错了」（正是 SDR-010 背景中「用户判断热更新不可用」的根因）。
+- **影响范围**：需求侧见 SDR-010；rust 核心（`mirri-embedded` flag 注册默认值 + 描述文案、既有依赖该默认值的测试翻转）；web（`apps/mirri-web`：ws 桥事件放行与投影、AppEvent 类型、技能缓存失效与重拉、非阻断提示、SkillsPanel 重扫按钮与结果/监听态呈现、i18n 中英双语）；ACP 翻译层（`mirri-acp`：会话通知投影）；协议零语义新增（`SkillCatalogChangedEvent` 按需补 zod schema）；docs 用户文档随后由 gen-docs 流程更新。
+- **落地裁决补记（2026-11-01，随实现批次）**：
+  1. **决策 7 的实际落地形态**：web 应用不 import `packages/protocol`（本仓的 web 前端本地重实现 wire 类型的既有惯例——ADR-012 的 `AppSkill` 同此），因此事件校验以桥接层的内联窄化（typeof / Array.isArray 守卫 + 非法字段丢弃）实现，`SkillCatalogChangedEvent` 的 zod schema 不新增——「校验在消费点、恶意/畸形负载被丢弃」的意图经测试覆盖成立。若未来出现第二消费方需要共享校验，再补 zod 面。
+  2. **「收到事件的端必须呈现」的生效时点**：web 端的事件连接随首个会话快照同步建立（既有懒连接设计），此前目录变更不产生提示与缓存失效——这同时满足 US7.2「未承载任何技能候选的界面不做请求」；验收口径以「会话至少同步过一次的界面」为准。
+
+### ADR-014 · 2026-11-02 · watcher 挂载点从「引擎惰性自动」上移到「宿主显式」
+
+- **背景**：ADR-010 把 watcher 挂载实现为「首次 RPC 分发时惰性自动挂载」（`EmbeddedServer::call_method` 入口的 lazy pass）。该实现让**每一次引擎构造**都隐含注册 macOS FSEventStream：测试二进制在一个进程里构造数百个短命 server，数百个 stream 同时注册/销毁，争抢系统级 FSEvents 服务。实测后果——负载下 `watch()` 从毫秒劣化到秒级（`FsEventWatcher::run` 在 runloop 握手上永久阻塞）、单条测试报 60s+、测试体全过而进程不退出、全量套件从 ~7 分钟劣化到 47 分钟+（conformance 套件同时从 4.15s 劣化到 437s 后挂死）。生产环境（一进程一两个 workspace）不受影响，但「构造即副作用」的结构对任何高频构造引擎的场景都是地雷。需求侧决策见 SDR-011。
+- **决策**：
+  1. **挂载是宿主的显式动作**：`EmbeddedServer::mount_skill_watchers()` 为公共 API；`mirri serve`/`mirri web`（`main.rs` 启动）、`mirri acp`（`run.rs` 三处引擎装配：默认引擎、per-cwd 池工厂、降级 embedded 工厂）、`mirri-node`（`EngineBridge::with_home_dir`）在 runtime 就绪后各调用一次。`call_method` 内的 lazy pass 移除。
+  2. **保留节流兜底 sweep**：`call_method` 仍调用 `sweep_skill_watchers_throttled()`（≥1s 节流）。这是 F1 的修正——serve 启动后才构建的 workspace（会话中途切换 workspace）否则永远拿不到 watcher，只有手动重扫能补。稳态下该 sweep 是一次 HashMap 读 + Instant 比较；只有真正新增的 workspace 才付一次 watch 注册。
+  3. **产品语义零变化**：「默认开启」由两个生产宿主各自的显式挂载保证；`skillHotReload` 的 env/config off 路径仍在挂载入口内判定。`skill.reload` 的 `watching` 继续如实反映活句柄（未挂载即 false），其内部的挂载刷新保留——手动重扫仍是「flag 晚开 / 技能根恢复」的补挂入口。
+  4. **测试回到零耦合**：绝大多数测试构造 server 不再有文件系统副作用；watcher 覆盖由显式依赖的少量 case 承担（`skill_watcher` 模块单测直接调 `spawn_skill_watcher`；`tests.rs` 的 e2e 热更新链经 `skill.reload` 的挂载刷新取得真实 watcher）。
+- **被否决的备选方案**：
+  1. **保留 lazy 自动 + `cfg!(test)` 入口拦截**——否决：保留了「构造即副作用」的错误耦合，只是堵住症状；产品代码带测试分支，且集成测试（不同编译单元，`cfg(test)` 不生效）仍需 env 豁免口，补丁叠补丁。
+  2. **逐个测试显式禁用（107 处构造点）**——否决：「默认开、测试逐个关」与正确形态（少数 case 显式依赖）方向相反；每新增一个构造点都要记得补禁用，防回归靠人肉。
+  3. **只升级 notify 6→8**（已单独落地 `dd99947`）——保留为必要非充分项：负载下 teardown 快 10-20 倍，但百量级 stream 的系统级争抢仍在；实测升级后 conformance 套件仍挂死。
+  4. **把 watcher 挂载彻底移出引擎（独立 watcher 服务进程）**——否决：跨进程文件事件回传要新增 IPC 面与生命周期协议，收益仅覆盖极端构造频率场景，代价与风险远高于宿主显式挂载。
+- **影响范围**：`rust/crates/mirri-embedded`（`mount_skill_watchers` 公共 API、`sweep_skill_watchers_throttled`、`call_method` lazy pass 移除、字段与注释语义更新）；`rust/crates/mirri-cli`（serve/web 启动挂载）；`rust/crates/mirri-acp`（三处装配点挂载）；`rust/crates/mirri-node`（EngineBridge 挂载）；`rust/crates/mirri-embedded/src/skill_watcher.rs` 与 `tests/t8_mcp_tests.rs` 的过时注释；测试面 `b2_notification_tests` 的混合 buffer 断言改为收敛轮询（该 flaky 由本批次的并发负载暴露，非本批次引入）。
+- **度量/验收**：macOS 全量 `cargo test -p mirri-embedded --lib` 从挂死恢复为 ~127s 自然结束；ACP 套件 conformance 437s→4.15s、desktop_share_e2e→6.58s、e2e_mock→0.40s；`skill_watcher` 模块 7 条单测与 e2e 热更新链保持绿。

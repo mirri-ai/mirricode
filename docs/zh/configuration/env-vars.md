@@ -2,10 +2,15 @@
 
 Mirri Code 通过环境变量控制少数运行时行为——迁移数据目录、关闭遥测、不改配置文件临时切换模型。
 
-::: warning 重要：API 密钥在这里只是兜底
-`MIRRI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 等密钥变量**不是**配置凭证的主要方式——`config.toml` 里的 `api_key` / `base_url` 字段和 `[providers.<name>.env]` 子表优先。它们只在解析链的最后一步才会从 shell 环境变量自动读取：字段和 `env` 子表键都缺失时，回退到该供应商类型惯用的导出变量（例如 `export MIRRI_API_KEY=xxx` 会让 `kimi` 类型的供应商获得密钥）。
+::: warning 重要：这里的键名只用于凭证存储与 `env` 子表
+`MIRRI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 等密钥变量**不会**从 shell 环境读取——引擎只使用显式配置的凭证。凭证只有两个来源：UI 管理的凭证存储（设置 → 供应商），以及 `config.toml` 里的 `[providers.<name>.env]` 子表——下面的键名就是各供应商类型在 `env` 子表里期望的写法。如果你之前依赖 shell 里的 `export ANTHROPIC_API_KEY=xxx`，请把密钥迁移进子表：
 
-`MIRRICODE_MODEL_*` 系列是另一条显式通道，始终从 shell 读取凭证——详见[用环境变量定义模型](#用环境变量定义模型-mirricode-model)。
+```toml
+[providers.anthropic.env]
+ANTHROPIC_API_KEY = "YOUR_API_KEY"
+```
+
+`MIRRICODE_MODEL_*` 系列是另一条显式通道，仍然从 shell 读取凭证——详见[用环境变量定义模型](#用环境变量定义模型-mirricode-model)。
 
 背景说明见[配置覆盖：供应商凭证](./overrides.md#供应商凭证)。
 :::
@@ -38,14 +43,12 @@ export MIRRICODE_DISABLE_TELEMETRY=1
 
 ## 供应商凭证键
 
-下面这些键名是写在 `config.toml` 的 `[providers.<name>.env]` 子表里、作为 `api_key` / `base_url` 解析链第二步的键名（直接字段之后）。同样的键名还会在第三步从 shell 环境变量读取——即字段和子表键都缺失时，会自动取到该供应商类型惯用的导出变量（如 `kimi` 类型的 `MIRRI_API_KEY`）。
-
-这样设计是为了让你保留熟悉的键名写法，同时把密钥放在配置文件里统一管理；同名键随后作为有惯用变量的供应商类型的 shell 兜底：
+下面这些键名是各供应商类型在 `config.toml` 的 `[providers.<name>.env]` 子表里期望的凭证键名——引擎解析的显式配置层（凭证存储之外）。它们**不会**从 shell 环境读取：惯用命名的导出变量（如 `MIRRI_API_KEY`）只有写进子表才会生效：
 
 ```toml
-[providers.kimi]
-api_key = "sk-xxx"
-base_url = "https://api.mirricode.com/coding/v1"
+[providers.kimi.env]
+MIRRI_API_KEY = "sk-xxx"
+MIRRI_BASE_URL = "https://api.mirricode.com/coding/v1"
 ```
 
 各供应商对应的键名：
@@ -62,7 +65,7 @@ base_url = "https://api.mirricode.com/coding/v1"
 | `GOOGLE_GEMINI_BASE_URL` | Google GenAI | `https://generativelanguage.googleapis.com/v1beta` |
 
 ::: warning
-`vertexai` 仅 TypeScript 引擎支持——rust 引擎在建立连接时会拒绝它。`GOOGLE_APPLICATION_CREDENTIALS`（服务账号 JSON 路径）是唯一走系统环境变量的例外——它由 Google SDK 自身通过 ADC 流程读取，CLI 不参与。其他所有键名通过 `[providers.<name>.env]` 子表和对应的 shell 兜底生效。
+`vertexai` 仅 TypeScript 引擎支持——rust 引擎在建立连接时会拒绝它。`GOOGLE_APPLICATION_CREDENTIALS`（服务账号 JSON 路径）是唯一走系统环境变量的例外——它由 Google SDK 自身通过 ADC 流程读取，CLI 不参与。其他所有键名只通过 `[providers.<name>.env]` 子表生效（凭证存储是另一层）。
 :::
 
 供应商类型与字段的完整说明见[平台与模型](./providers.md)。
@@ -131,7 +134,7 @@ mirri
 | `MIRRICODE_MODEL_THINKING_EFFORT` | 在线上强制使用指定的思考强度（`thinking.effort`），绕过模型声明的 `support_efforts`；仅对 `kimi` 供应商生效，且仅在 Thinking 开启时注入 | 思考强度值，如 `max` |
 | `MIRRICODE_MODEL_THINKING_KEEP` | 保留思考透传；在 `kimi` 上以 `thinking.keep` 发送，在 `anthropic`（Claude 以及 Mirri 的 Anthropic 兼容模式）上以 `context_management` 的 `clear_thinking_20251015` 编辑发送（开启 keep 会让 Anthropic 请求走 beta Messages API）；覆盖 `[thinking] keep`（其默认值为 `"all"`）；仅在 Thinking 开启时注入 | API 接受的值，如 `all`；传入关值（`false`/`0`/`no`/`off`/`none`/`null`）可禁用 |
 | `MIRRICODE_NO_AUTO_UPDATE` | 完全禁用更新预检——不检查、不后台安装、不提示。同时兼容旧名 `MIRRICODE_CLI_NO_AUTO_UPDATE` | 真值：`1`/`true`/`yes`/`on` |
-| `MIRRICODE_DISABLE_CRON` | 禁用定时任务工具（`CronCreate` 拒绝新计划，已有任务不触发） | `1` 表示禁用 |
+| `MIRRICODE_DISABLE_CRON` | 禁用定时任务工具（`SetTimer` 与 `CreateScheduledTask` 拒绝新计划，已有任务不触发） | `1` 表示禁用 |
 
 ## 诊断日志
 

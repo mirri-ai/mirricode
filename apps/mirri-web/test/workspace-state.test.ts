@@ -748,6 +748,37 @@ describe('useWorkspaceState — cancelTask', () => {
     resolveCancel({ cancelled: true });
     await first;
   });
+
+  it('should cancel by the REST task id when the row is keyed by agent id', async () => {
+    // Given a subagent row keyed by agent id that knows its REST task id
+    apiMock.cancelTask.mockResolvedValue({ cancelled: true });
+    const state = createState();
+    state.tasksBySession = {
+      sess_1: [{ ...task('agent-1'), kind: 'subagent', backgroundTaskId: 'task-9' }],
+    };
+    const ws = useWorkspaceState(state, createDeps());
+
+    // When the panel stop cancels the row
+    await ws.cancelTask('agent-1');
+
+    // Then the REST id is sent — the task store is keyed by `task-<uuid>`
+    expect(apiMock.cancelTask).toHaveBeenCalledWith('sess_1', 'task-9');
+    expect(state.tasksBySession['sess_1']?.[0]?.status).toBe('cancelled');
+  });
+
+  it('should send the row id unchanged when no REST task id is linked', async () => {
+    // Given a subagent row with no task link (a foreground swarm member)
+    apiMock.cancelTask.mockResolvedValue({ cancelled: true });
+    const state = createState();
+    state.tasksBySession = { sess_1: [{ ...task('agent-1'), kind: 'subagent' }] };
+    const ws = useWorkspaceState(state, createDeps());
+
+    // When the panel stop cancels the row
+    await ws.cancelTask('agent-1');
+
+    // Then the agent id goes out as-is — the engine resolves it (Task 2).
+    expect(apiMock.cancelTask).toHaveBeenCalledWith('sess_1', 'agent-1');
+  });
 });
 
 describe('useWorkspaceState — startSessionAndActivateSkill', () => {
@@ -2101,9 +2132,15 @@ describe('useWorkspaceState — initialOnly first page does not continue into th
     // never fire a second page.
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(apiMock.listSessions).toHaveBeenCalledTimes(1);
+    // SDR-016: the load now pairs the windowed page with ONE pinnedOnly
+    // backfill per workspace (the out-of-window pinned load) — exactly two
+    // calls, and the continuation cascade still never fires.
+    expect(apiMock.listSessions).toHaveBeenCalledTimes(2);
     expect(apiMock.listSessions).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'wd_recent', pageSize: 3 }),
+    );
+    expect(apiMock.listSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'wd_recent', pinnedOnly: true }),
     );
   });
 });

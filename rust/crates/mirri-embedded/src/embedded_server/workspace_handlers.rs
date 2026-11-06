@@ -486,6 +486,42 @@ impl EmbeddedServer {
 
         let mut deleted_sessions = 0usize;
         if purge {
+            // Stage-2 4b (A.4 补): terminate every in-flight run with the
+            // workspace-deletion cause BEFORE the store files go — an
+            // honest record, never a silent disappearance nor a
+            // mis-counted run failure.
+            if let Some(built) = self.registry.built_runtime(&workspace_id)
+                && let Some(cron) = built.cron()
+            {
+                let terminated = cron.terminate_running_runs("工作区已删除").await;
+                if !terminated.is_empty() {
+                    tracing::info!(
+                        workspace_id,
+                        count = terminated.len(),
+                        "terminated in-flight workspace cron runs (workspace deleted)"
+                    );
+                }
+            }
+            // Stage-2 T7 (A.4/V19 — the cron cascade): the workspace's cron
+            // rows go with the workspace — the shared SQLite index's
+            // DELETE by workspace_id runs BEFORE the store files go (every
+            // alias member's bucket, best-effort — the wholesale bucket
+            // removal below is the authoritative cleanup). The legacy
+            // `tasks.json` files go away with it (the store's own
+            // remove_files takes the lock convention with it).
+            for member in &alias_group {
+                if let Some(index) = self.registry.shared_cron_index() {
+                    let _ = index.delete_workspace(member);
+                }
+            }
+            if let Some(sessions_root) = self.workspace_sessions_root() {
+                for member in &alias_group {
+                    mirri_core::cron::WorkspaceCronStore::new(
+                        &sessions_root.join(member),
+                    )
+                    .remove_files();
+                }
+            }
             // Retention attachment reclamation (SDR-004, Task 9): the
             // bucket's blob references come off the shared ledger BEFORE
             // the wholesale directory removal (the decrement extracts

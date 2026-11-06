@@ -1,7 +1,7 @@
 # 子代理派发域现状参考（Context）
 
 > **文档类型：参考类**（按 `docs/specs/AGENTS.md` 治理约定）——现状与现状痛点的盘点，随侦察/现状变化更新。 ·
-> 结构快照：2026-09-09 · 增量快照：2026-09-12（§6，见文末） · 等待语义快照：2026-09-13（§6.13） · 重启孤儿治理快照：2026-10-14（§7） · MCP 交付缺口快照：2026-10-21（§2.1） ·
+> 结构快照：2026-09-09 · 增量快照：2026-09-12（§6，见文末） · 等待语义快照：2026-09-13（§6.13） · 重启孤儿治理快照：2026-10-14（§7） · MCP 交付缺口快照：2026-10-21（§2.1） · 派发引导面快照：2026-11-03（§8） ·
 > 配套设计文档：[subagent-requirements.md](subagent-requirements.md)（需求）· [subagent-architecture.md](subagent-architecture.md)（架构）·
 > 相邻域：[collaboration-context.md](collaboration-context.md)（团队协作视角的现状速览）· [rust-core-design/context.md](rust-core-design/context.md)（引擎迁移视角）·
 > 本文不描述目标、不含裁决——终态与裁决在设计文档。
@@ -386,3 +386,22 @@
 **跨平台启动时刻来源（可行性确认）**：macOS `proc_pidinfo` 系接口可取进程创建时刻；Linux `/proc/<pid>/stat` 第 22 字段（starttime）为进程创建时刻（时钟滴答）。两者可统一抽象为"存活 + 启动时刻"查询，已有依赖基础（mirri-os 依赖 nix）。
 
 **触发事件证据链（2026-10-14，JST）**：任务档案时间线证实多条超长 detached 任务——04:03→09:09（约 5h）的测试任务、10-12 号遗留的 20+ 小时任务；全部带 `disable_timeout`/no timeout 字样（调用级超时被显式绕开，纯超时机制防不住，需总寿命兜底——SDR-013 d 的直接动因）。
+
+## 8. 派发路径选择引导面盘点（快照 2026-11-03）
+
+> 起因：真实会话（本机 desktop，2026-11-03）反复出现「后台派发 + 立即阻塞等待」反模式——派发者把本应一步的前台派发拆成两步，多付工具调用与任务登记开销（串行两轮形态下还多耗一轮模型请求）。本节盘点模型在派发时刻读到的三层文案信号的现状，供 SDR-016 / ADR-016 引用。
+
+**实发形态（截图留档，v3 会话 9da4ede7）**：主回合声明「派架构师做终审」→ 同一调用组发起 `Agent`（终审任务）+ `TaskOutput {"block": true, "task_id": "task-fe602…"}`——后台派发与阻塞等待取回在同一调用组内先后发出（TaskOutput 依赖派发生成的任务号，故为同组内的两步串联），零穿插工作，与前台一步派发语义完全等价，多付一次工具调用与任务登记开销；串行两轮形态（后台化返回后再发起阻塞等待）则进一步多耗一轮模型请求。该形态多次复现，非孤例。
+
+**模型读到的三层文案信号（Rust HEAD，`rust/crates/mirri-core/src/tools/agent_tool.rs`）**：
+
+- **工具说明面**（`build_agent_description`，agent_tool.rs:73-77）：基础文案只讲后台分支——"Set `run_in_background` to return immediately with a task_id"；**「默认即等待、结果内联返回」零陈述**。构造期追加后台能力门槛一句（agent_tool.rs:57-58，"Background execution requires TaskList, TaskOutput, and TaskStop."）。
+- **参数说明**（schema，agent_tool.rs:162-165）：`run_in_background` 仅描述 true 分支——"If true, return immediately with a task_id instead of waiting for completion."；**无 default 标注**（代码缺省 `unwrap_or(false)`，agent_tool.rs:196-199），无「不设即等待至完成」的正面表述。
+- **后台返回正文**（`format_background_result`，agent_tool.rs:718-741）：三重催促——"Use TaskOutput to check progress and retrieve the result." + `<result>` 占位说明 "retrieve it with TaskOutput" + `<next_step>` "Check the agent's output above and decide whether to continue or integrate the results."——指令式口吻，不区分模型是否有其他工作可穿插。（行号以本快照日 HEAD 为准——同日提交 `71dbb22ae` 在 `build_agent_description` 内净增 6 行，本节行号已按该提交后的 HEAD 校准。）
+
+**三层信号的合力效应（分析性结论）**：说明面与参数说明构成「后台化是唯一被描述的选项」的单向陈述（模型需自行推断 false 的行为）；返回正文在后台化之后无条件催促查询。两层信号叠加下，模型（尤其受训练语料中「task 派发是异步原语」的习惯与系统提示的并行调用鼓励影响）滑向后台化，再被返回正文推着完成两步弯路——反模式的每一步都有文案依据，不是模型的随机行为。
+
+**执行链路无缺陷的证据**：前台路径（内联阻塞、超时真实取消、孤儿保护、活性喂狗）、显式等待（`task_output.rs` block 参数 + ADR-006 等待条目 + 终态通知抑制）、完成通知（`task_notification.rs` B2 闭环）三条路径均正常工作；**修复面收敛为文案层**（见 §6.13 Rust 段与 ROADMAP O10 的既有登记——后台返回正文轮询指引与 no-polling 契约相悖，`feat/rust-tool-calling` 分支 f51213ad 含对齐修复但未合并）。
+
+**TS v2 对照（参照基线）**：TS 后台派发结果是强反轮询文案——`next_step` "The completion arrives automatically in a later turn — do NOT wait, poll, or call TaskOutput on it"（agentTool.ts:585），且描述面有二选一模板 `agent-background-enabled.md`（"Never launch in the background and then immediately wait on it"，agentTool.ts:147-175，context §1 详录）——**TS 已在文案层显式禁止本反模式，Rust HEAD 反向鼓励**（TS 源文件已随引擎退役（SDR-002），此处行号为 2026-09-09 快照的历史记录，以 context §1 为准）。本节痛点的修复方向与 TS 契约一致（收敛起见随 SDR-016/ADR-016 落地，不再依赖未合并分支）。另注：tool-calling 域的 Agent 工具规格（`tool-calling-builtin-tools.md` §3.1）收录了 TS 对齐版后台段文案（"Default to a foreground subagent when your next step needs its result … Never launch in the background and then immediately wait on it"），其判据措辞（收益导向 + 条件式默认陈述）与 SDR-016 的依赖导向充要判据存在三处实质分歧，实现批次须按 SDR-016 重写而非照抄（ADR-016 影响范围已点名）。
+

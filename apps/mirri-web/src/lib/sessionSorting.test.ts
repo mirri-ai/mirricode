@@ -27,12 +27,54 @@ describe('sidebar sort projection (SDR-002 position-state decoupling)', () => {
       busy: true,
       pendingInteraction: 'approval',
     } as Parameters<typeof projectSessionForSort>[0]);
-    expect(Object.keys(projected).toSorted()).toEqual(['id', 'lastUsedAt', 'title', 'updatedAt']);
+    expect(Object.keys(projected).toSorted()).toEqual(['id', 'lastUsedAt', 'pinColor', 'pinned', 'pinnedAt', 'title', 'updatedAt']);
   });
 
   it('should answer 0 for unparseable timestamps', () => {
     expect(
       sortKeyEpoch({ lastUsedAt: undefined, updatedAt: '' }),
     ).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SDR-016/017: the pinned group
+// ---------------------------------------------------------------------------
+
+describe('sessionSorting pinned group (SDR-016)', () => {
+  const row = (
+    id: string,
+    opts: { pinned?: boolean; pinnedAt?: string; lastUsedAt?: string; updatedAt?: string } = {},
+  ) => ({
+    id,
+    title: id,
+    lastUsedAt: opts.lastUsedAt,
+    updatedAt: opts.updatedAt ?? '2025-01-01T00:00:00Z',
+    pinned: opts.pinned ?? false,
+    pinnedAt: opts.pinnedAt,
+  });
+
+  it('places pinned rows above unpinned ones regardless of recency', () => {
+    const sorted = sortSessionsByUse([
+      row('new-unpinned', { lastUsedAt: '2099-01-01T00:00:00Z' }),
+      row('old-pinned', { pinned: true, pinnedAt: '2020-01-01T00:00:00Z', lastUsedAt: '2020-01-01T00:00:00Z' }),
+    ]);
+    expect(sorted.map((r) => r.id)).toEqual(['old-pinned', 'new-unpinned']);
+  });
+
+  it('sorts the pinned group by pinnedAt descending', () => {
+    const sorted = sortSessionsByUse([
+      row('pinned-older', { pinned: true, pinnedAt: '2024-01-01T00:00:00Z' }),
+      row('pinned-newer', { pinned: true, pinnedAt: '2025-01-01T00:00:00Z' }),
+    ]);
+    expect(sorted.map((r) => r.id)).toEqual(['pinned-newer', 'pinned-older']);
+  });
+
+  it('keeps the recency order among unpinned rows', () => {
+    const sorted = sortSessionsByUse([
+      row('stale', { lastUsedAt: '2024-01-01T00:00:00Z' }),
+      row('fresh', { lastUsedAt: '2025-01-01T00:00:00Z' }),
+    ]);
+    expect(sorted.map((r) => r.id)).toEqual(['fresh', 'stale']);
   });
 });

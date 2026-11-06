@@ -1,3 +1,4 @@
+// layer: T1
 //! Integration tests for `mirri` CLI argument parsing.
 //!
 //! These tests exercise the [`Cli`](mirri_cli::Cli) struct directly (parsing

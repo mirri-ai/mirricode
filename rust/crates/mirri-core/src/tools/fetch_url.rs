@@ -230,6 +230,7 @@ mod tests {
                     tool_call_id: "test-call".into(),
                     cancel: crate::cancel::CancelToken::new(),
                     progress: crate::tool::ToolProgressHandle::default(),
+                    turn_origin: Default::default(),
                 };
                 execute(ctx).await
             }
@@ -435,6 +436,7 @@ mod tests {
                     tool_call_id: "test-call".into(),
                     cancel: crate::cancel::CancelToken::new(),
                     progress: crate::tool::ToolProgressHandle::default(),
+                    turn_origin: Default::default(),
                 };
                 let result = execute(ctx).await;
                 assert!(!result.is_error, "exempted fetch must succeed");
@@ -496,6 +498,7 @@ mod tests {
                     tool_call_id: "test-call".into(),
                     cancel: crate::cancel::CancelToken::new(),
                     progress: crate::tool::ToolProgressHandle::default(),
+                    turn_origin: Default::default(),
                 };
                 execute(ctx).await;
             }

@@ -9,16 +9,19 @@ pub(super) const ROUTES: &[Route] = &[
         method: "plan.enter",
         aliases: &["enterPlan"],
         handler: |server, params| Box::pin(server.dispatch_enter_plan(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "plan.cancel",
         aliases: &["cancelPlan"],
         handler: |server, params| Box::pin(server.dispatch_cancel_plan(params)),
+        settlement: Route::SETTLES,
     },
     Route {
         method: "plan.clear",
         aliases: &["clearPlan"],
         handler: |server, params| Box::pin(server.dispatch_clear_plan(params)),
+        settlement: Route::SETTLES,
     },
     // (renamed from the embedded `plan.get` in M3-c, D4 §2; the old wire
     // name is gone, so it is not kept as an alias — getPlan remains as the
@@ -27,5 +30,6 @@ pub(super) const ROUTES: &[Route] = &[
         method: "plan.status",
         aliases: &["getPlan"],
         handler: |server, params| Box::pin(server.dispatch_get_plan(params)),
+        settlement: Route::SETTLES,
     },
 ];

@@ -199,6 +199,7 @@ where
             step: ctx.step,
             tool_call_id: ctx.tool_call_id.clone(),
             tool_name: ctx.tool_name.clone(),
+            tool_readonly: ctx.tool_readonly,
             args: ctx.args,
             approval_rule: ctx.approval_rule,
             display: ctx.display,
