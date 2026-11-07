@@ -563,6 +563,14 @@ impl EmbeddedServer {
             };
             explicit.or_else(from_model)
         };
+        // Snapshot the wire spelling before the value moves into the agent
+        // config: the create-time `config.update` record needs it too, and a
+        // resume rebuilds the agent from that record alone. Without this the
+        // recorded value was hardcoded `None`, so every restart fell back to
+        // the model's declared default and an explicit off was lost.
+        let thinking_effort_wire = thinking_effort
+            .as_ref()
+            .and_then(|effort| serde_json::to_value(effort).ok());
         let mut agent_config = AgentScopeConfig {
             interaction_kernel,
             model_id: resolved_model_alias.clone(),
@@ -724,7 +732,7 @@ impl EmbeddedServer {
             .record_op(WireOp::ConfigUpdate {
                 model_alias: Some(resolved_model_alias.clone()),
                 profile_name: None,
-                thinking_effort: None,
+                thinking_effort: thinking_effort_wire,
                 system_prompt: None,
                 disallowed_tools: None,
             })
@@ -3891,6 +3899,12 @@ impl EmbeddedServer {
     /// The canonical param spelling is `thinking`; the `effort` spelling is
     /// accepted as a sibling alias (the node-sdk client sends it). The
     /// klient contract models the method as `noResult`: JSON `null`.
+    ///
+    /// The change is recorded on the session's own journal
+    /// (`config.update`), because a resume rebuilds the agent from the
+    /// replayed log alone: without the record the runtime pick survived only
+    /// until the process restarted, then reverted to the model's declared
+    /// default.
     pub(super) async fn dispatch_set_thinking(&self, params: Value) -> Result<Value, EngineError> {
         #[derive(Debug, Deserialize)]
         struct SetThinkingParams {
@@ -3912,6 +3926,24 @@ impl EmbeddedServer {
         // `support_efforts` is rejected here (`none` always allowed).
         let model_id = agent.model_id();
         self.validate_effort_for_model(&model_id, &params.thinking)?;
+        // Write-before-mutate, matching the plan/permission handlers: record
+        // the op first, so a crash between the two cannot leave the journal
+        // claiming an effort the agent never ran with.
+        let effort_wire = serde_json::to_value(&params.thinking).ok();
+        if let Ok(session) = self.resolve_session(&ref_params.session_id).await {
+            session
+                .record_op(WireOp::ConfigUpdate {
+                    // Only the effort changes here; the other fields stay
+                    // absent so the reducer's fold leaves the recorded model
+                    // and profile untouched.
+                    model_alias: None,
+                    profile_name: None,
+                    thinking_effort: effort_wire,
+                    system_prompt: None,
+                    disallowed_tools: None,
+                })
+                .await;
+        }
         agent.set_thinking(Some(params.thinking));
         Ok(Value::Null)
     }

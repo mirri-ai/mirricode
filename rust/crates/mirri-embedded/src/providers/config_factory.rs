@@ -2135,6 +2135,70 @@ mod tests {
         );
     }
 
+    /// The end-to-end proof that "off" reaches the wire: build the adapter from
+    /// a real config record, run a real HTTP chat against a mock endpoint, and
+    /// read the request body the engine actually sent.
+    ///
+    /// This is the check the unit tests on `build_request` cannot make — they
+    /// see the composed JSON, not what survives the transport. It is also the
+    /// reason a wire-log inspection cannot answer the question: `wire.jsonl`
+    /// records session ops, never HTTP bodies.
+    #[tokio::test]
+    async fn should_send_the_off_dialect_in_the_real_request_when_the_agent_asks_for_off() {
+        // Given a MiMo-endpoint provider (thinking.type dialect) and an agent
+        // whose effort is explicitly off
+        let server = MockServer::start().await;
+        mount_kimi_chat(&server).await;
+        let home = tempfile::tempdir().expect("tempdir");
+        let config = alias_config_with_model(
+            ProviderEntry {
+                r#type: Some("openai".to_string()),
+                env: Some(HashMap::from([(
+                    "OPENAI_API_KEY".to_string(),
+                    "sk-test".to_string(),
+                )])),
+                base_url: Some(format!("{}/v1", server.uri())),
+                ..Default::default()
+            },
+            "mimo-v2.6-flash",
+        );
+        // The dialect resolves from the model name's host, but the mock's base
+        // URL is localhost — pin it explicitly so the test asserts the encoding
+        // rather than the host table.
+        config
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .models
+            .as_mut()
+            .expect("models")
+            .get_mut("ultra")
+            .expect("alias")
+            .thinking_off = Some("thinking_type".to_string());
+        let factory = ConfigAwareLlmFactory::new(config, Some(home.path().to_path_buf()));
+        let mut agent = alias_agent_config();
+        agent.thinking_effort = Some(ThinkingEffort::None);
+
+        // When a chat runs
+        let llm = factory.create_llm(&agent).expect("adapter builds");
+        drain_chat(llm.chat(simple_chat_params()).expect("chat starts")).await;
+
+        // Then the request body the engine sent carries the off payload
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(requests.len(), 1, "exactly one request reaches the mock");
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests[0].body).expect("body is JSON");
+        assert_eq!(
+            body["thinking"],
+            serde_json::json!({"type": "disabled"}),
+            "the real request must carry the endpoint's off spelling: {body}"
+        );
+        // And it must NOT also send a contradictory effort tier
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "thinking.type and reasoning_effort must not both be sent: {body}"
+        );
+    }
+
     #[test]
     fn should_attach_a_thinking_intent_resolved_from_the_provider_endpoint_when_building_an_openai_adapter() {
         // Given a config whose openai-type provider points at MiMo's endpoint

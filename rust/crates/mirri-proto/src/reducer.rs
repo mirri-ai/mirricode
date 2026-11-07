@@ -618,9 +618,16 @@ pub fn apply_with_limits(
             state.tools.active = active_tool_names.clone();
         }
 
+        // `thinking_effort` is folded rather than dropped: without it a
+        // resumed session silently fell back to the model's declared default,
+        // so a user's explicit off survived only until the process restarted.
+        // The value is the engine's own spelling (`none` = explicitly off);
+        // an absent field leaves whatever was recorded before in place, which
+        // is what an unrelated `config.update` (e.g. a model switch) must do.
         WireOp::ConfigUpdate {
             model_alias,
             profile_name,
+            thinking_effort,
             ..
         } => {
             if let Some(name) = profile_name {
@@ -628,6 +635,12 @@ pub fn apply_with_limits(
             }
             if let Some(alias) = model_alias {
                 state.model = Some(alias.clone());
+            }
+            if let Some(effort) = thinking_effort
+                .as_ref()
+                .and_then(|value| value.as_str())
+            {
+                state.thinking_effort = Some(effort.to_string());
             }
             events.push(DomainEvent::ConfigUpdated {
                 model_alias: model_alias.clone(),
