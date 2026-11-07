@@ -727,32 +727,27 @@ async fn given_the_import_already_ran_when_the_engine_reboots_then_the_archive_n
     );
 }
 
-/// Poll `cron.listAll` (bounded) until the task id appears in the
-/// workspace groups — the import task is asynchronous, so the first
-/// listing after the census settlement may still race its table write.
-async fn poll_cron_list_all(server: &EmbeddedServer, task_id: &str) -> serde_json::Value {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let listed = server
-            .call_method("cron.listAll", json!({}))
-            .await
-            .expect("cron.listAll");
-        let found = listed["workspaces"]
+/// ONE `cron.listAll` dispatch asserting the adopted task id appears in
+/// the workspace groups — batch 4's fix AWAITS the legacy import inside
+/// the census settlement, so the first listing after dispatch must
+/// already carry the rows (no poll: a missing row here is a contract
+/// violation, not a scheduling delay).
+async fn listed_after_import_settles(server: &EmbeddedServer, task_id: &str) -> serde_json::Value {
+    let listed = server
+        .call_method("cron.listAll", json!({}))
+        .await
+        .expect("cron.listAll");
+    assert!(
+        listed["workspaces"]
             .as_array()
             .expect("workspaces array")
             .iter()
             .any(|g| g["tasks"]
                 .as_array()
-                .is_some_and(|tasks| tasks.iter().any(|row| row["id"] == task_id)));
-        if found || std::time::Instant::now() >= deadline {
-            assert!(
-                found,
-                "task {task_id} never showed in the aggregate within the poll window: {listed}"
-            );
-            return listed;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+                .is_some_and(|tasks| tasks.iter().any(|row| row["id"] == task_id))),
+        "task {task_id} must show in the first listing after the census settlement: {listed}"
+    );
+    listed
 }
 
 // --- Task 8 (ADR-006): the ACP legacy-cron adoption + the import's
@@ -805,12 +800,10 @@ async fn should_import_legacy_cron_tasks_when_acp_engine_boots() {
     .with_cron_tick(Duration::from_millis(50));
     assert_eq!(default_workspace_id(&server), workspace_id);
 
-    // The import rides the census-settled background task: the first
-    // dispatch settles the census (which releases the import), and the
-    // read face then observes the adopted rows. The poll is bounded —
-    // the import task is asynchronous, so the first listing after the
-    // settlement may still race its table write.
-    let _listed = poll_cron_list_all(&server, "cron-acp-legacy-1").await;
+    // The import is AWAITED inside the census settlement (batch 4's
+    // fix): the first dispatch settles the census — import included —
+    // and the read face observes the adopted rows on that very listing.
+    let _listed = listed_after_import_settles(&server, "cron-acp-legacy-1").await;
 
     // The durable row landed through the shared index (the manager's
     // workspace rows and the listing read the same database).
@@ -842,9 +835,10 @@ async fn should_import_legacy_cron_tasks_when_acp_engine_boots() {
 
 /// Given a legacy cron manifest, when the shared cron index is first
 /// opened, then the import does NOT run inline — the open is
-/// connection-only and the import rides the census-settled background
-/// task (e956f5e8a's principle: startup housekeeping stays off the
-/// first-request path).
+/// connection-only and the import is awaited inside the census
+/// settlement instead (e956f5e8a's principle: startup housekeeping stays
+/// off the first-request path; batch 4: the settlement itself joins the
+/// import before releasing any waiter).
 #[tokio::test]
 async fn should_not_block_first_request_when_cron_import_runs() {
     let home = tempfile::tempdir().unwrap();
@@ -859,9 +853,9 @@ async fn should_not_block_first_request_when_cron_import_runs() {
     );
 
     // The first open builds the connection only: the rows are NOT there
-    // yet (the import is a background task gated on the census
-    // settlement, which only the first dispatched RPC triggers — this
-    // direct call precedes every dispatch).
+    // yet (the import runs inside the census settlement, which only the
+    // first dispatched RPC triggers — this direct call precedes every
+    // dispatch).
     let index = server
         .shared_cron_index()
         .expect("the home-rooted engine carries a shared cron index");
@@ -870,10 +864,9 @@ async fn should_not_block_first_request_when_cron_import_runs() {
         "the shared index's first open does not import inline"
     );
 
-    // The settlement-gated task performs it: a dispatched RPC settles
-    // the census (the import's gate) and the read face then observes the
-    // adopted rows.
-    let _ = poll_cron_list_all(&server, "cron-acp-legacy-1").await;
+    // The settlement performs it — AWAITED, so the first dispatched RPC
+    // (this listing) already observes the adopted rows.
+    let _ = listed_after_import_settles(&server, "cron-acp-legacy-1").await;
 }
 
 /// Given the import already ran (this boot or an earlier one), when the
@@ -891,9 +884,10 @@ async fn should_not_reimport_the_workspace_local_archive_on_a_later_boot() {
         Some(home.path().to_path_buf()),
         Vec::new(),
     );
-    // First boot: settle the census (the import's gate) and wait for
-    // the adopted row, then delete the task through the durable face.
-    let _ = poll_cron_list_all(&server, "cron-acp-legacy-1").await;
+    // First boot: settle the census (which AWAITS the import — batch 4)
+    // and read the adopted row, then delete the task through the durable
+    // face.
+    let _ = listed_after_import_settles(&server, "cron-acp-legacy-1").await;
     let deleted = server
         .call_method(
             "cron.delete",
@@ -912,10 +906,11 @@ async fn should_not_reimport_the_workspace_local_archive_on_a_later_boot() {
         Some(home.path().to_path_buf()),
         Vec::new(),
     );
-    // The reboot's import settles through the census gate. Waiting for the
-    // housekeeping is the signal — and it does not cover the cron import,
-    // which the census body spawns, so drive one cron pass afterwards: the
-    // import must have landed before that pass reads the store.
+    // The reboot's import settles through the census gate — and batch
+    // 4's fix AWAITED it inside that settlement, so once the housekeeping
+    // settles the store is final. Drive one cron pass afterwards to prove
+    // the first pass reads that final store (no "must have landed"
+    // probability: the ordering is structural now).
     let _ = server2.call_method("cron.listAll", json!({})).await;
     server2.await_housekeeping_settled().await;
     drive_cron_pass(&server2).await;
