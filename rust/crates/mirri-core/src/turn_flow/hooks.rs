@@ -2985,7 +2985,13 @@ mod tests {
                 }
             })
         };
-        let outcome = hooks.authorize_tool_execution(ctx).await.unwrap();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            hooks.authorize_tool_execution(ctx),
+        )
+        .await
+        .expect("the authorize side settles within the bound (batch 6a #4: a hang here must be a bounded red, not an infinite wait)")
+        .unwrap();
         let pending_on_gate = pending.await.unwrap_or(0);
         A4Cell {
             outcome,

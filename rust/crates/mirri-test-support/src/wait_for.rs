@@ -57,6 +57,19 @@ where
 /// background work this poll is waiting on. For async tests that observe
 /// runtime-driven state — the sync [`wait_for`] would block the thread
 /// that must make progress.
+///
+/// **Deadline semantics (batch 6a #8):** the predicate is called BEFORE
+/// the deadline is checked in every iteration, so it gets one final call
+/// even after `timeout` has already elapsed — a condition that lands on
+/// that last call wins over the timeout. Only a predicate still returning
+/// `None` there fails with [`WaitTimeout`].
+///
+/// **Mixed-clock constraint (batch 5 review #3):** the deadline is
+/// [`std::time::Instant`] (wall clock) while the step is
+/// `tokio::time::sleep` (runtime clock). Under `start_paused` the step
+/// advances instantly but the deadline does not — a never-true predicate
+/// spins until the REAL timeout. Paused-clock tests should bound with
+/// `tokio::time::timeout` instead of this helper.
 pub async fn wait_for_async<F, T>(
     timeout: Duration,
     step: Duration,

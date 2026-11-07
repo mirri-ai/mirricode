@@ -1605,9 +1605,15 @@ impl SessionScope {
     /// `list_sessions` sorts on the in-memory metadata's `updated_at`
     /// (`(updated_at DESC, id DESC)`), and `Utc::now()` alone cannot
     /// express "this session is older than that one" when two creates
-    /// land in the same clock tick. Production callers keep
-    /// [`Self::update_metadata`]; this variant exists so a test can pin
-    /// the stamp instead of racing the wall clock.
+    /// land in the same clock tick.
+    ///
+    /// **Test-only: production must never call this.** A hand-picked stamp
+    /// lies about when the session actually changed — it breaks recency
+    /// ordering, cache invalidation, and any audit that trusts
+    /// `updated_at`. Hidden from rustdoc so it does not read as a public
+    /// alternative to [`Self::update_metadata`]; production callers keep
+    /// [`Self::update_metadata`] (which stamps `Utc::now()` itself).
+    #[doc(hidden)]
     pub async fn update_metadata_at(
         &self,
         stamp: chrono::DateTime<chrono::Utc>,

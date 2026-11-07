@@ -45,15 +45,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // the real loop for that (`KEEP-LOOP` in
 // `docs/specs/rust-core-design/plans/2026-11-05-negative-window-audit.md`),
 // so the seam stays honest.
-//
-// These helpers are consumed by Tasks 4-6 of that plan; until then they have
-// no call sites.
 // ===========================================================================
 
 /// Drive ONE task-driver notification pass for `session_id` — the body the
 /// spawned driver runs after its sweep (due-notification adjudication and
 /// delivery).
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn drive_notification_tick(server: &EmbeddedServer, session_id: &str) {
     let session = server
         .session_manager()
@@ -87,7 +83,6 @@ async fn drive_notification_tick(server: &EmbeddedServer, session_id: &str) {
 
 /// Drive `ticks` notification passes in sequence — the literal form of
 /// "N driver ticks passed and nothing was delivered".
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn drive_notification_ticks(server: &EmbeddedServer, session_id: &str, ticks: usize) {
     for _ in 0..ticks {
         drive_notification_tick(server, session_id).await;
@@ -97,7 +92,6 @@ async fn drive_notification_ticks(server: &EmbeddedServer, session_id: &str, tic
 /// Drive ONE SERVER-level cron pass for the default workspace. The orphan
 /// latch is pre-set (`true`) so a repeated call is a pure due-check + drain
 /// instead of re-running the stale-Running convergence.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn drive_cron_pass(server: &EmbeddedServer) {
     let workspace_id = server
         .workspace_registry()
@@ -181,7 +175,6 @@ async fn drive_cron_pass_capture(server: &EmbeddedServer) -> Vec<CapturedFire> {
 
 /// Drive ONE SESSION-scoped cron pass (`check_due` → hold → purge → idle
 /// gate → drain) — the per-session half of the scheduler tick.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn drive_session_cron_pass(server: &EmbeddedServer, session_id: &str) {
     super::cron_driver::schedule_session_cron_pass(
         Arc::clone(&server.registry),
@@ -210,7 +203,6 @@ async fn drive_session_cron_pass(server: &EmbeddedServer, session_id: &str) {
 /// Drive `passes` completed follow-driver passes for one session. A pass
 /// that skips for the in-flight guard counts as completed — that skip IS
 /// what the in-flight test asserts.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn drive_follow_passes(server: &EmbeddedServer, session_id: &str, passes: usize) {
     for _ in 0..passes {
         // `tests` is `embedded_server::tests`, so its submodules need TWO
@@ -226,7 +218,6 @@ async fn drive_follow_passes(server: &EmbeddedServer, session_id: &str, passes: 
 }
 
 /// The session's cron manager (the live session's own handle).
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn session_cron(
     server: &EmbeddedServer,
     session_id: &str,
@@ -244,7 +235,6 @@ async fn session_cron(
 /// ticks while the gate holds" windows were proxying: the hold can only
 /// appear after a pass ran `check_due`, and while the fire is held and the
 /// turn is in flight the busy gate blocks every injection.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_held_fire(server: &EmbeddedServer, session_id: &str, task_id: &str) {
     let cron = session_cron(server, session_id).await;
     mirri_test_support::wait_for::wait_for_async(
@@ -262,7 +252,6 @@ async fn wait_for_held_fire(server: &EmbeddedServer, session_id: &str, task_id: 
 }
 
 /// Wait until the held queue is EMPTY — the purge/inject/clear effect.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_held_fires_cleared(server: &EmbeddedServer, session_id: &str) {
     let cron = session_cron(server, session_id).await;
     mirri_test_support::wait_for::wait_for_async(
@@ -279,7 +268,6 @@ async fn wait_for_held_fires_cleared(server: &EmbeddedServer, session_id: &str) 
 /// to `embedded_server`; the `tests` subtree is a descendant, so it is
 /// reachable — if a refactor moves it, widen to `pub(super)` rather than
 /// duplicating the lookup.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn session_steer_buffer(
     server: &EmbeddedServer,
     session_id: &str,
@@ -302,7 +290,6 @@ async fn session_steer_buffer(
 
 /// Wait until `task_id`'s notification is parked in the steer buffer — the
 /// busy-path park is the ordering signal ("the park precedes the flush").
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_parked_notification(
     server: &EmbeddedServer,
     session_id: &str,
@@ -328,7 +315,6 @@ async fn wait_for_parked_notification(
 /// Wait until the session's MAIN turn has settled. `poll_agent_activity`
 /// hardcodes `agent_id: "main"`, so this is main-scoped by construction —
 /// for a subagent-addressed turn use [`wait_for_agent_turn_idle`].
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_turn_idle(server: &EmbeddedServer, session_id: &str) {
     poll_agent_activity(server, session_id, |state| {
         state["turn"].is_null() && state["lastTurn"].is_object()
@@ -338,7 +324,6 @@ async fn wait_for_turn_idle(server: &EmbeddedServer, session_id: &str) {
 
 /// Wait until a specific agent's turn settles (the addressee-scoped
 /// counterpart of [`wait_for_turn_idle`]).
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_agent_turn_idle(server: &EmbeddedServer, session_id: &str, agent_id: &str) {
     poll_agent_activity_for(server, session_id, agent_id, |state| {
         state["turn"].is_null()
@@ -351,7 +336,6 @@ async fn wait_for_agent_turn_idle(server: &EmbeddedServer, session_id: &str, age
 /// the "no further continuation can land" signal, because `UpdateGoal`
 /// writes the terminal status DURING the turn, long before the settle point
 /// runs the chain decision.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_goal_chain_stopped(server: &EmbeddedServer, session_id: &str) {
     mirri_test_support::wait_for::wait_for_async(
         Duration::from_secs(5),
@@ -371,7 +355,6 @@ async fn wait_for_goal_chain_stopped(server: &EmbeddedServer, session_id: &str) 
 }
 
 /// Wait until `expected` manual-compaction apply tasks have finished.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_manual_compaction_apply(server: &EmbeddedServer, expected: u64) {
     mirri_test_support::wait_for::wait_for_async(
         Duration::from_secs(5),
@@ -383,7 +366,6 @@ async fn wait_for_manual_compaction_apply(server: &EmbeddedServer, expected: u64
 }
 
 /// Wait until the engine's startup MCP connect set has settled.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_mcp_startup_settled(server: &EmbeddedServer) {
     mirri_test_support::wait_for::wait_for_async(
         Duration::from_secs(5),
@@ -395,7 +377,6 @@ async fn wait_for_mcp_startup_settled(server: &EmbeddedServer) {
 }
 
 /// Wait until the spawned task driver has exited (its own counter).
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_task_driver_exit(server: &EmbeddedServer, before: u64) {
     mirri_test_support::wait_for::wait_for_async(
         Duration::from_secs(5),
@@ -33616,10 +33597,12 @@ async fn should_return_catalog_providers_from_cache_when_list_catalog_is_called(
     assert_eq!(wm_large["name"], "WM Large");
     assert_eq!(wm_large["context_length"], 123456);
     // And the model row carries the directory's capability facts (the
-    // same derivation the import would write)
+    // same derivation the import would write). This fixture declares
+    // `reasoning` with no `reasoning_options`, so the directory offers no way
+    // to turn it off — the derivation marks it always-thinking (D-M11.1).
     assert_eq!(
         wm_large["capabilities"],
-        json!(["image_in", "thinking", "tool_use"])
+        json!(["image_in", "thinking", "tool_use", "always_thinking"])
     );
     assert_eq!(wm_large["reasoning"], true);
     assert!(

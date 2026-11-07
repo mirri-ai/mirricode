@@ -169,9 +169,11 @@ impl EmbeddedServer {
                 // settlement completes: the census gate every consumer
                 // already waits on is then the synchronization point. The
                 // e956f5e8a first-request principle still holds — the
-                // direct index OPEN never imports; only the
-                // census-settled dispatch pays this bounded local-disk
-                // cost, exactly like the migration seed above.
+                // direct index OPEN never imports; only the FIRST
+                // census-settled dispatch pays this one-time local-disk
+                // cost (the `cron_import_done` OnceCell turns every later
+                // call into a no-op), exactly like the migration seed
+                // above.
                 let registry = Arc::clone(&self.registry);
                 tokio::task::spawn_blocking(move || registry.import_legacy_cron_once())
                     .await

@@ -2036,13 +2036,17 @@ impl WorkspaceCronManager {
         // in the exact window between the durable write and the in-memory
         // apply — a removal landed here must win (the apply below is
         // conditional on the CURRENT entry, never a blind overwrite).
+        // Take-then-run: the guard is dropped before `hook()` executes, so
+        // a hook that re-enters `set_apply_hook` cannot self-deadlock on
+        // the non-reentrant `apply_hook` mutex.
         #[cfg(test)]
-        if let Some(hook) = self
+        let apply_hook = self
             .apply_hook
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-        {
+            .take();
+        #[cfg(test)]
+        if let Some(hook) = apply_hook {
             hook();
         }
         // Apply pass (review M4 — the compare-and-swap posture): each

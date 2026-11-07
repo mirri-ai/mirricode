@@ -191,10 +191,13 @@ jobs:
       # can silently break the orphan sweep's guarantees. Run the focused
       # suites that depend on it first, so such a regression reports in
       # minutes instead of after the whole workspace run.
-      # Fast-fail 防线 = 进程探测/归档的 D 层回归（process:: 组不在归层范围，原样保留）。
-      # 归层后果（设计 §3）：orphan_sweep 的进程组抽样守卫（spawn_leader/spawn_exiting_leader
-      # 的8 个 caller）已迁 R 层（#[ignore]）——由 rust-real-env job（PR 非阻塞 + nightly 必过）
-      # 执行；本过滤器下保留的是纯逻辑/归档类 D 层测试，抽样类已迁 R 层。
+      # 本步骤是两个半步（批 6a #3 拆分描述）：
+      #   1) `mirri-os process::` —— 进程探测 D 层回归（process:: 组不在归层范围，原样保留）；
+      #   2) `mirri-core orphan_sweep::` —— 归档/解析类纯逻辑 D 层测试（设计 §3：抽样类
+      #      8 个 caller 已迁 R 层 `#[ignore]`，本过滤器下不再出现）。
+      # 归层后果：进程组抽样守卫（spawn_leader/spawn_exiting_leader 的 caller）由
+      # rust-real-env job 执行 —— PR 非阻塞，**Linux liveness 信号现由 nightly 必过兜底**
+      # （nightly-rust-real-env.yml）；本步骤只保 fast-fail 的 D 层半边。
       - name: Fast-fail process liveness and orphan sweep tests
         run: |
           cargo test -p mirri-os --lib --locked process::

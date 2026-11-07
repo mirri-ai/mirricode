@@ -143,12 +143,11 @@ async fn should_record_the_terminal_run_and_keep_the_session_list_flat() {
     // V12: the terminal record carries duration + session_ref.
     assert!(terminal.duration_ms.is_some(), "duration recorded");
     assert!(terminal.session_ref.is_some(), "session ref recorded");
-    assert!(
-        runs.iter()
-            .any(|run| run.status == mirri_core::cron::RunStatus::Running)
-            || !runs.is_empty(),
-        "the Running record opened first (durable-first)"
-    );
+    // (Batch 4 review #6 removed a tautological disjunction here: after
+    // settle the record is terminal, so `any(Running)` was false and
+    // `!runs.is_empty()` was already proven by `terminal` above — the
+    // assert could never fail and claimed durable-first without checking
+    // it.)
     // V12's flat-list half: the execution session never entered the index.
     let sessions_after = listed_session_ids(&server).await;
     assert_eq!(
@@ -433,9 +432,14 @@ async fn should_record_the_run_failed_when_the_turn_produced_no_assistant_output
         .cloned()
         .unwrap_or_else(|| panic!("the run reaches a terminal state: {runs:?}"));
     assert_eq!(run.status, mirri_core::cron::RunStatus::Failed, "{run:?}");
+    // Batch 4 review #5: name the REAL reason this fixture produces (the
+    // engine's empty-response guard fails the turn, so the spawner's
+    // `TurnFailed` arm records `回合失败：…`), not just "non-empty".
     assert!(
-        run.skip_reason.as_deref().is_some_and(|r| !r.is_empty()),
-        "the failure names its reason: {run:?}"
+        run.skip_reason
+            .as_deref()
+            .is_some_and(|r| r.starts_with("回合失败：Model returned an empty response")),
+        "the failure names its real reason: {run:?}"
     );
     let _ = tmp;
 }
