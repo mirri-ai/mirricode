@@ -9994,7 +9994,7 @@ impl Llm for DrippingChildLlm {
                 text: format!("chunk-{i} "),
             }))
             .then(|delta| async move {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: real-time: DrippingChildLlm drips 50 deltas over ~5s — the ADR-006 real work-time window under test (host fn is R-layer, design §3)
                 delta
             })
             .chain(futures::stream::iter(vec![
@@ -10025,6 +10025,7 @@ impl Llm for DrippingChildLlm {
 /// acceptance: the pull model works end-to-end through run_engine_turn
 /// with the push path dead).
 #[tokio::test]
+#[ignore] // R-layer: ADR-006 real work-time window — the child drips deltas for ~5s against a 2s stall window (design §3)
 async fn should_keep_the_parent_turn_alive_through_the_pull_probe_when_the_push_feed_is_dead() {
     use b1_task_lifecycle_tests::b1_profiles_server_with_config;
 
@@ -36993,6 +36994,7 @@ async fn should_cancel_the_foreground_subagent_when_the_parent_turn_stalls_out()
 /// live child running far past the (shrunken) deadline must NOT stall the
 /// parent turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore] // R-layer: real work-time window — gated child steps span 8×80ms against a 400ms stall deadline (design §3)
 async fn should_keep_the_parent_turn_alive_while_a_foreground_subagent_stays_active() {
     use b1_task_lifecycle_tests::b1_profiles_server_with_config;
 
@@ -37028,7 +37030,7 @@ async fn should_keep_the_parent_turn_alive_while_a_foreground_subagent_stays_act
     mock.push_text("parent done");
     let gate_opener = tokio::spawn(async move {
         for release in releasers {
-            tokio::time::sleep(step_gate).await;
+            tokio::time::sleep(step_gate).await; // hygiene-allow: real-time: 80ms×8 gated steps keep the child alive across the 400ms stall window (R-layer host, design §3)
             let _ = release.send(());
         }
     });

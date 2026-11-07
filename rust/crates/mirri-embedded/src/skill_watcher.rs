@@ -799,6 +799,7 @@ mod tests {
     /// via the same snapshot) — the dynamic listen-set refresh (ADR-010
     /// decision 4).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore] // R-layer: macOS FSEventStream SinceNow remount blind window (design §3)
     async fn should_watch_a_configured_extra_skill_dir_after_a_config_write() {
         let workspace_root = tempfile::tempdir().expect("workspace tempdir");
         let home = tempfile::tempdir().expect("home tempdir");
@@ -852,7 +853,7 @@ mod tests {
         // appended watch rebuilds the FSEventStream with SinceNow, so a
         // write racing the rebuild is dropped with no later signal (the
         // manual reload stays the fallback).
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: real-time: FSEventStream remount blind window (R-layer host, design §3)
         write_skill(extra_root.path(), "extra-two", "the second extra skill");
         assert!(
             wait_until(Duration::from_secs(10), || {

@@ -4825,6 +4825,7 @@ async fn should_stop_only_unsettled_tasks_when_stopping_all_with_grace() {
 /// (SIGTERM→SIGKILL 经 mirri-os) — 修复前的代码只翻转状态并留下孤儿进程。
 #[cfg(unix)]
 #[tokio::test]
+#[ignore] // R-layer: real subprocess sampling — SIGTERM→SIGKILL escalation observed on a real process (design §3)
 async fn should_kill_the_real_process_when_a_background_bash_task_is_stopped() {
     use mirri_core::tools::bash::start_background_command;
 
@@ -4900,13 +4901,6 @@ async fn should_kill_the_real_process_when_a_background_bash_task_is_stopped() {
         !alive(pid),
         "the stopped background task's process must be dead"
     );
-    // 清理兜底：按具体 PID kill，绝不用宽匹配。
-    if alive(pid) {
-        let _ = std::process::Command::new("kill")
-            .arg("-9")
-            .arg(pid.to_string())
-            .status();
-    }
 }
 
 // ============================================================

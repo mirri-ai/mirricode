@@ -1647,6 +1647,7 @@ fn should_report_a_live_process_alive_with_start_ticks() {
 /// reports not alive — `OpenProcess` with the no-such-pid failure (or a
 /// settled exit code), matching the desktop discovery's fail-closed read.
 #[test]
+#[ignore] // R-layer: real Windows process-object settlement sampling (design §3)
 fn should_report_a_dead_pid_as_not_alive() {
     let mut child = new_command("cmd")
         .args(["/C", "exit", "0"])
@@ -1664,7 +1665,7 @@ fn should_report_a_dead_pid_as_not_alive() {
     let start = Instant::now();
     let mut probe = probe_process(pid).expect("probe must not error on a dead pid");
     while probe.alive && start.elapsed() < Duration::from_secs(5) {
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(50)); // hygiene-allow: real-time: dead-pid probe sampling (R-layer host, design §3)
         probe = probe_process(pid).expect("probe must not error on a dead pid");
     }
     assert!(
@@ -1874,6 +1875,7 @@ fn visible_windows_belonging_to(pid: u32) -> Vec<isize> {
 /// GUI-host process spawning through `new_command` must leave no visible
 /// window behind, which is what this asserts for a console-subsystem child.
 #[test]
+#[ignore] // R-layer: real UI observation window — console-window absence sampled over 750ms (design §3)
 fn should_spawn_children_without_a_visible_console_window() {
     // A console-subsystem child that stays alive long enough to observe.
     let mut child = new_command("cmd")
@@ -1888,7 +1890,7 @@ fn should_spawn_children_without_a_visible_console_window() {
     // Give the child a moment to (potentially) create a window before
     // asserting none exists. A console window, if one were created, appears
     // within a few scheduler quanta of process start.
-    std::thread::sleep(Duration::from_millis(750));
+    std::thread::sleep(Duration::from_millis(750)); // hygiene-allow: real-time: console-window observation window (R-layer host, design §3)
 
     // Sanity: the child is genuinely running, so the absence of a window
     // cannot be explained by the child having already exited.

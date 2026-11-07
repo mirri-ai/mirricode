@@ -1097,6 +1097,7 @@ mod tests {
     /// its group id) until reaped, which is what this guards against.
     #[test]
     #[cfg(unix)]
+    #[ignore] // R-layer: real zombie sampling (design §3)
     fn should_report_a_zombie_child_as_not_alive_when_probed() {
         // Given a group-leading child killed but not yet reaped by `wait`
         let mut child = std::process::Command::new("sleep")
@@ -1121,7 +1122,7 @@ mod tests {
             if !probe.alive {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // hygiene-allow: real-time: zombie liveness flip sampling (R-layer host, design §3)
             probe = super::probe_process(pid).expect("probe must not error");
         }
 
