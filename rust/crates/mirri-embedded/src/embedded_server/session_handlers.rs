@@ -5232,7 +5232,7 @@ impl EmbeddedServer {
         self.cron_list_all_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .replace((std::time::Instant::now(), sessions.clone()));
+            .replace((tokio::time::Instant::now(), sessions.clone()));
         self.cron_workspace_groups_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())

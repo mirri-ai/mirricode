@@ -1530,8 +1530,10 @@ pub struct EmbeddedServer {
     /// stored answer verbatim. `disabled` is NOT read from the snapshot but
     /// re-read live, so a config flip surfaces on the very next call even
     /// inside the window (the flag is one cheap field read — the sessions
-    /// walk is what the throttle exists to protect).
-    cron_list_all_cache: std::sync::Mutex<Option<(std::time::Instant, Vec<serde_json::Value>)>>,
+    /// walk is what the throttle exists to protect). The stamp is a
+    /// `tokio::time::Instant`: identical to `std` off a paused clock, and
+    /// it lets paused-clock tests step over the window with `advance`.
+    cron_list_all_cache: std::sync::Mutex<Option<(tokio::time::Instant, Vec<serde_json::Value>)>>,
     /// The last `cron.listAll` aggregation's WORKSPACE groups (stage-2 T6)
     /// — the workspace arm of the same throttle: a second call inside
     /// the window answers these groups verbatim alongside the stored
