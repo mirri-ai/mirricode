@@ -208,7 +208,10 @@ mod tests {
         let _guard2 = lock();
     }
 
-    const TEST_KEY: &str = "MIRRI_TEST_SUPPORT_ENV_GUARD_TEST";
+    // One key per test: sharing a key would let the two tests race each
+    // other's value through the (per-test) lock scopes.
+    const RESTORE_TEST_KEY: &str = "MIRRI_TEST_SUPPORT_ENV_GUARD_RESTORE_TEST";
+    const UNSET_TEST_KEY: &str = "MIRRI_TEST_SUPPORT_ENV_GUARD_UNSET_TEST";
 
     /// Drop everything `guard` would restore on release, so its mutation
     /// persists after the guard goes out of scope — the fixture's
@@ -225,25 +228,25 @@ mod tests {
         // guard-under-test scope below
         {
             let mut setup = EnvGuard::new();
-            setup.set(TEST_KEY, "initial");
+            setup.set(RESTORE_TEST_KEY, "initial");
             commit(&mut setup);
         }
         {
             let mut guard = EnvGuard::new();
-            guard.set(TEST_KEY, "overridden");
-            assert_eq!(std::env::var(TEST_KEY).as_deref(), Ok("overridden"));
+            guard.set(RESTORE_TEST_KEY, "overridden");
+            assert_eq!(std::env::var(RESTORE_TEST_KEY).as_deref(), Ok("overridden"));
         }
         // Then the guard above restored the `initial` value it recorded —
         // observed under the lock so a concurrent writer cannot race the read
         {
             let _lock = lock();
-            assert_eq!(std::env::var(TEST_KEY).as_deref(), Ok("initial"));
+            assert_eq!(std::env::var(RESTORE_TEST_KEY).as_deref(), Ok("initial"));
         }
         // Teardown removes the fixture key for good (the recorded previous
         // value is committed away, like the setup above)
         {
             let mut teardown = EnvGuard::new();
-            teardown.remove(TEST_KEY);
+            teardown.remove(RESTORE_TEST_KEY);
             commit(&mut teardown);
         }
     }
@@ -252,8 +255,8 @@ mod tests {
     fn should_preserve_unset_state_when_guard_drops() {
         {
             let mut guard = EnvGuard::new();
-            guard.set(TEST_KEY, "temporarily-set");
-            assert_eq!(std::env::var(TEST_KEY).as_deref(), Ok("temporarily-set"));
+            guard.set(UNSET_TEST_KEY, "temporarily-set");
+            assert_eq!(std::env::var(UNSET_TEST_KEY).as_deref(), Ok("temporarily-set"));
         }
         // Re-take the lock before observing the drop's effect: the guard
         // released it on drop, and another test in this binary may set the
@@ -261,7 +264,7 @@ mod tests {
         // the lock would then race that writer and report a spurious
         // "still set".
         let _lock = lock();
-        assert!(std::env::var(TEST_KEY).is_err());
+        assert!(std::env::var(UNSET_TEST_KEY).is_err());
     }
 
     #[test]

@@ -1372,7 +1372,8 @@ mod tests {
         }
         // Given the home injected into the state (the shutdown backup
         // snapshots this state's home, so no process env is involved)
-        let state = test_state(std::sync::Arc::new(ShutdownEngine)).with_home_dir(home.path().to_path_buf());
+        let state = test_state(std::sync::Arc::new(ShutdownEngine))
+            .with_home_dir(home.path().to_path_buf());
         state.request_shutdown().await;
         state.request_shutdown().await;
 

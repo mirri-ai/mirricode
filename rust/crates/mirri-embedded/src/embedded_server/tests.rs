@@ -22955,10 +22955,10 @@ async fn should_wait_for_the_in_flight_tool_call_when_the_reconcile_tears_a_conn
     // pending behind the 300ms tool delay, so the disabling write below
     // lands while the call is guaranteed mid-flight — no fixed window
     // whose sufficiency would depend on machine speed.
-    mock.tool_calls
-        .recv()
+    tokio::time::timeout(Duration::from_secs(5), mock.tool_calls.recv())
         .await
-        .expect("the mock received the tools/call request");
+        .expect("the mock received the tools/call request")
+        .expect("the request channel stays open");
 
     server
         .call_method(
@@ -23022,10 +23022,10 @@ async fn should_fail_an_in_flight_call_with_the_server_named_when_the_teardown_i
     // pending behind the 300ms tool delay), so the forced teardown below
     // races a call that is provably mid-flight — not one a slow machine
     // has not even sent yet.
-    mock.tool_calls
-        .recv()
+    tokio::time::timeout(Duration::from_secs(5), mock.tool_calls.recv())
         .await
-        .expect("the mock received the tools/call request");
+        .expect("the mock received the tools/call request")
+        .expect("the request channel stays open");
 
     // A drain wait shorter than the tool call: the teardown must not stall
     // on it (the embedded reconcile uses a 10s budget; this exercises the
@@ -23095,10 +23095,10 @@ async fn should_fail_a_timed_out_in_flight_call_with_the_server_named_when_the_t
     // pending behind the 1s tool delay — far beyond the 400ms tool
     // timeout), so the forced teardown below lands while the call is
     // provably hung rather than racing a fixed 50ms window.
-    mock.tool_calls
-        .recv()
+    tokio::time::timeout(Duration::from_secs(5), mock.tool_calls.recv())
         .await
-        .expect("the mock received the tools/call request");
+        .expect("the mock received the tools/call request")
+        .expect("the request channel stays open");
 
     // Force the teardown well before the call's own timeout fires: the
     // client is taken off the connection, so when the tool timeout elapses
