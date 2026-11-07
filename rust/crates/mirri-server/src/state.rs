@@ -1008,17 +1008,22 @@ mod tests {
         // the pre-engine-call subscribe in prepare_fire_watch observed the
         // terminal event call_method published, so the watcher ends instead
         // of leaving a stale running entry behind.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            if state.in_flight_turns.lock().await.is_empty() {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "in-flight entry was never reaped: the watcher missed the instant turn's terminal event"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        mirri_test_support::wait_for::wait_for_async_result(
+            Duration::from_secs(5),
+            Duration::from_millis(20),
+            || async {
+                state
+                    .in_flight_turns
+                    .lock()
+                    .await
+                    .is_empty()
+                    .then_some(())
+            },
+        )
+        .await
+        .expect(
+            "in-flight entry was never reaped: the watcher missed the instant turn's terminal event",
+        );
     }
 
     /// A stub engine whose `session.create` takes 300ms — slow enough to be

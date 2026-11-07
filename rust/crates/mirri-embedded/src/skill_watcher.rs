@@ -728,14 +728,11 @@ mod tests {
     /// asynchronously, so the tests observe the durable state (the
     /// swapped catalog), never the task internals.
     async fn wait_until(deadline: Duration, predicate: impl Fn() -> bool) -> bool {
-        let started = std::time::Instant::now();
-        while started.elapsed() < deadline {
-            if predicate() {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        predicate()
+        mirri_test_support::wait_for::wait_for_async(deadline, Duration::from_millis(50), || {
+            predicate().then_some(())
+        })
+        .await
+        .is_ok()
     }
 
     /// Given a workspace with a live watcher, when a new skill directory

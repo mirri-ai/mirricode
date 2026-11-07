@@ -1026,14 +1026,13 @@ mod tests {
     }
 
     /// Poll until `predicate` holds or ~5 s elapse.
-    fn eventually<T>(mut predicate: impl FnMut() -> Option<T>) -> Option<T> {
-        for _ in 0..50 {
-            if let Some(value) = predicate() {
-                return Some(value);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        predicate()
+    fn eventually<T>(predicate: impl FnMut() -> Option<T>) -> Option<T> {
+        mirri_test_support::wait_for::wait_for(
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(100),
+            predicate,
+        )
+        .ok()
     }
 
     /// Wait until the process group `pgid` has at least one live member.

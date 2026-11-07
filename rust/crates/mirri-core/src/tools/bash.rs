@@ -2111,18 +2111,13 @@ mod tests {
 
         // The fingerprint must be attached while the child is still alive —
         // poll briefly rather than assume it beats the (still sleeping) run.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        let task = loop {
-            let task = tasks.get(&task_id).expect("task registered");
-            if task.fingerprint.is_some() {
-                break task;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "background process tasks must carry the identity fingerprint (US14.1)"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        };
+        let task = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || tasks.get(&task_id).filter(|task| task.fingerprint.is_some()),
+        )
+        .await
+        .expect("background process tasks must carry the identity fingerprint (US14.1)");
 
         // The fingerprint is self-consistent and matches the live child.
         assert!(task.fingerprint.is_some());
@@ -2270,19 +2265,23 @@ mod tests {
         tasks.stop(&task_id);
 
         // Then the run settles stopped (not dangling running).
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-        let mut status = None;
-        while tokio::time::Instant::now() < deadline {
-            if let Some(task) = tasks.get(&task_id)
-                && task.status.is_terminal()
-            {
-                status = Some(task.status);
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
+        mirri_test_support::wait_for::wait_for_async(
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_millis(50),
+            || {
+                tasks
+                    .get(&task_id)
+                    .filter(|task| task.status.is_terminal())
+                    .map(|_| ())
+            },
+        )
+        .await
+        .expect("TaskStop settles the backgrounded run");
         assert!(
-            matches!(status, Some(crate::task::TaskStatus::Stopped)),
+            matches!(
+                tasks.get(&task_id).map(|task| task.status),
+                Some(crate::task::TaskStatus::Stopped)
+            ),
             "TaskStop settles the backgrounded run"
         );
     }
@@ -2936,33 +2935,38 @@ mod tests {
         ));
 
         // Poll until the manager holds the running foreground task.
-        let task_id = loop {
-            if let Some(task) = tasks
-                .list()
-                .into_iter()
-                .find(|task| task.status == TaskStatus::Running && !task.detached)
-            {
-                break task.id;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        };
+        let task_id = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                tasks
+                    .list()
+                    .into_iter()
+                    .find(|task| task.status == TaskStatus::Running && !task.detached)
+                    .map(|task| task.id)
+            },
+        )
+        .await
+        .expect("the foreground row registers before the progress write");
 
         writer.write_all(b"partial\n").await.unwrap();
         // Wait until the run consumed the chunk (the progress stream is the
         // observable face) — only then is it safely part of the foreground
         // window the detach result reports.
-        let saw_partial = loop {
-            let saw = updates
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|update| update.text.as_deref() == Some("partial\n"));
-            if saw {
-                break true;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        };
-        assert!(saw_partial);
+        let saw_partial = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                updates
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|update| update.text.as_deref() == Some("partial\n"))
+                    .then_some(())
+            },
+        )
+        .await;
+        assert!(saw_partial.is_ok(), "the progress stream carries the partial chunk");
         tasks
             .detach_foreground_by_tool_call("toolu-1")
             .expect("the tool call id addresses the foreground task");
@@ -3031,16 +3035,19 @@ mod tests {
             "toolu-1".to_string(),
         ));
 
-        let task_id = loop {
-            if let Some(task) = tasks
-                .list()
-                .into_iter()
-                .find(|task| task.status == TaskStatus::Running)
-            {
-                break task.id;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        };
+        let task_id = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                tasks
+                    .list()
+                    .into_iter()
+                    .find(|task| task.status == TaskStatus::Running)
+                    .map(|task| task.id)
+            },
+        )
+        .await
+        .expect("the running foreground row registers before the dispatch");
         cancel_handle.cancel();
         let result = run.await.unwrap();
         drop(writer);
@@ -3080,16 +3087,19 @@ mod tests {
             "toolu-1".to_string(),
         ));
 
-        let task_id = loop {
-            if let Some(task) = tasks
-                .list()
-                .into_iter()
-                .find(|task| task.status == TaskStatus::Running)
-            {
-                break task.id;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        };
+        let task_id = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                tasks
+                    .list()
+                    .into_iter()
+                    .find(|task| task.status == TaskStatus::Running)
+                    .map(|task| task.id)
+            },
+        )
+        .await
+        .expect("the running foreground row registers before the dispatch");
         // The same transition the task.cancel dispatch performs.
         tasks.stop(&task_id);
         let result = run.await.unwrap();
@@ -3133,16 +3143,19 @@ mod tests {
 
         // Wait for the foreground row, then fire the user detach (the same
         // transition the task.detach dispatch performs).
-        let task_id = loop {
-            if let Some(task) = tasks
-                .list()
-                .into_iter()
-                .find(|task| task.status == TaskStatus::Running && !task.detached)
-            {
-                break task.id;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        };
+        let task_id = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                tasks
+                    .list()
+                    .into_iter()
+                    .find(|task| task.status == TaskStatus::Running && !task.detached)
+                    .map(|task| task.id)
+            },
+        )
+        .await
+        .expect("the foreground row registers before the detach");
         tasks
             .detach_foreground_by_tool_call("toolu-detach")
             .expect("the tool call id addresses the foreground task");
@@ -3226,16 +3239,19 @@ mod tests {
             "toolu-1".to_string(),
         ));
 
-        let task_id = loop {
-            if let Some(task) = tasks
-                .list()
-                .into_iter()
-                .find(|task| task.status == TaskStatus::Running && !task.detached)
-            {
-                break task.id;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        };
+        let task_id = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                tasks
+                    .list()
+                    .into_iter()
+                    .find(|task| task.status == TaskStatus::Running && !task.detached)
+                    .map(|task| task.id)
+            },
+        )
+        .await
+        .expect("the foreground row registers before the detach");
         tasks
             .detach_foreground_by_tool_call("toolu-1")
             .expect("the tool call id addresses the foreground task");
@@ -3244,14 +3260,13 @@ mod tests {
 
         // When the detached task is stopped, the process dies too.
         tasks.stop(&task_id);
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        while !process.killed() {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "the detached continuation must kill the child on stop"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(2),
+            Duration::from_millis(10),
+            || process.killed().then_some(()),
+        )
+        .await
+        .expect("the detached continuation must kill the child on stop");
         assert_eq!(
             tasks.get(&task_id).unwrap().status,
             TaskStatus::Stopped,

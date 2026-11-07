@@ -358,7 +358,7 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::json;
     use std::time::Duration;
-    use tokio::time::{Instant, timeout};
+    use tokio::time::timeout;
 
     /// Test adapter that answers `engine.ping` by issuing a reverse RPC
     /// request to the registered handler — simulating an engine-initiated
@@ -518,23 +518,19 @@ mod tests {
             .await;
 
         // Then the forwarder delivers the event.message.received notification
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            {
+        mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(20),
+            || {
                 let recorded = received.lock().unwrap_or_else(|e| e.into_inner());
-                if recorded
+                recorded
                     .iter()
                     .any(|payload| payload["method"] == "event.message.received")
-                {
-                    break;
-                }
-            }
-            assert!(
-                Instant::now() < deadline,
-                "timed out waiting for a forwarded event"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+                    .then_some(())
+            },
+        )
+        .await
+        .expect("timed out waiting for a forwarded event");
     }
 
     #[tokio::test]

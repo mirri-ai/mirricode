@@ -5834,7 +5834,7 @@ impl EmbeddedServer {
         });
         let mut pace = std::pin::pin!(async {
             loop {
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await; // hygiene-allow: D: settlement-hold pacing timer (waker registration; released by the test probe)
             }
         });
         std::future::poll_fn(|cx| match hold.as_mut().poll(cx) {

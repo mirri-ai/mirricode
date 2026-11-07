@@ -20,22 +20,6 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-cli/src/watcher.rs:1217": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-cli/src/watcher.rs:2253": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-cli/src/watcher.rs:2323": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-cli/src/watcher.rs:2380": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
     "crates/mirri-core/tests/session_group.rs:2722": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
@@ -203,74 +187,6 @@
     "crates/mirri-core/tests/terminal_misc_group.rs:5181": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-core/src/orphan_sweep.rs:1034": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:2124": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:2282": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:2947": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:2963": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:3042": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:3091": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:3144": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:3237": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:3253": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/turn_flow/hooks.rs:2979": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/turn_flow/hooks.rs:3209": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/message_handlers.rs:3500": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/message_handlers.rs:3536": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/message_handlers.rs:3614": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/message_handlers.rs:3733": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/mod.rs:5837": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
     },
     "crates/mirri-embedded/src/embedded_server/tests.rs:1507": {
       "type": "sleep",
@@ -860,10 +776,6 @@
       "type": "real-env",
       "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
     },
-    "crates/mirri-embedded/src/skill_watcher.rs:736": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
     "crates/mirri-kosong/tests/providers_group.rs:2240": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
@@ -891,10 +803,6 @@
     "crates/mirri-mcp/tests/mcp_group.rs:3795": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-node/src/engine_bridge.rs:536": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
     },
     "crates/mirri-node/src/engine_e2e_tests.rs:174": {
       "type": "sleep",
@@ -971,26 +879,6 @@
     "crates/mirri-server/tests/server_group.rs:5664": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-server/src/file_index_registry.rs:415": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/file_index_registry.rs:437": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/file_index_registry.rs:456": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/rpc.rs:8064": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/state.rs:1020": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
     }
   }
 }

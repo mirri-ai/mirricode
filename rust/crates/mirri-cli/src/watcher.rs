@@ -1204,27 +1204,23 @@ mod tests {
         // profile file
         fs::create_dir_all(&agents_dir).expect("create agents dir late");
         let late_path = agents_dir.join("late.md");
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-        loop {
-            fs::write(
-                &late_path,
-                "---\nname: late\ndescription: Arrives after the watch.\n---\nYou arrive late.",
-            )
-            .expect("write late.md");
-            // Longer than the debounce window: one write is enough to fire
-            // the reload once the watch is armed, and repeating sooner
-            // would keep resetting the quiet period.
-            tokio::time::sleep(DEBOUNCE_WINDOW + Duration::from_millis(100)).await;
-
-            // Then the profile hot-loads without a restart (the parent
-            // watch observed the file creation inside the new root)
-            if manager.get("late").is_some() {
-                return;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                panic!("a profile in a root created after watch start never hot-loaded");
-            }
-        }
+        // Longer than the debounce window: one write is enough to fire
+        // the reload once the watch is armed, and repeating sooner
+        // would keep resetting the quiet period.
+        mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(20),
+            DEBOUNCE_WINDOW + Duration::from_millis(100),
+            || {
+                fs::write(
+                    &late_path,
+                    "---\nname: late\ndescription: Arrives after the watch.\n---\nYou arrive late.",
+                )
+                .expect("write late.md");
+                manager.get("late").map(|_| ())
+            },
+        )
+        .await
+        .expect("a profile in a root created after watch start never hot-loaded");
     }
 
     /// The shared reload harness: a manager, a single-root last-good state,
@@ -2241,17 +2237,13 @@ mod tests {
         .expect("write profile");
 
         // Then the manager picks it up within the OS event-delivery window
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            if manager.list().contains(&"coder".to_string()) {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "profile hot-reload did not pick up the new file in time"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+            || manager.list().contains(&"coder".to_string()).then_some(()),
+        )
+        .await
+        .expect("profile hot-reload did not pick up the new file in time");
     }
 
     /// should hot-reload a subdirectory profile when a nested agent file is
@@ -2305,23 +2297,21 @@ mod tests {
         // Then both changes are reflected within the OS event-delivery
         // window — the modified registration is replaced and the new
         // nested profile is registered
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let reviewer_ready = manager
-                .get("reviewer")
-                .is_some_and(|profile| profile.model == "model-b");
-            let nested_ready = manager.get("nested").is_some_and(|profile| {
-                profile.system_prompt.as_deref() == Some("You live in a subdirectory.")
-            });
-            if reviewer_ready && nested_ready {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "nested profile hot-reload did not pick up the subdirectory changes in time"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+            || {
+                let reviewer_ready = manager
+                    .get("reviewer")
+                    .is_some_and(|profile| profile.model == "model-b");
+                let nested_ready = manager.get("nested").is_some_and(|profile| {
+                    profile.system_prompt.as_deref() == Some("You live in a subdirectory.")
+                });
+                (reviewer_ready && nested_ready).then_some(())
+            },
+        )
+        .await
+        .expect("nested profile hot-reload did not pick up the subdirectory changes in time");
     }
 
     #[tokio::test]
@@ -2362,23 +2352,21 @@ mod tests {
 
         // Then the watcher converges to the final write, and the burst
         // collapses into a single reload
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let current = config_ref
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .provider
-                .as_ref()
-                .and_then(|provider| provider.api_key.clone());
-            if current.as_deref() == Some("sk-3") {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "config hot-reload did not converge to the final write in time"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+            || {
+                let current = config_ref
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .provider
+                    .as_ref()
+                    .and_then(|provider| provider.api_key.clone());
+                (current.as_deref() == Some("sk-3")).then_some(())
+            },
+        )
+        .await
+        .expect("config hot-reload did not converge to the final write in time");
         assert_eq!(
             reload_count.load(std::sync::atomic::Ordering::SeqCst),
             1,

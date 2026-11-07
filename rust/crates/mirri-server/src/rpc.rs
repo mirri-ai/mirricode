@@ -8056,14 +8056,19 @@ mod tests {
         handler: &SearchFilesHandler,
         params: serde_json::Value,
     ) -> serde_json::Value {
-        for _ in 0..40 {
-            let value = handler.handle(params.clone()).await.expect("search resolves");
-            if value["indexState"] != json!("building") {
-                return value;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        panic!("file.search index never became ready");
+        mirri_test_support::wait_for::wait_for_async_result(
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_millis(50),
+            || {
+                let params = params.clone();
+                async move {
+                    let value = handler.handle(params).await.expect("search resolves");
+                    (value["indexState"] != json!("building")).then_some(value)
+                }
+            },
+        )
+        .await
+        .expect("file.search index never became ready")
     }
 
     /// A session manager with one session whose workspace root holds a
