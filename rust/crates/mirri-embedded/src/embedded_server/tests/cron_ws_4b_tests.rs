@@ -936,21 +936,29 @@ async fn should_recover_from_a_stale_running_record_after_the_server_restarts() 
         .expect("cron.listAll (starts the scheduler)");
     // The sweep converges the orphan (the registry builds the runtime
     // on demand; the workspace pass runs `fail_orphan_running_runs`).
+    // Drive ONE pass directly with a fresh (unset) orphan latch: the
+    // sweep runs synchronously inside the await, so its effect is
+    // observable the moment this returns — no polling loop, no tick to
+    // hope for. (The tick-driven scheduler started above still serves
+    // the refire phase below.)
     let restarted_cron = ws_cron(&restarted);
-    let mut converged = false;
-    for _ in 0..100 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let runs = restarted_cron.runs(&task_id);
-        if runs.iter().any(|run| {
+    crate::embedded_server::cron_driver::schedule_workspace_cron_pass(
+        Arc::clone(&restarted.registry),
+        Arc::new(restarted.workspace_run_spawner()),
+        Arc::clone(&restarted.steer_buffers),
+        default_workspace_id(&restarted),
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+    .await;
+    let runs = restarted_cron.runs(&task_id);
+    assert!(
+        runs.iter().any(|run| {
             run.run_id == "run-crashed"
                 && run.status == mirri_core::cron::RunStatus::Failed
                 && run.skip_reason.as_deref() == Some("服务重启中断")
-        }) {
-            converged = true;
-            break;
-        }
-    }
-    assert!(converged, "the orphan Running converged to Failed");
+        }),
+        "the orphan Running converged to Failed"
+    );
     // The task is due (its schedule kept running past the crash) — the
     // recovered task fires and reaches a terminal state (the scheduling
     // un-wedged: no dead Running blocks the concurrency check anymore).

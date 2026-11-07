@@ -402,16 +402,20 @@ async fn should_record_a_skipped_run_when_a_workspace_task_is_triggered_manually
         .built_runtime(&workspace_id)
         .expect("runtime");
     let cron = runtime.cron().expect("cron");
-    // The spawner's fire is async — wait for the run to land.
-    let mut runs = Vec::new();
-    for _ in 0..50 {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        runs = cron.runs(&task_id);
-        if !runs.is_empty() {
-            break;
-        }
-    }
-    assert!(!runs.is_empty(), "the manual fire recorded a run: {runs:?}");
+    // The spawner's fire is async — wait (bounded) for the run to land.
+    // Having `cron.trigger` await the opener and return the runId is a
+    // wire-contract change deferred to a follow-up; until then the
+    // sanctioned bounded condition wait is the sync point.
+    let runs = mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(10),
+        Duration::from_millis(20),
+        || {
+            let runs = cron.runs(&task_id);
+            (!runs.is_empty()).then_some(runs)
+        },
+    )
+    .await
+    .expect("the manual fire recorded a run");
     assert!(
         runs.iter()
             .all(|run| run.skip_reason.as_deref() != Some("executor-pending-batch-4b")),

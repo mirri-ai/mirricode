@@ -844,10 +844,6 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b7_task_overview_tests.rs:49": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
     "crates/mirri-embedded/src/embedded_server/tests/credential_store_tests.rs:361": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
@@ -860,15 +856,11 @@
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4a_tests.rs:408": {
+    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4a_tests.rs:559": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4a_tests.rs:555": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4a_tests.rs:750": {
+    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4a_tests.rs:754": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
@@ -900,27 +892,23 @@
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:942": {
+    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:972": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:964": {
+    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:1127": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:1119": {
+    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:1214": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:1206": {
+    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:1315": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:1307": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:1371": {
+    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:1379": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },

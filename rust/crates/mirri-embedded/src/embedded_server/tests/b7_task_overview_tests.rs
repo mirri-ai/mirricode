@@ -39,6 +39,28 @@ async fn create_session(server: &EmbeddedServer, title: &str) -> String {
     created["id"].as_str().expect("session id").to_string()
 }
 
+/// The `session.list` row's `updatedAt` for a live session — the stamp
+/// the workspace overview's `(updated_at DESC, id DESC)` order sorts on.
+async fn session_updated_at(
+    server: &EmbeddedServer,
+    session_id: &str,
+) -> chrono::DateTime<chrono::Utc> {
+    let listed = server
+        .call_method("session.list", json!({}))
+        .await
+        .expect("session.list");
+    let row = listed["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|row| row["id"] == session_id)
+        .cloned()
+        .expect("the session row");
+    chrono::DateTime::parse_from_rfc3339(row["updatedAt"].as_str().expect("updatedAt"))
+        .expect("a parseable updatedAt")
+        .with_timezone(&chrono::Utc)
+}
+
 /// Given two live sessions each holding a background task, when
 /// `task.listWorkspace` runs, then both tasks are listed with their
 /// `session_id` attribution, sessions ordered by updated_at DESC.
@@ -46,7 +68,18 @@ async fn create_session(server: &EmbeddedServer, title: &str) -> String {
 async fn should_list_the_tasks_of_every_live_session_in_the_workspace() {
     let (server, _tmp) = test_server(None);
     let older = create_session(&server, "older").await;
-    tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    // Deterministic stamp separation: wait until the clock is strictly
+    // past the older session's recorded updated_at, so the newer
+    // session's create cannot tie it — the (updated_at DESC, id DESC)
+    // order then holds by construction instead of by a sleep's size.
+    let older_updated = session_updated_at(&server, &older).await;
+    mirri_test_support::wait_for::wait_for_async(
+        std::time::Duration::from_secs(5),
+        std::time::Duration::from_millis(1),
+        || (chrono::Utc::now() > older_updated).then_some(()),
+    )
+    .await
+    .expect("the clock must pass the older session's stamp");
     let newer = create_session(&server, "newer").await;
     let older_task = seed_task(&server, &older, "watch older").await;
     let newer_task = seed_task(&server, &newer, "watch newer").await;
