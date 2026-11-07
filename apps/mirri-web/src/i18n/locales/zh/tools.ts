@@ -54,6 +54,11 @@ export default {
     created: '已创建',
     todos: '{count} 项',
   },
+  /** Bash 行的工作目录徽标：该 `cd` 指向的就是当前工作区，命令语义上等于
+   *  直接在此目录执行，因此折叠成徽标而不隐藏——悬停可见完整路径。 */
+  workspacePrefixHint: '当前工作区（命令开头省略了 cd 到此目录）',
+  /** 非当前工作区的目录前缀：只保留末段路径，其余压缩为 …。 */
+  otherDirPrefixHint: '切换到此目录后执行',
   group: {
     title: '{count} 个工具调用',
     running: '运行中',

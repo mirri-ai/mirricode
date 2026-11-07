@@ -1,11 +1,14 @@
 <!-- apps/mirri-web/src/components/chat/ToolRow.vue -->
 <script setup lang="ts">
-import { inject, nextTick, ref } from 'vue';
+import { computed, inject, nextTick, ref } from 'vue';
+import { useI18n } from 'vue-i18n';
 import Icon from '../ui/Icon.vue';
 import Tooltip from '../ui/Tooltip.vue';
 import StatusDot from '../ui/StatusDot.vue';
+import { iconSvg } from '../../lib/icons';
+import type { BashPrefix } from '../../lib/bashDisplay';
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     status: 'running' | 'ok' | 'error' | 'suspended';
     /** Inline-SVG glyph string (toolGlyph), or empty for none. */
@@ -16,6 +19,13 @@ withDefaults(
     /** Hover bubble for `arg` (e.g. the pretty JSON payload); defaults to `arg`. */
     tooltip?: string;
     tooltipMaxWidth?: number;
+    /** Payload bubble height cap, in lines — longer content scrolls inside. */
+    tooltipLines?: number;
+    /** Size the payload bubble to the transcript's reading column. */
+    tooltipColumn?: boolean;
+    /** Working-directory prefix split off the row text (Bash `cd … &&`), shown
+     *  as a badge instead of inline text. */
+    prefix?: BashPrefix;
     open?: boolean;
     expandable?: boolean;
     stacked?: boolean;
@@ -26,6 +36,8 @@ withDefaults(
     arg: '',
     tooltip: '',
     tooltipMaxWidth: 280,
+    tooltipLines: 4,
+    tooltipColumn: false,
     time: '',
     open: false,
     expandable: false,
@@ -36,8 +48,33 @@ withDefaults(
 
 const emit = defineEmits<{ toggle: [] }>();
 
+const { t } = useI18n();
+
 const pinScroll = inject<(el: HTMLElement, ms?: number) => void>('pinScroll', () => {});
 const bhEl = ref<HTMLElement | null>(null);
+
+const folderGlyph = computed(() => iconSvg('folder', 'sm'));
+
+/** A workspace badge names the directory; any other directory is compressed to
+    `…/dir` so it can never be mistaken for the workspace. The `&&` that joined
+    the `cd` to the command renders outside the badge — the badge answers "in
+    which directory", not "how the command was stitched together". */
+const displayPrefix = computed(() => {
+  const p = props.prefix;
+  if (!p) return '';
+  return p.kind === 'workspace' ? `${p.label}/` : `…/${p.label}/`;
+});
+
+/** The badge's accessible name. The visible text is just the directory, so the
+    label has to say what the directory means — there is no native `title` here
+    because it would stack a second bubble on the payload tooltip. */
+const prefixAria = computed(() => {
+  const p = props.prefix;
+  if (!p) return '';
+  return p.kind === 'workspace'
+    ? `${t('tools.workspacePrefixHint')}: ${p.path}`
+    : `${t('tools.otherDirPrefixHint')}: ${p.path}`;
+});
 
 function onHeadClick(): void {
   emit('toggle');
@@ -61,8 +98,26 @@ function onHeadClick(): void {
     <div class="bh" ref="bhEl" @click="onHeadClick">
       <span v-if="icon" class="gl" v-html="icon" aria-hidden="true" />
       <span class="a">{{ name }}</span>
-      <Tooltip :text="tooltip || arg" variant="code" :max-width="tooltipMaxWidth">
-        <span v-if="arg" class="p">{{ arg }}</span>
+      <Tooltip
+        :text="tooltip || arg"
+        variant="code"
+        :max-width="tooltipMaxWidth"
+        :code-lines="tooltipLines"
+        :column="tooltipColumn"
+      >
+        <span v-if="arg || prefix" class="p">
+          <span
+            v-if="prefix"
+            class="ws-badge"
+            :class="prefix.kind"
+            :aria-label="prefixAria"
+          >
+            <span class="ws-ic" v-html="folderGlyph" aria-hidden="true" />
+            <span class="ws-nm">{{ displayPrefix }}</span>
+          </span>
+          <span v-if="prefix" class="ws-join" aria-hidden="true">&amp;&amp;</span>
+          <span v-if="arg" class="p-cmd">{{ arg }}</span>
+        </span>
       </Tooltip>
       <span class="rt">
         <span class="status" :class="status" role="status" :aria-label="status">
@@ -150,6 +205,60 @@ function onHeadClick(): void {
   white-space: nowrap;
   flex: 1;
   min-width: 0;
+  /* The row text is a badge + command pair; the command keeps the ellipsis, the
+     badge never shrinks (it is the shortest, most load-bearing part). */
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.p-cmd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* Working-directory badge: quiet enough to read past, explicit enough that the
+   `cd` is never hidden. `other` directories keep a `…/` prefix and a muted
+   folder glyph so they can't be mistaken for the session workspace. */
+.ws-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  max-width: 40%;
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-line);
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+  line-height: 18px;
+}
+.ws-badge.other {
+  color: var(--color-text-muted);
+  border-style: dashed;
+}
+.ws-ic {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.ws-ic :deep(svg) {
+  width: 11px;
+  height: 11px;
+}
+.ws-nm {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The joiner stays outside the badge and fainter than it: it records that the
+   model stitched a `cd` onto the command without being read as part of it. */
+.ws-join {
+  flex: none;
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
+  opacity: 0.7;
 }
 .rt {
   margin-left: auto;

@@ -337,6 +337,11 @@ function resolveAgentTaskId(toolCallId: string): string | undefined {
 }
 provide('resolveAgentTaskId', resolveAgentTaskId);
 provide('pinScroll', pinScrollFor);
+// The session's working directory, read by tool-call rows: a Bash command
+// prefixed with `cd <this directory> &&` is displayed as a workspace badge
+// instead of repeating the path on every row (lib/bashDisplay.ts). A getter so
+// it tracks workspace switches without re-providing.
+provide('sessionWorkspaceRoot', () => props.workspaceRoot);
 const todoDoneCount = computed(() => (props.todos ?? []).filter((td) => td.status === 'done').length);
 const hasDockWork = computed(() =>
   bashTasks.value.length > 0 ||
