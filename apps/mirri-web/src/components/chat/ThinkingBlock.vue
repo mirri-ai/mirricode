@@ -157,11 +157,13 @@ function onBodyTouch(): void {
 
 /* While streaming the live window grows unbounded so the user sees the
    whole thinking process; the 2-line clamp above only applies to the
-   non-streaming render paths. */
+   non-streaming render paths. Streaming text also steps one shade darker
+   (muted) for readability; the settled presentation keeps the faint tone. */
 .think.is-streaming .tc {
   max-height: none;
   overflow-y: visible;
   scrollbar-gutter: auto;
+  color: var(--color-text-muted);
 }
 
 /* ---- Ended: folded header + inline expand ---- */
