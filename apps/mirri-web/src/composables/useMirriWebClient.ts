@@ -3,6 +3,7 @@
 // Components consume computed view props and call actions; they never touch the API or reducer.
 
 import { computed, reactive, ref, watch } from 'vue';
+import { thinkingLevelFromDaemon } from '../lib/modelThinking';
 import { getDesktopBridge, parseSessionDeepLink } from '../lib/desktopBridge';
 import { i18n } from '../i18n';
 import { traceClientEvent } from '../debug/trace';
@@ -747,10 +748,20 @@ async function refreshSessionStatus(sessionId: string): Promise<void> {
   };
   // Fold the session's own thinking level too — per-session state wins over the
   // per-model storage pick (see thinkingBySession on ExtendedState).
-  if (st.thinkingEffort.length > 0) {
+  //
+  // Two spellings have to be kept apart here:
+  //   - `"none"` is the engine's word for *explicitly disabled*. Folding it
+  //     verbatim left `thinkingBySession` holding a value no level check
+  //     recognized, so the composer fell back to the model's default and
+  //     thinking came back on right after the user turned it off.
+  //   - `""` is "no level recorded" (the engine sends `null`). Writing that
+  //     into the map would look like a recorded preference and shadow the
+  //     model's own default, so the fold must be skipped entirely.
+  const daemonThinking = thinkingLevelFromDaemon(st.thinkingEffort);
+  if (daemonThinking !== undefined) {
     rawState.thinkingBySession = {
       ...rawState.thinkingBySession,
-      [sessionId]: st.thinkingEffort as ThinkingLevel,
+      [sessionId]: daemonThinking,
     };
   }
   // SDR-004 e: the composer mirrors the ACTIVE session's live mode from

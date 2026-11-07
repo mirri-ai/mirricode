@@ -30,6 +30,7 @@ import {
   getDesktopBridge,
   resolveWorkspacePath,
 } from '../../lib/desktopBridge';
+import { thinkingToDaemon } from '../../lib/modelThinking';
 import { toStatus } from '../../lib/todoStatus';
 import { buildRestUrl } from '../config';
 import { DaemonApiError } from '../errors';
@@ -270,7 +271,14 @@ interface RpcSessionStatus {
   model: string | null;
   permission: unknown;
   planMode: boolean;
-  thinkingEffort?: string;
+  /**
+   * The session's thinking level. `null` and absent both mean "no level
+   * recorded" — the engine keeps that distinct from an explicitly disabled
+   * session, which answers the string `"none"`. Do NOT treat the two as the
+   * same: `null` must leave the composer's own value alone, while `"none"`
+   * is the user's off choice and must be preserved.
+   */
+  thinkingEffort?: string | null;
   swarmMode?: boolean;
   collaborationMode?: boolean;
   contextTokens?: number;
@@ -776,6 +784,14 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     cwd?: string;
     model?: string;
     workspaceId?: string;
+    /**
+     * The thinking level the draft composer was showing. Without it the
+     * session is created with no explicit effort and the engine falls back to
+     * the model's declared default — so a user who had turned thinking off
+     * saw it come back on for the first prompt. The wire spelling differs
+     * from the UI's: the engine expects `none`, not `off`.
+     */
+    thinking?: string;
   }): Promise<AppSession> {
     const params: Record<string, unknown> = {};
     if (input.title !== undefined) params['title'] = input.title;
@@ -783,6 +799,9 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     // model → config default_model → the engine's built-in default); the
     // pick reaches the LLM factory at the first turn.
     if (input.model !== undefined) params['modelId'] = input.model;
+    if (input.thinking !== undefined) {
+      params['thinkingEffort'] = thinkingToDaemon(input.thinking);
+    }
     // W4 unseal — the v2 `session.create` workspace routing face:
     // `workspace_id` selects the registered workspace the session is
     // created in, paired with `metadata.cwd` — the same dual-send the
@@ -819,6 +838,8 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     // spelling the composer ring renders as no ceiling).
     return {
       model: status.model && status.model.length > 0 ? status.model : null,
+      // Empty string is this layer's "nothing recorded" spelling (the caller
+      // keeps its own value); the engine's `null` maps onto it here.
       thinkingEffort: typeof status.thinkingEffort === 'string' ? status.thinkingEffort : '',
       permission: typeof status.permission === 'string' ? status.permission : '',
       planMode: status.planMode === true,

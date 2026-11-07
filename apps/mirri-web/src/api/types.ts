@@ -1797,7 +1797,14 @@ export interface MirriWebApi {
    * fall back to client-side title filtering when the method is absent.
    */
   searchSessions?(input: { query: string; sessionId?: string; role?: 'user' | 'assistant' | 'title'; pageSize?: number; pageToken?: string }): Promise<AppSessionSearchPage>;
-  createSession(input: { title?: string; cwd?: string; model?: string; workspaceId?: string }): Promise<AppSession>;
+  createSession(input: {
+    title?: string;
+    cwd?: string;
+    model?: string;
+    workspaceId?: string;
+    /** UI thinking level to seed the session with (`off` / `on` / an effort). */
+    thinking?: string;
+  }): Promise<AppSession>;
   /** Fetch one session by id (deep links beyond the first listSessions page). */
   getSession(sessionId: string): Promise<AppSession>;
   /**
