@@ -84,8 +84,7 @@ printBackgroundMode = "exit"
 /// 300ms, When waitForBackgroundTasksOnPrint runs, Then it returns after
 /// the task settles (under the ceiling) and the subsequent decision is
 /// finish.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore] // R-layer: simulated 300ms task work measured against a real 1s ceiling (design §3)
+#[tokio::test(start_paused = true)]
 async fn should_wait_for_tasks_to_settle_when_print_background_mode_is_drain() {
     let (server, _tmp) = b1_print_server(
         r#"
@@ -108,13 +107,13 @@ printWaitCeilingS = 1
     let settle_tasks = tasks.clone();
     let settle_id = task_id.clone();
     tokio::spawn(async move {
-        // The task's simulated 300ms work: drain timing under the 1s ceiling
-        // is the assertion (judged D3, batch 5 pauses the clock).
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await; // hygiene-allow: D: 模拟 300ms 工时，1s 天花板下的 drain 时序即断言
+        // The task's simulated 300ms work: virtual under the paused clock,
+        // so the drain timing under the 1s ceiling is deterministic.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await; // hygiene-allow: D: paused clock 虚拟工时定时器，不耗墙钟
         settle_tasks.complete(&settle_id, 0);
     });
 
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     let waited = server
         .call_method(
             "session.waitForBackgroundTasksOnPrint",
@@ -126,7 +125,8 @@ printWaitCeilingS = 1
     assert_eq!(waited["remaining"], 0);
     assert!(
         started.elapsed() < std::time::Duration::from_secs(1),
-        "the drain returns as soon as the task settles"
+        "the drain returns as soon as the task settles (virtual {:?})",
+        started.elapsed()
     );
 
     let decision = server
@@ -187,7 +187,7 @@ printMaxTurns = 1
 /// Given steer mode with a 1s wait ceiling and a task that never settles,
 /// When decisions are taken past the ceiling, Then the loop finishes (the
 /// duration cap, not the turn cap, trips).
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn should_finish_when_steer_exceeds_the_wait_ceiling() {
     let (server, _tmp) = b1_print_server(
         r#"
@@ -215,7 +215,9 @@ printWaitCeilingS = 1
         .expect("first decision");
     assert_eq!(first["decision"], "continue");
 
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    // The first decision's state must be committed before the clock jumps.
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_millis(1100)).await;
 
     let second = server
         .call_method(
@@ -234,7 +236,7 @@ printWaitCeilingS = 1
 /// is resolved, Then it defaults to drain (`configSection.ts:58-62`): a
 /// stuck task makes the completion decision WAIT for the ceiling and then
 /// finish — where steer would answer continue immediately.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn should_default_to_drain_when_keep_alive_on_exit_and_no_explicit_mode() {
     let (server, _tmp) = b1_print_server(
         r#"
@@ -254,7 +256,7 @@ printWaitCeilingS = 1
         None,
     );
 
-    let started = std::time::Instant::now();
+    let started = tokio::time::Instant::now();
     let decision = server
         .call_method(
             "session.handlePrintMainTurnCompleted",
