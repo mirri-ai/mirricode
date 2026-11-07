@@ -162,7 +162,7 @@ test('should not report a call annotated with a hygiene-allow comment', () => {
   assert.equal(violationLines(stderr, file).length, 0);
 });
 
-test('should exit 0 when every violation is baseline-covered, and 1 on a new one', () => {
+test('should exit 0 when a poll-step baseline entry covers a sleep, and 1 when a legacy entry no longer does', () => {
   const file = 'crates/demo/tests/integration.rs';
   const content = [
     '// layer: T1',
@@ -172,9 +172,28 @@ test('should exit 0 when every violation is baseline-covered, and 1 on a new one
     '}',
     '',
   ].join('\n');
-  const baseline = { violations: { 'crates/demo/tests/integration.rs:4': { type: 'sleep', reason: 'legacy: pending R2/R4 migration' } } };
-  const ok = runGate({ [file]: content }, { baseline });
+  // poll-step（合规豁免语义不变）：基线覆盖 → exit 0
+  const pollStepBaseline = {
+    violations: {
+      'crates/demo/tests/integration.rs:4': {
+        type: 'sleep',
+        reason: 'poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)',
+      },
+    },
+  };
+  const ok = runGate({ [file]: content }, { baseline: pollStepBaseline });
   assert.equal(ok.status, 0, ok.stderr);
+
+  // 零容忍（批 6a）：legacy reason 的 sleep 基线条目不再视为已覆盖 → exit 1
+  const legacyBaseline = {
+    violations: {
+      'crates/demo/tests/integration.rs:4': { type: 'sleep', reason: 'legacy: pending R2/R4 migration' },
+    },
+  };
+  const legacy = runGate({ [file]: content }, { baseline: legacyBaseline });
+  assert.equal(legacy.status, 1, legacy.stdout);
+  assert.ok(legacy.stderr.includes('integration.rs:4'), legacy.stderr);
+  assert.ok(legacy.stderr.includes('zero-tolerance'), legacy.stderr);
 
   // 新增一行未被基线覆盖的 sleep（行 5）→ 必须报新违规
   const freshContent = [
@@ -186,7 +205,7 @@ test('should exit 0 when every violation is baseline-covered, and 1 on a new one
     '}',
     '',
   ].join('\n');
-  const fresh = runGate({ [file]: freshContent }, { baseline });
+  const fresh = runGate({ [file]: freshContent }, { baseline: pollStepBaseline });
   assert.equal(fresh.status, 1);
   assert.ok(fresh.stderr.includes('integration.rs:5'), fresh.stderr);
 });

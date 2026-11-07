@@ -70,7 +70,7 @@ rust 引擎还在开发中，很多功能可能还不成熟甚至是错误的。
 - 新测试必须声明层级（`// layer: T<n>` 模块头标签），按上表判定。T3 必须 `#[ignore]`。
 - 新测试必须满足全部八条隔离契约，方可进入评审。
 - 需要环境变量语义 → 注入式优先；确需 `set_var` → `mirri-test-support::env::lock()` + 最小集合 + 不跨 await。
-- 存量测试不满足隔离契约的，按 ROADMAP 分批迁移，不阻塞新贡献（baseline 白名单：`rust/scripts/test-hygiene-baseline.json`）。
+- 存量测试不满足隔离契约的，按 ROADMAP 分批迁移，不阻塞新贡献（baseline 白名单：`rust/scripts/test-hygiene-baseline.json`）。**sleep 规则零容忍（批 6a 起）**：baseline 中 reason 以 `legacy` 开头的 sleep 条目**不再视为已覆盖**——legacy 债务不可再写入/留在 baseline，任何新裸 sleep 或 legacy 复活都直接报违规；`poll-step` / `negative-wait` / `real-*` / 行级 `hygiene-allow: D:` 等既有豁免语义不变。
 - **主门禁**：`node rust/scripts/check-test-hygiene.mjs`（挂 `pnpm gate:rust-test-hygiene`，与 zero-io 守卫同级别）——扫 test cfg 内裸 `std::env::set_var`/`remove_var`、裸 `thread::sleep`、`tests/` 文件缺 `// layer:` 标签、规则 R 的 real-env 信号（见下条）；行内 `// hygiene-allow: <reason>` 豁免（规则 R 的 `real-` 窗口分支除外）。clippy `disallowed-methods` 因全局作用域无法限定 test cfg（会误伤生产合法 `set_var`），仅作为 ROADMAP 增量项（SDR-016.3）。
 - **规则 R（real-env 归因棘轮）**：测试代码里有两类信号，必须归因到 R 层，由 test-hygiene 机械执行：
   - **裸真实子进程 spawn**（`std::process::Command` / `tokio::process::Command` / `Command::new`）：所在行必须在 `#[ignore]` 的测试 fn 内，或带行级 `// hygiene-allow: <reason>`。helper fn 挂不了 `#[ignore]`，所以它的 spawn 行**默认保持可见**——只能靠行级 `// hygiene-allow` 豁免；caller 测试上的 `#[ignore]` **不为 helper 的 spawn 背书**。
