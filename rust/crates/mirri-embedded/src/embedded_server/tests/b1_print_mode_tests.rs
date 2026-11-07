@@ -80,9 +80,10 @@ printBackgroundMode = "exit"
     );
 }
 
-/// Given drain mode with a ceiling of 1s and a task that completes in
-/// 300ms, When waitForBackgroundTasksOnPrint runs, Then it returns after
-/// the task settles (under the ceiling) and the subsequent decision is
+/// Given drain mode with a ceiling of 1s and a task that settles on its
+/// first poll (paused clock — no stub work time), When
+/// waitForBackgroundTasksOnPrint runs, Then it returns as soon as the
+/// task settles (well under the ceiling) and the subsequent decision is
 /// finish.
 #[tokio::test(start_paused = true)]
 async fn should_wait_for_tasks_to_settle_when_print_background_mode_is_drain() {
@@ -99,7 +100,7 @@ printWaitCeilingS = 1
             command: None,
             dispatcher: None,
         },
-        "settles in 300ms".into(),
+        "settles on its first poll".into(),
         session_id.clone(),
         None,
     );
