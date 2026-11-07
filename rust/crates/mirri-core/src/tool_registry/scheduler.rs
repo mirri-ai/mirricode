@@ -309,11 +309,35 @@ mod tests {
         }
     }
 
-    /// A helper to create a task that sleeps briefly, to test concurrency.
+    /// A gate the test opens explicitly: an executed task increments the
+    /// concurrency counter, then parks until the test releases it — task
+    /// overlap becomes a fact the test observes before releasing, not a
+    /// bet on how long a fixed delay keeps tasks inside the window.
+    struct ExecutionGate {
+        permits: tokio::sync::Semaphore,
+    }
+
+    impl ExecutionGate {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                permits: tokio::sync::Semaphore::new(0),
+            })
+        }
+
+        /// Let `n` parked tasks leave the execute body.
+        fn release(&self, n: usize) {
+            self.permits.add_permits(n);
+        }
+    }
+
+    /// A helper to create a task that parks on the test's gate, to test
+    /// concurrency. The counter/max bookkeeping is unchanged from the old
+    /// delay-based helper: entry increments, exit decrements, `max` records
+    /// the high-water mark.
     fn make_delayed_task(
         tool_call_id: &str,
         accesses: Vec<ToolAccess>,
-        delay_ms: u64,
+        gate: Arc<ExecutionGate>,
         counter: Arc<AtomicUsize>,
         max_concurrent: Arc<AtomicUsize>,
     ) -> PendingToolTask {
@@ -337,7 +361,7 @@ mod tests {
                     let current = counter.fetch_add(1, Ordering::SeqCst) + 1;
                     max_concurrent.fetch_max(current, Ordering::SeqCst);
 
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    let _permit = gate.permits.acquire().await.expect("the gate opens");
 
                     counter.fetch_sub(1, Ordering::SeqCst);
                     ToolResult::success(result_text)
@@ -397,32 +421,48 @@ mod tests {
         let cancel = CancelToken::new();
         let counter = Arc::new(AtomicUsize::new(0));
         let max_concurrent = Arc::new(AtomicUsize::new(0));
+        let gate = ExecutionGate::new();
 
         let tasks = vec![
             make_delayed_task(
                 "read-1",
                 vec![read_access("/a/b")],
-                50,
+                Arc::clone(&gate),
                 Arc::clone(&counter),
                 Arc::clone(&max_concurrent),
             ),
             make_delayed_task(
                 "read-2",
                 vec![read_access("/a/b")],
-                50,
+                Arc::clone(&gate),
                 Arc::clone(&counter),
                 Arc::clone(&max_concurrent),
             ),
             make_delayed_task(
                 "read-3",
                 vec![read_access("/a/b")],
-                50,
+                Arc::clone(&gate),
                 Arc::clone(&counter),
                 Arc::clone(&max_concurrent),
             ),
         ];
 
-        let results = schedule_and_execute(tasks, &cancel).await;
+        let (results, ()) = tokio::join!(
+            schedule_and_execute(tasks, &cancel),
+            async {
+                // All three conflict-free tasks must be admitted together
+                // before any of them is allowed to finish — the overlap is
+                // observed, then released, not raced against a delay.
+                mirri_test_support::wait_for::wait_for_async(
+                    std::time::Duration::from_secs(5),
+                    std::time::Duration::from_millis(10),
+                    || (counter.load(Ordering::SeqCst) >= 3).then_some(()),
+                )
+                .await
+                .expect("all three conflict-free tasks run concurrently");
+                gate.release(3);
+            }
+        );
 
         // Results in provider order
         assert_eq!(results.len(), 3);
@@ -444,25 +484,51 @@ mod tests {
         let cancel = CancelToken::new();
         let counter = Arc::new(AtomicUsize::new(0));
         let max_concurrent = Arc::new(AtomicUsize::new(0));
+        let gate = ExecutionGate::new();
 
         let tasks = vec![
             make_delayed_task(
                 "write-1",
                 vec![write_access("/same/path")],
-                50,
+                Arc::clone(&gate),
                 Arc::clone(&counter),
                 Arc::clone(&max_concurrent),
             ),
             make_delayed_task(
                 "write-2",
                 vec![write_access("/same/path")],
-                50,
+                Arc::clone(&gate),
                 Arc::clone(&counter),
                 Arc::clone(&max_concurrent),
             ),
         ];
 
-        let results = schedule_and_execute(tasks, &cancel).await;
+        let (results, ()) = tokio::join!(
+            schedule_and_execute(tasks, &cancel),
+            async {
+                // The first writer parks inside execute; while it holds the
+                // lane, the conflicting second writer must never enter —
+                // the bounded window is the negative proof, then release.
+                mirri_test_support::wait_for::wait_for_async(
+                    std::time::Duration::from_secs(5),
+                    std::time::Duration::from_millis(10),
+                    || (counter.load(Ordering::SeqCst) >= 1).then_some(()),
+                )
+                .await
+                .expect("the first writer enters execute");
+                let overlapped = mirri_test_support::wait_for::wait_for_async(
+                    std::time::Duration::from_millis(200),
+                    std::time::Duration::from_millis(10),
+                    || (counter.load(Ordering::SeqCst) >= 2).then_some(()),
+                )
+                .await;
+                assert!(
+                    overlapped.is_err(),
+                    "conflicting writes must serialize (no second entry while the first parks)"
+                );
+                gate.release(2);
+            }
+        );
 
         // Results in provider order
         assert_eq!(results.len(), 2);
@@ -483,25 +549,39 @@ mod tests {
         let cancel = CancelToken::new();
         let counter = Arc::new(AtomicUsize::new(0));
         let max_concurrent = Arc::new(AtomicUsize::new(0));
+        let gate = ExecutionGate::new();
 
         let tasks = vec![
             make_delayed_task(
                 "write-a",
                 vec![write_access("/path/a")],
-                50,
+                Arc::clone(&gate),
                 Arc::clone(&counter),
                 Arc::clone(&max_concurrent),
             ),
             make_delayed_task(
                 "write-b",
                 vec![write_access("/path/b")],
-                50,
+                Arc::clone(&gate),
                 Arc::clone(&counter),
                 Arc::clone(&max_concurrent),
             ),
         ];
 
-        let results = schedule_and_execute(tasks, &cancel).await;
+        let (results, ()) = tokio::join!(
+            schedule_and_execute(tasks, &cancel),
+            async {
+                // Disjoint writes must be admitted together before release
+                mirri_test_support::wait_for::wait_for_async(
+                    std::time::Duration::from_secs(5),
+                    std::time::Duration::from_millis(10),
+                    || (counter.load(Ordering::SeqCst) >= 2).then_some(()),
+                )
+                .await
+                .expect("disjoint writes run concurrently");
+                gate.release(2);
+            }
+        );
 
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].0, "write-a");
@@ -520,32 +600,58 @@ mod tests {
         let cancel = CancelToken::new();
         let counter = Arc::new(AtomicUsize::new(0));
         let max_concurrent = Arc::new(AtomicUsize::new(0));
+        let gate = ExecutionGate::new();
 
         let tasks = vec![
             make_delayed_task(
                 "all-1",
                 vec![all_access()],
-                50,
+                Arc::clone(&gate),
                 Arc::clone(&counter),
                 Arc::clone(&max_concurrent),
             ),
             make_delayed_task(
                 "read-1",
                 vec![read_access("/some/path")],
-                50,
+                Arc::clone(&gate),
                 Arc::clone(&counter),
                 Arc::clone(&max_concurrent),
             ),
             make_delayed_task(
                 "read-2",
                 vec![read_access("/other/path")],
-                50,
+                Arc::clone(&gate),
                 Arc::clone(&counter),
                 Arc::clone(&max_concurrent),
             ),
         ];
 
-        let results = schedule_and_execute(tasks, &cancel).await;
+        let (results, ()) = tokio::join!(
+            schedule_and_execute(tasks, &cancel),
+            async {
+                // The global-mutex task parks first; while it holds the
+                // lane, no other task may enter — bounded negative proof,
+                // then release the whole batch.
+                mirri_test_support::wait_for::wait_for_async(
+                    std::time::Duration::from_secs(5),
+                    std::time::Duration::from_millis(10),
+                    || (counter.load(Ordering::SeqCst) >= 1).then_some(()),
+                )
+                .await
+                .expect("the all-access task enters execute");
+                let overlapped = mirri_test_support::wait_for::wait_for_async(
+                    std::time::Duration::from_millis(200),
+                    std::time::Duration::from_millis(10),
+                    || (counter.load(Ordering::SeqCst) >= 2).then_some(()),
+                )
+                .await;
+                assert!(
+                    overlapped.is_err(),
+                    "the all-access mutex serializes the whole batch"
+                );
+                gate.release(3);
+            }
+        );
 
         assert_eq!(results.len(), 3);
         // Results in provider order
@@ -567,6 +673,7 @@ mod tests {
         let cancel = CancelToken::new();
         let counter = Arc::new(AtomicUsize::new(0));
         let max_concurrent = Arc::new(AtomicUsize::new(0));
+        let gate = ExecutionGate::new();
 
         // Task 0: write to /a — conflicts with task 1 (write to /a)
         // Task 1: write to /a — conflicts with task 0
@@ -575,27 +682,53 @@ mod tests {
             make_delayed_task(
                 "write-a-1",
                 vec![write_access("/a")],
-                50,
+                Arc::clone(&gate),
                 Arc::clone(&counter),
                 Arc::clone(&max_concurrent),
             ),
             make_delayed_task(
                 "write-a-2",
                 vec![write_access("/a")],
-                50,
+                Arc::clone(&gate),
                 Arc::clone(&counter),
                 Arc::clone(&max_concurrent),
             ),
             make_delayed_task(
                 "read-b",
                 vec![read_access("/b")],
-                50,
+                Arc::clone(&gate),
                 Arc::clone(&counter),
                 Arc::clone(&max_concurrent),
             ),
         ];
 
-        let results = schedule_and_execute(tasks, &cancel).await;
+        let (results, ()) = tokio::join!(
+            schedule_and_execute(tasks, &cancel),
+            async {
+                // The writer and the disjoint reader must be admitted
+                // together (partial overlap)…
+                mirri_test_support::wait_for::wait_for_async(
+                    std::time::Duration::from_secs(5),
+                    std::time::Duration::from_millis(10),
+                    || (counter.load(Ordering::SeqCst) >= 2).then_some(()),
+                )
+                .await
+                .expect("the disjoint reader runs beside the first writer");
+                // …while the conflicting second write never enters (bounded
+                // negative proof), then the whole batch is released.
+                let all_three = mirri_test_support::wait_for::wait_for_async(
+                    std::time::Duration::from_millis(200),
+                    std::time::Duration::from_millis(10),
+                    || (counter.load(Ordering::SeqCst) >= 3).then_some(()),
+                )
+                .await;
+                assert!(
+                    all_three.is_err(),
+                    "the conflicting second write must wait for the first"
+                );
+                gate.release(3);
+            }
+        );
 
         assert_eq!(results.len(), 3);
         assert_eq!(results[0].0, "write-a-1");

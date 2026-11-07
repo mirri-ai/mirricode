@@ -2418,20 +2418,43 @@ mod tests {
     async fn should_kill_command_and_report_cancelled_when_cancel_token_fires() {
         let cancel = CancelToken::new();
         let cancel_handle = cancel.clone();
-        let (result, _tasks) = tokio::join!(
-            run_tracked(
-                local_process(),
-                "sleep 30",
-                Some(60),
-                cancel,
-                ToolProgressHandle::default(),
-            ),
-            async {
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                cancel_handle.cancel();
-            }
+        let tasks = Arc::new(TaskManager::new());
+        let run = tokio::spawn(run_foreground_tracked(
+            local_process(),
+            "sleep 30".to_string(),
+            None,
+            Some(60),
+            Some(600),
+            false,
+            cancel,
+            ToolProgressHandle::default(),
+            Arc::clone(&tasks),
+            "session-1".to_string(),
+            "agent-main".to_string(),
+            "toolu-1".to_string(),
+        ));
+
+        // Cancel only once the run has provably registered its foreground
+        // row — the mid-flight window this test is about — instead of
+        // betting that 300ms of wall clock gets there. The spawn always
+        // precedes the run's select loop, so the cancel arm below kills a
+        // child that exists by the time the token is observed.
+        mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                tasks
+                    .list()
+                    .iter()
+                    .any(|task| task.status == TaskStatus::Running && !task.detached)
+                    .then_some(())
+            },
         )
-        .0;
+        .await
+        .expect("the foreground row registers before the cancel");
+        cancel_handle.cancel();
+
+        let result = run.await.expect("the run joins");
 
         assert!(result.is_error);
         let text = output_text(&result);

@@ -6037,7 +6037,7 @@ async fn should_update_title_and_refresh_updated_at_when_metadata_is_updated() {
     let original = session.metadata().await;
 
     // Small delay so updated_at is measurably different.
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await; // hygiene-allow: D: 毫秒时钟 tick 守卫，慢机器只会拉大间隔
 
     session
         .update_metadata(|m| {
@@ -8149,6 +8149,9 @@ impl DynChildProcess for ScriptedHookChild {
 struct SlowHookChild {
     killed: Arc<AtomicBool>,
     killed_handle: Arc<AtomicBool>,
+    /// Signals the parked `wait` the moment `kill` flips the flag — no
+    /// polling interval for the test to size.
+    kill_signal: Arc<tokio::sync::Notify>,
 }
 
 impl SlowHookChild {
@@ -8157,6 +8160,7 @@ impl SlowHookChild {
         Self {
             killed_handle: Arc::clone(&killed),
             killed,
+            kill_signal: Arc::new(tokio::sync::Notify::new()),
         }
     }
 }
@@ -8164,9 +8168,17 @@ impl SlowHookChild {
 impl DynChildProcess for SlowHookChild {
     fn wait(&mut self) -> DynProcessFuture<'_, anyhow::Result<i32>> {
         let killed = Arc::clone(&self.killed_handle);
+        let kill_signal = Arc::clone(&self.kill_signal);
         Box::pin(async move {
-            while !killed.load(Ordering::SeqCst) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+            // Park until kill() flips the flag and signals: the flag is
+            // re-checked around the await, and `notify_one` stores a
+            // permit when the signal fires first, so the wakeup is never
+            // missed.
+            loop {
+                if killed.load(Ordering::SeqCst) {
+                    break;
+                }
+                kill_signal.notified().await;
             }
             // A killed child reports signal termination — the erased trait's
             // convention for "no meaningful exit code".
@@ -8176,6 +8188,7 @@ impl DynChildProcess for SlowHookChild {
 
     fn kill(&mut self) -> DynProcessFuture<'_, anyhow::Result<()>> {
         self.killed.store(true, Ordering::SeqCst);
+        self.kill_signal.notify_one();
         Box::pin(async { Ok(()) })
     }
 }

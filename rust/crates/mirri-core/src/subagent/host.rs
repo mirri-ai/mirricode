@@ -4635,9 +4635,10 @@ mod tests {
 
     /// An LLM whose `chat` never resolves — the turn parks on its stream.
     /// Signals the test that the turn reached the LLM await through
-    /// `started` before parking.
+    /// `reached_llm` (a one-shot permit, so the signal is never missed
+    /// even if the test awaits after `chat` already fired) before parking.
     struct HangingLlm {
-        started: Arc<std::sync::atomic::AtomicBool>,
+        reached_llm: Arc<tokio::sync::Notify>,
         capability: ModelCapability,
     }
 
@@ -4652,8 +4653,7 @@ mod tests {
             &self.capability
         }
         fn chat(&self, _params: LlmChatParams) -> EngineResult<LlmEventStream> {
-            self.started
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.reached_llm.notify_one();
             Ok(Box::pin(futures::stream::pending()))
         }
     }
@@ -4661,13 +4661,13 @@ mod tests {
     /// A factory whose LLM hangs (test 2) — every child built from it parks
     /// its turn on the LLM stream.
     struct HangingLlmFactory {
-        started: Arc<std::sync::atomic::AtomicBool>,
+        reached_llm: Arc<tokio::sync::Notify>,
     }
 
     impl SubagentLlmFactory for HangingLlmFactory {
         fn create_llm(&self, _config: &AgentScopeConfig) -> Result<Arc<dyn Llm>, String> {
             Ok(Arc::new(HangingLlm {
-                started: Arc::clone(&self.started),
+                reached_llm: Arc::clone(&self.reached_llm),
                 capability: ModelCapability::default(),
             }))
         }
@@ -4770,7 +4770,7 @@ mod tests {
             .build()
             .expect("runtime");
         runtime.block_on(async {
-            let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let reached_llm = Arc::new(tokio::sync::Notify::new());
             let session = make_session(SessionScopeConfig::default());
             let host = SessionSubagentHost::new(
                 Arc::downgrade(&session),
@@ -4778,7 +4778,7 @@ mod tests {
                 AgentId::new("main"),
                 AgentScopeConfig::default(),
                 Arc::new(HangingLlmFactory {
-                    started: Arc::clone(&started),
+                    reached_llm: Arc::clone(&reached_llm),
                 }),
                 TurnFlowConfig::default(),
                 None,
@@ -4794,15 +4794,15 @@ mod tests {
                 (&mut completion).await
             });
 
-            // ...until the turn parks on the LLM stream.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while !started.load(std::sync::atomic::Ordering::SeqCst) {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the child turn never reached the LLM await"
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
+            // ...until the turn parks on the LLM stream — signalled by the
+            // LLM's chat() itself (a one-shot permit, bounded by a timeout
+            // so a turn that never reaches the await fails red).
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                reached_llm.notified(),
+            )
+            .await
+            .expect("the child turn never reached the LLM await");
 
             // Then a sentinel blocking-pool task completes while the child
             // turn is still parked — the pool's single thread is free.
