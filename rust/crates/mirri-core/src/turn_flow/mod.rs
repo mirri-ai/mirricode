@@ -1886,7 +1886,8 @@ impl TurnFlow {
         // The callback is called after each LLM response with the token
         // usage, the response's natural stop reason, and the 1-based step
         // number. It records usage against the goal's budget and returns:
-        // - Ok(None) — continue normally (no goal or budget not exhausted).
+        // - Ok(None) — continue normally (no goal, the goal is completed, or
+        //   budget not exhausted).
         // - Ok(Some(true)) — stop the turn (budget exhausted; no grace
         //   available — not a tool_calls stop, the grace already spent, or
         //   no step budget left).
@@ -1960,8 +1961,16 @@ impl TurnFlow {
                         let Some(gm) = gm else {
                             return Ok(None);
                         };
+                        // A completed goal is terminal: subsequent steps are
+                        // regular work, not goal turns — no usage-only op, no
+                        // counter advance, and no budget enforcement (a
+                        // completed goal must never flip to blocked).
+                        if gm.is_goal_complete() {
+                            return Ok(None);
+                        }
                         // Usage-only goal persistence (F11): while a
-                        // goal is active, record its running totals
+                        // goal is live (created and not completed), record
+                        // its running totals
                         // (absolute values — the same semantics as
                         // the TS `goal.update` usage fields) as a
                         // `goal.update` op *before* the in-memory
