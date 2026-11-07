@@ -23,7 +23,12 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+// tokio::time::Instant (not std): identical outside a paused clock, and
+// required inside one — a paused runtime auto-advances tokio timers while a
+// std::time::Instant never moves, which would spin wait_for_settlement's
+// deadline loop forever (D3 print-mode tests).
+use tokio::time::Instant;
 
 use mirri_core::config::{PrintBackgroundMode, ServerConfig};
 use serde_json::json;
