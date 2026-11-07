@@ -403,18 +403,18 @@ mod tests {
         // The first search never waits for the build (M3): it returns the
         // current partial snapshot + Building. Poll until the background
         // build lands, then the authoritative answer must be there.
-        let mut state = IndexState::Building;
-        let mut hits = Vec::new();
-        for _ in 0..40 {
-            let answer = reg.search(dir.path(), "composer", 20).await;
-            state = answer.1;
-            hits = answer.0;
-            if state == IndexState::Ready {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        assert_eq!(state, IndexState::Ready);
+        let answer = mirri_test_support::wait_for::wait_for_async_result(
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_millis(50),
+            || async {
+                let answer = reg.search(dir.path(), "composer", 20).await;
+                (answer.1 == IndexState::Ready).then_some(answer)
+            },
+        )
+        .await
+        .expect("the background index build lands in time");
+        let hits = answer.0;
+        assert_eq!(answer.1, IndexState::Ready);
         assert!(
             hits.iter()
                 .any(|h| h.rel_path == "src/components/Composer.vue" && h.kind == "file")
@@ -427,16 +427,17 @@ mod tests {
         let reg = FileIndexRegistry::new();
         // The first search no longer waits for the build (M3) — poll until
         // the background build lands before asserting.
-        let mut hits = Vec::new();
-        for _ in 0..40 {
-            let answer = reg.search(dir.path(), "components", 20).await;
-            hits = answer.0;
-            if answer.1 == IndexState::Ready {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        assert!(hits.iter().any(|h| h.kind == "directory"));
+        let answer = mirri_test_support::wait_for::wait_for_async_result(
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_millis(50),
+            || async {
+                let answer = reg.search(dir.path(), "components", 20).await;
+                (answer.1 == IndexState::Ready).then_some(answer)
+            },
+        )
+        .await
+        .expect("the background index build lands in time");
+        assert!(answer.0.iter().any(|h| h.kind == "directory"));
     }
 
     #[tokio::test]
@@ -446,15 +447,16 @@ mod tests {
         std::fs::write(dir.path().join("src/components/New.vue"), "x").unwrap();
         // 通知注册表该 root 有变化（生产链路由 watcher 驱动；测试手动触发）。
         // invalidate 不等待重建（M3）——轮询直到重建完成再断言。
-        let mut hits = Vec::new();
-        for _ in 0..40 {
-            let answer = reg.search(dir.path(), "New.vue", 20).await;
-            hits = answer.0;
-            if answer.1 == IndexState::Ready {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        assert!(hits.iter().any(|h| h.rel_path == "src/components/New.vue"));
+        let answer = mirri_test_support::wait_for::wait_for_async_result(
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_millis(50),
+            || async {
+                let answer = reg.search(dir.path(), "New.vue", 20).await;
+                (answer.1 == IndexState::Ready).then_some(answer)
+            },
+        )
+        .await
+        .expect("the background index rebuild lands in time");
+        assert!(answer.0.iter().any(|h| h.rel_path == "src/components/New.vue"));
     }
 }

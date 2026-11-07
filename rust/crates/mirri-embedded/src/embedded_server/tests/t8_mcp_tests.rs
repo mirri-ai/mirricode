@@ -747,7 +747,13 @@ async fn restart_mock_mcp_http_server(url: &str) {
                     };
                     let (delay, error) = (0u64, false);
                     let tools = vec![("echo".to_string(), "echo tool".to_string())];
-                    tokio::spawn(serve_mock_mcp_connection(stream, delay, error, tools));
+                    tokio::spawn(serve_mock_mcp_connection(
+                        stream,
+                        delay,
+                        error,
+                        tools,
+                        None,
+                    ));
                 }
             });
             return;

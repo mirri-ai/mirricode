@@ -442,7 +442,7 @@ mod tests {
         // sleep inside the stream, so a dropped `next()` future (the
         // select's heartbeat arm) never loses state.
         let stream: LlmEventStream = Box::pin(futures::stream::once(async move {
-            tokio::time::sleep(Duration::from_millis(1500)).await;
+            tokio::time::sleep(Duration::from_millis(1500)).await; // hygiene-allow: D: paused clock 下的 fixture 虚拟定时器，不耗墙钟
             LlmEvent::Done {
                 stop_reason: "completed".to_string(),
             }
@@ -500,7 +500,7 @@ mod tests {
                 text: "first".into(),
             }])
             .chain(futures::stream::once(async move {
-                tokio::time::sleep(Duration::from_millis(2000)).await;
+                tokio::time::sleep(Duration::from_millis(2000)).await; // hygiene-allow: D: paused clock 下的 fixture 虚拟定时器，不耗墙钟
                 LlmEvent::Done {
                     stop_reason: "completed".to_string(),
                 }

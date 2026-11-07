@@ -50,18 +50,66 @@ pub async fn async_lock() -> AsyncEnvGuard {
         .lock()
         .await;
     let std_guard = lock();
-    AsyncEnvGuard { guard, std_guard }
+    AsyncEnvGuard {
+        guard,
+        std_guard,
+        saved: Vec::new(),
+    }
 }
 
 /// Guard returned by [`async_lock`]; releasing it releases both the async
 /// and the underlying std env mutex. The guard is opaque on purpose —
 /// extracting the inner tokio guard would silently drop the std half and
 /// break the sync/async mutual exclusion invariant, so no such API exists.
+///
+/// Like [`EnvGuard`], it records every mutation it is asked to make and
+/// restores the previous values on drop — the sanctioned way to hold a
+/// process-env mutation across `.await` points (the sync [`EnvGuard`]
+/// must not span them).
 pub struct AsyncEnvGuard {
     #[allow(dead_code)]
     guard: tokio::sync::MutexGuard<'static, ()>,
     #[allow(dead_code)]
     std_guard: MutexGuard<'static, ()>,
+    saved: Vec<(String, Option<std::ffi::OsString>)>,
+}
+
+impl AsyncEnvGuard {
+    /// Set `key` to `value`, recording the previous value for restore on
+    /// drop. Same contract as [`EnvGuard::set`], for guards that must
+    /// span `.await` points.
+    pub fn set(&mut self, key: &str, value: impl AsRef<std::ffi::OsStr>) {
+        self.record(key);
+        // SAFETY: both halves of the workspace env lock are held for this
+        // guard's whole lifetime; no other thread reads or writes these
+        // variables concurrently.
+        unsafe { std::env::set_var(key, value.as_ref()) };
+    }
+
+    /// Remove `key`, recording its previous value for restore on drop.
+    pub fn remove(&mut self, key: &str) {
+        self.record(key);
+        // SAFETY: same lock discipline as `set`.
+        unsafe { std::env::remove_var(key) };
+    }
+
+    fn record(&mut self, key: &str) {
+        self.saved.push((key.to_string(), std::env::var_os(key)));
+    }
+}
+
+impl Drop for AsyncEnvGuard {
+    fn drop(&mut self) {
+        for (key, previous) in self.saved.drain(..).rev() {
+            // SAFETY: the lock is still held while this guard's fields are
+            // dropped (field drop happens after `Drop::drop`), so no other
+            // thread can race the restore.
+            match previous {
+                Some(value) => unsafe { std::env::set_var(&key, value) },
+                None => unsafe { std::env::remove_var(&key) },
+            }
+        }
+    }
 }
 
 /// Try to acquire the workspace env lock without blocking.
@@ -160,25 +208,46 @@ mod tests {
         let _guard2 = lock();
     }
 
-    const TEST_KEY: &str = "MIRRI_TEST_SUPPORT_ENV_GUARD_TEST";
+    // One key per test: sharing a key would let the two tests race each
+    // other's value through the (per-test) lock scopes.
+    const RESTORE_TEST_KEY: &str = "MIRRI_TEST_SUPPORT_ENV_GUARD_RESTORE_TEST";
+    const UNSET_TEST_KEY: &str = "MIRRI_TEST_SUPPORT_ENV_GUARD_UNSET_TEST";
+
+    /// Drop everything `guard` would restore on release, so its mutation
+    /// persists after the guard goes out of scope — the fixture's
+    /// setup/teardown half, expressed through the guard API instead of a
+    /// bare env write (which the test-hygiene gate bans).
+    fn commit(guard: &mut EnvGuard) {
+        guard.saved.clear();
+    }
 
     #[test]
     fn should_restore_previous_value_when_guard_drops() {
+        // Given the key holds its initial value: the setup guard installs
+        // it and commits the write, so the value persists into the
+        // guard-under-test scope below
         {
-            let _setup = lock();
-            // SAFETY: lock held; single-variable test fixture setup.
-            unsafe { std::env::set_var(TEST_KEY, "initial") };
+            let mut setup = EnvGuard::new();
+            setup.set(RESTORE_TEST_KEY, "initial");
+            commit(&mut setup);
         }
         {
             let mut guard = EnvGuard::new();
-            guard.set(TEST_KEY, "overridden");
-            assert_eq!(std::env::var(TEST_KEY).as_deref(), Ok("overridden"));
+            guard.set(RESTORE_TEST_KEY, "overridden");
+            assert_eq!(std::env::var(RESTORE_TEST_KEY).as_deref(), Ok("overridden"));
         }
-        assert_eq!(std::env::var(TEST_KEY).as_deref(), Ok("initial"));
+        // Then the guard above restored the `initial` value it recorded —
+        // observed under the lock so a concurrent writer cannot race the read
         {
-            let _teardown = lock();
-            // SAFETY: lock held; fixture cleanup only.
-            unsafe { std::env::remove_var(TEST_KEY) };
+            let _lock = lock();
+            assert_eq!(std::env::var(RESTORE_TEST_KEY).as_deref(), Ok("initial"));
+        }
+        // Teardown removes the fixture key for good (the recorded previous
+        // value is committed away, like the setup above)
+        {
+            let mut teardown = EnvGuard::new();
+            teardown.remove(RESTORE_TEST_KEY);
+            commit(&mut teardown);
         }
     }
 
@@ -186,8 +255,8 @@ mod tests {
     fn should_preserve_unset_state_when_guard_drops() {
         {
             let mut guard = EnvGuard::new();
-            guard.set(TEST_KEY, "temporarily-set");
-            assert_eq!(std::env::var(TEST_KEY).as_deref(), Ok("temporarily-set"));
+            guard.set(UNSET_TEST_KEY, "temporarily-set");
+            assert_eq!(std::env::var(UNSET_TEST_KEY).as_deref(), Ok("temporarily-set"));
         }
         // Re-take the lock before observing the drop's effect: the guard
         // released it on drop, and another test in this binary may set the
@@ -195,7 +264,7 @@ mod tests {
         // the lock would then race that writer and report a spurious
         // "still set".
         let _lock = lock();
-        assert!(std::env::var(TEST_KEY).is_err());
+        assert!(std::env::var(UNSET_TEST_KEY).is_err());
     }
 
     #[test]

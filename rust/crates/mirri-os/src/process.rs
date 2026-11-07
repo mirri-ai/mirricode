@@ -1082,7 +1082,7 @@ mod tests {
     #[test]
     fn should_report_a_dead_pid_as_not_alive_when_probed() {
         // spawn a short-lived child, wait it out, then probe its pid slot
-        let mut child = std::process::Command::new("true")
+        let mut child = std::process::Command::new("true") // hygiene-allow: D: spawn+wait 后探活，无时间依赖
             .spawn()
             .expect("spawn true");
         let pid = child.id() as i32;
@@ -1097,6 +1097,7 @@ mod tests {
     /// its group id) until reaped, which is what this guards against.
     #[test]
     #[cfg(unix)]
+    #[ignore] // R-layer: real zombie sampling (design §3)
     fn should_report_a_zombie_child_as_not_alive_when_probed() {
         // Given a group-leading child killed but not yet reaped by `wait`
         let mut child = std::process::Command::new("sleep")
@@ -1121,7 +1122,7 @@ mod tests {
             if !probe.alive {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // hygiene-allow: real-time: zombie liveness flip sampling (R-layer host, design §3)
             probe = super::probe_process(pid).expect("probe must not error");
         }
 
@@ -1251,13 +1252,12 @@ mod tests {
     #[cfg(unix)]
     fn should_terminate_an_empty_or_dead_group_when_terminating() {
         // A group whose leader exited and has no members: ESRCH path → Ok.
-        let mut child = std::process::Command::new("true")
+        let mut child = std::process::Command::new("true") // hygiene-allow: D: spawn+wait，ESRCH 路径确定性
             .process_group(0) // std::os::unix::process::CommandExt
             .spawn()
             .expect("spawn group leader");
         let pgid = child.id() as i32;
         let _ = child.wait();
-        std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(super::terminate_group(pgid).is_ok());
     }
 }

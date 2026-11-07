@@ -938,6 +938,46 @@ export function reduceAppEvent(
             break;
           }
         }
+        // Assistant tool-call echo dedup: a tool call id is unique per call,
+        // so an assistant message whose tool_use ids were ALL already
+        // appended is a re-delivery of an earlier message (streamed-vs-
+        // persisted copy, crash-recovery replay) — appending it again would
+        // render every tool card twice. Fold its volatile extras (live
+        // progress / start anchor) into the surviving copy's tool parts and
+        // drop the message. Text-only duplicates are deliberately NOT
+        // matched (a model may legitimately repeat itself).
+        if (event.message.role === 'assistant') {
+          const incomingToolUses = event.message.content.filter((c) => c.type === 'toolUse');
+          if (incomingToolUses.length > 0) {
+            const seenIds = new Set<string>();
+            for (const m of msgs) {
+              for (const c of m.content) {
+                if (c.type === 'toolUse') seenIds.add(c.toolCallId);
+              }
+            }
+            if (incomingToolUses.every((c) => seenIds.has(c.toolCallId))) {
+              next.messagesBySession = { ...next.messagesBySession };
+              next.messagesBySession[sid] = msgs.map((m) => ({
+                ...m,
+                content: m.content.map((c) => {
+                  if (c.type !== 'toolUse') return c;
+                  const echo = incomingToolUses.find((u) => u.toolCallId === c.toolCallId);
+                  if (echo === undefined) return c;
+                  // Gap-fill only; never overwrite what the survivor carries.
+                  const fillOutput = c.outputLines === undefined && echo.outputLines?.length;
+                  const fillStartedAt = c.startedAtMs === undefined && echo.startedAtMs !== undefined;
+                  if (!fillOutput && !fillStartedAt) return c;
+                  return {
+                    ...c,
+                    outputLines: fillOutput ? echo.outputLines : c.outputLines,
+                    startedAtMs: fillStartedAt ? echo.startedAtMs : c.startedAtMs,
+                  };
+                }),
+              }));
+              break;
+            }
+          }
+        }
         next.messagesBySession = { ...next.messagesBySession };
         next.messagesBySession[sid] = [...msgs, event.message];
       }

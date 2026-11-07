@@ -1361,7 +1361,7 @@ mod tests {
         // Create a .gitignore that excludes ignored.txt
         std::fs::write(tmp.path().join(".gitignore"), "ignored.txt\n").unwrap();
         // Initialize a git repo so ripgrep respects .gitignore
-        std::process::Command::new("git")
+        std::process::Command::new("git") // hygiene-allow: D: git init fixture，结果与机器快慢无关
             .arg("init")
             .current_dir(tmp.path())
             .output()

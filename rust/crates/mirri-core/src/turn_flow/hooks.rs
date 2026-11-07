@@ -2969,19 +2969,29 @@ mod tests {
         let pending = {
             let gate = std::sync::Arc::clone(&approval_gate);
             tokio::spawn(async move {
-                for _ in 0..200 {
-                    let rows = gate.list_pending();
-                    if let Some((id, _)) = rows.first() {
+                let found = mirri_test_support::wait_for::wait_for_async(
+                    std::time::Duration::from_secs(5),
+                    std::time::Duration::from_millis(5),
+                    || gate.list_pending().first().map(|(id, _)| *id),
+                )
+                .await;
+                match found {
+                    Ok(id) => {
                         let _ =
-                            gate.resolve(*id, crate::session::gates::ApprovalDecision::Approved);
-                        return 1usize;
+                            gate.resolve(id, crate::session::gates::ApprovalDecision::Approved);
+                        1usize
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    Err(_) => 0,
                 }
-                0
             })
         };
-        let outcome = hooks.authorize_tool_execution(ctx).await.unwrap();
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            hooks.authorize_tool_execution(ctx),
+        )
+        .await
+        .expect("the authorize side settles within the bound (batch 6a #4: a hang here must be a bounded red, not an infinite wait)")
+        .unwrap();
         let pending_on_gate = pending.await.unwrap_or(0);
         A4Cell {
             outcome,
@@ -3200,15 +3210,13 @@ mod tests {
         };
         let drive = async {
             // Wait for the ask to park on the gate.
-            let mut parked = false;
-            for _ in 0..200 {
-                if !approval_gate.list_pending().is_empty() {
-                    parked = true;
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-            assert!(parked, "the manual workspace ask parks on the gate");
+            mirri_test_support::wait_for::wait_for_async(
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_millis(5),
+                || (!approval_gate.list_pending().is_empty()).then_some(()),
+            )
+            .await
+            .expect("the manual workspace ask parks on the gate");
             // B-1: a pending user decision is alive by design — the
             // watchdog must read it as Advancing, never as plain engine
             // silence (which the backstop would hard-drop).

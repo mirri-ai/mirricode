@@ -54,6 +54,13 @@ export default {
     created: 'created',
     todos: '{count} items',
   },
+  /** Bash row directory badge: the leading `cd` targets the current workspace,
+   *  so the command is equivalent to running here — collapsed to a badge rather
+   *  than hidden. Hovering shows the full path. */
+  workspacePrefixHint: 'Current workspace (the leading cd to this directory is omitted)',
+  /** Directory prefix for a workspace other than the current one: only the last
+   *  path segment is kept, the rest is compressed to `…`. */
+  otherDirPrefixHint: 'Runs after changing into this directory',
   group: {
     title: '{count} tool call | {count} tool calls',
     running: 'running',

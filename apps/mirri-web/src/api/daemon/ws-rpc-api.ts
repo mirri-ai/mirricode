@@ -4137,6 +4137,8 @@ export interface RpcProvider {
   type: string;
   base_url?: string;
   default_model?: string;
+  thinking_off?: string;
+  custom_headers?: Record<string, string>;
   has_api_key: boolean;
   status: 'connected' | 'error' | 'unconfigured';
   models?: string[];
@@ -4773,6 +4775,8 @@ export function toAppProvider(provider: RpcProvider): AppProvider {
     type: provider.type,
     baseUrl: provider.base_url,
     defaultModel: provider.default_model,
+    thinkingOff: provider.thinking_off,
+    customHeaders: provider.custom_headers,
     hasApiKey: provider.has_api_key ?? false,
     status: provider.status ?? 'unconfigured',
     models: provider.models,

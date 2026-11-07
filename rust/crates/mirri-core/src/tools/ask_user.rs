@@ -2005,7 +2005,7 @@ mod tests {
                 // the paused runtime interleaves the spawned ask and its
                 // keepalive ticker at every virtual wakeup.
                 let ask = tokio::task::spawn(async move { execute(ctx).await });
-                tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(600)).await; // hygiene-allow: D: paused clock 虚拟推进，用作调度让出点
                 assert!(
                     !ask.is_finished(),
                     "the ask must still be waiting (no answer arrived)"
@@ -2067,10 +2067,18 @@ mod tests {
                 let ctx = make_ctx();
                 let ask = tokio::task::spawn(async move { execute(ctx).await });
 
-                // While the loop is retrying the broken channel, the
-                // transport "re-subscribes": install a working callback
-                // into the same slot.
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                // While the loop is retrying the broken channel, wait
+                // until the retries have provably happened (the very
+                // condition the assertion below pins), then the transport
+                // "re-subscribes": install a working callback into the
+                // same slot.
+                mirri_test_support::wait_for::wait_for_async(
+                    std::time::Duration::from_secs(30),
+                    std::time::Duration::from_millis(20),
+                    || (broken.attempts() >= 2).then_some(()),
+                )
+                .await
+                .expect("the broken channel must be retried before the reinstall");
                 *slot.write().unwrap() = Some(Arc::new(MockCallback {
                     response: json!({ "answers": [{ "question": "Which?", "answer": "B" }] }),
                     last_method: Mutex::new(None),
@@ -2227,8 +2235,15 @@ mod tests {
                 let ask = tokio::task::spawn(async move { execute(ctx).await });
 
                 // While the loop waits for the channel, the user answers
-                // through the gate's request_id (question.answer).
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                // through the gate's request_id (question.answer) — wait
+                // until the ask is provably registered on the gate first.
+                mirri_test_support::wait_for::wait_for_async(
+                    std::time::Duration::from_secs(30),
+                    std::time::Duration::from_millis(10),
+                    || (!question_gate.list_pending().is_empty()).then_some(()),
+                )
+                .await
+                .expect("the waiting ask registers on the gate");
                 let pending = question_gate.list_pending();
                 assert_eq!(pending.len(), 1, "the waiting ask stays pending");
                 let (request_id, _) = pending[0].clone();
@@ -2297,8 +2312,16 @@ mod tests {
                     .to_string();
 
                 // While the detached future retries the broken channel,
-                // the transport "re-subscribes" with a working callback.
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                // wait until the retries have provably happened (the
+                // condition the assertion below pins), then the transport
+                // "re-subscribes" with a working callback.
+                mirri_test_support::wait_for::wait_for_async(
+                    std::time::Duration::from_secs(30),
+                    std::time::Duration::from_millis(20),
+                    || (broken.attempts() >= 2).then_some(()),
+                )
+                .await
+                .expect("the broken channel must be retried before the reinstall");
                 *slot.write().unwrap() = Some(Arc::new(MockCallback {
                     response: json!({ "answers": [{ "question": "Which?", "answer": "B" }] }),
                     last_method: Mutex::new(None),

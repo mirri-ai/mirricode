@@ -935,7 +935,7 @@ mod tests {
         });
 
         // Sleep long enough to exceed the 10ms wall-clock budget.
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // hygiene-allow: D: 真实墙钟语义，10ms 预算 vs 20ms 等待，慢机器只会更成立
 
         assert!(
             manager.is_budget_exhausted(),
@@ -952,8 +952,6 @@ mod tests {
             tokens: None,
             wall_clock_ms: None,
         });
-
-        std::thread::sleep(std::time::Duration::from_millis(10));
 
         assert!(
             !manager.is_budget_exhausted(),
@@ -1039,7 +1037,7 @@ mod tests {
         });
 
         // Sleep long enough to exceed the 10ms wall-clock budget.
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // hygiene-allow: D: 真实墙钟语义，10ms 预算 vs 20ms 等待，慢机器只会更成立
 
         let result = manager.record_step_usage(LlmUsage {
             input_tokens: 10,
@@ -1068,9 +1066,6 @@ mod tests {
             let start = manager.start_time.lock().unwrap_or_else(|e| e.into_inner());
             start.unwrap()
         };
-
-        // Sleep a bit so a reset would be detectable.
-        std::thread::sleep(std::time::Duration::from_millis(15));
 
         // Set a new budget — the timer should NOT reset.
         manager.set_budget(GoalBudget {

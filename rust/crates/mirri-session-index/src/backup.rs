@@ -512,6 +512,15 @@ mod tests {
         assert_eq!(latest_backup(&db_path), None);
     }
 
+    /// Pin a file's modification time to `when` — explicit mtimes make
+    /// mtime-ordering assertions deterministic without sleeping across
+    /// filesystem timestamp granularity.
+    fn set_modified(path: &Path, when: SystemTime) {
+        let file = std::fs::File::open(path).unwrap();
+        let times = std::fs::FileTimes::new().set_modified(when);
+        file.set_times(times).expect("set mtime");
+    }
+
     /// Given a `.bak2` that is newer than `.bak` (a restored or hand-copied
     /// generation), When the latest generation is asked for, Then mtime
     /// decides, not the file name.
@@ -522,9 +531,11 @@ mod tests {
         let newest = generation_path(&db_path, NEWEST_SUFFIX);
         let previous = generation_path(&db_path, PREVIOUS_SUFFIX);
         std::fs::write(&newest, b"older").unwrap();
-        // A whole second of separation defeats filesystem mtime granularity.
-        std::thread::sleep(Duration::from_millis(1_100));
         std::fs::write(&previous, b"newer").unwrap();
+        // Explicit mtimes an hour apart — filesystem mtime granularity
+        // never enters the picture, so no sleep separates the writes.
+        set_modified(&newest, std::time::UNIX_EPOCH + Duration::from_secs(3_600));
+        set_modified(&previous, std::time::UNIX_EPOCH + Duration::from_secs(7_200));
 
         assert_eq!(latest_backup(&db_path), Some(previous));
     }

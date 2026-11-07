@@ -1530,8 +1530,10 @@ pub struct EmbeddedServer {
     /// stored answer verbatim. `disabled` is NOT read from the snapshot but
     /// re-read live, so a config flip surfaces on the very next call even
     /// inside the window (the flag is one cheap field read — the sessions
-    /// walk is what the throttle exists to protect).
-    cron_list_all_cache: std::sync::Mutex<Option<(std::time::Instant, Vec<serde_json::Value>)>>,
+    /// walk is what the throttle exists to protect). The stamp is a
+    /// `tokio::time::Instant`: identical to `std` off a paused clock, and
+    /// it lets paused-clock tests step over the window with `advance`.
+    cron_list_all_cache: std::sync::Mutex<Option<(tokio::time::Instant, Vec<serde_json::Value>)>>,
     /// The last `cron.listAll` aggregation's WORKSPACE groups (stage-2 T6)
     /// — the workspace arm of the same throttle: a second call inside
     /// the window answers these groups verbatim alongside the stored
@@ -5736,6 +5738,48 @@ impl EmbeddedServer {
         }
     }
 
+    /// Join the session's in-flight FIRE turn (batch 4's test seam): take
+    /// the session's fire-mode entries out of the registry and await their
+    /// task handles, so a test observes "the turn finished" as a fact
+    /// instead of polling for its side effects. The task removes its own
+    /// entry right after the engine turn returns — by then every tool the
+    /// turn ran has run — so an already-absent entry means the same thing
+    /// and nothing is joined. Precondition: the caller must have seen the
+    /// turn's registry insertion before calling (the dispatch that
+    /// registers the entry has returned) — otherwise "absent" is
+    /// indistinguishable from "not yet inserted" and the join would return
+    /// while the turn is still starting. Wait-mode entries are
+    /// remove-and-drop, not skipped: they run inline on their own dispatch
+    /// future so there is no handle to join, but the entry is still taken
+    /// out of the registry and discarded here (the turn's `WaitTurnGuard`
+    /// removal later is then a no-op). Taking the entry also retires it
+    /// from `message.abort`/busy probes for the duration of the join —
+    /// fine for the single-flow tests that call this.
+    #[cfg(test)]
+    pub(super) async fn await_turn(&self, session_id: &str) {
+        let prefix = format!("{session_id}:");
+        let handles: Vec<tokio::task::JoinHandle<()>> = {
+            let mut turns = self
+                .in_flight_turns
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let keys: Vec<String> = turns
+                .keys()
+                .filter(|key| key.starts_with(&prefix))
+                .cloned()
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| match turns.remove(&key) {
+                    Some(InFlightTurn::Fire { handle, .. }) => Some(handle),
+                    _ => None,
+                })
+                .collect()
+        };
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+
     /// The census gate for `call_method` (ADR-003 c / ADR-012 c): every
     /// route waits for the one-time startup orphan census (and the
     /// lifetime-sweeper spawn behind it), regardless of class — the census
@@ -5778,7 +5822,7 @@ impl EmbeddedServer {
         // captured the probe once would wait forever on the retired
         // closure (a `false` probe is never flipped — the tests install
         // one pinned to `false` and release by clearing the slot).
-        let mut hold = std::pin::pin!(async {
+        let hold = std::pin::pin!(async {
             loop {
                 let probe = self
                     .settlement_hold
@@ -5794,21 +5838,18 @@ impl EmbeddedServer {
                 tokio::task::yield_now().await;
             }
         });
-        let mut pace = std::pin::pin!(async {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-            }
-        });
-        std::future::poll_fn(|cx| match hold.as_mut().poll(cx) {
-            std::task::Poll::Ready(()) => std::task::Poll::Ready(()),
-            std::task::Poll::Pending => {
-                // Registering the pace's timer with THIS task's waker is
-                // what keeps the dispatch eligible for another poll.
-                let _ = pace.as_mut().poll(cx);
-                std::task::Poll::Pending
-            }
-        })
-        .await;
+        // Batch 6b #9: the 1 ms pacing timer that used to sit here is gone.
+        // Its stated job ("register a timer with this task's waker so the
+        // dispatch stays eligible for another poll") is already done by the
+        // `yield_now()` above — a yield re-polls the task on the next
+        // scheduler turn, which is the same wake path a timer would
+        // register. Verified by mutation: deleting the timer left all four
+        // settlement-hold tests green (`should_answer_session_list_before_
+        // census_settles`, `should_wait_for_recovery_check_before_answering_
+        // recovery_list`, `should_skip_recovery_check_for_config_and_core_
+        // reads`, `should_wait_for_census_and_recovery_before_cron_first_
+        // tick`), so the D1 verdict stands: no sleep, no allow needed.
+        hold.await;
     }
 
     /// Install the settlement probe — see [`Self::settlement_access`]. The

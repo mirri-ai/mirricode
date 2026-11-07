@@ -556,7 +556,7 @@ async fn should_report_the_disabled_state_on_the_aggregated_view() {
 /// CACHED replay (the per-session cache entry is present) — and after the
 /// log's fingerprint moves, the cache invalidates and the fresh replay
 /// serves the appended task.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn should_cache_a_persisted_sessions_replay_and_invalidate_when_the_log_moves() {
     let mock = Arc::new(ScriptedLlm::new());
     let (server, _tmp) = cron_b3_server(Arc::clone(&mock));
@@ -599,7 +599,8 @@ async fn should_cache_a_persisted_sessions_replay_and_invalidate_when_the_log_mo
     // the unchanged wire log answers from the per-session cache — the
     // top-level 1s throttle would also serve the stored answer, so the
     // observable here is the per-session cache entry surviving the walk.
-    tokio::time::sleep(CRON_LIST_ALL_MIN_INTERVAL + Duration::from_millis(50)).await;
+    tokio::task::yield_now().await;
+    tokio::time::advance(CRON_LIST_ALL_MIN_INTERVAL + Duration::from_millis(50)).await;
     let second = server
         .call_method("cron.listAll", json!({}))
         .await
@@ -617,11 +618,22 @@ async fn should_cache_a_persisted_sessions_replay_and_invalidate_when_the_log_mo
 
     // Move the log's fingerprint (a rewrite of the same bytes: the mtime
     // moves, the content stays valid) and aggregate again: the cache
-    // invalidates and the fresh replay re-serves the same task.
+    // invalidates and the fresh replay re-serves the same task. The stat
+    // behind the fingerprint is second-precision (`SyncFs::stat`), so the
+    // paused clock's frozen real time would keep a same-second rewrite
+    // inside the cached second — pin the mtime explicitly instead (the
+    // `set_times` technique of `mirri-os`'s mtime tests).
     let wire_log = find_wire_log(_tmp.path());
     let bytes = std::fs::read(&wire_log).expect("read the wire log");
     std::fs::write(&wire_log, &bytes).expect("rewrite the wire log (mtime moves)");
-    tokio::time::sleep(CRON_LIST_ALL_MIN_INTERVAL + Duration::from_millis(50)).await;
+    {
+        use std::fs::FileTimes;
+        let file = std::fs::File::open(&wire_log).expect("open the wire log");
+        let times = FileTimes::new().set_modified(std::time::UNIX_EPOCH + Duration::from_secs(3_600));
+        file.set_times(times).expect("pin the wire log mtime");
+    }
+    tokio::task::yield_now().await;
+    tokio::time::advance(CRON_LIST_ALL_MIN_INTERVAL + Duration::from_millis(50)).await;
     let third = server
         .call_method("cron.listAll", json!({}))
         .await

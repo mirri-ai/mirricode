@@ -46,7 +46,18 @@ async fn create_session(server: &EmbeddedServer, title: &str) -> String {
 async fn should_list_the_tasks_of_every_live_session_in_the_workspace() {
     let (server, _tmp) = test_server(None);
     let older = create_session(&server, "older").await;
-    tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    // Deterministic stamp separation (batch 4's `update_metadata_at`
+    // seam): pin the older session's updated_at to a fixed past instant
+    // on the MEMORY path `list_sessions` sorts — no clock-tick wait
+    // stands between the two creates; the (updated_at DESC, id DESC)
+    // order holds by construction.
+    let older_scope = server
+        .resolve_session(&older)
+        .await
+        .expect("the older session is live");
+    older_scope
+        .update_metadata_at(chrono::Utc::now() - chrono::Duration::hours(1), |_| {})
+        .await;
     let newer = create_session(&server, "newer").await;
     let older_task = seed_task(&server, &older, "watch older").await;
     let newer_task = seed_task(&server, &newer, "watch newer").await;

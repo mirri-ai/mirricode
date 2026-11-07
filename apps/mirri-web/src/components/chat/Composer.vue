@@ -34,6 +34,7 @@ import {
   isThinkingOn,
   modelThinkingAvailability,
   segmentsFor,
+  thinkingCopyKey,
 } from '../../lib/modelThinking';
 import { useInputHistory } from '../../composables/useInputHistory';
 import { useSlashMenu } from '../../composables/useSlashMenu';
@@ -1121,6 +1122,8 @@ const thinkingOn = computed(() => isThinkingOn(thinkingLevel.value));
 const thinkingReadonly = computed(
   () => thinkingAvailability.value === 'unsupported' || thinkingSegments.value.length <= 1,
 );
+/** The note explaining why the off segment is missing (D-M11.4). */
+const thinkingNoteKey = computed(() => thinkingCopyKey(currentModel.value));
 // Footer-style suffix: effort models show the concrete level; boolean models
 // keep the plain "thinking" tag; off shows nothing.
 const thinkingSuffix = computed(() => {
@@ -1593,6 +1596,9 @@ function selectModel(modelId: string): void {
               v-if="thinkingAvailability === 'unsupported'"
               class="md-note"
             >{{ t('status.modeNotSupported') }}</span>
+            <span v-else-if="thinkingNoteKey !== null" class="md-note">
+              {{ t(thinkingNoteKey) }}
+            </span>
             <div
               v-else
               class="effort-segments"

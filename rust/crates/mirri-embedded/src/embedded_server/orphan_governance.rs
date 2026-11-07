@@ -123,12 +123,12 @@ impl EmbeddedServer {
                 self.spawn_orphan_lifetime_sweeper();
                 // ADR-006 Task 9: the one-shot metadata migration (裁决 5)
                 // rides the census-settled body — INLINE in the settlement
-                // (not a fire-and-forget spawn like the cron import below):
-                // the read face waits for the census on its first dispatch,
-                // and a row-only read face without the seeded rows would
-                // answer every legacy session as not-found. Running the seed
-                // inside the census settlement is the e956f5e8a-compatible
-                // point — the census itself already settles off the first
+                // (never a detached background task): the read face waits
+                // for the census on its first dispatch, and a row-only
+                // read face without the seeded rows would answer every
+                // legacy session as not-found. Running the seed inside the
+                // census settlement is the e956f5e8a-compatible point —
+                // the census itself already settles off the first
                 // request's INLINE path (the OnceCell initializer runs when
                 // the first gate waiter arrives, and `spawn_blocking` keeps
                 // the state.json reads off the async workers) — while still
@@ -157,21 +157,32 @@ impl EmbeddedServer {
                     None => {} // no shared index (no home) — nothing to migrate
                 }
                 // ADR-006 Task 8: the one-time legacy cron JSON import
-                // rides the census-settled body — the `spawn_orphan_
-                // lifetime_sweeper` spawn pattern, one background task
-                // exactly once per server. The import is bounded local-disk
-                // I/O (reading every registered workspace's bucket files)
-                // and it must NOT ride the first request path
-                // (e956f5e8a's principle): the census settlement is the
-                // first point where the engine is off the request path,
-                // and the cron driver's first tick — which the census
-                // also gates — can never observe a half-imported
-                // manifest (the import completes before any settlement
-                // waiter is released).
+                // rides the census-settled body — AWAITED here, never a
+                // detached spawn (batch 4's fix: the documented contract —
+                // "the import completes before any settlement waiter is
+                // released" — was NOT implemented while the import was a
+                // fire-and-forget `tokio::spawn`, so the first
+                // `cron.listAll` / the cron driver's first tick could race
+                // a half-imported manifest). The import is synchronous
+                // SQLite + filesystem I/O, so it rides `spawn_blocking`
+                // (off the async workers) and joins before this
+                // settlement completes: the census gate every consumer
+                // already waits on is then the synchronization point. The
+                // e956f5e8a first-request principle still holds — the
+                // direct index OPEN never imports; only the FIRST
+                // census-settled dispatch pays this one-time local-disk
+                // cost (the `cron_import_done` OnceCell turns every later
+                // call into a no-op), exactly like the migration seed
+                // above.
                 let registry = Arc::clone(&self.registry);
-                tokio::spawn(async move {
-                    registry.import_legacy_cron_once();
-                });
+                tokio::task::spawn_blocking(move || registry.import_legacy_cron_once())
+                    .await
+                    .unwrap_or_else(|join_error| {
+                        tracing::warn!(
+                            %join_error,
+                            "startup legacy cron import task failed to join"
+                        );
+                    });
                 // ADR-006 Task 10: the existence reaper rides the same
                 // settlement body — one best-effort sweep of the tombstone
                 // set right after the migration, then the retired
@@ -354,7 +365,10 @@ mod tests {
 
     /// Spawn `program args...` as its own process-group leader.
     fn spawn_leader(program: &str, args: &[&str]) -> SpawnedGroup {
-        let child = Command::new(program)
+        // The harness itself: real process-group sampling lives behind the
+        // `#[ignore]`d R-layer callers (mirrors the `mirri-core`
+        // `orphan_sweep` helper verdict, audit tranche C).
+        let child = Command::new(program) // hygiene-allow: real-process-group-harness
             .args(args)
             .process_group(0)
             .stdout(Stdio::null())
@@ -470,6 +484,7 @@ mod tests {
     /// and (report-only default) leaves both the process and the archive
     /// untouched.
     #[tokio::test]
+    #[ignore] // R-layer: real process-group sampling (design §3)
     async fn should_run_the_orphan_sweep_once_when_the_server_starts() {
         let home = tempfile::tempdir().expect("home tempdir");
         let sessions_root = home.path().join("v3_sessions");
@@ -514,6 +529,7 @@ mod tests {
     /// task's process group is terminated and the archive settles
     /// Stopped with the lifetime-ceiling annotation.
     #[tokio::test]
+    #[ignore] // R-layer: real process-group sampling (design §3)
     async fn should_terminate_a_lifetime_expired_task_when_the_sweeper_ticks() {
         let home = tempfile::tempdir().expect("home tempdir");
         let sessions_root = home.path().join("v3_sessions");
@@ -570,6 +586,7 @@ mod tests {
     /// process keeps running and the archive stays Running (SDR-013 d —
     /// the user already said "keep it alive").
     #[tokio::test]
+    #[ignore] // R-layer: real process-group sampling (design §3)
     async fn should_keep_an_exempt_task_alive_when_the_sweeper_ticks() {
         let home = tempfile::tempdir().expect("home tempdir");
         let sessions_root = home.path().join("v3_sessions");

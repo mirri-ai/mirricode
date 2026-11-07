@@ -302,12 +302,12 @@ mod tests {
             .await
             .unwrap();
         #[cfg(windows)]
-        let mut child = std::process::Command::new("cmd")
+        let mut child = std::process::Command::new("cmd") // hygiene-allow: D: spawn 后已 wait 收割，探活无时间依赖
             .args(["/C", "exit", "0"])
             .spawn()
             .unwrap();
         #[cfg(not(windows))]
-        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let mut child = std::process::Command::new("true").spawn().unwrap(); // hygiene-allow: D: spawn 后已 wait 收割，探活无时间依赖
         let dead_pid = child.id() as i64;
         let _ = child.wait();
         tokio::fs::write(

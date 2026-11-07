@@ -162,7 +162,7 @@ test('should not report a call annotated with a hygiene-allow comment', () => {
   assert.equal(violationLines(stderr, file).length, 0);
 });
 
-test('should exit 0 when every violation is baseline-covered, and 1 on a new one', () => {
+test('should exit 0 when a poll-step baseline entry covers a sleep, and 1 when a legacy entry no longer does', () => {
   const file = 'crates/demo/tests/integration.rs';
   const content = [
     '// layer: T1',
@@ -172,9 +172,28 @@ test('should exit 0 when every violation is baseline-covered, and 1 on a new one
     '}',
     '',
   ].join('\n');
-  const baseline = { violations: { 'crates/demo/tests/integration.rs:4': { type: 'sleep', reason: 'legacy: pending R2/R4 migration' } } };
-  const ok = runGate({ [file]: content }, { baseline });
+  // poll-step（合规豁免语义不变）：基线覆盖 → exit 0
+  const pollStepBaseline = {
+    violations: {
+      'crates/demo/tests/integration.rs:4': {
+        type: 'sleep',
+        reason: 'poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)',
+      },
+    },
+  };
+  const ok = runGate({ [file]: content }, { baseline: pollStepBaseline });
   assert.equal(ok.status, 0, ok.stderr);
+
+  // 零容忍（批 6a）：legacy reason 的 sleep 基线条目不再视为已覆盖 → exit 1
+  const legacyBaseline = {
+    violations: {
+      'crates/demo/tests/integration.rs:4': { type: 'sleep', reason: 'legacy: pending R2/R4 migration' },
+    },
+  };
+  const legacy = runGate({ [file]: content }, { baseline: legacyBaseline });
+  assert.equal(legacy.status, 1, legacy.stdout);
+  assert.ok(legacy.stderr.includes('integration.rs:4'), legacy.stderr);
+  assert.ok(legacy.stderr.includes('zero-tolerance'), legacy.stderr);
 
   // 新增一行未被基线覆盖的 sleep（行 5）→ 必须报新违规
   const freshContent = [
@@ -186,7 +205,7 @@ test('should exit 0 when every violation is baseline-covered, and 1 on a new one
     '}',
     '',
   ].join('\n');
-  const fresh = runGate({ [file]: freshContent }, { baseline });
+  const fresh = runGate({ [file]: freshContent }, { baseline: pollStepBaseline });
   assert.equal(fresh.status, 1);
   assert.ok(fresh.stderr.includes('integration.rs:5'), fresh.stderr);
 });
@@ -215,4 +234,266 @@ test('should write the baseline under the --root tree only (never the real repo 
   // 真实仓库基线不含 fixture 条目
   const real = JSON.parse(readFile(join(import.meta.dirname, 'test-hygiene-baseline.json'), 'utf-8'));
   assert.equal(real.violations['crates/demo/tests/integration.rs:4'], undefined);
+});
+
+// --- 规则 R：real-env 归因 ------------------------------------------------------
+
+/** 一个 tests/ 二进制 fixture：layer 标签 + 给定 fn 体。 */
+function testBinary(body) {
+  return ['// layer: T2', ...body, ''].join('\n');
+}
+
+test('should only let allow-listed sleep reasons cover a baseline entry', () => {
+  // 覆盖判定 allow-list（批 6b）：sleep 基线条目只有 reason 匹配
+  // /^(poll-step|negative-wait|real-|D:)/ 才算已覆盖；其余（无 reason、
+  // `Legacy:` 大写变体、随口写的 prose）一律不覆盖 → exit 1。
+  const file = 'crates/demo/tests/integration.rs';
+  const content = [
+    '// layer: T1',
+    '#[test]',
+    'fn waits() {',
+    '    thread::sleep(std::time::Duration::from_millis(1));',
+    '}',
+    '',
+  ].join('\n');
+  const covering = [
+    'negative-wait: bounded absence probe (sanctioned)',
+    'real-io: hermetic child window (sanctioned)',
+    'D: operator-adjudicated line (sanctioned)',
+  ];
+  for (const reason of covering) {
+    const ok = runGate(
+      { [file]: content },
+      { baseline: { violations: { 'crates/demo/tests/integration.rs:4': { type: 'sleep', reason } } } },
+    );
+    assert.equal(ok.status, 0, `reason \`${reason}\` should cover:\n${ok.stderr}`);
+  }
+  const nonCovering = [
+    undefined, // 无 reason
+    'Legacy: pending R2/R4 migration', // 大写变体
+    'operator note: kept for now', // allow-list 之外的 prose
+  ];
+  for (const reason of nonCovering) {
+    const entry = { type: 'sleep' };
+    if (reason !== undefined) entry.reason = reason;
+    const bad = runGate(
+      { [file]: content },
+      { baseline: { violations: { 'crates/demo/tests/integration.rs:4': entry } } },
+    );
+    assert.equal(bad.status, 1, `reason \`${reason}\` must NOT cover:\n${bad.stdout}`);
+    assert.ok(bad.stderr.includes('integration.rs:4'), bad.stderr);
+  }
+});
+
+test('should warn about baseline growth when writing new file+type group entries', () => {
+  // --write-baseline 新条目守卫（批 6b）：重锚时该 file+type 组内没有可配对
+  // 旧条目的新增（组缺失或组条数增长）→ stderr 告警并显式列出，但不阻断
+  // 写入（重锚是操作员动作）。
+  const file = 'crates/demo/tests/integration.rs';
+  const oneSleep = [
+    '// layer: T1',
+    '#[test]',
+    'fn waits() {',
+    '    thread::sleep(std::time::Duration::from_millis(1));',
+    '}',
+    '',
+  ].join('\n');
+  const twoSleeps = [
+    '// layer: T1',
+    '#[test]',
+    'fn waits() {',
+    '    thread::sleep(std::time::Duration::from_millis(1));',
+    '    tokio::time::sleep(std::time::Duration::from_millis(2));',
+    '}',
+    '',
+  ].join('\n');
+  const writeWithBaseline = (content, baseline) => {
+    const root = mkdtempSync(join(tmpdir(), 'test-hygiene-'));
+    const cratePath = join(root, file);
+    mkdirSync(dirname(cratePath), { recursive: true });
+    writeFileSync(cratePath, content);
+    if (baseline !== undefined) {
+      mkdirSync(join(root, 'scripts'), { recursive: true });
+      writeFileSync(join(root, 'scripts', 'test-hygiene-baseline.json'), JSON.stringify(baseline));
+    }
+    return spawnSync(process.execPath, [SCRIPT, '--root', root, '--write-baseline'], {
+      encoding: 'utf-8',
+    });
+  };
+
+  // 组完全缺失（首跑）→ 告警 + 列出 file:line，exit 0（写入不被阻断）
+  const first = writeWithBaseline(oneSleep, undefined);
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stderr, /NEW/);
+  assert.ok(first.stderr.includes('crates/demo/tests/integration.rs:4'), first.stderr);
+
+  // 组存在且条数不变（纯行号漂移重锚）→ 不告警
+  const reanchor = writeWithBaseline(oneSleep, {
+    violations: {
+      'crates/demo/tests/integration.rs:99': {
+        type: 'sleep',
+        reason: 'poll-step: deadline-bounded polling step (sanctioned)',
+      },
+    },
+  });
+  assert.equal(reanchor.status, 0, reanchor.stderr);
+  assert.ok(!reanchor.stderr.includes('NEW'), reanchor.stderr);
+
+  // 组存在但条数增长（1 → 2）→ 多出的条目告警并列出
+  const grown = writeWithBaseline(twoSleeps, {
+    violations: {
+      'crates/demo/tests/integration.rs:4': {
+        type: 'sleep',
+        reason: 'poll-step: deadline-bounded polling step (sanctioned)',
+      },
+    },
+  });
+  assert.equal(grown.status, 0, grown.stderr);
+  assert.match(grown.stderr, /NEW/);
+  assert.ok(grown.stderr.includes('crates/demo/tests/integration.rs:5'), grown.stderr);
+});
+
+test('should flag a raw subprocess spawn in a test fn without #[ignore]', () => {
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    '#[test]',
+    'fn spawns_a_child() {',
+    '    let _c = std::process::Command::new("echo");',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 1);
+  assert.deepEqual(violationLines(stderr, file), [4]);
+});
+
+test('should not flag a raw subprocess spawn in an #[ignore]d test fn', () => {
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    '#[test]',
+    '#[ignore]',
+    'fn spawns_a_child() {',
+    '    let _c = std::process::Command::new("echo");',
+    '}',
+  ]);
+  const { status } = runGate({ [file]: content });
+  assert.equal(status, 0);
+});
+
+test('should attribute a spawn hit by fn body rather than by line window', () => {
+  // fn a 带 #[ignore] 且只有一个短 fn 头；fn b 不带 ignore，命中行距离
+  // fn a 的 #[ignore] 不足 15 行——旧的行窗口守卫会误放行，fn 归因必须拦下。
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    '#[test]',
+    '#[ignore]',
+    'fn a() {',
+    '    let _c = 1;',
+    '}',
+    '#[test]',
+    'fn b() {',
+    '    let _c = tokio::process::Command::new("echo");',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 1);
+  assert.deepEqual(violationLines(stderr, file), [9]);
+});
+
+test('should flag a real-time window in a test fn without #[ignore]', () => {
+  const file = 'crates/demo/tests/window.rs';
+  const content = testBinary([
+    '#[test]',
+    'fn samples_a_window() {',
+    '    let _s = 0; // hygiene-allow: real-time: simulated work under test',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 1);
+  assert.deepEqual(violationLines(stderr, file), [4]);
+});
+
+test('should not flag a virtual-clock pacing window', () => {
+  const file = 'crates/demo/tests/window.rs';
+  const content = testBinary([
+    '#[test]',
+    'fn paces_a_scenario() {',
+    '    let _s = 0; // hygiene-allow: scenario pacing (virtual clock — member work time)',
+    '}',
+  ]);
+  const { status } = runGate({ [file]: content });
+  assert.equal(status, 0);
+});
+
+test('should accept an #[ignore] with a reason string as R-layer attribution', () => {
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    '#[test]',
+    '#[ignore = "needs a real child process"]',
+    'fn spawns_a_child() {',
+    '    let _c = std::process::Command::new("echo");',
+    '}',
+  ]);
+  const { status } = runGate({ [file]: content });
+  assert.equal(status, 0);
+});
+
+test('should not treat doc-comment prose mentioning #[ignore] as attribution', () => {
+  // 属性区间的判定只看代码（注释/字符串已被 mask）：文档注释里"提到"
+  // #[ignore] 不算归因，否则一段说明文字就能悄悄放过裸 spawn。
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    '/// Not `#[ignore]`d yet: the child is hermetic.',
+    '#[test]',
+    'fn spawns_a_child() {',
+    '    let _c = std::process::Command::new("echo");',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 1);
+  assert.deepEqual(violationLines(stderr, file), [5]);
+});
+
+test('should accept a line-level hygiene-allow on a spawn in a plain test fn', () => {
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    '#[test]',
+    'fn spawns_a_hermetic_child() {',
+    '    let _c = Command::new("echo"); // hygiene-allow: D: hermetic child',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 0, stderr);
+});
+
+test('should flag a spawn in a helper fn without a line-level hygiene-allow', () => {
+  // helper 不能合法携带 #[ignore]，所以它没有归因能力：spawn 必须留在
+  // 违规面上（或行级豁免并写明理由），由 caller 测试归因。
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    'fn helper_spawns_a_child() {',
+    '    let _c = std::process::Command::new("echo");',
+    '}',
+    '#[test]',
+    '#[ignore]',
+    'fn spawns_a_child() {',
+    '    helper_spawns_a_child();',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 1);
+  assert.deepEqual(violationLines(stderr, file), [3]);
+});
+
+test('should not let an #[ignore] on a non-test fn exempt a spawn', () => {
+  // 非 test fn 上的 #[ignore] 是惰性的（编译期无效果），不构成归因。
+  const file = 'crates/demo/tests/procs.rs';
+  const content = testBinary([
+    '#[ignore]',
+    'fn helper_spawns_a_child() {',
+    '    let _c = std::process::Command::new("echo");',
+    '}',
+  ]);
+  const { status, stderr } = runGate({ [file]: content });
+  assert.equal(status, 1);
+  assert.deepEqual(violationLines(stderr, file), [4]);
 });

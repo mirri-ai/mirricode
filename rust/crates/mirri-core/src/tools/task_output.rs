@@ -413,7 +413,7 @@ mod tests {
         assert!(!text.contains("message:"), "{text}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn should_wait_for_completion_when_block_is_true() {
         let tasks = Arc::new(TaskManager::new());
         let task_id = tasks.register(
@@ -431,7 +431,7 @@ mod tests {
         let tasks_clone = Arc::clone(&tasks);
         let id_clone = task_id.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await; // hygiene-allow: D: paused clock 虚拟定时器
             tasks_clone.append_output(&id_clone, "done\n");
             tasks_clone.complete(&id_clone, 0);
         });
@@ -452,7 +452,7 @@ mod tests {
         assert!(text.contains("[output]"), "{text}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn should_suppress_terminal_notification_when_blocking_read_settles_the_task() {
         // Given a detached (background-registered) task that completes while
         // a blocking TaskOutput call waits for it
@@ -471,7 +471,7 @@ mod tests {
         let tasks_clone = Arc::clone(&tasks);
         let id_clone = task_id.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await; // hygiene-allow: D: paused clock 虚拟定时器
             tasks_clone.complete(&id_clone, 0);
         });
 
@@ -705,7 +705,7 @@ mod tests {
         assert!(text.contains("[output]"), "{text}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn should_return_error_immediately_when_the_turn_is_cancelled_while_blocking() {
         // Given a still-running task and a blocking TaskOutput whose turn
         // cancel token fires mid-wait
@@ -723,7 +723,7 @@ mod tests {
         let cancel = crate::cancel::CancelToken::new();
         let cancel_clone = cancel.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await; // hygiene-allow: D: paused clock 虚拟定时器
             cancel_clone.cancel();
         });
 
@@ -749,12 +749,13 @@ mod tests {
         };
 
         // When the wait runs (30s timeout — the cancel at 150ms must win)
-        let start = std::time::Instant::now();
+        let start = tokio::time::Instant::now();
         let result = execute(ctx).await;
 
         // Then the tool returns promptly with the cancellation error —
         // no zombie window between the cancel and the wait's natural end
-        // (US5.3). The task itself keeps running.
+        // (US5.3, measured on the same virtual clock as the cancel timer).
+        // The task itself keeps running.
         assert!(result.is_error, "{result:?}");
         assert!(
             output_text(&result).contains("turn was cancelled"),

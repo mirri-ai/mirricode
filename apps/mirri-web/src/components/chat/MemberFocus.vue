@@ -167,7 +167,14 @@ function onBodyTouch(): void {
          in true happening order. Same DOM structure as ChatPane's block loop. -->
     <div v-if="renderBlocks.length > 0" class="mf-narrative">
       <template v-for="(blk, bi) in renderBlocks" :key="renderBlockKey(blk, bi)">
-        <ThinkingBlock v-if="blk.kind === 'thinking'" :text="blk.thinking" mobile :foldable="false" />
+        <!-- Same two-phase presentation as the main transcript's thinking
+             blocks: unclamped while streaming, folded "Thought" header after. -->
+        <ThinkingBlock
+          v-if="blk.kind === 'thinking'"
+          :text="blk.thinking"
+          mobile
+          :streaming="streamingBlockIsOpen(blk)"
+        />
         <div v-else-if="blk.kind === 'text' && blk.text" class="msg">
           <Markdown :text="blk.text" :streaming="streamingBlockIsOpen(blk)" class="mf-md" />
         </div>

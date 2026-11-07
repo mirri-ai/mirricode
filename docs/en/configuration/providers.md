@@ -13,7 +13,7 @@ The `type` field in the `providers` table determines which protocol implementati
 | `openai` | OpenAI Chat Completions | OpenAI and compatible services, DeepSeek, Qwen, etc. |
 | `openai_responses` | OpenAI Responses API | OpenAI's newer Responses interface |
 | `google-genai` | Google GenAI | Gemini API |
-| `vertexai` | Google GenAI on Vertex | Google Cloud Vertex AI (TypeScript engine only) |
+| `vertexai` | Google GenAI on Vertex | Not supported by this engine; the UI does not offer it, and an existing config is rejected at connection time |
 
 All providers communicate with models in streaming mode by default. Capabilities such as thinking, vision, and tool use are matched automatically by model name prefix — you typically do not need to declare them manually.
 
@@ -135,7 +135,7 @@ base_url = "https://your-gateway.example"
 Shares the same implementation as `google-genai`; setting `type = "vertexai"` switches to the Vertex AI access path.
 
 ::: warning
-`vertexai` is recognized by the TypeScript engine only — the rust engine rejects it at connection time with an "unsupported provider type" error. The fields below document the TypeScript-engine behavior.
+`vertexai` is not supported by this engine — it is rejected at connection time with an "unsupported provider type" error. If such a config already exists, switch it to `google-genai`.
 :::
 
 Authentication follows the standard Google Cloud ADC flow (`gcloud auth application-default login` or a `GOOGLE_APPLICATION_CREDENTIALS` service account JSON) — this part is unrelated to Mirri Code. **The project ID and region must be written in the `[providers.vertexai.env]` sub-table** — simply `export GOOGLE_CLOUD_PROJECT` in the shell will not be read by the CLI.

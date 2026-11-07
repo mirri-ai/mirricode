@@ -123,6 +123,13 @@ provide('resumeInterruptedSession', (sessionId: string): void => {
   void resumeWithHintGate(sessionId);
 });
 
+// The session's working directory, for tool-call rows that fold a redundant
+// `cd <workspace> &&` prefix into a badge (lib/bashDisplay.ts). ConversationPane
+// provides the precise per-session value; this one covers the surfaces without
+// it (the side-chat panel, which mounts ChatPane outside a conversation pane).
+provide('sessionWorkspaceRoot', (): string | undefined =>
+  client.visibleWorkspace.value?.root ?? client.status.value.cwd,
+);
 /** B7 W6 — move a running model Bash tool call to the background:
  *  `task.detach` addressed by toolCallId. On ack, stamp the card (the
  *  `◐ backgrounded` badge then survives the moved-to-background tool

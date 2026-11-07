@@ -11,6 +11,7 @@
         empty models list, so a provider is created without models and models
         are added later from the provider detail panel. -->
 <script setup lang="ts">
+import { SUPPORTED_PROVIDER_TYPES } from '../../../lib/providerConnection';
 import { computed, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { AppCatalogProvider } from '../../../api/types';
@@ -49,7 +50,10 @@ const emit = defineEmits<{
 }>();
 
 /** Wire protocols the v2 create/import accepts (kap-server providerWireTypeSchema). */
-const WIRE_TYPES = ['kimi', 'openai', 'openai_responses', 'anthropic', 'google-genai', 'vertexai'] as const;
+// Only the protocol types this engine can actually build: `vertexai` is
+// refused at connection time, so offering it would be an entry that errors
+// when used (R5). `custom` is a creation MODE, not a protocol.
+const WIRE_TYPES = SUPPORTED_PROVIDER_TYPES;
 /** Mirrors the v2 providerIdSchema: start with a letter/digit, then letters,
  *  digits, "-", "_" and spaces (Unicode letters/digits, like the server). */
 const PROVIDER_ID_RE = /^[\p{L}\p{N}][\p{L}\p{N}\-_ ]*$/u;
