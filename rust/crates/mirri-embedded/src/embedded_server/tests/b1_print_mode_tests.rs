@@ -103,13 +103,12 @@ printWaitCeilingS = 1
         session_id.clone(),
         None,
     );
-    // The runner: settles 300ms after registration.
+    // The runner: settles on its first poll. The dispatch reaches the
+    // `waited` computation without yielding, so the task is still active
+    // on entry (D3: no stub sleep needed under the paused clock).
     let settle_tasks = tasks.clone();
     let settle_id = task_id.clone();
     tokio::spawn(async move {
-        // The task's simulated 300ms work: virtual under the paused clock,
-        // so the drain timing under the 1s ceiling is deterministic.
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await; // hygiene-allow: D: paused clock 虚拟工时定时器，不耗墙钟
         settle_tasks.complete(&settle_id, 0);
     });
 
