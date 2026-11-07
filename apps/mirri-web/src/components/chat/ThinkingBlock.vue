@@ -1,9 +1,9 @@
 <!-- apps/mirri-web/src/components/chat/ThinkingBlock.vue -->
-<!-- Two-phase presentation. While this block is streaming it shows a live
-     scrolling window (max 2 lines). When the stream ends the block folds into
-     a one-line "Thought · duration" header (Claude-style); clicking the header
-     toggles an inline expand of the full text, clamped to a scrollable
-     ~8-line window. -->
+<!-- Two-phase presentation. While this block is streaming it shows the full
+     text with no height clamp (the container grows as the stream does). When
+     the stream ends the block folds into a one-line "Thought · duration"
+     header (Claude-style); clicking the header toggles an inline expand of
+     the full text, clamped to a scrollable ~8-line window. -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
@@ -142,7 +142,7 @@ function onBodyTouch(): void {
   margin: 0;
 }
 
-/* ---- Streaming live window ---- */
+/* ---- Streaming: full height, no clamp ---- */
 .tc {
   font: var(--text-base)/var(--leading-relaxed) var(--font-mono);
   color: var(--color-text-muted);
@@ -153,6 +153,15 @@ function onBodyTouch(): void {
   overflow-y: scroll;
   scrollbar-gutter: stable;
   overflow-anchor: none;
+}
+
+/* While streaming the live window grows unbounded so the user sees the
+   whole thinking process; the 2-line clamp above only applies to the
+   non-streaming render paths. */
+.think.is-streaming .tc {
+  max-height: none;
+  overflow-y: visible;
+  scrollbar-gutter: auto;
 }
 
 /* ---- Ended: folded header + inline expand ---- */
