@@ -772,10 +772,6 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/orphan_governance.rs:368": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
     "crates/mirri-kosong/tests/providers_group.rs:2240": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"

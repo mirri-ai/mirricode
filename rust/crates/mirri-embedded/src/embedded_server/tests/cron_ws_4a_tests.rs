@@ -804,7 +804,13 @@ fn seed_workspace_local_cron_document(workspace_root: &std::path::Path, workspac
 /// ACP shape), when the home-rooted engine boots, then the census-settled
 /// background import adopts the tasks into the shared SQLite index and
 /// `cron.listAll` serves them.
-#[tokio::test]
+///
+/// Multi-thread flavour on purpose (final review Important 4): the bug this
+/// locks was a *detached* `tokio::spawn` whose blocking import lost the race
+/// against the first read. On a `current_thread` bed the detached task
+/// simply runs to completion between awaits, so reverting the fix would stay
+/// green and the test would only assert the spec, never the regression.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn should_import_legacy_cron_tasks_when_acp_engine_boots() {
     let home = tempfile::tempdir().unwrap();
     let root = tempfile::tempdir().unwrap();

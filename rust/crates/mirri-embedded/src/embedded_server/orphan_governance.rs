@@ -365,7 +365,10 @@ mod tests {
 
     /// Spawn `program args...` as its own process-group leader.
     fn spawn_leader(program: &str, args: &[&str]) -> SpawnedGroup {
-        let child = Command::new(program)
+        // The harness itself: real process-group sampling lives behind the
+        // `#[ignore]`d R-layer callers (mirrors the `mirri-core`
+        // `orphan_sweep` helper verdict, audit tranche C).
+        let child = Command::new(program) // hygiene-allow: real-process-group-harness
             .args(args)
             .process_group(0)
             .stdout(Stdio::null())
@@ -481,6 +484,7 @@ mod tests {
     /// and (report-only default) leaves both the process and the archive
     /// untouched.
     #[tokio::test]
+    #[ignore] // R-layer: real process-group sampling (design §3)
     async fn should_run_the_orphan_sweep_once_when_the_server_starts() {
         let home = tempfile::tempdir().expect("home tempdir");
         let sessions_root = home.path().join("v3_sessions");
@@ -525,6 +529,7 @@ mod tests {
     /// task's process group is terminated and the archive settles
     /// Stopped with the lifetime-ceiling annotation.
     #[tokio::test]
+    #[ignore] // R-layer: real process-group sampling (design §3)
     async fn should_terminate_a_lifetime_expired_task_when_the_sweeper_ticks() {
         let home = tempfile::tempdir().expect("home tempdir");
         let sessions_root = home.path().join("v3_sessions");
@@ -581,6 +586,7 @@ mod tests {
     /// process keeps running and the archive stays Running (SDR-013 d —
     /// the user already said "keep it alive").
     #[tokio::test]
+    #[ignore] // R-layer: real process-group sampling (design §3)
     async fn should_keep_an_exempt_task_alive_when_the_sweeper_ticks() {
         let home = tempfile::tempdir().expect("home tempdir");
         let sessions_root = home.path().join("v3_sessions");

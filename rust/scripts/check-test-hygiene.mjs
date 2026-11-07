@@ -741,6 +741,7 @@ if (writeBaselineMode) {
   }
 
   const next = {};
+  const newSet = new Set(newEntries.map((v) => key(v)));
   for (const v of violations) {
     // Preserve hand-curated reasons across re-anchoring (e.g. the R4
     // poll-step / negative-wait classification, the R-layer real-env audit
@@ -763,13 +764,21 @@ if (writeBaselineMode) {
         );
       },
     );
+    // Anti-laundering (final review Important 2): a NEW entry must not
+    // inherit the group's sanctioned reason. Inheriting it would make the
+    // next gate run green on a violation no human adjudicated, which
+    // defeats the "gate is the enforcement point" contract. New entries
+    // always get a NON-covering reason instead, so the gate stays red
+    // until someone names the real reason.
+    const isNew = newSet.has(key(v));
     next[key(v)] = {
       type: v.type,
-      reason: priorForFile
-        ? priorForFile[1].reason
-        : v.type === 'real-env'
-          ? 'real-env: pending audit adjudication (see 2026-11-06 design §4)'
-          : 'legacy: pending R2/R4 migration',
+      reason:
+        !isNew && priorForFile
+          ? priorForFile[1].reason
+          : v.type === 'real-env'
+            ? 'real-env: pending audit adjudication (see 2026-11-06 design §4)'
+            : 'legacy: pending R2/R4 migration',
     };
   }
   baseline = next;
