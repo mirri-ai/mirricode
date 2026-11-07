@@ -66,7 +66,6 @@ pub struct ServerConfig {
     /// External command hooks (see [`HookDef`]).
     pub hooks: Option<Vec<HookDef>>,
     /// Thinking configuration (parse-only; host-interpreted).
-    pub thinking: Option<ThinkingConfig>,
     /// Experimental feature flags (host-interpreted).
     pub experimental: Option<HashMap<String, bool>>,
 
@@ -211,6 +210,12 @@ pub struct ProviderEntry {
     /// fully inline).
     #[serde(default, alias = "mediaFileRefs")]
     pub media_file_refs: Option<bool>,
+    /// How this endpoint spells "stop thinking" (see
+    /// [`crate::thinking_dialect`]). One of `thinking_type` /
+    /// `reasoning_effort` / `enable_thinking`; absent lets the model alias
+    /// or the builtin endpoint table decide.
+    #[serde(default, alias = "thinkingOff")]
+    pub thinking_off: Option<String>,
     /// Provider source descriptor (passthrough; host-interpreted).
     pub source: Option<Value>,
 }
@@ -239,6 +244,10 @@ pub struct ModelAlias {
     pub support_efforts: Option<Vec<String>>,
     #[serde(alias = "defaultEffort")]
     pub default_effort: Option<String>,
+    /// Per-model override of how this endpoint spells "stop thinking".
+    /// Wins over the provider-level `thinking_off` and the builtin table.
+    #[serde(default, alias = "thinkingOff")]
+    pub thinking_off: Option<String>,
     /// The wire protocol this alias speaks (`anthropic` / `openai` /
     /// `openai_responses` / `google-genai` — TS `ModelRecord.protocol`,
     /// one of the four real wire protocols; a vendor such as `kimi` is
@@ -361,19 +370,6 @@ impl LoopControlConfig {
                 .map_or(defaults.max_deferred_messages, |v| v as usize),
         }
     }
-}
-
-/// Thinking configuration, mirroring the TypeScript `thinking` section.
-///
-/// All fields are parse-only and host-interpreted.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ThinkingConfig {
-    /// Whether extended thinking is enabled.
-    pub enabled: Option<bool>,
-    /// Thinking effort level (e.g. `"low"`, `"medium"`, `"high"`, `"max"`).
-    pub effort: Option<String>,
-    /// Mirri Preserved Thinking passthrough (forwarded verbatim to the wire).
-    pub keep: Option<String>,
 }
 
 /// The print-mode background strategy (D-59): what `mirri print` does with
@@ -831,9 +827,6 @@ impl ServerConfig {
         {
             changes.push(ConfigChange::Models);
         }
-        if self.thinking != previous.thinking {
-            changes.push(ConfigChange::Thinking);
-        }
         if self.permission != previous.permission
             || self.default_permission_mode != previous.default_permission_mode
         {
@@ -1081,6 +1074,59 @@ impl ServerConfig {
     /// consistent config reports none.
     pub fn diagnostics_warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
+
+        // The [thinking] section is retired: its `effort` duplicated the
+        // per-model default, `enabled` duplicated per-model closeability, and
+        // `keep` never had a request-path consumer. A leftover section is
+        // preserved verbatim in the raw document (never rewritten) but does
+        // nothing — say so instead of failing silently.
+        if self
+            .raw
+            .as_ref()
+            .and_then(|raw| raw.get("thinking"))
+            .is_some()
+        {
+            warnings.push(
+                "[thinking] is retired and has no effect. Set the per-model \
+                 `default_effort` (or `support_efforts`) for reasoning strength, \
+                 and use the thinking control in the composer to turn it off."
+                    .to_string(),
+            );
+        }
+
+        // An unrecognized `thinking_off` falls through the resolution chain
+        // (a typo must not disable reasoning control), so the doctor is the
+        // only place that can report it did nothing.
+        let recognized = |raw: &str| {
+            crate::thinking_dialect::ThinkingDialect::parse(raw).is_some()
+        };
+        let accepted = crate::thinking_dialect::ThinkingDialect::ALL.join(", ");
+        if let Some(providers) = &self.providers {
+            for (id, entry) in providers {
+                if let Some(raw) = entry.thinking_off.as_deref()
+                    && !raw.trim().is_empty()
+                    && !recognized(raw)
+                {
+                    warnings.push(format!(
+                        "provider \"{id}\" has an unrecognized thinking_off value \"{raw}\"; \
+                         nothing was inferred from it. Accepted values: {accepted}."
+                    ));
+                }
+            }
+        }
+        if let Some(models) = &self.models {
+            for (alias, record) in models {
+                if let Some(raw) = record.thinking_off.as_deref()
+                    && !raw.trim().is_empty()
+                    && !recognized(raw)
+                {
+                    warnings.push(format!(
+                        "model alias \"{alias}\" has an unrecognized thinking_off value \"{raw}\"; \
+                         nothing was inferred from it. Accepted values: {accepted}."
+                    ));
+                }
+            }
+        }
         let providers = self.providers.as_ref();
 
         if let Some(default_provider) = self
@@ -1154,14 +1200,6 @@ fn override_if_set<T: Clone>(dst: &mut Option<T>, src: &Option<T>) {
     }
 }
 
-/// Marker file recording which one-shot config migrations have been applied
-/// (and when), stored in the Mirri home directory next to `config.toml`.
-const MIGRATIONS_MARKER_FILE: &str = "migrations-effort.json";
-
-/// Migration ID for `thinking.effort: "max"` → `"high"` (same id as the
-/// TypeScript migration).
-const MIGRATION_THINKING_EFFORT_MAX_TO_HIGH: &str = "thinking-effort-max-to-high";
-
 /// Reserved provider key for the environment-synthesized provider.
 ///
 /// Mirrors the TypeScript `ENV_MODEL_PROVIDER_KEY` in `config/env-model.ts`.
@@ -1180,76 +1218,6 @@ const ENV_MODEL_DEFAULT_CAPABILITIES: &[&str] = &["image_in", "thinking"];
 
 /// Provider types allowed for `MIRRICODE_MODEL_PROVIDER_TYPE`.
 const ENV_MODEL_ALLOWED_PROVIDER_TYPES: &[&str] = &["anthropic", "openai", "google-genai"];
-
-/// Apply one-shot config migrations to `config`, persisting any change back
-/// to `config.toml` and recording each applied migration in a marker file
-/// under the Mirri home directory.
-///
-/// `config_path` is the path of the `config.toml` the config was loaded
-/// from; `home_dir` is the Mirri data directory — the directory that
-/// contains `config.toml` (e.g. `$HOME/.mirri-code`, or `$MIRRICODE_HOME`
-/// when set). The marker file is `<home_dir>/migrations-effort.json`, a JSON
-/// object mapping migration id → ISO-8601 timestamp. A migration whose id is
-/// already recorded is skipped, so a value the user re-sets by hand
-/// afterwards is never migrated again.
-///
-/// When a migration mutates the config, the mutated config is first
-/// serialized back to TOML and written to `config_path` atomically
-/// (write-to-temp + fsync + rename, mirroring
-/// [`mirri_persistence::AtomicDocument`]). The marker is written only after
-/// that rewrite succeeds: a failed rewrite leaves no marker, so the
-/// migration is retried on the next boot. The in-memory `config` keeps the
-/// migrated value either way, so the current run behaves as migrated.
-///
-/// Mirrors the TypeScript one-shot migration mechanism
-/// (`migrations-effort.json`): the marker records that a migration has been
-/// *considered* for this home, not that a value changed. Missing or corrupt
-/// marker files are treated as "no migrations applied".
-///
-/// This runs once at startup and must never block it: it costs one file
-/// read plus at most one config.toml rewrite and one marker write. All
-/// marker and file reads/writes go through the injected [`SyncFs`] provider
-/// (zero-IO T13b).
-pub fn migrate_config(
-    config: &mut ServerConfig,
-    config_path: &Path,
-    home_dir: &Path,
-    fs: &dyn SyncFs,
-) -> EngineResult<()> {
-    let marker_path = home_dir.join(MIGRATIONS_MARKER_FILE);
-    if read_migration_markers(&marker_path, fs).contains_key(MIGRATION_THINKING_EFFORT_MAX_TO_HIGH)
-    {
-        return Ok(());
-    }
-
-    // Persisted `thinking.effort = "max"` dates from when the UI recorded
-    // any pick unconditionally. `max` is session-only now, so rewrite it to
-    // `"high"` once, matching TypeScript. All other values are honored as-is.
-    let mut effort_migrated = false;
-    if let Some(thinking) = config.thinking.as_mut()
-        && thinking.effort.as_deref() == Some("max")
-    {
-        thinking.effort = Some("high".to_string());
-        effort_migrated = true;
-        tracing::info!("migrated config: thinking.effort \"max\" -> \"high\"");
-    }
-
-    // Persist the migration into config.toml BEFORE recording the marker:
-    // only a successful rewrite is followed by the marker write, so a failed
-    // rewrite leaves the migration unmarked and it retries on the next boot.
-    if effort_migrated {
-        let contents = config.to_toml_string().map_err(|err| {
-            EngineError::RequestInvalid(format!(
-                "cannot serialize migrated config for '{}': {err}",
-                config_path.display()
-            ))
-        })?;
-        write_config_file_atomically(config_path, &contents)?;
-    }
-
-    write_migration_marker(&marker_path, MIGRATION_THINKING_EFFORT_MAX_TO_HIGH, fs)?;
-    Ok(())
-}
 
 /// Read the current `[retention]` config straight from the config file at
 /// `path` — the retention task's per-round reader (US6.1: the task never
@@ -1373,47 +1341,6 @@ fn extract_retention_key<T>(
 pub(crate) fn write_config_file_atomically(config_path: &Path, contents: &str) -> EngineResult<()> {
     mirri_persistence::write_file_atomically(config_path, contents.as_bytes())?;
     Ok(())
-}
-
-/// Read the migration marker file as a map of migration id → timestamp.
-///
-/// A missing or corrupt marker file is treated as "no migrations applied"
-/// so the migrations run once. Reads go through the injected [`SyncFs`]
-/// provider.
-fn read_migration_markers(marker_path: &Path, fs: &dyn SyncFs) -> HashMap<String, String> {
-    let Ok(contents) = fs.read_text(marker_path) else {
-        return HashMap::new();
-    };
-    serde_json::from_str(&contents).unwrap_or_default()
-}
-
-/// Record an applied migration in the marker file, preserving any markers
-/// already present (e.g. written by an earlier migration run). Writes go
-/// through the injected [`SyncFs`] provider.
-fn write_migration_marker(
-    marker_path: &Path,
-    migration_id: &str,
-    fs: &dyn SyncFs,
-) -> EngineResult<()> {
-    if let Some(parent) = marker_path.parent() {
-        fs.mkdir(parent, true).map_err(sync_fs_io_error)?;
-    }
-    let mut markers = read_migration_markers(marker_path, fs);
-    markers.insert(migration_id.to_string(), chrono::Utc::now().to_rfc3339());
-    let contents = format!("{}\n", serde_json::to_string_pretty(&markers)?);
-    fs.write_text(marker_path, &contents)
-        .map_err(sync_fs_io_error)?;
-    Ok(())
-}
-
-/// Map a [`SyncFs`] error onto the engine error the pre-trait code produced:
-/// an underlying [`std::io::Error`] keeps the `Io` variant (with its source
-/// chain), anything else becomes `RequestInvalid`.
-fn sync_fs_io_error(err: anyhow::Error) -> EngineError {
-    match err.downcast::<std::io::Error>() {
-        Ok(io) => EngineError::Io(io),
-        Err(err) => EngineError::RequestInvalid(err.to_string()),
-    }
 }
 
 mod doctor;

@@ -2,7 +2,7 @@
 
 > 状态: 活文档（随执行推进更新） · 建立于 2026-09-08 ·
 > **本文是 Model/Provider 设置域执行状态的唯一源**（按 `docs/specs/AGENTS.md` 治理约定：设计文档不持有进度，批次状态、开放项在这里维护；本文不含需求与设计内容）。
-> 设计事实源: [model-settings-architecture.md](model-settings-architecture.md)（RFC 与裁决 D-M1~D-M9、组件 C1-C6）· [model-settings-page-requirements.md](model-settings-page-requirements.md)（域需求，D-M 裁决与 US-1~14）· 现状参考: [model-settings-context.md](model-settings-context.md)
+> 设计事实源: [model-settings-architecture.md](model-settings-architecture.md)（RFC 与裁决 D-M1~D-M12、组件 C1-C8）· [model-settings-page-requirements.md](model-settings-page-requirements.md)（域需求，D-M 裁决与 US-1~16）· 现状参考: [model-settings-context.md](model-settings-context.md)
 > 执行协议: 每批工作走 SDD（brief → 实现 → 评审含 mutation → 提交 → 账本 `.superpowers/sdd/`）。
 > 实施计划: [docs/superpowers/plans/2026-09-08-rust-core-mcp-model-parallel.md](../superpowers/plans/2026-09-08-rust-core-mcp-model-parallel.md)（Track P）。
 
@@ -18,6 +18,10 @@
 | B6 rust：`importCatalog` 目录推导字段 + 不可用模型过滤 + merge 语义 + 种子默认（G-15/17/19/22，ADR-004）；klient browse 契约能力字段（G-16）；web mapper 修正 | ✅ 完成（2026-09-18） | 推导字段 + 不可用模型过滤 + merge 语义（墓碑/凭据保留）+ 全新环境种子默认 + provider.oauth_managed 域码 + klient/browse 加法字段 + web mapper 透传与预览徽标（G-15/16/17/19/22 收口，G-18 维持 followup）；实现见 commits e4c95da6^..8c2fb5c9 |
 | B7 web：custom `addProvider` 原子化 + 目录预填（G-20） | ✅ 完成（2026-09-18） | addProvider 原子化（单次 config.set 分节写）+ custom 模式目录预填（目录事实做表单默认值，用户可改）（G-20 收口）；实现见 commits 400ca3c9^..e73ae98f |
 | B8 批量删除 + 过滤保持 + 导入时模型选择（G-26~28，SDR-2026-10-28 / ADR-005） | ✅ 完成（2026-10-28） | rust：`model.delete` 批量化（别名数组 + positional 形态 + raw-base 墓碑写回）、`importCatalog` `exclude_model_ids`（`effective_tombstones` 同源合并）；web：`src/lib/modelSelection.ts` + `catalogModelSelection.ts` 选择状态机纯函数（选择面 UI 逻辑抽 lib 惯例）、provider 详情多选 + 批量删除单次提交 + 切 provider 清选、`load()` 期间详情面板常驻（`lastSelectedProvider` 回退，过滤词保留）、Add provider 对话框可勾选模型清单（默认全选 + 清单内搜索不触碰排除态 + 底部实时计数）+ 排除清单随导入提交；AddProviderDialog 头注释两处失真修正；klient 契约任务随 SDR-002 引擎退役作废（wire 由 rust 引擎层与 web `ws-rpc-api.ts` 直接约定）。实现见 commits 10ffe70f8^..52c17f839 |
+| B9 思考方言三级解析 + 三种表达法编码（G-29/G-30，D-M11 / ADR-006） | 🚧 待开始 | rust：`thinking_dialect` 模块（三取值枚举 + 解析链 + 内置端点表）、`OpenAILlm` 按方言编码关闭与档位、`thinking_off` 两个配置键入 round-trip 白名单、`model.list` 有效能力追加 `always_thinking` |
+| B10 导入派生 + 会话默认档位 + 废弃全局节（G-18 部分/G-31/G-32，C7.6–C7.8） | 🚧 待开始 | rust：`models_dev_alias_record` 派生 `always_thinking`/`thinking_off`；会话创建解析默认档位；`[thinking]` 节移除 + 废弃体检提示；非法 `thinking_off` 告警 |
+| B11 思考关闭方式的模型设置面（US-9/C7.5，R7） | 🚧 待开始 | web：模型编辑表单在思考折叠区增"思考关闭方式"（自动 + 三取值 + 不发送），默认自动并显示解析结果；与推理字段名覆盖并列；移除全局思考节写入 |
+| B12 供应商接入配置编辑面（G-33/G-34，D-M12/US-16/C8） | 🚧 待开始 | web：供应商编辑面扩展为完整接入配置表单（类型 / 端点 / 自定义请求头 / 思考关闭方式）；协议类型选项收敛为引擎可建立的集合；保存原子、切换类型保留模型清单并提示 |
 
 ## 2. 开放项清单
 
@@ -40,7 +44,7 @@
 | G-15 | `importCatalog` 只写最小别名 `{provider, model, max_context_size}`，无 capabilities/maxOutputSize/reasoningKey/supportEfforts——导入模型能力全空（运行时只剩名字 marker 猜测） | 事故 2026-09-18（rust + web 实测，用户报告）；context §6.2-1 | **B6 收口**（裁决：SDR-2026-09-18 / ADR-004）：`dispatch_import_provider_catalog` 按 TS `modelsDevModelToRecord` 的推导补齐别名字段 + 不可用模型过滤；`displayName`/`description` 维持不写（D-M1 / curated 门控） |
 | G-16 | browse 契约裁掉能力字段：klient `providerCatalogModelEntrySchema` 仅 id/name/context_length；web rust mapper 硬填 `reasoning:false`、capabilities 丢弃 | context §6.2-2 | **B6 收口**：klient 契约加法（`capabilities?`/`reasoning?`，zod strip 兼容）+ rust `listCatalog` 发射 + web mapper 透传 |
 | G-17 | 重复导入已存在 provider 直接 `provider.already_exists` 拒绝，与 TS merge 语义及 web 对话框 alreadyAdded 徽标/文案矛盾 | context §6.2-3 | **B6 收口**（ADR-004 勘误）：merge——既有别名逐字节保留、`removed_model_ids` 墓碑不复活、只追加新模型；`already_exists` 保留给手动建 provider |
-| G-18 | rust `ModelAlias` 无 `max_input_size`/`off_effort` 字段、引擎不消费 `always_thinking`——TS v2 导入的这三个派生值在 rust 无落点 | context §6.2-8/10 | followup：出现真实消费方再引入（SDR-2026-09-18 暂不引入项） |
+| G-18 | rust `ModelAlias` 无 `max_input_size`/`off_effort` 字段、引擎原先不消费 `always_thinking`——TS v2 导入的三个派生值在 rust 无落点 | context §6.2-8/10 | **部分改判（2026-11-07，D-M11/ADR-006）**：`always_thinking` 的消费方已就绪（web 思考控件分支 + 需求 US-15），挂账撤销——导入时派生写入、`model.list` 作为有效能力投递，随 B10 落地。`max_input_size`/`off_effort` 维持 followup（仍无消费方；`off_effort` 的语义在 `reasoning_effort` 方言下已由固定 `none` 覆盖，无独立落点价值） |
 | G-19 | 导入不种子 default_model（TS 在 unset 时种第一个模型；rust server 与 web 适配器都不种） | context §6.2-4 | **B6 收口**（ADR-004 第 4 条）：全新环境导入后种子第一个非墓碑模型 |
 | G-20 | web custom `addProvider` 两次 `config.set` 非原子（第二次失败留下无模型的 provider）；capabilities 仅 3 个硬编码预设 chips，无目录预填 | context §6.2-9 | **B7 收口**：合并为单次分节写 + 模型 id 命中目录时预填目录事实做表单默认值 |
 | G-21 | 无内置 models.dev 快照——全新 rust 安装未刷新前 `listCatalog` 空数组、目录页空白无引导 | context §6.2-7 | **✅ 已收口（2026-10-12，`fix(models): settle the model-settings audit tails`）**：构建期内置快照 `rust/crates/mirri-embedded/data/models-dev-snapshot.json`（19 provider 策展集 ~273KB，零网络）；磁盘缓存缺省时内存回落快照（**不写盘**，磁盘缓存仍仅由真实 fetch 产生，refresh 链路字节不变）；web 目录空/失败态补「刷新获取最新」操作。两测试钉住（无缓存服务快照 / 默认配置下未知 id 报 no-such-entry）；两条诚实空面测试迁移至 `persist_cache=false` 配置面保义 |
@@ -51,6 +55,13 @@
 | G-26 | 模型无批量删除：逐行单删 = N 次 config 写事务；全仓无 selection/bulk 交互模式 | 用户需求 2026-10-28 · context §7-1 | **✅ 已收口（2026-10-28，B8）**：`model.delete` 批量化（单写事务）+ web 多选 + 单次提交 |
 | G-27 | 单删后 provider 详情过滤词丢失（`load()` 中间态卸载重挂组件） | 用户需求 2026-10-28 · context §7-3 | **✅ 已收口（2026-10-28，B8）**：详情面板常驻（`lastSelectedProvider` 回退），过滤词保留 |
 | G-28 | catalog 导入无模型选择（只读 badge 预览 + 必全量导入）；`model.delete` 不写墓碑，删除/排除后重导入即复活（`AddProviderDialog` 头注释宣称的语义与实现不符） | 用户需求 2026-10-28 · context §7-2/4/5 | **✅ 已收口（2026-10-28，B8）**：`importCatalog` `exclude_model_ids` + `model.delete` 墓碑（重导入不复活）+ web 可勾选模型清单 |
+| G-29 | 思考"关闭"在所有 `type = "openai"` 的 provider 上无效：`ThinkingEffort::None` 编码为省略字段，而省略在推理模型处意为厂商默认（继续思考）；关闭失败且无任何信号 | 用户报告 2026-11-07 · context §8.1/§8.7 · 需求 US-15 | **B9 待做**（D-M11/ADR-006）：三级方言解析 + 三种表达法编码；已知厂商（MiMo/DeepSeek/GLM/Kimi K2/Qwen/MiniMax）的关闭真实送达 |
+| G-30 | 引擎不投递"能否关闭"事实：`capabilities` 只有 `thinking`，"永远思考"无落点，关不掉的模型仍显示关闭项 | context §8.2 · 需求 D-M11.4 | **B9/B10 待做**：`model.list` 有效能力追加 `always_thinking`（B9）；`importCatalog` 按目录 `reasoning_options` 派生 `always_thinking`/`thinking_off`（B10） |
+| G-31 | `[thinking]` 配置节的 `enabled`/`effort` 无请求路径消费者（parse-only），用户写的 `enabled = false` 从未生效且无提示；`keep` 的文档所述发送行为在引擎侧完全不存在；同时界面切档位仍在写这个无效节（有写入方、无读端） | context §8.3 · 需求 US-15 末条 | **B10/B11 待做**（C7.8）：整节移除——`effort` 由模型级 `default_effort` 取代、`enabled` 由模型级可关闭性 + 会话级选择取代、`keep` 是未实现残留；存量配置按未知节透传保留不改写，体检提示已废弃；web 移除 `persistGlobalThinking` 的全局写入（B11） |
+| G-32 | 会话创建不解析模型默认档位（仅在切换模型时解析），新会话 `thinking_effort = None`，导入的 `default_effort` 对新会话无效 | context §8.4 · 需求 US-15 | **B10 待做**（C7.7）：创建会话走同一条默认档位解析 |
+| G-33 | 供应商接入配置只在创建时确定：协议类型、自定义请求头无任何界面入口，改类型只能删库重建（连模型清单一起丢） | 用户需求 2026-11-07（自建/代理场景）· 需求 D-M12/US-16 | **B12 待做**（C8）：接入配置合并为可反复编辑的表单 |
+| G-34 | 创建对话框的协议类型选项含引擎无法建立连接的取值，选中后直到请求时才失败；用户无法从错误判断是配置问题还是产品不支持 | 需求 D-M12.3 · R5 | **B12 待做**：可选项收敛为引擎可建立的协议；保存时按新类型校验端点必填性 |
+| G-35 | 会话级思考选择不持久化：`session.updateMeta` 的 thinking 只应用不落 wire log，重启或恢复会话后回到模型默认 | context §8.3 · 需求 US-15 | 开放项（用户裁决：本批不做，以后再考虑）。移除全局节后该缺口更明显——用户选的档位只活在当前进程 |
 
 ## 3. 账本指针
 

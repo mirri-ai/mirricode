@@ -118,7 +118,7 @@ impl AcpProcess {
         // real MCP servers in the background on its first engine call —
         // a machine-wide process storm that blows the 30s response
         // deadlines and leaves orphaned servers behind.
-        let mut command = Command::new(ACP_BIN);
+        let mut command = Command::new(ACP_BIN); // hygiene-allow: D: 黑盒一致性套件的被测对象，spawn 即语义
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -3515,9 +3515,11 @@ async fn should_advertise_the_models_declared_efforts_when_the_thinking_option_i
             "Thinking Max"
         ]
     );
-    // And currentValue still echoes whatever agent.getConfig reports
-    // (here the fresh session's "none"), independent of the options list.
-    assert_eq!(thinking["currentValue"], json!("none"));
+    // And currentValue echoes whatever agent.getConfig reports. A session
+    // created without an explicit effort inherits the model's declared
+    // default — here the middle of ["low", "high", "max"] — rather than
+    // starting at "none" (C7.7).
+    assert_eq!(thinking["currentValue"], json!("high"));
 }
 
 // ===== L. stdio smoke against the real provider stack =====================

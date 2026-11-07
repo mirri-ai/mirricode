@@ -4236,12 +4236,12 @@ async fn should_keep_async_work_schedulable_while_replaying_a_large_wire_log() {
     let resume = tokio::spawn(async move { manager.resume_session(&session_id).await });
 
     // While the resume is in flight, the probe must complete some rounds.
-    // Poll the shared flag with real sleeps: each sleep is an await point
-    // the (single) worker thread must return to the scheduler for, and the
-    // probe task runs on those scheduling opportunities.
+    // Each yield is an await point the (single) worker thread must return
+    // to the scheduler for, and the probe task runs on those scheduling
+    // opportunities — no wall-clock sleep, just scheduling turns.
     let mut progressed = false;
     for _ in 0..100 {
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        tokio::task::yield_now().await;
         if *resumed.lock().await > 0 {
             progressed = true;
             break;
@@ -4870,8 +4870,23 @@ async fn pin_test_manager() -> (SessionManager, Arc<SessionId>) {
 #[tokio::test]
 async fn should_pin_without_refreshing_recency() {
     let (manager, id) = pin_test_manager().await;
+    // Seed a historical recency stamp through the store: a pin that
+    // wrongly refreshed it would jump a month, so the comparison needs no
+    // sleep to make the two stamps distinguishable.
+    let historical = chrono::Utc::now() - chrono::Duration::days(30);
+    manager
+        .metadata_store()
+        .apply(
+            &id,
+            &manager.metadata_workspace_id(),
+            MetadataPatch {
+                updated_at: Some(historical),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
     let before = manager.metadata_store().get(&id).await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
     manager.set_pin(&id, Some(mirri_proto::PinColor::Blue)).await.unwrap();
 
@@ -4890,15 +4905,37 @@ async fn should_pin_without_refreshing_recency() {
 #[tokio::test]
 async fn should_not_refresh_pinned_at_on_repeated_pin() {
     let (manager, id) = pin_test_manager().await;
-    manager.set_pin(&id, None).await.unwrap();
-    let first = manager.metadata_store().get(&id).await.unwrap().pinned_at;
-    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    // Seed the pin with a historical pinned_at through the store: a pin
+    // that wrongly re-stamped it would jump a month, so the idempotence
+    // check needs no sleep to separate the stamps.
+    let historical = chrono::Utc::now() - chrono::Duration::days(30);
+    manager
+        .metadata_store()
+        .apply(
+            &id,
+            &manager.metadata_workspace_id(),
+            MetadataPatch {
+                pinned: Some(true),
+                pinned_at: Some(Some(historical)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
 
     manager.set_pin(&id, Some(mirri_proto::PinColor::Red)).await.unwrap();
 
     let row = manager.metadata_store().get(&id).await.unwrap();
-    assert_eq!(row.pinned_at, first, "the original pin moment survives");
-    assert_eq!(row.pin_color.as_deref(), Some("red"), "the color follows the request");
+    assert_eq!(
+        row.pinned_at,
+        Some(historical),
+        "the original pin moment survives"
+    );
+    assert_eq!(
+        row.pin_color.as_deref(),
+        Some("red"),
+        "the color follows the request"
+    );
 }
 
 /// Given a pinned session with a color, When it is unpinned, Then the

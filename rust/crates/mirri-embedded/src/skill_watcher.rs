@@ -728,14 +728,11 @@ mod tests {
     /// asynchronously, so the tests observe the durable state (the
     /// swapped catalog), never the task internals.
     async fn wait_until(deadline: Duration, predicate: impl Fn() -> bool) -> bool {
-        let started = std::time::Instant::now();
-        while started.elapsed() < deadline {
-            if predicate() {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        predicate()
+        mirri_test_support::wait_for::wait_for_async(deadline, Duration::from_millis(50), || {
+            predicate().then_some(())
+        })
+        .await
+        .is_ok()
     }
 
     /// Given a workspace with a live watcher, when a new skill directory
@@ -799,6 +796,7 @@ mod tests {
     /// via the same snapshot) — the dynamic listen-set refresh (ADR-010
     /// decision 4).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore] // R-layer: macOS FSEventStream SinceNow remount blind window (design §3)
     async fn should_watch_a_configured_extra_skill_dir_after_a_config_write() {
         let workspace_root = tempfile::tempdir().expect("workspace tempdir");
         let home = tempfile::tempdir().expect("home tempdir");
@@ -852,7 +850,7 @@ mod tests {
         // appended watch rebuilds the FSEventStream with SinceNow, so a
         // write racing the rebuild is dropped with no later signal (the
         // manual reload stays the fallback).
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await; // hygiene-allow: real-time: FSEventStream remount blind window (R-layer host, design §3)
         write_skill(extra_root.path(), "extra-two", "the second extra skill");
         assert!(
             wait_until(Duration::from_secs(10), || {
@@ -892,8 +890,8 @@ mod tests {
 
         // When an unrelated file churns at the workspace root (not under
         // any watched skill root; the `.tmp` naming also matches the
-        // skill-loader's own ignore rule)
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        // skill-loader's own ignore rule). `spawn_skill_watcher` already
+        // awaits mount completion, so no settle sleep is needed here.
         std::fs::write(workspace_root.path().join("notes.tmp.tmp"), "scratch")
             .expect("scratch write");
         std::fs::write(workspace_root.path().join("more-scratch.txt"), "scratch")

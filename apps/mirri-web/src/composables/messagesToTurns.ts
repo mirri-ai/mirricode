@@ -731,6 +731,13 @@ export function messagesToTurns(
     approvalByTool.set(a.toolCallId, a);
   }
 
+  // A tool call id is unique per call: every rendered card registers here so
+  // a duplicate delivery of the same call — a crash-recovery replay, or a
+  // streamed-vs-persisted copy that landed under a different prompt id —
+  // merges into the surviving card instead of rendering a second one (the
+  // batch-review double-card regression).
+  const renderedToolCalls = new Map<string, Group>();
+
   let pendingGroup: Group | null = null;
 
   function flushGroup(final = false): void {
@@ -825,6 +832,14 @@ export function messagesToTurns(
           else g.blocks.push({ kind: 'thinking', thinking: c.thinking });
         }
       } else if (c.type === 'toolUse') {
+        // A tool call id is unique per call: an id that already rendered is a
+        // duplicate delivery of the same call (mixed copies / late replays) —
+        // never a second card. Fold its volatile extras into the survivor.
+        const renderedGroup = renderedToolCalls.get(c.toolCallId);
+        if (renderedGroup !== undefined) {
+          mergeVolatileExtras(renderedGroup, [c]);
+          continue;
+        }
         // Single `Agent` subagent spawns and all other tools render as a normal
         // tool card: the card shows the fixed args (prompt / description) plus
         // the final result when expanded, while a subagent's live progress
@@ -848,16 +863,20 @@ export function messagesToTurns(
         };
         g.tools.push(toolCall);
         g.blocks.push({ kind: 'tool', tool: toolCall });
+        renderedToolCalls.set(c.toolCallId, g);
         if (pendingApproval) {
           g.approval = buildApprovalBlock(pendingApproval);
           g.approvalId = pendingApproval.approvalId;
         }
       } else if (c.type === 'toolResult') {
-        // Update the matching tool call status within this group (both the flat
-        // tools[] and the ordered block that renders it).
-        const idx = g.tools.findIndex((t) => t.id === c.toolCallId);
+        // Update the matching tool call status (both the flat tools[] and the
+        // ordered block that renders it). The result may arrive on a different
+        // message than the call's own copy (a duplicate echo was dropped), so
+        // resolve the owning group globally first, falling back to this group.
+        const owner = renderedToolCalls.get(c.toolCallId) ?? g;
+        const idx = owner.tools.findIndex((t) => t.id === c.toolCallId);
         if (idx !== -1) {
-          const tool = g.tools[idx]!;
+          const tool = owner.tools[idx]!;
           const updated: ToolCall = {
             ...tool,
             status: c.isError ? 'error' : 'ok',
@@ -874,8 +893,8 @@ export function messagesToTurns(
           if (updated.name === 'ExitPlanMode' && !updated.planPath) {
             updated.planPath = parsePlanSavedPath(updated.output);
           }
-          g.tools[idx] = updated;
-          const blk = g.blocks.find((b) => b.kind === 'tool' && b.tool.id === c.toolCallId);
+          owner.tools[idx] = updated;
+          const blk = owner.blocks.find((b) => b.kind === 'tool' && b.tool.id === c.toolCallId);
           if (blk && blk.kind === 'tool') blk.tool = updated;
         }
       }
@@ -1081,6 +1100,30 @@ export function messagesToTurns(
 
     // Assistant messages: decide whether to extend the current group or start a new one.
     //
+    // Duplicate-echo guard (tool-call anchored): a tool call id is unique per
+    // call, so an assistant message whose tool_use ids were ALL already
+    // rendered is a re-delivery of an earlier message (a streamed-vs-persisted
+    // copy under a different prompt id, a crash-recovery replay). Fold its
+    // volatile extras into the surviving cards and drop it before it opens a
+    // duplicate group — the double-card regression. Text-only duplicates are
+    // deliberately NOT matched (a model may legitimately repeat itself).
+    const toolUseParts = msg.content.filter((c) => c.type === 'toolUse');
+    if (toolUseParts.length > 0 && toolUseParts.every((c) => renderedToolCalls.has(c.toolCallId))) {
+      const owner = renderedToolCalls.get(toolUseParts[0]!.toolCallId)!;
+      // Mirror the row-tracking updates the absorb path would have made so a
+      // dropped copy's completion instant still lands on the turn (the
+      // "anchor endedAt on the last duplicate row" semantics).
+      if (msg.durationMs !== undefined && owner.durationMs !== msg.durationMs) {
+        owner.durationMs = msg.durationMs;
+      }
+      owner.lastCreatedAt = msg.createdAt;
+      owner.lastRowEndedAt = msg.endedAt;
+      for (const c of toolUseParts) {
+        mergeVolatileExtras(renderedToolCalls.get(c.toolCallId)!, [c]);
+      }
+      continue;
+    }
+
     // Merge rule: user messages and compaction summaries are hard boundaries.
     // Inside an assistant segment, split only when both sides have known,
     // different promptIds. The daemon's REST snapshot is allowed to omit

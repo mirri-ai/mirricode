@@ -118,6 +118,7 @@ pub mod task_notification;
 pub mod task_persist;
 pub mod telemetry;
 pub mod terminal_pool;
+pub mod thinking_dialect;
 pub mod todo;
 pub mod tool;
 pub mod tool_policy;
@@ -152,8 +153,8 @@ pub use compaction::{
 };
 pub use config::{
     LoopControlConfig, ModelAlias, ModelConfig, PermissionConfig, ProviderConfig, ProviderEntry,
-    RetentionConfig, ServerConfig, ThinkingConfig, camel_to_snake, convert_keys_to_camel_case,
-    convert_keys_to_snake_case, json_to_toml_value, load_retention, migrate_config, mirri_home_dir,
+    RetentionConfig, ServerConfig, camel_to_snake, convert_keys_to_camel_case,
+    convert_keys_to_snake_case, json_to_toml_value, load_retention, mirri_home_dir,
     resolve_model_alias_in, snake_to_camel, toml_to_json,
 };
 pub use context::{AgentContextData, ContextMessage, ProjectOptions, ProjectionAnomaly};

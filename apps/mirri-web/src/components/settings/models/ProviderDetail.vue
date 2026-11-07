@@ -28,6 +28,14 @@ import Tooltip from '../../ui/Tooltip.vue';
 import Dialog from '../../ui/Dialog.vue';
 import Field from '../../ui/Field.vue';
 import ModelEditDialog from './ModelEditDialog.vue';
+import {
+  SUPPORTED_PROVIDER_TYPES,
+  buildConnectionPatch,
+  toHeaderPairs,
+  validateConnection,
+  type HeaderPair,
+} from '../../../lib/providerConnection';
+import { THINKING_OFF_OPTIONS } from '../../../lib/thinkingOff';
 import { useConfirmDialog } from '../../../composables/useConfirmDialog';
 import { isCompositionKeyEvent } from '../../../lib/keyboard';
 
@@ -469,6 +477,75 @@ async function submitEditBaseUrl(): Promise<void> {
   }
 }
 
+// Edit connection dialog (D-M12): type / endpoint / custom headers /
+// thinking-off in ONE submit, because these are the fields a self-hosted or
+// proxied provider needs to correct after the fact.
+const editConnectionOpen = ref(false);
+const editConnectionType = ref('');
+const editConnectionBaseUrl = ref('');
+const editConnectionHeaders = ref<HeaderPair[]>([]);
+const editConnectionThinkingOff = ref('');
+const editConnectionSaving = ref(false);
+const editConnectionError = ref('');
+
+/** The stored type is outside the buildable set (e.g. a directory import
+ *  produced `vertexai`). The select keeps it visible so the form does not
+ *  silently rewrite it on an untouched save. */
+const supportedTypeMissing = computed(
+  () => !(SUPPORTED_PROVIDER_TYPES as readonly string[]).includes(props.provider.type),
+);
+
+function openEditConnection(): void {
+  editConnectionType.value = props.provider.type;
+  editConnectionBaseUrl.value = props.provider.baseUrl ?? '';
+  editConnectionHeaders.value = toHeaderPairs(props.provider.customHeaders);
+  editConnectionThinkingOff.value = props.provider.thinkingOff ?? '';
+  editConnectionError.value = '';
+  editConnectionOpen.value = true;
+}
+
+function addConnectionHeader(): void {
+  editConnectionHeaders.value = [...editConnectionHeaders.value, { name: '', value: '' }];
+}
+
+function removeConnectionHeader(index: number): void {
+  editConnectionHeaders.value = editConnectionHeaders.value.filter((_, i) => i !== index);
+}
+
+async function saveConnection(): Promise<void> {
+  if (editConnectionSaving.value) return;
+  const invalid = validateConnection({
+    providerId: props.provider.id,
+    type: editConnectionType.value,
+    baseUrl: editConnectionBaseUrl.value,
+    headers: editConnectionHeaders.value,
+  });
+  if (invalid !== null) {
+    editConnectionError.value = t(invalid);
+    return;
+  }
+  editConnectionSaving.value = true;
+  editConnectionError.value = '';
+  try {
+    await api.setConfig(
+      buildConnectionPatch(props.provider.id, {
+        type: editConnectionType.value,
+        baseUrl: editConnectionBaseUrl.value,
+        headers: editConnectionHeaders.value,
+        thinkingOff: editConnectionThinkingOff.value,
+      }),
+    );
+    editConnectionOpen.value = false;
+    // `changed` is what the base-URL dialog emits after a successful write;
+    // `refresh` means "re-pull the models.dev catalog" and takes an id.
+    emit('changed');
+  } catch (error) {
+    editConnectionError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    editConnectionSaving.value = false;
+  }
+}
+
 function onBaseUrlEditKeydown(e: KeyboardEvent): void {
   if (isCompositionKeyEvent(e)) return;
   if (e.key === 'Enter') {
@@ -511,6 +588,9 @@ function caps(alias: AppModelAlias): string[] {
           <span class="pvd-type">{{ provider.type }}</span>
           <span v-if="provider.baseUrl" class="pvd-url" :title="t('settings.models.editBaseUrl')" @click="openEditBaseUrl">{{ provider.baseUrl }}</span>
           <button v-else type="button" class="pvd-url pvd-url-empty" :title="t('settings.models.editBaseUrl')" @click="openEditBaseUrl">{{ t('settings.models.editBaseUrl') }}</button>
+          <button type="button" class="pvd-connection-entry" @click="openEditConnection">
+            {{ t('settings.models.editConnection') }}
+          </button>
           <div class="pvd-head-meta">
             <Badge :variant="credentialBadge.variant" size="sm">
               <template v-if="credentialBadge.envRef">{{ credentialBadge.envRef }}</template>
@@ -711,6 +791,81 @@ function caps(alias: AppModelAlias): string[] {
       </template>
     </Dialog>
 
+    <!-- Edit connection dialog (D-M12) -->
+    <Dialog
+      v-if="editConnectionOpen"
+      :open="true"
+      :title="t('settings.models.editConnection')"
+      size="md"
+      overlay-class="model-edit-overlay"
+      @close="editConnectionOpen = false"
+    >
+      <div class="pvd-add-form">
+        <Field
+          :label="t('settings.models.fieldProviderType')"
+          :hint="supportedTypeMissing ? t('settings.models.connection.unsupportedType') : undefined"
+        >
+          <Select v-model="editConnectionType">
+            <!-- A config may already carry a type this engine cannot build
+                 (a directory import can produce one). Keep it selectable and
+                 labelled so an untouched save does not silently rewrite it. -->
+            <option v-if="supportedTypeMissing" :value="editConnectionType">
+              {{ editConnectionType }}
+            </option>
+            <option v-for="wire in SUPPORTED_PROVIDER_TYPES" :key="wire" :value="wire">
+              {{ wire }}
+            </option>
+          </Select>
+        </Field>
+        <Field :label="t('settings.models.fieldBaseUrl')" :hint="t('settings.models.fieldBaseUrlHint')">
+          <Input
+            v-model="editConnectionBaseUrl"
+            :placeholder="'https://api.example.com/v1'"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </Field>
+        <Field :label="t('settings.models.connection.headers')">
+          <div v-for="(pair, i) in editConnectionHeaders" :key="i" class="pvd-conn-header">
+            <Input v-model="pair.name" placeholder="X-Route" autocomplete="off" spellcheck="false" />
+            <Input v-model="pair.value" placeholder="value" autocomplete="off" spellcheck="false" />
+            <Button variant="ghost" size="sm" @click="removeConnectionHeader(i)">
+              {{ t('settings.models.connection.removeHeader') }}
+            </Button>
+          </div>
+          <Button variant="ghost" size="sm" @click="addConnectionHeader">
+            {{ t('settings.models.connection.addHeader') }}
+          </Button>
+          <p class="pvd-conn-hint">{{ t('settings.models.connection.headersHint') }}</p>
+        </Field>
+        <!-- The kimi adapter owns its dialect (it puts the tier inside the
+             thinking object), so an override here would be a control with no
+             effect. Hide it rather than offer a dead switch (R5). -->
+        <Field
+          v-if="editConnectionType !== 'kimi'"
+          :label="t('settings.models.fieldThinkingOff')"
+          :hint="t('settings.models.connection.thinkingOffHint')"
+        >
+          <Select v-model="editConnectionThinkingOff">
+            <option v-for="opt in THINKING_OFF_OPTIONS" :key="opt.value" :value="opt.value">
+              {{ t(opt.labelKey) }}
+            </option>
+          </Select>
+        </Field>
+        <p v-else class="pvd-conn-hint">
+          {{ t('settings.models.connection.kimiOwnsDialect') }}
+        </p>
+        <div v-if="editConnectionError" class="pvd-add-err">{{ editConnectionError }}</div>
+        <p v-if="editConnectionType !== provider.type" class="pvd-conn-hint">
+          {{ t('settings.models.connection.typeChangeHint') }}
+        </p>
+      </div>
+      <template #foot>
+        <Button variant="primary" size="sm" :loading="editConnectionSaving" @click="saveConnection">{{ t('common.save') }}</Button>
+        <Button variant="secondary" size="sm" @click="editConnectionOpen = false">{{ t('common.cancel') }}</Button>
+      </template>
+    </Dialog>
+
     <!-- Add-model dialog -->
     <Dialog
       v-if="showAddModel"
@@ -776,6 +931,10 @@ function caps(alias: AppModelAlias): string[] {
 .pvd-url { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--color-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pvd-url:not(.pvd-url-empty) { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
 .pvd-url:not(.pvd-url-empty):hover { color: var(--color-text); }
+.pvd-connection-entry { margin-top: 2px; padding: 0; border: 0; background: none; color: var(--color-text-muted); font-size: var(--text-xs); text-decoration: underline dotted; text-underline-offset: 2px; cursor: pointer; align-self: flex-start; }
+.pvd-connection-entry:hover { color: var(--color-text); }
+.pvd-conn-header { display: flex; gap: var(--space-2); align-items: center; }
+.pvd-conn-hint { margin: var(--space-1) 0 0; color: var(--color-text-muted); font-size: var(--text-xs); }
 .pvd-url-empty { background: none; border: none; padding: 0; text-align: left; cursor: pointer; color: var(--color-text-faint); font-size: var(--text-xs); }
 .pvd-url-empty:hover { color: var(--color-text); text-decoration: underline; }
 .pvd-head-meta { display: flex; align-items: center; gap: var(--space-2); margin-top: 2px; }

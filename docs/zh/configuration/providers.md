@@ -13,7 +13,7 @@ Mirri Code 支持同时接入多家 LLM 平台——用 Mirri Code 托管服务�
 | `openai` | OpenAI Chat Completions | OpenAI 及兼容服务、DeepSeek、Qwen 等 |
 | `openai_responses` | OpenAI Responses API | OpenAI 较新的 Responses 接口 |
 | `google-genai` | Google GenAI | Gemini API |
-| `vertexai` | Google GenAI on Vertex | Google Cloud Vertex AI（仅 TypeScript 引擎） |
+| `vertexai` | Google GenAI on Vertex | 本引擎不支持；界面不提供该选项，已有配置会在建立连接时被拒绝 |
 
 所有供应商默认以流式方式与模型交互。thinking、视觉、工具调用等能力按模型名前缀自动匹配，通常不需要手动声明。
 
@@ -135,7 +135,7 @@ base_url = "https://your-gateway.example"
 与 `google-genai` 共用实现，`type = "vertexai"` 时切换到 Vertex AI 访问路径。
 
 ::: warning 注意
-`vertexai` 仅 TypeScript 引擎支持——rust 引擎在建立连接时会以 "unsupported provider type" 报错拒绝。下文字段描述的是 TypeScript 引擎的行为。
+`vertexai` 本引擎不支持——建立连接时会以 "unsupported provider type" 报错拒绝，设置页也不提供该选项。如已存在这样的配置，请改为 `google-genai`。
 :::
 
 认证走 Google Cloud 标准 ADC 流程（`gcloud auth application-default login` 或 `GOOGLE_APPLICATION_CREDENTIALS` 服务账号 JSON），这部分与 Mirri Code 无关。**项目 ID 和区域必须写在 `[providers.vertexai.env]` 子表里**——直接在 shell 里 `export GOOGLE_CLOUD_PROJECT` 不会被 CLI 读取。

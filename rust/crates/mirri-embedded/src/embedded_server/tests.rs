@@ -45,15 +45,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // the real loop for that (`KEEP-LOOP` in
 // `docs/specs/rust-core-design/plans/2026-11-05-negative-window-audit.md`),
 // so the seam stays honest.
-//
-// These helpers are consumed by Tasks 4-6 of that plan; until then they have
-// no call sites.
 // ===========================================================================
 
 /// Drive ONE task-driver notification pass for `session_id` — the body the
 /// spawned driver runs after its sweep (due-notification adjudication and
 /// delivery).
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn drive_notification_tick(server: &EmbeddedServer, session_id: &str) {
     let session = server
         .session_manager()
@@ -87,17 +83,15 @@ async fn drive_notification_tick(server: &EmbeddedServer, session_id: &str) {
 
 /// Drive `ticks` notification passes in sequence — the literal form of
 /// "N driver ticks passed and nothing was delivered".
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn drive_notification_ticks(server: &EmbeddedServer, session_id: &str, ticks: usize) {
     for _ in 0..ticks {
         drive_notification_tick(server, session_id).await;
     }
 }
 
-/// Drive ONE server-level cron pass for the default workspace. The orphan
+/// Drive ONE SERVER-level cron pass for the default workspace. The orphan
 /// latch is pre-set (`true`) so a repeated call is a pure due-check + drain
 /// instead of re-running the stale-Running convergence.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn drive_cron_pass(server: &EmbeddedServer) {
     let workspace_id = server
         .workspace_registry()
@@ -114,9 +108,73 @@ async fn drive_cron_pass(server: &EmbeddedServer) {
     .await;
 }
 
+/// One captured workspace fire (batch 4's deterministic drive): what
+/// `check_due` handed the executor, kept for the test to settle itself.
+#[derive(Clone, Debug)]
+struct CapturedFire {
+    trigger: mirri_core::cron::RunTrigger,
+    scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// A capturing [`super::cron_driver::WorkspaceFireExecutor`]: the pass
+/// runs `check_due` for real (cursor advance, `scheduled_at`, the
+/// `Scheduled` trigger) but RECORDS the fires instead of spawning the run
+/// pipeline — the test then drives the run to its terminal record through
+/// `WorkspaceRunSpawner::spawn_and_settle` on its own task, with no
+/// background scheduler tick racing to execute the same fire.
+#[derive(Default)]
+struct CaptureFireExecutor {
+    fires: std::sync::Mutex<Vec<CapturedFire>>,
+}
+
+impl super::cron_driver::WorkspaceFireExecutor for CaptureFireExecutor {
+    fn execute(
+        &self,
+        _workspace_id: &str,
+        _task_id: &str,
+        trigger: mirri_core::cron::RunTrigger,
+        scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) {
+        self.fires
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(CapturedFire {
+                trigger,
+                scheduled_at,
+            });
+    }
+}
+
+/// Drive ONE server-level cron pass with the CAPTURING executor and hand
+/// back the fires (usually exactly one — the due task). Pair with
+/// `spawn_and_settle` for the deterministic fire → terminal drive; the
+/// orphan latch is pre-set (a capture pass never sweeps — the sweep tests
+/// drive their own latch directly).
+async fn drive_cron_pass_capture(server: &EmbeddedServer) -> Vec<CapturedFire> {
+    let workspace_id = server
+        .workspace_registry()
+        .default_workspace_id()
+        .expect("the default workspace is set")
+        .to_string();
+    let executor = Arc::new(CaptureFireExecutor::default());
+    super::cron_driver::schedule_workspace_cron_pass(
+        Arc::clone(&server.registry),
+        executor.clone(),
+        Arc::clone(&server.steer_buffers),
+        workspace_id,
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .await;
+    std::mem::take(
+        &mut *executor
+            .fires
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()),
+    )
+}
+
 /// Drive ONE SESSION-scoped cron pass (`check_due` → hold → purge → idle
 /// gate → drain) — the per-session half of the scheduler tick.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn drive_session_cron_pass(server: &EmbeddedServer, session_id: &str) {
     super::cron_driver::schedule_session_cron_pass(
         Arc::clone(&server.registry),
@@ -145,7 +203,6 @@ async fn drive_session_cron_pass(server: &EmbeddedServer, session_id: &str) {
 /// Drive `passes` completed follow-driver passes for one session. A pass
 /// that skips for the in-flight guard counts as completed — that skip IS
 /// what the in-flight test asserts.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn drive_follow_passes(server: &EmbeddedServer, session_id: &str, passes: usize) {
     for _ in 0..passes {
         // `tests` is `embedded_server::tests`, so its submodules need TWO
@@ -161,7 +218,6 @@ async fn drive_follow_passes(server: &EmbeddedServer, session_id: &str, passes: 
 }
 
 /// The session's cron manager (the live session's own handle).
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn session_cron(
     server: &EmbeddedServer,
     session_id: &str,
@@ -179,7 +235,6 @@ async fn session_cron(
 /// ticks while the gate holds" windows were proxying: the hold can only
 /// appear after a pass ran `check_due`, and while the fire is held and the
 /// turn is in flight the busy gate blocks every injection.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_held_fire(server: &EmbeddedServer, session_id: &str, task_id: &str) {
     let cron = session_cron(server, session_id).await;
     mirri_test_support::wait_for::wait_for_async(
@@ -197,7 +252,6 @@ async fn wait_for_held_fire(server: &EmbeddedServer, session_id: &str, task_id: 
 }
 
 /// Wait until the held queue is EMPTY — the purge/inject/clear effect.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_held_fires_cleared(server: &EmbeddedServer, session_id: &str) {
     let cron = session_cron(server, session_id).await;
     mirri_test_support::wait_for::wait_for_async(
@@ -214,7 +268,6 @@ async fn wait_for_held_fires_cleared(server: &EmbeddedServer, session_id: &str) 
 /// to `embedded_server`; the `tests` subtree is a descendant, so it is
 /// reachable — if a refactor moves it, widen to `pub(super)` rather than
 /// duplicating the lookup.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn session_steer_buffer(
     server: &EmbeddedServer,
     session_id: &str,
@@ -237,7 +290,6 @@ async fn session_steer_buffer(
 
 /// Wait until `task_id`'s notification is parked in the steer buffer — the
 /// busy-path park is the ordering signal ("the park precedes the flush").
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_parked_notification(
     server: &EmbeddedServer,
     session_id: &str,
@@ -263,7 +315,6 @@ async fn wait_for_parked_notification(
 /// Wait until the session's MAIN turn has settled. `poll_agent_activity`
 /// hardcodes `agent_id: "main"`, so this is main-scoped by construction —
 /// for a subagent-addressed turn use [`wait_for_agent_turn_idle`].
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_turn_idle(server: &EmbeddedServer, session_id: &str) {
     poll_agent_activity(server, session_id, |state| {
         state["turn"].is_null() && state["lastTurn"].is_object()
@@ -273,7 +324,6 @@ async fn wait_for_turn_idle(server: &EmbeddedServer, session_id: &str) {
 
 /// Wait until a specific agent's turn settles (the addressee-scoped
 /// counterpart of [`wait_for_turn_idle`]).
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_agent_turn_idle(server: &EmbeddedServer, session_id: &str, agent_id: &str) {
     poll_agent_activity_for(server, session_id, agent_id, |state| {
         state["turn"].is_null()
@@ -286,7 +336,6 @@ async fn wait_for_agent_turn_idle(server: &EmbeddedServer, session_id: &str, age
 /// the "no further continuation can land" signal, because `UpdateGoal`
 /// writes the terminal status DURING the turn, long before the settle point
 /// runs the chain decision.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_goal_chain_stopped(server: &EmbeddedServer, session_id: &str) {
     mirri_test_support::wait_for::wait_for_async(
         Duration::from_secs(5),
@@ -306,7 +355,6 @@ async fn wait_for_goal_chain_stopped(server: &EmbeddedServer, session_id: &str) 
 }
 
 /// Wait until `expected` manual-compaction apply tasks have finished.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_manual_compaction_apply(server: &EmbeddedServer, expected: u64) {
     mirri_test_support::wait_for::wait_for_async(
         Duration::from_secs(5),
@@ -318,7 +366,6 @@ async fn wait_for_manual_compaction_apply(server: &EmbeddedServer, expected: u64
 }
 
 /// Wait until the engine's startup MCP connect set has settled.
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_mcp_startup_settled(server: &EmbeddedServer) {
     mirri_test_support::wait_for::wait_for_async(
         Duration::from_secs(5),
@@ -330,7 +377,6 @@ async fn wait_for_mcp_startup_settled(server: &EmbeddedServer) {
 }
 
 /// Wait until the spawned task driver has exited (its own counter).
-#[allow(dead_code)] // consumed by Tasks 4-6
 async fn wait_for_task_driver_exit(server: &EmbeddedServer, before: u64) {
     mirri_test_support::wait_for::wait_for_async(
         Duration::from_secs(5),
@@ -9929,7 +9975,7 @@ impl Llm for DrippingChildLlm {
                 text: format!("chunk-{i} "),
             }))
             .then(|delta| async move {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: real-time: DrippingChildLlm drips 50 deltas over ~5s — the ADR-006 real work-time window under test (host fn is R-layer, design §3)
                 delta
             })
             .chain(futures::stream::iter(vec![
@@ -9960,6 +10006,7 @@ impl Llm for DrippingChildLlm {
 /// acceptance: the pull model works end-to-end through run_engine_turn
 /// with the push path dead).
 #[tokio::test]
+#[ignore] // R-layer: ADR-006 real work-time window — the child drips deltas for ~5s against a 2s stall window (design §3)
 async fn should_keep_the_parent_turn_alive_through_the_pull_probe_when_the_push_feed_is_dead() {
     use b1_task_lifecycle_tests::b1_profiles_server_with_config;
 
@@ -17349,9 +17396,10 @@ async fn should_refuse_manual_compaction_when_a_turn_is_active() {
                 )
                 .await
                 .expect("the fire-mode send must be accepted");
-            loop {
-                tokio::time::sleep(Duration::from_secs(3600)).await;
-            }
+            // Park this dedicated runtime (and its `Arc<server>`) for the rest
+            // of the test without registering a real timer: `pending()` never
+            // wakes, so no 1h timer sits on the reactor wheel.
+            std::future::pending::<()>().await;
         });
     });
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -18849,7 +18897,7 @@ async fn should_report_zero_startup_duration_when_no_mcp_configs_discovered() {
 /// layer connects — the second engine's claim is refused and its own layer
 /// never registers (the desktop N-workspaces case: one connection set per
 /// home, not one per workspace).
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn should_connect_the_user_layer_once_when_engines_share_a_pool() {
     let (home_a, workspace_a) = layered_mcp_fixture(
         json!({"alpha": {"command": "echo", "args": [], "enabled": false}}),
@@ -18885,9 +18933,13 @@ async fn should_connect_the_user_layer_once_when_engines_share_a_pool() {
 
     wait_for_connection(&shared_pool.manager(), "alpha").await;
     // A wrong claim from engine B would register "beta" within one
-    // scheduler tick of its returned call; a short stability window is
-    // enough to let that betrayal show up.
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    // scheduler tick of its returned call. Under a paused clock this
+    // window only elapses once the runtime has drained every task it
+    // already has queued, so a betrayal spawned by engine B's call has
+    // run by the time the assertion below reads the connection list —
+    // the window is a scheduler quiescence barrier, not a bet on how
+    // much wall clock "short" means.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await; // hygiene-allow: D: paused clock 虚拟定时器，作调度静止屏障
     let names: Vec<String> = shared_pool
         .manager()
         .list_connections()
@@ -21762,6 +21814,11 @@ struct MockMcpHttpServer {
     #[allow(dead_code)] // held for lifetime; the loop ends with the runtime
     handle: tokio::task::JoinHandle<()>,
     url: String,
+    /// Fires once per `tools/call` request the mock receives, before the
+    /// tool delay starts: a test that needs the call provably in flight
+    /// awaits this instead of sleeping through a fixed window (the delay
+    /// then keeps the response pending for its own duration).
+    tool_calls: tokio::sync::mpsc::UnboundedReceiver<()>,
 }
 
 async fn spawn_mock_mcp_http_server(tool_delay_ms: u64, tool_error: bool) -> MockMcpHttpServer {
@@ -21785,30 +21842,41 @@ async fn spawn_mock_mcp_http_server_with_tools(
         .iter()
         .map(|(name, description)| (name.to_string(), description.to_string()))
         .collect();
+    let (tool_calls_tx, tool_calls_rx) = tokio::sync::mpsc::unbounded_channel();
     let handle = tokio::spawn(async move {
         loop {
             let Ok((stream, _)) = listener.accept().await else {
                 return;
             };
+            let tool_calls_tx = tool_calls_tx.clone();
             tokio::spawn(serve_mock_mcp_connection(
                 stream,
                 tool_delay_ms,
                 tool_error,
                 tools.clone(),
+                Some(tool_calls_tx),
             ));
         }
     });
-    MockMcpHttpServer { handle, url }
+    MockMcpHttpServer {
+        handle,
+        url,
+        tool_calls: tool_calls_rx,
+    }
 }
 
 /// Serve one connection of the mock MCP HTTP server (the per-connection
 /// half of [`spawn_mock_mcp_http_server`], extracted so other tests — the
 /// T8 restart helper — can serve the same protocol on a rebound port).
+/// `tool_calls`, when present, receives one message per `tools/call`
+/// request the moment it arrives — before the tool delay — so callers can
+/// synchronize on the call being in flight.
 async fn serve_mock_mcp_connection(
     stream: tokio::net::TcpStream,
     tool_delay_ms: u64,
     tool_error: bool,
     tools: Vec<(String, String)>,
+    tool_calls: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 ) {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
     let mut stream = tokio::io::BufReader::new(stream);
@@ -21843,6 +21911,14 @@ async fn serve_mock_mcp_connection(
     let method = request["method"].as_str().unwrap_or_default().to_string();
     let id = request["id"].clone();
     let is_notification = id.is_null();
+
+    // Report the call's arrival before the delay starts, so a test awaiting
+    // `tool_calls` wakes while the response is still guaranteed pending.
+    if method == "tools/call"
+        && let Some(tool_calls) = &tool_calls
+    {
+        let _ = tool_calls.send(());
+    }
 
     if tool_delay_ms > 0 {
         tokio::time::sleep(std::time::Duration::from_millis(tool_delay_ms)).await;
@@ -22896,7 +22972,7 @@ async fn should_refresh_tool_registrations_without_reconnecting_when_the_filter_
 /// R2's "let in-flight calls finish" half.
 #[tokio::test]
 async fn should_wait_for_the_in_flight_tool_call_when_the_reconcile_tears_a_connection_down() {
-    let mock = spawn_mock_mcp_http_server(300, false).await;
+    let mut mock = spawn_mock_mcp_http_server(300, false).await;
     let (home, workspace) = layered_mcp_fixture(
         json!({}),
         Some(json!({"mock": {"transport": "http", "url": mock.url}})),
@@ -22922,8 +22998,14 @@ async fn should_wait_for_the_in_flight_tool_call_when_the_reconcile_tears_a_conn
         let manager = Arc::clone(&manager);
         async move { manager.call_tool("mock", "echo", json!({})).await }
     });
-    // Let the call get in flight before the disabling write.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Wait until the mock has the call in flight: its response is still
+    // pending behind the 300ms tool delay, so the disabling write below
+    // lands while the call is guaranteed mid-flight — no fixed window
+    // whose sufficiency would depend on machine speed.
+    tokio::time::timeout(Duration::from_secs(5), mock.tool_calls.recv())
+        .await
+        .expect("the mock received the tools/call request")
+        .expect("the request channel stays open");
 
     server
         .call_method(
@@ -22957,7 +23039,7 @@ async fn should_wait_for_the_in_flight_tool_call_when_the_reconcile_tears_a_conn
 /// force-fail half.
 #[tokio::test]
 async fn should_fail_an_in_flight_call_with_the_server_named_when_the_teardown_is_forced() {
-    let mock = spawn_mock_mcp_http_server(300, true).await;
+    let mut mock = spawn_mock_mcp_http_server(300, true).await;
     let (home, workspace) = layered_mcp_fixture(
         json!({}),
         Some(json!({"mock": {"transport": "http", "url": mock.url}})),
@@ -22983,7 +23065,14 @@ async fn should_fail_an_in_flight_call_with_the_server_named_when_the_teardown_i
         let manager = Arc::clone(&manager);
         async move { manager.call_tool("mock", "echo", json!({})).await }
     });
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Wait until the mock has the call in flight (its response still
+    // pending behind the 300ms tool delay), so the forced teardown below
+    // races a call that is provably mid-flight — not one a slow machine
+    // has not even sent yet.
+    tokio::time::timeout(Duration::from_secs(5), mock.tool_calls.recv())
+        .await
+        .expect("the mock received the tools/call request")
+        .expect("the request channel stays open");
 
     // A drain wait shorter than the tool call: the teardown must not stall
     // on it (the embedded reconcile uses a 10s budget; this exercises the
@@ -23017,7 +23106,7 @@ async fn should_fail_a_timed_out_in_flight_call_with_the_server_named_when_the_t
     // The mock delays every request by 1s; the connect cycle (initialize +
     // tools/list) finishes well inside the 5s pool wait, while a tool call
     // outlives the 400ms `toolTimeoutMs` below.
-    let mock = spawn_mock_mcp_http_server(1000, false).await;
+    let mut mock = spawn_mock_mcp_http_server(1000, false).await;
     let (home, workspace) = layered_mcp_fixture(
         json!({}),
         Some(json!({
@@ -23049,7 +23138,14 @@ async fn should_fail_a_timed_out_in_flight_call_with_the_server_named_when_the_t
         let manager = Arc::clone(&manager);
         async move { manager.call_tool("mock", "echo", json!({})).await }
     });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Wait until the mock has the call in flight (its response still
+    // pending behind the 1s tool delay — far beyond the 400ms tool
+    // timeout), so the forced teardown below lands while the call is
+    // provably hung rather than racing a fixed 50ms window.
+    tokio::time::timeout(Duration::from_secs(5), mock.tool_calls.recv())
+        .await
+        .expect("the mock received the tools/call request")
+        .expect("the request channel stays open");
 
     // Force the teardown well before the call's own timeout fires: the
     // client is taken off the connection, so when the tool timeout elapses
@@ -33501,10 +33597,12 @@ async fn should_return_catalog_providers_from_cache_when_list_catalog_is_called(
     assert_eq!(wm_large["name"], "WM Large");
     assert_eq!(wm_large["context_length"], 123456);
     // And the model row carries the directory's capability facts (the
-    // same derivation the import would write)
+    // same derivation the import would write). This fixture declares
+    // `reasoning` with no `reasoning_options`, so the directory offers no way
+    // to turn it off — the derivation marks it always-thinking (D-M11.1).
     assert_eq!(
         wm_large["capabilities"],
-        json!(["image_in", "thinking", "tool_use"])
+        json!(["image_in", "thinking", "tool_use", "always_thinking"])
     );
     assert_eq!(wm_large["reasoning"], true);
     assert!(
@@ -33766,7 +33864,10 @@ api_key = "sk-kimi"
             "image_in",
             "thinking",
             "tool_use",
-            "dynamically_loaded_tools"
+            "dynamically_loaded_tools",
+            // The fixture declares `reasoning` with no reasoning_options, so
+            // the directory offers no way to turn it off (D-M11.1).
+            "always_thinking"
         ])
     );
     assert_eq!(record["reasoningKey"], "reasoning");
@@ -36879,6 +36980,7 @@ async fn should_cancel_the_foreground_subagent_when_the_parent_turn_stalls_out()
 /// live child running far past the (shrunken) deadline must NOT stall the
 /// parent turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore] // R-layer: real work-time window — gated child steps span 8×80ms against a 400ms stall deadline (design §3)
 async fn should_keep_the_parent_turn_alive_while_a_foreground_subagent_stays_active() {
     use b1_task_lifecycle_tests::b1_profiles_server_with_config;
 
@@ -36914,7 +37016,7 @@ async fn should_keep_the_parent_turn_alive_while_a_foreground_subagent_stays_act
     mock.push_text("parent done");
     let gate_opener = tokio::spawn(async move {
         for release in releasers {
-            tokio::time::sleep(step_gate).await;
+            tokio::time::sleep(step_gate).await; // hygiene-allow: real-time: 80ms×8 gated steps keep the child alive across the 400ms stall window (R-layer host, design §3)
             let _ = release.send(());
         }
     });
@@ -37617,7 +37719,6 @@ async fn should_order_hits_by_time_desc_across_sessions_when_multiple_sessions_m
         mirri_core::ContextMessage::from_message(mirri_core::Message::user("shared needle older")),
     )
     .await;
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     let newer = create_search_session(&server, "Newer session").await;
     seed_search_history_message(
         &server,
@@ -46391,7 +46492,6 @@ async fn should_pin_without_refreshing_recency_when_rpc_invoked() {
     let (server, _workspace, _home, session_id) = pin_fixture_server().await;
     let index = server.session_index().expect("the index is open");
     let before = index.get_session(&session_id).expect("the row exists");
-    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
     server
         .call_method(
@@ -46621,4 +46721,263 @@ async fn should_stamp_archived_at_when_archiving_over_the_rpc() {
         stamped >= before,
         "the stamp is the archive moment, not a stale value"
     );
+}
+
+#[tokio::test]
+async fn should_report_always_thinking_when_the_endpoint_has_no_known_off_spelling() {
+    // Given a configured model on an unknown gateway that declares thinking
+    // but no thinking_off
+    let (server, _tmp, _cfg) = test_server_with_config_toml(
+        r#"
+default_model = "gw"
+
+[providers.gw]
+type = "openai"
+base_url = "https://gateway.example.test/v1"
+
+[models.gw]
+provider = "gw"
+model = "mystery-model"
+max_context_size = 128000
+capabilities = ["thinking"]
+"#,
+    );
+
+    // When the model list is read
+    let listed = server.call_method("model.list", json!({})).await.unwrap();
+    let row = listed
+        .as_array()
+        .expect("bare array")
+        .iter()
+        .find(|row| row["id"] == "gw")
+        .expect("the alias is listed");
+
+    // Then its effective capabilities carry the always-thinking marker
+    let caps = row["capabilities"].as_array().expect("capabilities array");
+    assert!(
+        caps.iter().any(|c| c == "always_thinking"),
+        "effective capabilities must carry the marker: {row}"
+    );
+}
+
+#[tokio::test]
+async fn should_not_report_always_thinking_when_the_endpoint_dialect_is_known() {
+    // Given a configured model on MiMo's endpoint
+    let (server, _tmp, _cfg) = test_server_with_config_toml(
+        r#"
+default_model = "mimo"
+
+[providers.mimo]
+type = "openai"
+base_url = "https://token-plan-cn.xiaomimimo.com/v1"
+
+[models.mimo]
+provider = "mimo"
+model = "mimo-v2.6-flash"
+max_context_size = 128000
+capabilities = ["thinking"]
+"#,
+    );
+
+    // When the model list is read
+    let listed = server.call_method("model.list", json!({})).await.unwrap();
+    let row = listed
+        .as_array()
+        .expect("bare array")
+        .iter()
+        .find(|row| row["id"] == "mimo")
+        .expect("the alias is listed");
+
+    // Then the marker is absent -- off is deliverable here
+    let caps = row["capabilities"].as_array().expect("capabilities array");
+    assert!(
+        !caps.iter().any(|c| c == "always_thinking"),
+        "a deliverable dialect must not claim always-thinking: {row}"
+    );
+}
+
+#[tokio::test]
+async fn should_not_mark_an_anthropic_model_always_thinking_when_the_provider_is_not_openai() {
+    // Given an anthropic-type provider on its official host (absent from the
+    // OpenAI builtin table)
+    let (server, _tmp, _cfg) = test_server_with_config_toml(
+        r#"
+default_model = "c"
+
+[providers.c]
+type = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+
+[models.c]
+provider = "c"
+model = "claude-opus-4-7"
+max_context_size = 200000
+capabilities = ["thinking"]
+"#,
+    );
+
+    // When the model list is read
+    let listed = server.call_method("model.list", json!({})).await.unwrap();
+    let row = listed
+        .as_array()
+        .expect("bare array")
+        .iter()
+        .find(|row| row["id"] == "c")
+        .expect("the alias is listed");
+
+    // Then the always-thinking marker is absent -- anthropic closes by omission
+    let caps = row["capabilities"].as_array().expect("capabilities array");
+    assert!(!caps.iter().any(|c| c == "always_thinking"), "{row}");
+}
+
+#[tokio::test]
+async fn should_not_mark_a_non_thinking_model_always_thinking_on_an_unknown_gateway() {
+    // Given a model that declares no reasoning capability at all
+    let (server, _tmp, _cfg) = test_server_with_config_toml(
+        r#"
+default_model = "gw"
+
+[providers.gw]
+type = "openai"
+base_url = "https://gateway.example.test/v1"
+
+[models.gw]
+provider = "gw"
+model = "chat-only"
+max_context_size = 128000
+"#,
+    );
+
+    // When the model list is read
+    let listed = server.call_method("model.list", json!({})).await.unwrap();
+    let row = listed
+        .as_array()
+        .expect("bare array")
+        .iter()
+        .find(|row| row["id"] == "gw")
+        .expect("the alias is listed");
+
+    // Then no capability array claims always-thinking
+    let claims = row["capabilities"]
+        .as_array()
+        .is_some_and(|caps| caps.iter().any(|c| c == "always_thinking"));
+    assert!(!claims, "{row}");
+}
+
+#[tokio::test]
+async fn should_inherit_the_model_default_effort_when_a_session_is_created_without_one() {
+    // Given a model declaring a default effort
+    let (server, _tmp, _cfg) = test_server_with_config_toml(
+        r#"
+default_model = "p/m"
+
+[providers.p]
+type = "openai"
+base_url = "https://api.example.test/v1"
+
+[models."p/m"]
+provider = "p"
+model = "m"
+max_context_size = 128000
+capabilities = ["thinking"]
+support_efforts = ["low", "high", "max"]
+default_effort = "high"
+"#,
+    );
+
+    // When a session is created with no explicit effort
+    let created = server
+        .call_method("session.create", json!({"modelId": "p/m"}))
+        .await
+        .expect("session created");
+    let session_id = created["id"].as_str().expect("session id").to_string();
+
+    // Then the session's effective effort is the model default
+    let level = server
+        .call_method(
+            "agent.getEffectiveThinkingLevel",
+            json!({"sessionId": session_id}),
+        )
+        .await
+        .expect("level reads");
+    assert_eq!(level, json!("high"));
+}
+
+#[tokio::test]
+async fn should_keep_the_explicit_effort_when_the_request_carries_one() {
+    // Given the same model
+    let (server, _tmp, _cfg) = test_server_with_config_toml(
+        r#"
+default_model = "p/m"
+
+[providers.p]
+type = "openai"
+base_url = "https://api.example.test/v1"
+
+[models."p/m"]
+provider = "p"
+model = "m"
+max_context_size = 128000
+capabilities = ["thinking"]
+support_efforts = ["low", "high", "max"]
+default_effort = "high"
+"#,
+    );
+
+    // When a session is created with an explicit effort
+    let created = server
+        .call_method(
+            "session.create",
+            json!({"modelId": "p/m", "thinkingEffort": "low"}),
+        )
+        .await
+        .expect("session created");
+    let session_id = created["id"].as_str().expect("session id").to_string();
+
+    // Then the explicit value wins over the model default
+    let level = server
+        .call_method(
+            "agent.getEffectiveThinkingLevel",
+            json!({"sessionId": session_id}),
+        )
+        .await
+        .expect("level reads");
+    assert_eq!(level, json!("low"));
+}
+
+#[tokio::test]
+async fn should_expose_connection_settings_on_the_provider_list_when_they_are_configured() {
+    // Given a provider carrying custom headers and a thinking-off spelling
+    let (server, _tmp, _cfg) = test_server_with_config_toml(
+        r#"
+default_model = "gw/m"
+
+[providers.gw]
+type = "openai"
+base_url = "https://gw.example.test/v1"
+thinking_off = "thinking_type"
+customHeaders = { X-Route = "a" }
+
+[models."gw/m"]
+provider = "gw"
+model = "m"
+max_context_size = 128000
+"#,
+    );
+
+    // When the provider list is read
+    let listed = server
+        .call_method("model.listProviders", json!({}))
+        .await
+        .unwrap();
+    let row = listed
+        .as_array()
+        .expect("bare array")
+        .iter()
+        .find(|row| row["id"] == "gw")
+        .expect("the provider is listed");
+
+    // Then both connection fields ride the row
+    assert_eq!(row["thinking_off"], "thinking_type");
+    assert_eq!(row["custom_headers"]["X-Route"], "a");
 }

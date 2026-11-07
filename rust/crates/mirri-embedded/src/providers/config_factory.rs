@@ -168,6 +168,33 @@ impl ConfigAwareLlmFactory {
             },
         };
 
+        // The thinking-off contract for this alias: how the endpoint spells
+        // "stop thinking" and whether an off may be sent at all. Resolved
+        // once here and attached to the OpenAI-dialect adapter below; the
+        // kimi adapter owns its own hardcoded dialect.
+        let declared_capabilities: Vec<String> = alias
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .map(|caps| {
+                caps.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let declared_efforts = alias
+            .get("supportEfforts")
+            .and_then(Value::as_array)
+            .is_some_and(|efforts| !efforts.is_empty());
+        let thinking_intent = mirri_core::thinking_dialect::ThinkingIntent::resolve(
+            &declared_capabilities,
+            declared_efforts,
+            alias.get("thinkingOff").and_then(Value::as_str),
+            provider.get("thinkingOff").and_then(Value::as_str),
+            &base_url,
+            &upstream_model,
+        );
+
         let system_prompt = agent_config.system_prompt.clone().unwrap_or_default();
         let thinking_effort = agent_config.thinking_effort.clone();
 
@@ -230,7 +257,8 @@ impl ConfigAwareLlmFactory {
                     custom_headers,
                 )
                 .with_media_capability(media_caps.clone())
-                .with_provider_id(provider_id.to_string()),
+                .with_provider_id(provider_id.to_string())
+                .with_thinking_intent(thinking_intent),
             )),
             "openai_responses" => Ok(Arc::new(
                 OpenAIResponsesLlm::with_headers(
@@ -2106,4 +2134,42 @@ mod tests {
             PathBuf::from(".mirri-code")
         );
     }
+
+    #[test]
+    fn should_attach_a_thinking_intent_resolved_from_the_provider_endpoint_when_building_an_openai_adapter() {
+        // Given a config whose openai-type provider points at MiMo's endpoint
+        // And an agent asking for an explicit off
+        let home = tempfile::tempdir().expect("tempdir");
+        let factory = ConfigAwareLlmFactory::new(
+            alias_config_with_model(
+                ProviderEntry {
+                    r#type: Some("openai".to_string()),
+                    env: Some(HashMap::from([(
+                        "OPENAI_API_KEY".to_string(),
+                        "sk-test".to_string(),
+                    )])),
+                    base_url: Some("https://token-plan-cn.xiaomimimo.com/v1".to_string()),
+                    ..Default::default()
+                },
+                "mimo-v2.6-flash",
+            ),
+            Some(home.path().to_path_buf()),
+        );
+        let mut agent = alias_agent_config();
+        agent.thinking_effort = Some(ThinkingEffort::None);
+
+        // When the adapter is built
+        let llm = factory.create_llm(&agent).expect("adapter builds");
+
+        // Then its request spells the off in the endpoint's own dialect
+        let adapter = llm
+            .as_any()
+            .downcast_ref::<OpenAILlm>()
+            .expect("the adapter is the OpenAI dialect");
+        let request = adapter
+            .build_request(&simple_chat_params())
+            .expect("request builds");
+        assert_eq!(request["thinking"], serde_json::json!({"type": "disabled"}));
+    }
+
 }

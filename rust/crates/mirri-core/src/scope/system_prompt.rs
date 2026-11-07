@@ -448,6 +448,24 @@ mod tests {
     /// concepts each get their own guidance — SetTimer for in-session
     /// delayed callbacks, CreateScheduledTask for approved workspace
     /// routines; the retired tool names are gone).
+    /// Given the fixed-part render, When inspecting the tool-use guidance,
+    /// Then it names the line-range read as Read's job and the shell idiom
+    /// it replaces — the generic "a known path" phrasing alone did not stop
+    /// models from reaching for `sed -n`.
+    #[test]
+    fn should_name_the_line_range_read_in_the_tool_use_guidance() {
+        let rendered = render_fixed_part(&fixed_vars());
+
+        assert!(
+            rendered.contains("line_offset"),
+            "the guidance must name the paging parameters"
+        );
+        assert!(
+            rendered.contains("sed -n"),
+            "the guidance must name the shell idiom it replaces"
+        );
+    }
+
     #[test]
     fn should_carry_the_scheduling_guidance_in_the_base_prompt() {
         let rendered = apply_workspace_part(

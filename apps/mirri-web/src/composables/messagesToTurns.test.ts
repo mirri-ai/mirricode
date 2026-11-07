@@ -1191,3 +1191,137 @@ describe('messagesToTurns — E9 echoed file references (M5)', () => {
     expect(turns[0]!.fileRefs).toBeUndefined();
   });
 });
+
+describe('messagesToTurns (duplicate tool-call echoes across groups)', () => {
+  it('should render one tool card when duplicate assistant copies share tool call ids but split into different groups', () => {
+    // Given the same logical dispatch step reached the message list twice —
+    // e.g. a crashed-and-recovered live copy plus the persisted copy — and
+    // the two copies carry different prompt ids so the group fold cannot
+    // see them as one reply (the batch-review double-card regression)
+    const copyA = message({
+      id: 'msg-a',
+      role: 'assistant',
+      promptId: 'turn-1',
+      content: [
+        { type: 'text', text: '派批 2 评审：' },
+        { type: 'toolUse', toolCallId: 'call-review', toolName: 'Agent', input: { description: 'Review 批 2' } },
+      ],
+    });
+    const copyB = message({
+      id: 'msg-b',
+      role: 'assistant',
+      promptId: 'turn-2',
+      content: [
+        { type: 'toolUse', toolCallId: 'call-review', toolName: 'Agent', input: { description: 'Review 批 2' } },
+      ],
+    });
+
+    // When the turns are projected (session still active)
+    const turns = messagesToTurns([copyA, copyB], []);
+
+    // Then the call renders exactly once across all turns and the empty
+    // duplicate group leaves no ghost turn behind
+    const allTools = turns.flatMap((t) => t.tools ?? []);
+    expect(allTools).toHaveLength(1);
+    expect(allTools[0]?.id).toBe('call-review');
+    expect(turns).toHaveLength(1);
+  });
+
+  it('should render one tool card when duplicate copies both lack a prompt id', () => {
+    // Given two copies of the same dispatch step with no prompt id at all —
+    // the group fold is gated on group.promptId being defined, so without a
+    // tool-call-id guard both copies render
+    const persisted = message({
+      id: 'msg-a',
+      role: 'assistant',
+      content: [
+        { type: 'toolUse', toolCallId: 'call-1', toolName: 'TodoList', input: { todos: [] } },
+      ],
+    });
+    const streamed = message({
+      id: 'msg-b',
+      role: 'assistant',
+      content: [
+        { type: 'toolUse', toolCallId: 'call-1', toolName: 'TodoList', input: { todos: [] } },
+      ],
+    });
+
+    // When the turns are projected
+    const turns = messagesToTurns([persisted, streamed], []);
+
+    // Then the call renders exactly once
+    const allTools = turns.flatMap((t) => t.tools ?? []);
+    expect(allTools).toHaveLength(1);
+  });
+
+  it('should settle the surviving tool card when the result arrives after the duplicate copy', () => {
+    // Given the duplicated dispatch step, followed by the tool result
+    const copyA = message({
+      id: 'msg-a',
+      role: 'assistant',
+      promptId: 'turn-1',
+      content: [
+        { type: 'toolUse', toolCallId: 'call-1', toolName: 'Agent', input: { description: 'Review 批 2' } },
+      ],
+    });
+    const copyB = message({
+      id: 'msg-b',
+      role: 'assistant',
+      promptId: 'turn-2',
+      content: [
+        { type: 'toolUse', toolCallId: 'call-1', toolName: 'Agent', input: { description: 'Review 批 2' } },
+      ],
+    });
+    const result = message({
+      id: 'msg-r',
+      role: 'tool',
+      content: [{ type: 'toolResult', toolCallId: 'call-1', output: 'done' }],
+    });
+
+    // When the turns are projected
+    const turns = messagesToTurns([copyA, copyB, result], []);
+
+    // Then exactly one card exists and its result resolved it to ok
+    const allTools = turns.flatMap((t) => t.tools ?? []);
+    expect(allTools).toHaveLength(1);
+    expect(allTools[0]?.status).toBe('ok');
+  });
+
+  it('should fold the duplicate copy volatile extras into the surviving tool card', () => {
+    // Given the persisted copy without progress and a duplicate copy that
+    // carries live progress plus the start anchor (resync-seed shape, but
+    // under a different prompt id so the group fold misses it)
+    const persisted = message({
+      id: 'msg-a',
+      role: 'assistant',
+      promptId: 'turn-1',
+      content: [
+        { type: 'toolUse', toolCallId: 'call-1', toolName: 'Agent', input: { description: 'Review 批 2' } },
+      ],
+    });
+    const seeded = message({
+      id: 'msg-b',
+      role: 'assistant',
+      promptId: 'aborted-27',
+      content: [
+        {
+          type: 'toolUse',
+          toolCallId: 'call-1',
+          toolName: 'Agent',
+          input: { description: 'Review 批 2' },
+          outputLines: ['reviewing…'],
+          startedAtMs: 1000,
+        },
+      ],
+    });
+
+    // When the turns are projected
+    const turns = messagesToTurns([persisted, seeded], []);
+
+    // Then one card survives and it keeps the volatile extras
+    const allTools = turns.flatMap((t) => t.tools ?? []);
+    expect(allTools).toHaveLength(1);
+    expect(allTools[0]?.output).toEqual(['reviewing…']);
+    expect(allTools[0]?.startedAtMs).toBe(1000);
+  });
+});

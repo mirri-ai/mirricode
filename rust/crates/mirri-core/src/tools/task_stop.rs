@@ -372,7 +372,6 @@ mod tests {
         let settle_id = task_id.clone();
         tokio::spawn(async move {
             signal.cancelled().await;
-            tokio::time::sleep(Duration::from_millis(20)).await;
             mgr.complete(&settle_id, 0);
         });
 

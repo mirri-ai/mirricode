@@ -3,7 +3,8 @@
 import { computed, inject, ref, watch, type Ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { FilePreviewRequest, ToolCall, ToolMedia } from '../../../types';
-import { toolChip, toolGlyph, toolLabel, toolPayload, toolSummary } from '../../../lib/toolMeta';
+import { toolChip, toolGlyph, toolLabel, normalizeToolName, toolPayload, toolSummary } from '../../../lib/toolMeta';
+import { bashCommandOf, bashExtraFieldsOf, summarizeBashCommand } from '../../../lib/bashDisplay';
 import { formatDuration } from '../../chatTurnRendering';
 import ToolRow from '../ToolRow.vue';
 
@@ -63,9 +64,42 @@ const open = ref(props.tool.defaultExpanded === true && canExpand.value);
 const status = computed<'running' | 'ok' | 'error'>(() => props.tool.status as 'running' | 'ok' | 'error');
 const label = computed(() => toolLabel(props.tool.name));
 const glyph = computed(() => toolGlyph(props.tool.name));
-const summary = computed(() => toolSummary(props.tool.name, props.tool.arg));
+
+// The session's working directory, provided by ConversationPane (a getter so
+// it tracks workspace switches). Used to tell a redundant `cd <workspace>`
+// apart from a real directory change — see lib/bashDisplay.ts.
+const workspaceRoot = inject<() => string | undefined>('sessionWorkspaceRoot', () => undefined);
+
+/** Bash rows render as a directory badge + the command itself; other tools
+ *  keep the plain one-line summary. Split here (rather than inside
+ *  `toolSummary`) because only the row can render the badge. */
+const bashRow = computed(() => {
+  if (normalizeToolName(props.tool.name) !== 'bash') return undefined;
+  const cmd = bashCommandOf(props.tool.arg);
+  if (!cmd) return undefined;
+  return { cmd, display: summarizeBashCommand(cmd, workspaceRoot()) };
+});
+
+const rowPrefix = computed(() => bashRow.value?.display.prefix);
+const summary = computed(() => bashRow.value?.display.text ?? toolSummary(props.tool.name, props.tool.arg));
 const summaryFull = computed(() => toolSummary(props.tool.name, props.tool.arg, true));
 const payload = computed(() => toolPayload(props.tool.arg));
+/** Hover text. For Bash the command alone is the useful payload: wrapping it in
+ *  the pretty-printed input JSON spends the bubble's four lines on braces and
+ *  field names. The remaining input fields follow below it. */
+const hoverText = computed(() => {
+  const b = bashRow.value;
+  if (!b) return payload.value;
+  const extra = bashExtraFieldsOf(props.tool.arg);
+  return extra ? `${b.cmd}\n\n${extra}` : b.cmd;
+});
+
+// The hover bubble is sized to the transcript's reading column (it reads as the
+// row's own detail, not a floating chip) and capped at four lines of content.
+const TOOLTIP_LINES = 4;
+/** Fallback width for contexts with no reading column (the side-chat panel);
+ *  the real column width takes over whenever it is available. */
+const TOOLTIP_FALLBACK_WIDTH = 640;
 const chip = computed(() =>
   toolChip({
     name: props.tool.name,
@@ -96,8 +130,11 @@ watch(
     :icon="glyph"
     :name="label"
     :arg="!open ? summary : ''"
-    :tooltip="payload"
-    :tooltip-max-width="480"
+    :prefix="!open ? rowPrefix : undefined"
+    :tooltip="hoverText"
+    :tooltip-max-width="TOOLTIP_FALLBACK_WIDTH"
+    :tooltip-lines="TOOLTIP_LINES"
+    :tooltip-column="true"
     :time="tool.name !== 'bash' ? (liveTime ?? tool.timing) : ''"
     :open="open"
     :expandable="canExpand"

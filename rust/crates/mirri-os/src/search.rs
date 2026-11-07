@@ -1301,57 +1301,12 @@ mod tests {
 
     use super::*;
 
-    // Tests that mutate the process-global `PATH` variable serialize on the
-    // workspace-wide async env lock: the guard must span the `.await` on the
-    // rg spawn — releasing early would let another test rewrite `PATH`
-    // mid-spawn (16-test-execution-strategy.md §4.2 rule 8).
-
-    /// Replaces `PATH` for the duration of a test and restores it on drop.
-    struct PathGuard {
-        original: Option<std::ffi::OsString>,
-    }
-
-    impl PathGuard {
-        fn set(value: impl AsRef<std::ffi::OsStr>) -> Self {
-            let original = std::env::var_os("PATH");
-            unsafe { std::env::set_var("PATH", value) };
-            Self { original }
-        }
-    }
-
-    impl Drop for PathGuard {
-        fn drop(&mut self) {
-            match &self.original {
-                Some(path) => unsafe { std::env::set_var("PATH", path) },
-                None => unsafe { std::env::remove_var("PATH") },
-            }
-        }
-    }
-
-    /// Guard `MIRRICODE_HOME` the same way [`PathGuard`] guards `PATH`: set
-    /// it for the duration of a test and restore (or remove) it on drop. The
-    /// rg fallback probe reads this variable, so tests that exercise the
-    /// fallback (or must avoid it) pin it to a tempdir.
-    struct MirriHomeGuard {
-        original: Option<std::ffi::OsString>,
-    }
-
-    impl MirriHomeGuard {
-        fn set(value: impl AsRef<std::ffi::OsStr>) -> Self {
-            let original = std::env::var_os("MIRRICODE_HOME");
-            unsafe { std::env::set_var("MIRRICODE_HOME", value) };
-            Self { original }
-        }
-    }
-
-    impl Drop for MirriHomeGuard {
-        fn drop(&mut self) {
-            match &self.original {
-                Some(home) => unsafe { std::env::set_var("MIRRICODE_HOME", home) },
-                None => unsafe { std::env::remove_var("MIRRICODE_HOME") },
-            }
-        }
-    }
+    // Tests that mutate the process-global `PATH` / `MIRRICODE_HOME` hold
+    // the workspace-wide async env guard for their whole body: the guard
+    // must span the `.await` on the rg spawn — releasing early would let
+    // another test rewrite `PATH` mid-spawn (16-test-execution-strategy.md
+    // §4.2 rule 8) — and every write goes through the guard's `set`, which
+    // restores the previous values when the guard drops.
 
     /// Write a fixture file under `dir`.
     fn write_file(dir: &Path, name: &str, content: &str) {
@@ -1403,25 +1358,26 @@ exit 0
         install_custom_rg(dir, FAKE_RG_SCRIPT)
     }
 
-    /// Prepend `bin` to `PATH` for the duration of the returned guard.
-    fn prepend_to_path(bin: &Path) -> PathGuard {
+    /// Prepend `bin` to `PATH` on the held env guard (the guard restores
+    /// the original `PATH` when it drops).
+    fn prepend_to_path(env: &mut mirri_test_support::env::AsyncEnvGuard, bin: &Path) {
         let mut dirs = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
             .collect::<Vec<_>>();
         dirs.insert(0, bin.to_path_buf());
-        PathGuard::set(std::env::join_paths(dirs).expect("join PATH"))
+        env.set("PATH", std::env::join_paths(dirs).expect("join PATH"));
     }
 
     #[tokio::test]
     async fn should_return_error_naming_ripgrep_when_rg_is_missing_from_path() {
         // Given a PATH that cannot contain any `rg` binary
-        let _lock = mirri_test_support::env::async_lock().await;
+        let mut env = mirri_test_support::env::async_lock().await;
         let empty_bin = tempfile::tempdir().unwrap();
-        let _path_guard = PathGuard::set(empty_bin.path());
+        env.set("PATH", empty_bin.path());
         // And no cached rg under the fallback home (a machine-level
         // ~/.mirri-code/bin/rg must not rescue this test's missing-binary
         // expectation)
         let empty_home = tempfile::tempdir().unwrap();
-        let _home_guard = MirriHomeGuard::set(empty_home.path());
+        env.set("MIRRICODE_HOME", empty_home.path());
 
         // And a searchable directory with a matching line
         let dir = tempfile::tempdir().unwrap();
@@ -1449,13 +1405,13 @@ exit 0
     #[tokio::test]
     async fn should_use_the_cached_rg_binary_when_path_misses_and_cache_exists() {
         // Given a fake rg installed under the MIRRICODE_HOME bin cache
-        let _lock = mirri_test_support::env::async_lock().await;
+        let mut env = mirri_test_support::env::async_lock().await;
         let home = tempfile::tempdir().unwrap();
         install_fake_rg(home.path());
-        let _home_guard = MirriHomeGuard::set(home.path());
+        env.set("MIRRICODE_HOME", home.path());
         // And a PATH that cannot contain any `rg` binary
         let empty_bin = tempfile::tempdir().unwrap();
-        let _path_guard = PathGuard::set(empty_bin.path());
+        env.set("PATH", empty_bin.path());
 
         // And a file with a matching line under the search root
         let dir = tempfile::tempdir().unwrap();
@@ -1480,9 +1436,9 @@ exit 0
     #[tokio::test]
     async fn should_return_parsed_matches_when_rg_is_available_on_path() {
         // Given a fake rg that emits one JSON match, placed first on PATH
-        let _lock = mirri_test_support::env::async_lock().await;
+        let mut env = mirri_test_support::env::async_lock().await;
         let tmp = tempfile::tempdir().unwrap();
-        let _path_guard = prepend_to_path(&install_fake_rg(tmp.path()));
+        prepend_to_path(&mut env, &install_fake_rg(tmp.path()));
 
         // And a file with a matching line under the search root
         let dir = tempfile::tempdir().unwrap();
@@ -1516,9 +1472,9 @@ exit 0
     async fn should_run_rg_from_the_search_root_when_a_glob_filter_is_active() {
         // Given a fake rg that reports its own cwd and emits a ./relative
         // record path, placed first on PATH
-        let _lock = mirri_test_support::env::async_lock().await;
+        let mut env = mirri_test_support::env::async_lock().await;
         let tmp = tempfile::tempdir().unwrap();
-        let _path_guard = prepend_to_path(&install_custom_rg(tmp.path(), FAKE_RG_CWD_SCRIPT));
+        prepend_to_path(&mut env, &install_custom_rg(tmp.path(), FAKE_RG_CWD_SCRIPT));
 
         // And a search whose root differs from the process cwd, with a glob
         // filter active
@@ -1556,9 +1512,9 @@ exit 0
     async fn should_keep_the_legacy_invocation_when_no_glob_filter_is_active() {
         // Given a fake rg that emits an absolute-path match keyed on the
         // search directory passed as its last CLI argument
-        let _lock = mirri_test_support::env::async_lock().await;
+        let mut env = mirri_test_support::env::async_lock().await;
         let tmp = tempfile::tempdir().unwrap();
-        let _path_guard = prepend_to_path(&install_fake_rg(tmp.path()));
+        prepend_to_path(&mut env, &install_fake_rg(tmp.path()));
 
         // And a search without a glob filter
         let dir = tempfile::tempdir().unwrap();

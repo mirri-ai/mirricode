@@ -1303,6 +1303,10 @@ export interface AppProvider {
    *  without leaking a secret. `null` or `undefined` means a literal key
    *  or no key. */
   apiKeyDisplay?: string | null;
+  /** How this endpoint spells "stop thinking". Absent = infer it. */
+  thinkingOff?: string;
+  /** Custom HTTP headers sent with every request to this provider. */
+  customHeaders?: Record<string, string>;
   /** Provider connectivity status */
   status: 'connected' | 'error' | 'unconfigured';
   /** Model ids available from this provider */
@@ -1396,6 +1400,10 @@ export interface AppConfigProvider {
    *  below the credential store). Only the per-type conventional key
    *  participates in resolution; case-sensitive spellings are preserved. */
   env?: Record<string, string>;
+  /** How this endpoint spells "stop thinking". Absent = infer it. */
+  thinkingOff?: string;
+  /** Custom HTTP headers sent with every request to this provider. */
+  customHeaders?: Record<string, string>;
 }
 
 /** The credential value a provider stores — the tagged union mirroring the
@@ -1445,6 +1453,8 @@ export interface AppModelAlias {
   adaptiveThinking?: boolean;
   supportEfforts?: string[];
   defaultEffort?: string;
+  /** How this endpoint spells "stop thinking". Empty/absent = infer it. */
+  thinkingOff?: string;
   betaApi?: boolean;
 }
 

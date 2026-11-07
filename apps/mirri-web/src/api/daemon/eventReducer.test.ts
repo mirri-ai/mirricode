@@ -1886,3 +1886,106 @@ describe('subagent legacy progress line cap (ADR-015 e)', () => {
     expect(lines.at(-1)).toBe('line-b-59');
   });
 });
+
+describe('messageCreated assistant tool-call echo dedup', () => {
+  function makeAssistantMessage(overrides: Partial<AppMessage> & { id: string }): AppMessage {
+    return {
+      sessionId: SID,
+      role: 'assistant',
+      content: [
+        { type: 'text', text: '派批 2 评审：' },
+        {
+          type: 'toolUse',
+          toolCallId: 'call-review',
+          toolName: 'Agent',
+          input: { description: 'Review 批 2' },
+        },
+      ],
+      createdAt: '2025-01-01T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('should skip assistant messageCreated when all its tool call ids already exist in the transcript', () => {
+    // Given: an assistant message already holding the dispatch step
+    const first = makeAssistantMessage({ id: 'msg_a' });
+    const state = stateWithMessages([first]);
+
+    // When: a second messageCreated for the same logical step arrives under
+    // a different message id (streamed copy vs persisted copy dual echo)
+    const echo = makeAssistantMessage({ id: 'msg_b' });
+    const result = reduceAppEvent(state, messageCreatedEvent(echo), { ...META, seq: 2 });
+
+    // Then: the transcript keeps exactly one copy — no duplicated tool cards
+    const messages = result.messagesBySession[SID]!;
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.id).toBe('msg_a');
+  });
+
+  it('should merge volatile extras from the dropped echo into the surviving tool call', () => {
+    // Given: the persisted copy without live progress
+    const first = makeAssistantMessage({ id: 'msg_a' });
+    const state = stateWithMessages([first]);
+
+    // When: the echo carries live progress and the start anchor
+    const echo = makeAssistantMessage({
+      id: 'msg_b',
+      content: [
+        {
+          type: 'toolUse',
+          toolCallId: 'call-review',
+          toolName: 'Agent',
+          input: { description: 'Review 批 2' },
+          outputLines: ['reviewing…'],
+          startedAtMs: 1000,
+        },
+      ],
+    });
+    const result = reduceAppEvent(state, messageCreatedEvent(echo), { ...META, seq: 2 });
+
+    // Then: one message survives and its tool call carries the volatile extras
+    const messages = result.messagesBySession[SID]!;
+    expect(messages).toHaveLength(1);
+    const toolUse = messages[0]!.content.find((c) => c.type === 'toolUse');
+    expect(toolUse).toMatchObject({ toolCallId: 'call-review', outputLines: ['reviewing…'], startedAtMs: 1000 });
+  });
+
+  it('should append assistant messageCreated when it introduces a new tool call id', () => {
+    // Given: an assistant message with one tool call
+    const first = makeAssistantMessage({ id: 'msg_a' });
+    const state = stateWithMessages([first]);
+
+    // When: a genuinely new step arrives with a fresh tool call id
+    const next = makeAssistantMessage({
+      id: 'msg_b',
+      content: [
+        {
+          type: 'toolUse',
+          toolCallId: 'call-followup',
+          toolName: 'Agent',
+          input: { description: '批 2 修复' },
+        },
+      ],
+    });
+    const result = reduceAppEvent(state, messageCreatedEvent(next), { ...META, seq: 2 });
+
+    // Then: both messages exist (no false dedup)
+    const messages = result.messagesBySession[SID]!;
+    expect(messages).toHaveLength(2);
+  });
+
+  it('should append assistant messageCreated without tool calls regardless of identical text', () => {
+    // Given: a text-only assistant message
+    const first = makeAssistantMessage({ id: 'msg_a', content: [{ type: 'text', text: 'done' }] });
+    const state = stateWithMessages([first]);
+
+    // When: another text-only message with the same text arrives (a model
+    // may legitimately repeat itself — only tool call ids are unique per call)
+    const second = makeAssistantMessage({ id: 'msg_b', content: [{ type: 'text', text: 'done' }] });
+    const result = reduceAppEvent(state, messageCreatedEvent(second), { ...META, seq: 2 });
+
+    // Then: both survive
+    const messages = result.messagesBySession[SID]!;
+    expect(messages).toHaveLength(2);
+  });
+});

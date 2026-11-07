@@ -546,12 +546,21 @@ fn set_mtime_now(path: &Path) {
 
 #[tokio::test]
 async fn should_sort_results_newest_first_when_globbing_files() {
-    // Given a temp dir where file_a.txt is created before file_b.txt.
+    // Given a temp dir with two .txt files whose mtimes are pinned an
+    // hour apart (the same explicit-mtime technique as set_mtime_now), so
+    // "newest first" holds by construction — no sleep across filesystem
+    // timestamp granularity.
     let tmp = TempDir::new().unwrap();
     write_file(tmp.path(), "file_a.txt", "a");
-    // Sleep to ensure a detectable mtime difference.
-    std::thread::sleep(Duration::from_millis(50));
     write_file(tmp.path(), "file_b.txt", "b");
+    let set_mtime = |name: &str, when: Duration| {
+        let file = fs::File::open(tmp.path().join(name)).unwrap();
+        let times = std::fs::FileTimes::new()
+            .set_modified(std::time::UNIX_EPOCH + when);
+        file.set_times(times).expect("set mtime");
+    };
+    set_mtime("file_a.txt", Duration::from_secs(3_600));
+    set_mtime("file_b.txt", Duration::from_secs(7_200));
 
     // When globbing for *.txt.
     let glob = LocalGlob::new();
@@ -591,7 +600,7 @@ use tempfile::TempDir;
 
 /// Return `true` if the `rg` (ripgrep) binary is available on `PATH`.
 fn ripgrep_available() -> bool {
-    std::process::Command::new("rg")
+    std::process::Command::new("rg") // hygiene-allow: D: 能力探测
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -600,7 +609,7 @@ fn ripgrep_available() -> bool {
 
 /// Initialize an empty git repository in `dir`.
 fn init_git_repo(dir: &Path) {
-    std::process::Command::new("git")
+    std::process::Command::new("git") // hygiene-allow: D: git init fixture，外部工具确定性
         .arg("init")
         .current_dir(dir)
         .output()
@@ -1265,7 +1274,7 @@ use tempfile::TempDir;
 
 /// Return `true` if the `rg` binary is available on PATH.
 fn rg_available() -> bool {
-    std::process::Command::new("rg")
+    std::process::Command::new("rg") // hygiene-allow: D: 能力探测
         .arg("--version")
         .output()
         .is_ok()
@@ -1638,6 +1647,7 @@ fn should_report_a_live_process_alive_with_start_ticks() {
 /// reports not alive — `OpenProcess` with the no-such-pid failure (or a
 /// settled exit code), matching the desktop discovery's fail-closed read.
 #[test]
+#[ignore] // R-layer: real Windows process-object settlement sampling (design §3)
 fn should_report_a_dead_pid_as_not_alive() {
     let mut child = new_command("cmd")
         .args(["/C", "exit", "0"])
@@ -1655,7 +1665,7 @@ fn should_report_a_dead_pid_as_not_alive() {
     let start = Instant::now();
     let mut probe = probe_process(pid).expect("probe must not error on a dead pid");
     while probe.alive && start.elapsed() < Duration::from_secs(5) {
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(50)); // hygiene-allow: real-time: dead-pid probe sampling (R-layer host, design §3)
         probe = probe_process(pid).expect("probe must not error on a dead pid");
     }
     assert!(
@@ -1865,6 +1875,7 @@ fn visible_windows_belonging_to(pid: u32) -> Vec<isize> {
 /// GUI-host process spawning through `new_command` must leave no visible
 /// window behind, which is what this asserts for a console-subsystem child.
 #[test]
+#[ignore] // R-layer: real UI observation window — console-window absence sampled over 750ms (design §3)
 fn should_spawn_children_without_a_visible_console_window() {
     // A console-subsystem child that stays alive long enough to observe.
     let mut child = new_command("cmd")
@@ -1879,7 +1890,7 @@ fn should_spawn_children_without_a_visible_console_window() {
     // Give the child a moment to (potentially) create a window before
     // asserting none exists. A console window, if one were created, appears
     // within a few scheduler quanta of process start.
-    std::thread::sleep(Duration::from_millis(750));
+    std::thread::sleep(Duration::from_millis(750)); // hygiene-allow: real-time: console-window observation window (R-layer host, design §3)
 
     // Sanity: the child is genuinely running, so the absence of a window
     // cannot be explained by the child having already exited.

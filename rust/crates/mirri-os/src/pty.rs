@@ -624,9 +624,6 @@ mod tests {
 
         let pty = PtyTerminal::spawn(&config).expect("failed to spawn PTY");
 
-        // Give the process a moment to start.
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
         // Write data to the PTY.
         pty.write(b"test-input\n").expect("failed to write to PTY");
 

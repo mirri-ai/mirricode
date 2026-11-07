@@ -1,9 +1,5 @@
 {
   "violations": {
-    "crates/mirri-acp/tests/conformance.rs:121": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
     "crates/mirri-acp/tests/conformance.rs:1725": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
@@ -16,57 +12,13 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-acp/tests/conformance.rs:3744": {
+    "crates/mirri-acp/tests/conformance.rs:3746": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
     "crates/mirri-acp/tests/desktop_share_e2e.rs:557": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-acp/src/desktop_probe.rs:305": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-acp/src/desktop_probe.rs:310": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-cli/src/main.rs:954": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-cli/src/main.rs:962": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-cli/src/main.rs:963": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-cli/src/main.rs:1119": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-cli/src/main.rs:1141": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-cli/src/watcher.rs:1217": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-cli/src/watcher.rs:2253": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-cli/src/watcher.rs:2323": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-cli/src/watcher.rs:2380": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
     },
     "crates/mirri-core/tests/session_group.rs:2722": {
       "type": "sleep",
@@ -220,569 +172,261 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-core/tests/terminal_misc_group.rs:4875": {
+    "crates/mirri-core/tests/terminal_misc_group.rs:4876": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-core/tests/terminal_misc_group.rs:4883": {
+    "crates/mirri-core/tests/terminal_misc_group.rs:4884": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-core/tests/terminal_misc_group.rs:4897": {
+    "crates/mirri-core/tests/terminal_misc_group.rs:4898": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-core/tests/terminal_misc_group.rs:4905": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-core/tests/terminal_misc_group.rs:5187": {
-      "type": "sleep",
-      "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-core/tests/tools_scope_group.rs:6040": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/tests/tools_scope_group.rs:8134": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/tests/tools_scope_group.rs:8168": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/cron/workspace_store.rs:2892": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/goal.rs:938": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/goal.rs:956": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/goal.rs:1042": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/goal.rs:1073": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/loop_engine/shared.rs:445": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/loop_engine/shared.rs:503": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/orphan_sweep.rs:996": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-core/src/orphan_sweep.rs:1014": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-core/src/orphan_sweep.rs:1034": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/session/activity_shadow.rs:274": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/session/manager/tests.rs:4244": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/session/manager/tests.rs:4874": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/session/manager/tests.rs:4895": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/subagent/host.rs:4804": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/subagent/mod.rs:1041": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/subagent/mod.rs:1050": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/task.rs:3778": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/task.rs:3854": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/task.rs:3905": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/task.rs:4497": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/task.rs:4545": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/task.rs:4640": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/task.rs:4761": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/terminal_pool.rs:758": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tool_registry/scheduler.rs:340": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/agent_swarm_tool.rs:1500": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/agent_tool.rs:2036": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/agent_tool.rs:2077": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/agent_tool.rs:2144": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/agent_tool.rs:2164": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/agent_tool.rs:2201": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/agent_tool.rs:2245": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/ask_user.rs:2008": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/ask_user.rs:2073": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/ask_user.rs:2231": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/ask_user.rs:2301": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:2080": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:2238": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:2430": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:2880": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:2896": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:2975": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:3024": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:3077": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:3170": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/bash.rs:3186": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/glob.rs:456": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-core/src/tools/grep.rs:1364": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-core/src/tools/task_output.rs:434": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/task_output.rs:474": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/task_output.rs:726": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/task_stop.rs:375": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/turn_flow/activity.rs:508": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/turn_flow/activity.rs:517": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/turn_flow/activity.rs:539": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/turn_flow/activity.rs:541": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/turn_flow/hooks.rs:2979": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/turn_flow/hooks.rs:3209": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/turn_flow/wait_registry.rs:483": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-credentials/src/store_tests.rs:40": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/message_handlers.rs:3500": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/message_handlers.rs:3536": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/message_handlers.rs:3614": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/message_handlers.rs:3733": {
+    "crates/mirri-core/tests/terminal_misc_group.rs:5181": {
       "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/mod.rs:5799": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:1442": {
-      "type": "sleep",
-      "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:2697": {
-      "type": "sleep",
-      "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:2882": {
-      "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:2977": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:1488": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:3065": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:2743": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:3161": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:2928": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:3244": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:3023": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:3316": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:3111": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:3373": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:3207": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:3412": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:3290": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:3448": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:3362": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:6215": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:3419": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:6272": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:3458": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:6397": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:3494": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:6598": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:6261": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:6692": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:6318": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:6804": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:6443": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:6817": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:6644": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:9932": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:6738": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:11643": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:6850": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:11880": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:6863": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:11948": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:11690": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:14206": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:11927": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:14563": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:11995": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:14643": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:14253": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:14668": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:14610": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:14753": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:14690": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:14781": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:14715": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:14874": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:14800": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:14900": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:14828": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:16821": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:14921": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:17353": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:14947": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:17366": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:16868": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:17425": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:17414": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:18824": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:17473": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:21848": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:18872": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:21935": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:21924": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:21980": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:22011": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:23315": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:22056": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:25467": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:23411": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:25814": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:25563": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:36472": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:25910": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:36507": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:36573": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:36537": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:36608": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:36869": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:36638": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:36917": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:36970": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:37265": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:37367": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:37620": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:40999": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:40898": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:41167": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:41066": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:41244": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:41143": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:41325": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:41224": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:41442": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:41341": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:41608": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:41507": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:41643": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:41542": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:42158": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:42057": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:42186": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:42085": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:42194": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:42093": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:42271": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:42170": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:42609": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:42508": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:43278": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:43177": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:46221": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:46120": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:46281": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:46180": {
+    "crates/mirri-embedded/src/embedded_server/tests.rs:46354": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:46253": {
-      "type": "sleep",
-      "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests.rs:46394": {
-      "type": "sleep",
-      "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/b1_print_mode_tests.rs:111": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/b1_print_mode_tests.rs:217": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
     },
     "crates/mirri-embedded/src/embedded_server/tests/b1_task_lifecycle_tests.rs:87": {
       "type": "sleep",
@@ -1032,97 +676,13 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b7_task_overview_tests.rs:49": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
     "crates/mirri-embedded/src/embedded_server/tests/credential_store_tests.rs:361": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_b3_user_face_tests.rs:602": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_b3_user_face_tests.rs:624": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4a_tests.rs:408": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4a_tests.rs:555": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4a_tests.rs:750": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:115": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:275": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:336": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:390": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:448": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:494": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:737": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:942": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:964": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:1119": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:1206": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:1307": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4b_tests.rs:1371": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
     "crates/mirri-embedded/src/embedded_server/tests/e10_interrupted_recovery_tests.rs:847": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/e10_interrupted_recovery_tests.rs:1313": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/e10_interrupted_recovery_tests.rs:1315": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
     },
     "crates/mirri-embedded/src/embedded_server/tests/e10_interrupted_recovery_tests.rs:1396": {
       "type": "sleep",
@@ -1132,15 +692,15 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/t8_mcp_tests.rs:755": {
+    "crates/mirri-embedded/src/embedded_server/tests/t8_mcp_tests.rs:761": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/t8_mcp_tests.rs:1034": {
+    "crates/mirri-embedded/src/embedded_server/tests/t8_mcp_tests.rs:1040": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/t8_mcp_tests.rs:1868": {
+    "crates/mirri-embedded/src/embedded_server/tests/t8_mcp_tests.rs:1874": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
@@ -1212,22 +772,6 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/orphan_governance.rs:357": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-embedded/src/skill_watcher.rs:736": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/skill_watcher.rs:855": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/skill_watcher.rs:896": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
     "crates/mirri-kosong/tests/providers_group.rs:2240": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
@@ -1235,10 +779,6 @@
     "crates/mirri-mcp/tests/mcp_group.rs:1345": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-mcp/tests/mcp_group.rs:1559": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
     },
     "crates/mirri-mcp/tests/mcp_group.rs:3213": {
       "type": "sleep",
@@ -1260,121 +800,9 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-mcp/tests/mcp_group.rs:3942": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-mcp/src/config.rs:1153": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-mcp/src/config.rs:1160": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-mcp/src/config.rs:1177": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-node/src/engine_bridge.rs:519": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-node/src/engine_bridge.rs:541": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
     "crates/mirri-node/src/engine_e2e_tests.rs:174": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-os/tests/all_group.rs:553": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/tests/all_group.rs:594": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-os/tests/all_group.rs:603": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-os/tests/all_group.rs:1268": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-os/tests/all_group.rs:1658": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/tests/all_group.rs:1882": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/src/process.rs:1085": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-os/src/process.rs:1102": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-os/src/process.rs:1124": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/src/process.rs:1254": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-os/src/process.rs:1260": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/src/pty.rs:628": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/src/search.rs:1317": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/src/search.rs:1325": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/src/search.rs:1326": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/src/search.rs:1342": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/src/search.rs:1350": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-os/src/search.rs:1351": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-persistence/src/dir_lock.rs:168": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-persistence/src/dir_lock.rs:189": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-persistence/src/dir_lock.rs:233": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-persistence/src/dir_lock.rs:248": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
     },
     "crates/mirri-remote/tests/remote_adapter_tests.rs:805": {
       "type": "sleep",
@@ -1447,70 +875,6 @@
     "crates/mirri-server/tests/server_group.rs:5664": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-server/src/file_index_registry.rs:415": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/file_index_registry.rs:437": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/file_index_registry.rs:456": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/rpc.rs:8064": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/rpc.rs:8438": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-server/src/rpc.rs:8563": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-server/src/rpc.rs:8571": {
-      "type": "real-env",
-      "reason": "real-env: pending audit adjudication (see 2026-11-06 design §4)"
-    },
-    "crates/mirri-server/src/state.rs:998": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/state.rs:1010": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/state.rs:1295": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/state.rs:1364": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/ws_rpc.rs:3341": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/ws_rpc.rs:3442": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/ws_rpc.rs:3466": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-session-index/src/backup.rs:526": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-test-support/src/env.rs:170": {
-      "type": "set_var",
-      "reason": "legacy: pending R2/R4 migration"
     }
   }
 }

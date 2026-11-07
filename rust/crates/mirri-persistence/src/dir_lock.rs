@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn should_return_none_when_another_process_holds_the_lock() {
         use std::io::BufRead;
-        use std::process::Command;
+        use std::process::Command; // hygiene-allow: D: 就绪握手后才进入被测段，慢机器不改结果
 
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
@@ -186,7 +186,7 @@ try:
 except Exception:
     pass
 "#;
-        let mut child = Command::new("python3")
+        let mut child = Command::new("python3") // hygiene-allow: D: 就绪握手后才进入被测段，慢机器不改结果
             .arg("-c")
             .arg(script)
             .arg(&dir)
@@ -230,7 +230,7 @@ except Exception:
     #[test]
     fn should_succeed_again_after_the_other_process_releases_the_lock() {
         use std::io::BufRead;
-        use std::process::Command;
+        use std::process::Command; // hygiene-allow: D: 就绪握手后才进入被测段，慢机器不改结果
 
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
@@ -245,7 +245,7 @@ fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 print('ready', flush=True)
 time.sleep(0.5)
 "#;
-        let mut child = Command::new("python3")
+        let mut child = Command::new("python3") // hygiene-allow: D: 就绪握手后才进入被测段，慢机器不改结果
             .arg("-c")
             .arg(script)
             .arg(&dir)

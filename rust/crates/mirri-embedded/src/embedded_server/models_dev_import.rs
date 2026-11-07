@@ -46,6 +46,8 @@ pub(super) struct ModelsDevAliasRecord {
     pub max_output_size: Option<u64>,
     pub reasoning_key: Option<String>,
     pub support_efforts: Option<Vec<String>>,
+    /// The off spelling the directory implies, when it implies one.
+    pub thinking_off: Option<&'static str>,
 }
 
 /// The usable-chat-model predicate (the TS `isUsableChatModel` +
@@ -100,6 +102,9 @@ fn has_embedding_marker(value: Option<&str>) -> bool {
 struct ThinkingOptions {
     efforts: Option<Vec<String>>,
     has_toggle: bool,
+    /// Whether an effort tier literally equal to "none" is offered — the
+    /// directory's way of saying "this model can be told to stop".
+    has_none_tier: bool,
 }
 
 /// The TS `modelsDevThinkingOptions` (effort tiers only — `offEffort` and
@@ -109,10 +114,12 @@ struct ThinkingOptions {
 fn models_dev_thinking_options(raw: &Value) -> ThinkingOptions {
     let mut efforts = None;
     let mut has_toggle = false;
+    let mut has_none_tier = false;
     let Some(options) = raw.get("reasoning_options").and_then(Value::as_array) else {
         return ThinkingOptions {
             efforts,
             has_toggle,
+            has_none_tier,
         };
     };
     for option in options {
@@ -122,6 +129,12 @@ fn models_dev_thinking_options(raw: &Value) -> ThinkingOptions {
                 let Some(values) = option.get("values").and_then(Value::as_array) else {
                     continue;
                 };
+                if values.iter().any(|v| {
+                    v.as_str()
+                        .is_some_and(|s| s.trim().eq_ignore_ascii_case("none"))
+                }) {
+                    has_none_tier = true;
+                }
                 let selectable: Vec<String> = values
                     .iter()
                     .filter_map(Value::as_str)
@@ -138,6 +151,7 @@ fn models_dev_thinking_options(raw: &Value) -> ThinkingOptions {
     ThinkingOptions {
         efforts,
         has_toggle,
+        has_none_tier,
     }
 }
 
@@ -188,6 +202,18 @@ pub(super) fn models_dev_alias_record(raw: &Value) -> Option<ModelsDevAliasRecor
     if raw.get("dynamically_loaded_tools").and_then(Value::as_bool) == Some(true) {
         capabilities.push("dynamically_loaded_tools".to_string());
     }
+    // The directory encodes "can this be turned off" in reasoning_options: a
+    // toggle, or an explicit "none" effort tier. Neither means the model
+    // always thinks.
+    let has_off_option = thinking_options.has_toggle || thinking_options.has_none_tier;
+    if !has_off_option && reasoning {
+        capabilities.push(mirri_core::thinking_dialect::ALWAYS_THINKING.to_string());
+    }
+    let thinking_off = if thinking_options.has_none_tier && !thinking_options.has_toggle {
+        Some(mirri_core::thinking_dialect::ThinkingDialect::ReasoningEffort.as_str())
+    } else {
+        None
+    };
     Some(ModelsDevAliasRecord {
         context,
         capabilities,
@@ -204,6 +230,7 @@ pub(super) fn models_dev_alias_record(raw: &Value) -> Option<ModelsDevAliasRecor
             .filter(|field| !field.is_empty())
             .map(str::to_string),
         support_efforts: thinking_options.efforts,
+        thinking_off,
     })
 }
 
@@ -231,7 +258,10 @@ mod tests {
                 "image_in".to_string(),
                 "thinking".to_string(),
                 "tool_use".to_string(),
-                "dynamically_loaded_tools".to_string()
+                "dynamically_loaded_tools".to_string(),
+                // A directory model declaring `reasoning` with NO
+                // reasoning_options offers no way to turn it off.
+                "always_thinking".to_string()
             ]
         );
         assert_eq!(record.max_output_size, Some(8192));
@@ -385,4 +415,71 @@ mod tests {
                 .contains(&"dynamically_loaded_tools".to_string())
         );
     }
+    #[test]
+    fn should_mark_always_thinking_when_the_directory_declares_no_off_option() {
+        // Given a directory model whose reasoning_options carry only effort
+        // tiers with no "none"
+        let raw = json!({
+            "name": "Locked",
+            "limit": {"context": 128000},
+            "reasoning": true,
+            "reasoning_options": [{"type": "effort", "values": ["low", "high"]}]
+        });
+
+        // When the alias record is derived
+        let record = models_dev_alias_record(&raw).expect("model is importable");
+
+        // Then the always-thinking marker is added to its capabilities
+        assert!(
+            record.capabilities.iter().any(|c| c == "always_thinking"),
+            "capabilities: {:?}",
+            record.capabilities
+        );
+        // And no thinking-off spelling is written (the endpoint table decides)
+        assert_eq!(record.thinking_off, None);
+    }
+
+    #[test]
+    fn should_write_the_reasoning_effort_dialect_when_the_directory_offers_a_none_tier() {
+        // Given a directory model whose effort tiers include "none"
+        let raw = json!({
+            "name": "Flexible",
+            "limit": {"context": 128000},
+            "reasoning": true,
+            "reasoning_options": [{"type": "effort", "values": ["none", "low", "high"]}]
+        });
+
+        // When the alias record is derived
+        let record = models_dev_alias_record(&raw).expect("model is importable");
+
+        // Then the none tier is excluded from the selectable tiers
+        assert_eq!(
+            record.support_efforts,
+            Some(vec!["low".to_string(), "high".to_string()])
+        );
+        // And the off spelling is reasoning_effort
+        assert_eq!(record.thinking_off, Some("reasoning_effort"));
+        // And no always-thinking marker is claimed
+        assert!(!record.capabilities.iter().any(|c| c == "always_thinking"));
+    }
+
+    #[test]
+    fn should_leave_the_off_spelling_unset_when_the_directory_offers_a_toggle() {
+        // Given a directory model with a toggle and no none tier
+        let raw = json!({
+            "name": "Toggle",
+            "limit": {"context": 128000},
+            "reasoning": true,
+            "reasoning_options": [{"type": "toggle"}, {"type": "effort", "values": ["low", "high"]}]
+        });
+
+        // When the alias record is derived
+        let record = models_dev_alias_record(&raw).expect("model is importable");
+
+        // Then no off spelling is forced (the endpoint table resolves it)
+        assert_eq!(record.thinking_off, None);
+        // And the model is not marked always-thinking
+        assert!(!record.capabilities.iter().any(|c| c == "always_thinking"));
+    }
+
 }

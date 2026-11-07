@@ -3774,8 +3774,9 @@ mod tests {
                 |_task_id| {
                     Box::pin(async {
                         // A pending question that never answers within the
-                        // test's horizon.
-                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        // test's horizon — `pending()` parks it forever
+                        // without registering a 30s timer on the wheel.
+                        std::future::pending::<()>().await;
                         Ok((0, "answered".to_string(), String::new()))
                     })
                 },
@@ -3828,11 +3829,12 @@ mod tests {
         );
     }
 
-    /// Given a task registered with an explicit 50ms timeout and an attached
-    /// cancel signal, When terminate_expired runs after the deadline, Then
-    /// the signal FIRES and the task lands in Failed(TASK_TIMEOUT_MESSAGE) —
-    /// the pre-fix code only flipped the status and never cancelled the
-    /// work.
+    /// Given a task registered with an immediately-expired explicit timeout
+    /// (`Duration::ZERO` — the deadline is already in the past at
+    /// registration) and an attached cancel signal, When terminate_expired
+    /// runs, Then the signal FIRES and the task lands in
+    /// Failed(TASK_TIMEOUT_MESSAGE) — the pre-fix code only flipped the
+    /// status and never cancelled the work.
     #[test]
     fn should_fire_the_attached_signal_when_terminate_expired_kills_a_timed_out_task() {
         let tasks = TaskManager::new();
@@ -3846,12 +3848,11 @@ mod tests {
             },
             "stuck".into(),
             "session-1".into(),
-            Some(Duration::from_millis(50)),
+            Some(Duration::ZERO),
         );
         let signal = CancelToken::new();
         tasks.attach_signal(&id, signal.clone());
 
-        std::thread::sleep(Duration::from_millis(80));
         let terminated = tasks.terminate_expired();
 
         assert_eq!(terminated, vec![id.clone()]);
@@ -3890,9 +3891,10 @@ mod tests {
     /// registered without one).
     #[test]
     fn should_prefer_the_explicit_deadline_over_the_global_agent_timeout() {
-        // Global timeout long expired (the task's created_at is in the
-        // past), but the explicit deadline is still ahead — not expired.
-        let tasks = TaskManager::new().with_agent_timeout(Duration::from_millis(1));
+        // Global timeout already elapsed by construction (a zero window:
+        // `elapsed >= 0` always holds), but the explicit deadline is still
+        // ahead — not expired.
+        let tasks = TaskManager::new().with_agent_timeout(Duration::ZERO);
         tasks.register_with_timeout(
             TaskKind::Process {
                 command: None,
@@ -3902,7 +3904,6 @@ mod tests {
             "session-1".into(),
             Some(Duration::from_secs(60)),
         );
-        std::thread::sleep(Duration::from_millis(20));
         assert!(
             tasks.terminate_expired().is_empty(),
             "the explicit (unexpired) deadline must suppress the global fallback"
@@ -4478,7 +4479,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn should_return_cancelled_immediately_when_the_wait_is_cancelled() {
         // Given a still-running task and a cancel token that fires while a
         // blocking wait is in flight
@@ -4494,19 +4495,20 @@ mod tests {
         let cancel = crate::cancel::CancelToken::new();
         let cancel_clone = cancel.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await; // hygiene-allow: D: paused clock 虚拟定时器
             cancel_clone.cancel();
         });
 
         // When the wait runs with a 10-second timeout (far longer than the
         // cancel)
-        let start = std::time::Instant::now();
+        let start = tokio::time::Instant::now();
         let result = manager
             .wait_for_completion_with(&id, 10, Some(&cancel))
             .await;
 
         // Then the wait ends promptly with Cancelled — not after the task
-        // settles nor after the timeout (US5.3: no zombie window)
+        // settles nor after the timeout (US5.3: no zombie window). The
+        // bound measures the same virtual clock the cancel timer runs on.
         assert_eq!(result, WaitResult::Cancelled);
         assert!(
             start.elapsed() < std::time::Duration::from_secs(5),
@@ -4517,7 +4519,7 @@ mod tests {
         assert_eq!(manager.get(&id).unwrap().status, TaskStatus::Running);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn should_report_liveness_only_while_the_heartbeat_advances() {
         // Given a manager with a heartbeat interval and a liveness listener
         // that counts invocations
@@ -4542,7 +4544,7 @@ mod tests {
         let manager_for_beats = Arc::clone(&manager);
         tokio::spawn(async move {
             for _ in 0..5 {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: D: paused clock 虚拟定时器
                 manager_for_beats.heartbeat(&id_for_beats);
             }
         });
@@ -4621,7 +4623,9 @@ mod tests {
 
     #[tokio::test]
     async fn should_prefer_the_settlement_when_it_races_the_cancel() {
-        // Given a task that settles at the same moment the cancel fires
+        // Given a task that settles at the same moment the cancel fires —
+        // both land synchronously before the waiter starts, so the race's
+        // outcome is fixed rather than sampled off a timer
         let manager = TaskManager::new();
         let id = manager.register(
             TaskKind::Process {
@@ -4632,15 +4636,8 @@ mod tests {
             SESSION.into(),
         );
         let cancel = crate::cancel::CancelToken::new();
-        let manager = Arc::new(manager);
-        let manager_ref = Arc::clone(&manager);
-        let id_clone = id.clone();
-        let cancel_clone = cancel.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            manager_ref.complete(&id_clone, 0);
-            cancel_clone.cancel();
-        });
+        manager.complete(&id, 0);
+        cancel.cancel();
 
         // When the wait runs
         let result = manager
@@ -4756,9 +4753,9 @@ mod tests {
             count.load(std::sync::atomic::Ordering::SeqCst)
         );
 
-        // Cleanup: cancel and settle so the spawned wrapper exits cleanly
+        // Cleanup: cancel and settle so the spawned wrapper exits cleanly.
+        // `driver.await` alone is enough — the wrapper converges once stopped.
         manager.stop(&task_id);
-        tokio::time::sleep(Duration::from_millis(50)).await;
         let _ = driver.await;
     }
 }

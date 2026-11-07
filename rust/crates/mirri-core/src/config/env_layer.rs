@@ -117,12 +117,6 @@ impl ServerConfig {
             }
         }
 
-        // `thinking` section.
-        if let Some(ref mut thinking) = self.thinking {
-            expand_opt_string(&mut thinking.effort, lookup);
-            expand_opt_string(&mut thinking.keep, lookup);
-        }
-
         // `permission` section: mode and user-configured rules.
         if let Some(ref mut permission) = self.permission {
             expand_opt_string(&mut permission.mode, lookup);
@@ -440,14 +434,6 @@ impl ServerConfig {
 
         // Force the env alias to be the default model.
         self.default_model = Some(ENV_MODEL_ALIAS_KEY.to_string());
-
-        // Optionally override thinking.effort (preserving other thinking
-        // fields, matching TS `{ ...config.thinking, effort }`).
-        if let Some(effort) = env_var_non_empty("MIRRICODE_MODEL_THINKING_EFFORT", get_env) {
-            self.thinking
-                .get_or_insert_with(ThinkingConfig::default)
-                .effort = Some(effort);
-        }
 
         Ok(())
     }

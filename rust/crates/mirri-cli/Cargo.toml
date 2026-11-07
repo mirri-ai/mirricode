@@ -41,4 +41,5 @@ notify = "8"
 rpassword = "7"
 
 [dev-dependencies]
+mirri-test-support = { path = "../mirri-test-support" }
 tempfile = "3"

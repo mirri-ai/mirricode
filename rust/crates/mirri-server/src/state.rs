@@ -101,6 +101,12 @@ pub struct ServerState {
     /// uploaded file is immediately attachable to a prompt. `None` falls
     /// back to the ambient Mirri home's `files/` subdir at request time.
     pub files_dir: Option<PathBuf>,
+    /// The Mirri home this state treats as its own (the injected override
+    /// for the graceful-shutdown library backup and the files-store
+    /// fallback). `None` (the default, production) resolves the ambient
+    /// `MIRRICODE_HOME`/OS home at use time; tests inject a tempdir
+    /// instead of mutating the process environment.
+    home_dir: Option<PathBuf>,
     /// The app-level MCP pool event broadcast (M7, F-9): `event.mcp.server
     /// .status` notifications fanned out to every connection that called
     /// `mcp.subscribe`. Fed by a single forwarder task (spawned lazily on
@@ -227,6 +233,7 @@ impl ServerState {
             config,
             config_path: None,
             files_dir: None,
+            home_dir: None,
             file_index,
             mcp_event_tx: broadcast::channel(MCP_EVENT_CHANNEL_CAPACITY).0,
             mcp_event_forwarder: Arc::new(std::sync::OnceLock::new()),
@@ -436,13 +443,25 @@ impl ServerState {
         self
     }
 
+    /// Override the Mirri home this state resolves its own paths from (the
+    /// shutdown library backup's `<home>/session-index.db`, the files
+    /// store's `files/` subdir). Production leaves it unset and resolves
+    /// the ambient home at use time; tests inject a tempdir here instead
+    /// of mutating the process environment.
+    pub fn with_home_dir(mut self, home_dir: PathBuf) -> Self {
+        self.home_dir = Some(home_dir);
+        self
+    }
+
     /// The files-store root of this server (the injected override, or the
-    /// ambient Mirri home's `files/` subdir).
+    /// Mirri home's `files/` subdir — injected or ambient).
     pub(crate) fn file_store(&self) -> mirri_persistence::FileStore {
         let root = self.files_dir.clone().unwrap_or_else(|| {
-            mirri_core::config::mirri_home_dir()
+            self.home_dir
+                .clone()
+                .or_else(|| mirri_core::config::mirri_home_dir().ok())
                 .map(|home| home.join("files"))
-                .unwrap_or_else(|_| PathBuf::from(".mirri-code-files"))
+                .unwrap_or_else(|| PathBuf::from(".mirri-code-files"))
         });
         mirri_persistence::FileStore::new(root)
     }
@@ -547,7 +566,10 @@ impl ServerState {
         if !self
             .shutdown_backup_done
             .swap(true, std::sync::atomic::Ordering::SeqCst)
-            && let Ok(home) = mirri_core::config::mirri_home_dir()
+            && let Some(home) = self
+                .home_dir
+                .clone()
+                .or_else(|| mirri_core::config::mirri_home_dir().ok())
             && home.join("session-index.db").exists()
             && let Err(error) =
                 mirri_session_index::backup::backup_library(&home.join("session-index.db"))
@@ -986,28 +1008,34 @@ mod tests {
         // the pre-engine-call subscribe in prepare_fire_watch observed the
         // terminal event call_method published, so the watcher ends instead
         // of leaving a stale running entry behind.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            if state.in_flight_turns.lock().await.is_empty() {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "in-flight entry was never reaped: the watcher missed the instant turn's terminal event"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        mirri_test_support::wait_for::wait_for_async_result(
+            Duration::from_secs(5),
+            Duration::from_millis(20),
+            || async {
+                state
+                    .in_flight_turns
+                    .lock()
+                    .await
+                    .is_empty()
+                    .then_some(())
+            },
+        )
+        .await
+        .expect(
+            "in-flight entry was never reaped: the watcher missed the instant turn's terminal event",
+        );
     }
 
     /// A stub engine whose `session.create` takes 300ms — slow enough to be
-    /// in flight when a shutdown drain starts.
+    /// in flight when a shutdown drain starts (virtual under the paused
+    /// clock of the drain test below).
     struct SlowEngine;
 
     #[async_trait::async_trait]
     impl EngineAdapter for SlowEngine {
         async fn call_method(&self, method: &str, _params: Value) -> Result<Value, EngineError> {
             if method == "session.create" {
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: D: paused clock 虚拟 fixture 工时
                 return Ok(json!({ "id": "session-slow" }));
             }
             Err(EngineError::MethodNotFound(method.to_string()))
@@ -1032,7 +1060,7 @@ mod tests {
     /// in-flight call completes and returns its result — the drain must let
     /// tracked engine calls finish instead of abandoning them to a runtime
     /// drop (the "engine call task vanished" incident, 2026-10-12).
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn should_complete_in_flight_engine_calls_when_shutdown_drain_runs() {
         // Given a state whose engine answers slowly
         let state = test_state(Arc::new(SlowEngine));
@@ -1291,8 +1319,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn should_snapshot_the_library_once_across_concurrent_shutdown_signals() {
         let home = tempfile::tempdir().expect("home tempdir");
-        // SAFETY: test-only, single-threaded setup before any parallel test reads it.
-        unsafe { std::env::set_var("MIRRICODE_HOME", home.path()) };
         let db_path = home.path().join("session-index.db");
         let index = mirri_session_index::SessionIndex::open(&db_path).unwrap();
         let now = chrono::Utc::now();
@@ -1350,7 +1376,10 @@ mod tests {
                 Ok(())
             }
         }
-        let state = test_state(std::sync::Arc::new(ShutdownEngine));
+        // Given the home injected into the state (the shutdown backup
+        // snapshots this state's home, so no process env is involved)
+        let state = test_state(std::sync::Arc::new(ShutdownEngine))
+            .with_home_dir(home.path().to_path_buf());
         state.request_shutdown().await;
         state.request_shutdown().await;
 
@@ -1359,8 +1388,5 @@ mod tests {
             newest.exists(),
             "the shutdown snapshot's newest generation exists"
         );
-
-        // SAFETY: test-only teardown.
-        unsafe { std::env::remove_var("MIRRICODE_HOME") };
     }
 }
