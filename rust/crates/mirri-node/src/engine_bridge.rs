@@ -366,6 +366,9 @@ mod tests {
     #[derive(Default)]
     struct ReverseRpcProbeAdapter {
         handler: std::sync::Mutex<Option<ReverseRpcHandler>>,
+        /// Fires once per `on_reverse_rpc` registration — the test awaits
+        /// this instead of sampling `has_registered_handler()`.
+        registered: tokio::sync::Notify,
     }
 
     impl ReverseRpcProbeAdapter {
@@ -375,6 +378,19 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .is_some()
+        }
+
+        /// Await the handler registration: checked first (an already-
+        /// registered adapter returns immediately), and `notify_one`
+        /// stores a permit when the signal fires before the wait starts,
+        /// so the wakeup is never missed.
+        async fn wait_registered(&self) {
+            loop {
+                if self.has_registered_handler() {
+                    return;
+                }
+                self.registered.notified().await;
+            }
         }
     }
 
@@ -404,6 +420,7 @@ mod tests {
 
         async fn on_reverse_rpc(&self, handler: ReverseRpcHandler) -> Result<(), EngineError> {
             *self.handler.lock().unwrap_or_else(|e| e.into_inner()) = Some(handler);
+            self.registered.notify_one();
             Ok(())
         }
 
@@ -532,14 +549,10 @@ mod tests {
         });
 
         // And the handler registration has landed before the engine fires
-        let registration_deadline = Instant::now() + Duration::from_secs(5);
-        while !probe.has_registered_handler() {
-            assert!(
-                Instant::now() < registration_deadline,
-                "reverse rpc handler never registered"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        // — signalled by `on_reverse_rpc` itself, bounded by a timeout
+        timeout(Duration::from_secs(5), probe.wait_registered())
+            .await
+            .expect("reverse rpc handler never registered");
 
         // When the engine issues a reverse RPC request
         let bridge_for_call = Arc::clone(&bridge);

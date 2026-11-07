@@ -3220,12 +3220,16 @@ mod tests {
     /// embedded pool behind it.
     struct PoolEventEngine {
         pool_tx: broadcast::Sender<Arc<Value>>,
+        /// Fires once per `subscribe_mcp_pool_events` call — the test
+        /// awaits this instead of sampling `engine_receivers()`.
+        subscribed: tokio::sync::Notify,
     }
 
     impl PoolEventEngine {
         fn new() -> Arc<Self> {
             Arc::new(Self {
                 pool_tx: broadcast::channel(64).0,
+                subscribed: tokio::sync::Notify::new(),
             })
         }
 
@@ -3235,6 +3239,19 @@ mod tests {
 
         fn engine_receivers(&self) -> usize {
             self.pool_tx.receiver_count()
+        }
+
+        /// Await the state-level forwarder's subscription: checked first
+        /// (an already-subscribed engine returns immediately), and
+        /// `notify_one` stores a permit when the signal fires before the
+        /// wait starts, so the wakeup is never missed.
+        async fn wait_subscribed(&self) {
+            loop {
+                if self.engine_receivers() > 0 {
+                    return;
+                }
+                self.subscribed.notified().await;
+            }
         }
     }
 
@@ -3262,7 +3279,11 @@ mod tests {
             &self,
         ) -> Result<broadcast::Receiver<Arc<Value>>, mirri_transport::adapter::EngineError>
         {
-            Ok(self.pool_tx.subscribe())
+            let receiver = self.pool_tx.subscribe();
+            // The state-level forwarder subscribes through this call —
+            // signal the test that the receiver now exists.
+            self.subscribed.notify_one();
+            Ok(receiver)
         }
 
         async fn on_reverse_rpc(
@@ -3332,14 +3353,9 @@ mod tests {
     /// lazily, and the task only calls `subscribe_mcp_pool_events` on its
     /// first poll — emitting before that would race the subscription.
     async fn await_engine_subscription(engine: &PoolEventEngine) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        while engine.engine_receivers() == 0 {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "the state-level forwarder never subscribed to the engine broadcast"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        tokio::time::timeout(Duration::from_secs(5), engine.wait_subscribed())
+            .await
+            .expect("the state-level forwarder never subscribed to the engine broadcast");
     }
 
     /// Given a connection, when `mcp.subscribe` is called and the engine
@@ -3425,22 +3441,17 @@ mod tests {
         // send fails, ending the relay)
         engine.emit(json!({ "server": { "name": "mock", "status": "connected" } }));
 
-        // Then the forwarder task finishes instead of leaking
+        // Then the forwarder task finishes instead of leaking — awaited
+        // directly (a JoinHandle IS the completion signal; the timeout
+        // keeps the wait bounded).
         let forwarder = connection
             .mcp_subscription
             .take()
             .expect("forwarder was spawned");
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            if forwarder.is_finished() {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "forwarder outlived the connection's writer"
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        tokio::time::timeout(Duration::from_secs(5), forwarder)
+            .await
+            .expect("forwarder outlived the connection's writer")
+            .expect("the forwarder task must not panic");
     }
 
     /// Given a subscribed connection, when the connection ends (the

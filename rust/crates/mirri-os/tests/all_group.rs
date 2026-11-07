@@ -546,12 +546,21 @@ fn set_mtime_now(path: &Path) {
 
 #[tokio::test]
 async fn should_sort_results_newest_first_when_globbing_files() {
-    // Given a temp dir where file_a.txt is created before file_b.txt.
+    // Given a temp dir with two .txt files whose mtimes are pinned an
+    // hour apart (the same explicit-mtime technique as set_mtime_now), so
+    // "newest first" holds by construction — no sleep across filesystem
+    // timestamp granularity.
     let tmp = TempDir::new().unwrap();
     write_file(tmp.path(), "file_a.txt", "a");
-    // Sleep to ensure a detectable mtime difference.
-    std::thread::sleep(Duration::from_millis(50));
     write_file(tmp.path(), "file_b.txt", "b");
+    let set_mtime = |name: &str, when: Duration| {
+        let file = fs::File::open(tmp.path().join(name)).unwrap();
+        let times = std::fs::FileTimes::new()
+            .set_modified(std::time::UNIX_EPOCH + when);
+        file.set_times(times).expect("set mtime");
+    };
+    set_mtime("file_a.txt", Duration::from_secs(3_600));
+    set_mtime("file_b.txt", Duration::from_secs(7_200));
 
     // When globbing for *.txt.
     let glob = LocalGlob::new();
