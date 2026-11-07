@@ -16,7 +16,6 @@ import {
   modelThinkingAvailability,
   segmentsFor,
   thinkingLevelForModelSwitch,
-  thinkingLevelToConfig,
 } from './modelThinking';
 import type { ModelThinkingInfo } from './modelThinking';
 
@@ -174,37 +173,6 @@ describe('modelThinking', () => {
       expect(levelDeclaredBy(alwaysOnModel, 'off')).toBe(false);
       expect(levelDeclaredBy(maxOnlyModel, 'low')).toBe(false);
       expect(levelDeclaredBy(unsupportedModel, 'max')).toBe(false);
-    });
-  });
-
-  describe('thinkingLevelToConfig', () => {
-    it('converts off to disabled', () => {
-      expect(thinkingLevelToConfig('off')).toEqual({ enabled: false });
-    });
-
-    it('converts on to enabled without effort', () => {
-      expect(thinkingLevelToConfig('on')).toEqual({ enabled: true });
-    });
-
-    it('persists levels below the model top tier as the global default', () => {
-      expect(thinkingLevelToConfig('low', ['low', 'high', 'max'])).toEqual({
-        enabled: true,
-        effort: 'low',
-      });
-      expect(thinkingLevelToConfig('high', ['low', 'high', 'max'])).toEqual({
-        enabled: true,
-        effort: 'high',
-      });
-    });
-
-    it('records only enabled for the model top tier', () => {
-      expect(thinkingLevelToConfig('max', ['low', 'high', 'max'])).toEqual({ enabled: true });
-      expect(thinkingLevelToConfig('max', ['max'])).toEqual({ enabled: true });
-    });
-
-    it('persists concrete levels as-is when the model levels are unknown', () => {
-      expect(thinkingLevelToConfig('max')).toEqual({ enabled: true, effort: 'max' });
-      expect(thinkingLevelToConfig('ultra')).toEqual({ enabled: true, effort: 'ultra' });
     });
   });
 
@@ -624,5 +592,10 @@ describe('useModelProviderState thinking on model selection', () => {
     await provider.loadModels();
 
     expect(apiMock.setConfig).not.toHaveBeenCalled();
+  });
+
+  it('should not export a global config encoder once the global section is retired', async () => {
+    const mod = await import('./modelThinking');
+    expect('thinkingLevelToConfig' in mod).toBe(false);
   });
 });

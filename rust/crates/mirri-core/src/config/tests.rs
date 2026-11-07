@@ -166,7 +166,6 @@ command = "echo end"
     for expected in [
         ConfigChange::Providers,
         ConfigChange::Models,
-        ConfigChange::Thinking,
         ConfigChange::Permission,
         ConfigChange::LoopControl,
         ConfigChange::Yolo,
@@ -949,177 +948,6 @@ fn should_round_trip_turn_stall_timeout_when_config_saved_and_reloaded() {
     );
 }
 
-#[test]
-fn should_migrate_thinking_effort_max_to_high_when_config_has_stale_value() {
-    // Given a config.toml with a stale thinking.effort = "max" and a
-    // fresh home directory (no marker file yet)
-    let temp_dir = tempfile::tempdir().expect("tempdir should succeed");
-    let config_path = temp_dir.path().join("config.toml");
-    std::fs::write(&config_path, "[thinking]\neffort = \"max\"\n")
-        .expect("write config.toml should succeed");
-    let mut config = ServerConfig::load_without_env(&config_path, &LocalSyncFs)
-        .expect("config.toml should parse");
-
-    // When running the config migration
-    migrate_config(&mut config, &config_path, temp_dir.path(), &LocalSyncFs)
-        .expect("migration should succeed");
-
-    // Then the in-memory effort is rewritten to "high"
-    assert_eq!(
-        config
-            .thinking
-            .as_ref()
-            .expect("thinking should parse")
-            .effort
-            .as_deref(),
-        Some("high")
-    );
-    // ... the marker file records the applied migration ...
-    let marker_path = temp_dir.path().join(MIGRATIONS_MARKER_FILE);
-    let markers: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&marker_path).expect("marker file should be written"),
-    )
-    .expect("marker file should be valid JSON");
-    assert!(
-        markers.get(MIGRATION_THINKING_EFFORT_MAX_TO_HIGH).is_some(),
-        "marker file should record the applied migration"
-    );
-    // ... and the rewrite is persisted to config.toml, so a later boot
-    // loads the migrated value from disk (the fix for the in-memory-only
-    // migration bug)
-    let persisted = ServerConfig::from_toml(
-        &std::fs::read_to_string(&config_path)
-            .expect("config.toml should be rewritten by the migration"),
-    )
-    .expect("rewritten config.toml should parse");
-    assert_eq!(
-        persisted
-            .thinking
-            .as_ref()
-            .expect("thinking should persist")
-            .effort
-            .as_deref(),
-        Some("high"),
-        "config.toml must persist the migrated effort"
-    );
-}
-
-#[test]
-fn should_skip_migration_when_marker_already_records_the_migration() {
-    // Given a marker file that already records the migration and a
-    // config whose effort is still "max"
-    let temp_dir = tempfile::tempdir().expect("tempdir should succeed");
-    let config_path = temp_dir.path().join("config.toml");
-    std::fs::write(&config_path, "[thinking]\neffort = \"max\"\n")
-        .expect("write config.toml should succeed");
-    let marker_path = temp_dir.path().join(MIGRATIONS_MARKER_FILE);
-    std::fs::write(
-        &marker_path,
-        format!("{{\"{MIGRATION_THINKING_EFFORT_MAX_TO_HIGH}\": \"2024-01-01T00:00:00Z\"}}\n"),
-    )
-    .expect("write marker should succeed");
-    let mut config = ServerConfig::load_without_env(&config_path, &LocalSyncFs)
-        .expect("config.toml should parse");
-
-    // When running the config migration again
-    migrate_config(&mut config, &config_path, temp_dir.path(), &LocalSyncFs)
-        .expect("migration should succeed");
-
-    // Then the already-marked migration is skipped entirely (fast path):
-    // the value stays "max" in memory, the config file is left untouched,
-    // and the marker keeps its original timestamp
-    assert_eq!(
-        config
-            .thinking
-            .as_ref()
-            .expect("thinking should parse")
-            .effort
-            .as_deref(),
-        Some("max")
-    );
-    let persisted = std::fs::read_to_string(&config_path).expect("config should be readable");
-    assert!(
-        persisted.contains("effort = \"max\""),
-        "a skipped migration must not rewrite config.toml"
-    );
-}
-
-#[test]
-fn should_apply_migration_when_marker_file_is_corrupt() {
-    // Given a corrupt (unparseable) marker file and a config with a
-    // stale thinking.effort = "max"
-    let temp_dir = tempfile::tempdir().expect("tempdir should succeed");
-    let config_path = temp_dir.path().join("config.toml");
-    std::fs::write(&config_path, "[thinking]\neffort = \"max\"\n")
-        .expect("write config.toml should succeed");
-    let marker_path = temp_dir.path().join(MIGRATIONS_MARKER_FILE);
-    std::fs::write(&marker_path, "{ this is not valid json")
-        .expect("write corrupt marker should succeed");
-    let mut config = ServerConfig::load_without_env(&config_path, &LocalSyncFs)
-        .expect("config.toml should parse");
-
-    // When running the config migration
-    migrate_config(&mut config, &config_path, temp_dir.path(), &LocalSyncFs)
-        .expect("migration should succeed");
-
-    // Then the corrupt marker is treated as "no migrations applied": the
-    // migration runs, the effort is rewritten to "high", and the marker
-    // file is replaced with valid JSON recording the migration
-    assert_eq!(
-        config
-            .thinking
-            .as_ref()
-            .expect("thinking should parse")
-            .effort
-            .as_deref(),
-        Some("high")
-    );
-    let markers: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&marker_path).expect("marker file should be rewritten"),
-    )
-    .expect("marker file should be valid JSON after the migration");
-    assert!(
-        markers.get(MIGRATION_THINKING_EFFORT_MAX_TO_HIGH).is_some(),
-        "marker file should record the applied migration"
-    );
-}
-
-#[test]
-fn should_not_write_marker_when_config_rewrite_fails() {
-    // Given a config with a stale effort = "max" whose config.toml path
-    // has a regular file as its parent directory, so writing the
-    // rewritten config is guaranteed to fail
-    let temp_dir = tempfile::tempdir().expect("tempdir should succeed");
-    let blocked_parent = temp_dir.path().join("not-a-directory");
-    std::fs::write(&blocked_parent, "i am a file, not a directory")
-        .expect("write blocker file should succeed");
-    let config_path = blocked_parent.join("config.toml");
-    let mut config =
-        ServerConfig::from_toml("[thinking]\neffort = \"max\"\n").expect("TOML should parse");
-
-    // When running the config migration
-    migrate_config(&mut config, &config_path, temp_dir.path(), &LocalSyncFs)
-        .expect_err("a failed config.toml rewrite must surface as an error");
-
-    // Then the in-memory config keeps the migrated value for this run,
-    // but no marker is written, so the migration retries on the next
-    // boot
-    assert_eq!(
-        config
-            .thinking
-            .as_ref()
-            .expect("thinking should parse")
-            .effort
-            .as_deref(),
-        Some("high"),
-        "the in-memory config must keep the migrated value"
-    );
-    assert!(
-        !temp_dir.path().join(MIGRATIONS_MARKER_FILE).exists(),
-        "no marker may be written when the config.toml rewrite fails"
-    );
-}
-
 // ===== env var expansion tests =====
 
 #[test]
@@ -1592,6 +1420,7 @@ fn should_build_camel_case_wire_config_when_multi_provider_fields_present() {
             adaptive_thinking: Some(true),
             support_efforts: Some(vec!["low".to_string(), "high".to_string()]),
             default_effort: Some("high".to_string()),
+            thinking_off: None,
             protocol: None,
             beta_api: None,
         },
@@ -1761,16 +1590,11 @@ fn should_omit_absent_fields_when_config_is_default() {
 }
 
 #[test]
-fn should_build_wire_thinking_permission_loop_control_hooks_when_present() {
-    // Given a config with thinking, permission, loop_control, hooks, and
-    // experimental sections
+fn should_build_wire_permission_loop_control_hooks_when_present() {
+    // Given a config with permission, loop_control, hooks, and experimental
+    // sections
     let config = ServerConfig::from_toml(
         r#"
-[thinking]
-enabled = true
-effort = "high"
-keep = "all"
-
 [permission]
 mode = "yolo"
 
@@ -1802,11 +1626,10 @@ streaming = true
     // When building the wire config
     let wire = config.to_mirri_config_wire();
 
-    // Then the sections serialize with camelCase keys
-    let thinking = &wire["thinking"];
-    assert_eq!(thinking["enabled"], true);
-    assert_eq!(thinking["effort"], "high");
-    assert_eq!(thinking["keep"], "all");
+    // Then the sections serialize with camelCase keys, and the retired
+    // thinking section is NOT projected (it survives only as raw passthrough
+    // through `to_config_sections_wire`)
+    assert!(wire.get("thinking").is_none(), "retired section must not be projected");
     let rule = &wire["permission"]["rules"][0];
     assert_eq!(rule["decision"], "allow");
     assert_eq!(rule["scope"], "user");
@@ -2509,10 +2332,6 @@ fn should_set_synthesized_model_as_default_when_env_model_config_is_present() {
     assert_eq!(alias.display_name.as_deref(), Some("Claude Sonnet"));
     assert_eq!(alias.reasoning_key.as_deref(), Some("reasoning"));
     assert_eq!(alias.adaptive_thinking, Some(true));
-
-    // And thinking.effort is overridden
-    let thinking = config.thinking.as_ref().expect("thinking should exist");
-    assert_eq!(thinking.effort.as_deref(), Some("high"));
 }
 
 #[test]
@@ -2837,36 +2656,6 @@ fn should_parse_adaptive_thinking_false_when_env_value_is_false() {
     assert_eq!(alias.adaptive_thinking, Some(false));
 }
 
-#[test]
-fn should_override_thinking_effort_when_mirricode_model_thinking_effort_is_set() {
-    // Given a config with an existing thinking section
-    let mut config = ServerConfig {
-        thinking: Some(ThinkingConfig {
-            enabled: Some(true),
-            effort: Some("low".to_string()),
-            keep: None,
-        }),
-        ..Default::default()
-    };
-    let env = fake_env(&[
-        ("MIRRICODE_MODEL_NAME", "gpt-4o"),
-        ("MIRRICODE_MODEL_API_KEY", "sk-env"),
-        ("MIRRICODE_MODEL_THINKING_EFFORT", "max"),
-    ]);
-
-    // When applying the env model config
-    config.apply_env_model_config(&env).expect("should succeed");
-
-    // Then thinking.effort is overridden but other thinking fields are preserved
-    let thinking = config.thinking.as_ref().expect("thinking should exist");
-    assert_eq!(thinking.effort.as_deref(), Some("max"));
-    assert_eq!(
-        thinking.enabled,
-        Some(true),
-        "existing thinking.enabled must be preserved"
-    );
-}
-
 // -----------------------------------------------------------------------
 // G31 — raw TOML preservation and round-trip fidelity
 // -----------------------------------------------------------------------
@@ -3002,11 +2791,11 @@ key = "value"
     .expect("should parse");
     assert!(config.raw.is_some(), "raw should be set after parsing");
 
-    // When merging a wire patch
+    // When merging a wire patch (a still-typed section: the retired
+    // `thinking` key is now rejected as unknown, which is its own guarantee)
     let patch = json!({
-        "thinking": {
-            "enabled": true,
-            "effort": "high"
+        "loopControl": {
+            "maxStepsPerTurn": 42
         }
     });
     config
@@ -3019,15 +2808,13 @@ key = "value"
         "raw should be preserved through merge_wire_patch"
     );
 
-    // And the merged thinking field is applied
+    // And the merged value landed on the typed field
     assert_eq!(
         config
-            .thinking
+            .loop_control
             .as_ref()
-            .expect("thinking")
-            .effort
-            .as_deref(),
-        Some("high")
+            .and_then(|l| l.max_steps_per_turn),
+        Some(42)
     );
 }
 
@@ -3061,11 +2848,16 @@ type = "openai"
         ])
         .unwrap();
 
-    // Then the parsed struct reflects all three changes
-    assert_eq!(
-        config.thinking.as_ref().and_then(|t| t.effort.clone()),
-        Some("high".into())
-    );
+    // Then the parsed struct reflects the modeled change and the retired
+    // section lands in the raw document.
+    let thinking_effort = config
+        .raw
+        .as_ref()
+        .and_then(|r| r.get("thinking"))
+        .and_then(|t| t.get("effort"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    assert_eq!(thinking_effort, Some("high".to_string()));
     assert!(
         config.providers.is_none(),
         "cleared: {:?}",
@@ -3080,11 +2872,11 @@ type = "openai"
     let before = serde_json::to_value(&config).unwrap();
     let error = config
         .replace_raw_sections(&[(
-            "thinking".to_string(),
+            "loop_control".to_string(),
             Some(serde_json::json!("not-a-table")),
         )])
         .unwrap_err();
-    assert!(error.to_string().contains("thinking"), "error: {error}");
+    assert!(error.to_string().contains("loop_control"), "error: {error}");
     let after = serde_json::to_value(&config).unwrap();
     assert_eq!(before, after, "the config is unchanged after the failure");
 }
@@ -3286,117 +3078,6 @@ provider = "anthropic"
     assert!(
         warnings[0].contains("[models") || warnings[0].contains("default_model"),
         "warning should point at the new spelling: {warnings:?}"
-    );
-}
-
-// ===== injected SyncFs (T-13b1-2: marker double-write protection) =====
-
-/// In-memory [`mirri_os::SyncFs`] double backing the migration-marker
-/// tests, so the marker write and the second-run skip are verified
-/// without the real filesystem.
-#[derive(Default)]
-struct MarkerFs {
-    files: std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, String>>,
-    writes: std::sync::Mutex<Vec<std::path::PathBuf>>,
-}
-
-impl mirri_os::SyncFs for MarkerFs {
-    fn read_text(&self, path: &Path) -> anyhow::Result<String> {
-        self.files
-            .lock()
-            .unwrap()
-            .get(path)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("no such file: {}", path.display()))
-    }
-
-    fn write_text(&self, path: &Path, content: &str) -> anyhow::Result<()> {
-        self.writes.lock().unwrap().push(path.to_path_buf());
-        self.files
-            .lock()
-            .unwrap()
-            .insert(path.to_path_buf(), content.to_string());
-        Ok(())
-    }
-
-    fn mkdir(&self, _path: &Path, _recursive: bool) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn exists(&self, path: &Path) -> bool {
-        self.files.lock().unwrap().contains_key(path)
-    }
-}
-
-/// should record the migration marker through the injected fs and skip
-/// on the second run (T-13b1-2)
-#[test]
-fn should_record_migration_marker_through_injected_fs_and_skip_second_run() {
-    // Given a config without a stale effort (so only the marker write
-    // path runs — the config.toml rewrite itself stays with
-    // mirri-persistence) and an in-memory fs double
-    let fs = MarkerFs::default();
-    let home = std::path::PathBuf::from("/virtual-home");
-    let config_path = home.join("config.toml");
-    let marker_path = home.join(MIGRATIONS_MARKER_FILE);
-    let mut config =
-        ServerConfig::from_toml("[thinking]\neffort = \"high\"\n").expect("TOML should parse");
-
-    // When the migration runs through the double
-    migrate_config(&mut config, &config_path, &home, &fs).expect("migration should succeed");
-
-    // Then the marker was written through the injected fs and records
-    // the migration
-    assert!(
-        fs.writes.lock().unwrap().contains(&marker_path),
-        "marker write must go through the injected fs"
-    );
-    let markers: serde_json::Value = serde_json::from_str(
-        fs.files
-            .lock()
-            .unwrap()
-            .get(&marker_path)
-            .expect("marker file written through the double"),
-    )
-    .expect("marker file should be valid JSON");
-    assert!(
-        markers.get(MIGRATION_THINKING_EFFORT_MAX_TO_HIGH).is_some(),
-        "marker file should record the applied migration"
-    );
-
-    // And a second run is skipped entirely (double-write protection):
-    // no additional marker writes, the value is left as the caller
-    // holds it, and the marker keeps its original timestamp
-    let writes_before = fs.writes.lock().unwrap().len();
-    let marker_before = fs
-        .files
-        .lock()
-        .unwrap()
-        .get(&marker_path)
-        .cloned()
-        .expect("marker present");
-    let mut second =
-        ServerConfig::from_toml("[thinking]\neffort = \"max\"\n").expect("TOML should parse");
-    migrate_config(&mut second, &config_path, &home, &fs).expect("migration should succeed");
-    assert_eq!(
-        second
-            .thinking
-            .as_ref()
-            .expect("thinking should parse")
-            .effort
-            .as_deref(),
-        Some("max"),
-        "an already-marked migration must not rewrite the value"
-    );
-    assert_eq!(
-        fs.writes.lock().unwrap().len(),
-        writes_before,
-        "an already-marked migration must not write the marker again"
-    );
-    assert_eq!(
-        fs.files.lock().unwrap().get(&marker_path).cloned(),
-        Some(marker_before),
-        "the marker file must be left untouched on the skip path"
     );
 }
 
@@ -3899,7 +3580,6 @@ fn should_cover_typed_sections_when_inspecting_known_section_keys() {
     // When looking up each typed section
     // Then the section is present with a non-empty key list
     for section in [
-        "thinking",
         "loop_control",
         "task",
         "subagent",
@@ -3917,17 +3597,16 @@ fn should_cover_typed_sections_when_inspecting_known_section_keys() {
 }
 
 #[test]
-fn should_list_effort_and_aliases_for_thinking_when_inspecting_known_section_keys() {
-    // Given the thinking section entry
-    // When checking its keys
-    // Then both the snake_case field and its accepted spellings are present
-    let (_, thinking_keys) = KNOWN_SECTION_KEYS
-        .iter()
-        .find(|(name, _)| *name == "thinking")
-        .expect("thinking section entry");
-    for key in ["enabled", "effort", "keep"] {
-        assert!(thinking_keys.contains(&key), "expected thinking key {key}");
-    }
+fn should_omit_the_retired_thinking_section_from_the_known_section_keys() {
+    // Given the per-section known-key table
+    // When looking for the retired thinking section
+    // Then it is absent -- a leftover [thinking] is raw passthrough, not a
+    // typed section, and the doctor must not treat its keys as recognized
+    // struct fields.
+    assert!(
+        !KNOWN_SECTION_KEYS.iter().any(|(name, _)| *name == "thinking"),
+        "the retired section must not be registered as a typed section"
+    );
 }
 
 #[test]
@@ -4627,5 +4306,251 @@ apiKey = "sk-camel"
     assert_eq!(
         openai.get("base_url").unwrap().as_str(),
         Some("https://x")
+    );
+}
+#[test]
+fn should_round_trip_thinking_off_on_both_provider_and_model_when_configured() {
+    // Given a config declaring thinking_off at provider level and overriding
+    // it at model level
+    let text = r#"
+default_model = "p/m"
+
+[providers.p]
+type = "openai"
+base_url = "https://api.example.test/v1"
+thinking_off = "thinking_type"
+
+[models."p/m"]
+provider = "p"
+model = "m"
+max_context_size = 128000
+thinking_off = "reasoning_effort"
+"#;
+    // When parsed and projected onto the wire
+    let config = ServerConfig::from_toml(text).expect("config parses");
+    let providers = config.to_provider_records_wire();
+    let models = config.to_model_records_wire();
+
+    // Then both levels carry their value (camelCase on the wire)
+    assert_eq!(providers["p"]["thinkingOff"], "thinking_type");
+    assert_eq!(models["p/m"]["thinkingOff"], "reasoning_effort");
+
+    // And the camelCase spelling is accepted on read
+    let camel = r#"
+[providers.p]
+type = "openai"
+thinkingOff = "enable_thinking"
+"#;
+    let config = ServerConfig::from_toml(camel).expect("camelCase config parses");
+    assert_eq!(
+        config.providers.as_ref().unwrap()["p"].thinking_off.as_deref(),
+        Some("enable_thinking")
+    );
+}
+
+#[test]
+fn should_preserve_a_leftover_thinking_section_when_the_config_is_saved() {
+    // Given a config file still carrying the retired [thinking] section
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+default_model = "p/m"
+
+[thinking]
+enabled = false
+effort = "high"
+
+[providers.p]
+type = "openai"
+
+[models."p/m"]
+provider = "p"
+model = "m"
+max_context_size = 128000
+"#,
+    )
+    .unwrap();
+
+    // When a load -> save -> reload round-trip runs (the `config.set` path)
+    let config = ServerConfig::load_without_env(&path, &LocalSyncFs).expect("should load");
+    config.save_to(&path).expect("should save");
+    let persisted = std::fs::read_to_string(&path).expect("read back");
+
+    // Then the retired section is still in the written document
+    assert!(
+        persisted.contains("[thinking]"),
+        "the retired section must survive a save: {persisted}"
+    );
+    assert!(persisted.contains("enabled = false"), "{persisted}");
+}
+
+#[test]
+fn should_warn_that_the_thinking_section_is_retired_when_it_is_present() {
+    // Given a config with the retired section
+    let config = ServerConfig::from_toml("[thinking]\nenabled = false\n").expect("TOML should parse");
+
+    // When diagnostics are computed
+    let warnings = config.diagnostics_warnings();
+
+    // Then one names the retirement and the replacement
+    assert!(
+        warnings.iter().any(|w| w.contains("[thinking]")
+            && w.contains("default_effort")),
+        "warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn should_not_warn_about_the_thinking_section_when_it_is_absent() {
+    // Given a config without the section
+    let config = ServerConfig::from_toml("default_model = \"p/m\"\n").expect("TOML should parse");
+
+    // When diagnostics are computed
+    let warnings = config.diagnostics_warnings();
+
+    // Then nothing mentions the retired section
+    assert!(
+        !warnings.iter().any(|w| w.contains("[thinking]")),
+        "warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn should_warn_when_a_thinking_off_value_is_unrecognized() {
+    // Given a provider and a model each carrying an unparsable spelling
+    let config = ServerConfig::from_toml(
+        r#"
+default_model = "p/m"
+
+[providers.p]
+type = "openai"
+thinking_off = "thinkingtype-typo"
+
+[models."p/m"]
+provider = "p"
+model = "m"
+max_context_size = 128000
+thinking_off = "nonsense"
+"#,
+    )
+    .expect("config parses");
+
+    // When diagnostics are computed
+    let warnings = config.diagnostics_warnings();
+
+    // Then both sites are named, with the accepted values
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("thinking_off") && w.contains("thinkingtype-typo")),
+        "provider-level warning missing: {warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("thinking_off") && w.contains("nonsense")),
+        "model-level warning missing: {warnings:?}"
+    );
+}
+
+#[test]
+fn should_not_warn_when_every_thinking_off_value_is_recognized() {
+    // Given valid spellings at both levels
+    let config = ServerConfig::from_toml(
+        r#"
+default_model = "p/m"
+
+[providers.p]
+type = "openai"
+thinking_off = "thinking_type"
+
+[models."p/m"]
+provider = "p"
+model = "m"
+max_context_size = 128000
+thinking_off = "reasoning_effort"
+"#,
+    )
+    .expect("config parses");
+
+    // When diagnostics are computed
+    let warnings = config.diagnostics_warnings();
+
+    // Then nothing complains
+    assert!(
+        !warnings.iter().any(|w| w.contains("thinking_off")),
+        "warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn should_replace_the_header_map_when_a_patch_targets_custom_headers() {
+    // Given a provider carrying two custom headers
+    let mut config = ServerConfig::from_toml(
+        r#"
+default_model = "p/m"
+
+[providers.p]
+type = "openai"
+base_url = "https://gw.example.test/v1"
+
+[providers.p.customHeaders]
+X-Route = "a"
+X-Trace = "b"
+
+[models."p/m"]
+provider = "p"
+model = "m"
+max_context_size = 128000
+"#,
+    )
+    .expect("config parses");
+
+    // When a patch supplies only one of them
+    config
+        .merge_wire_patch(&json!({"providers": {"p": {"customHeaders": {"X-Route": "a"}}}}))
+        .expect("patch applies");
+    let wire = config.to_provider_records_wire();
+
+    // Then the map is exactly what the patch said -- the dropped header is gone
+    assert_eq!(wire["p"]["customHeaders"]["X-Route"], "a");
+    assert!(wire["p"]["customHeaders"].get("X-Trace").is_none());
+}
+
+#[test]
+fn should_clear_the_header_map_when_the_patch_sends_an_empty_object() {
+    // Given a provider with headers
+    let mut config = ServerConfig::from_toml(
+        r#"
+default_model = "p/m"
+
+[providers.p]
+type = "openai"
+
+[providers.p.customHeaders]
+X-Route = "a"
+
+[models."p/m"]
+provider = "p"
+model = "m"
+max_context_size = 128000
+"#,
+    )
+    .expect("config parses");
+
+    // When the patch sends an empty map
+    config
+        .merge_wire_patch(&json!({"providers": {"p": {"customHeaders": {}}}}))
+        .expect("patch applies");
+
+    // Then the map is empty, not preserved
+    let wire = config.to_provider_records_wire();
+    let headers = wire["p"]["customHeaders"].as_object();
+    assert!(
+        headers.is_none_or(|m| m.is_empty()),
+        "headers must be cleared: {:?}",
+        wire["p"]["customHeaders"]
     );
 }

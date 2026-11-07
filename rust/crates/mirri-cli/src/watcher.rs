@@ -1903,33 +1903,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_reload_thinking_config_when_config_toml_changes() {
-        // Given a shared config loaded from a config.toml with a thinking
-        // section
-        let temp_dir = tempfile::tempdir().expect("tempdir should succeed");
-        let config_path = temp_dir.path().join("config.toml");
-        let (engine, config_ref) = config_reload_env(
-            &config_path,
-            "[thinking]\nenabled = true\neffort = \"high\"\n",
-        );
-        reload_full_config(&config_path, &engine, &config_ref, None).await;
-
-        // When config.toml changes the thinking section
-        fs::write(
-            &config_path,
-            "[thinking]\nenabled = false\neffort = \"low\"\n",
-        )
-        .expect("rewrite config");
-        reload_full_config(&config_path, &engine, &config_ref, None).await;
-
-        // Then the shared snapshot carries the new thinking values
-        let config = config_ref.read().unwrap_or_else(|e| e.into_inner());
-        let thinking = config.thinking.as_ref().expect("thinking must reload");
-        assert_eq!(thinking.enabled, Some(false));
-        assert_eq!(thinking.effort.as_deref(), Some("low"));
-    }
-
-    #[tokio::test]
     async fn should_reload_permission_config_when_config_toml_changes() {
         // Given a shared config loaded from a config.toml with a permission
         // section

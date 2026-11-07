@@ -33881,7 +33881,10 @@ api_key = "sk-kimi"
             "image_in",
             "thinking",
             "tool_use",
-            "dynamically_loaded_tools"
+            "dynamically_loaded_tools",
+            // The fixture declares `reasoning` with no reasoning_options, so
+            // the directory offers no way to turn it off (D-M11.1).
+            "always_thinking"
         ])
     );
     assert_eq!(record["reasoningKey"], "reasoning");
@@ -46735,4 +46738,263 @@ async fn should_stamp_archived_at_when_archiving_over_the_rpc() {
         stamped >= before,
         "the stamp is the archive moment, not a stale value"
     );
+}
+
+#[tokio::test]
+async fn should_report_always_thinking_when_the_endpoint_has_no_known_off_spelling() {
+    // Given a configured model on an unknown gateway that declares thinking
+    // but no thinking_off
+    let (server, _tmp, _cfg) = test_server_with_config_toml(
+        r#"
+default_model = "gw"
+
+[providers.gw]
+type = "openai"
+base_url = "https://gateway.example.test/v1"
+
+[models.gw]
+provider = "gw"
+model = "mystery-model"
+max_context_size = 128000
+capabilities = ["thinking"]
+"#,
+    );
+
+    // When the model list is read
+    let listed = server.call_method("model.list", json!({})).await.unwrap();
+    let row = listed
+        .as_array()
+        .expect("bare array")
+        .iter()
+        .find(|row| row["id"] == "gw")
+        .expect("the alias is listed");
+
+    // Then its effective capabilities carry the always-thinking marker
+    let caps = row["capabilities"].as_array().expect("capabilities array");
+    assert!(
+        caps.iter().any(|c| c == "always_thinking"),
+        "effective capabilities must carry the marker: {row}"
+    );
+}
+
+#[tokio::test]
+async fn should_not_report_always_thinking_when_the_endpoint_dialect_is_known() {
+    // Given a configured model on MiMo's endpoint
+    let (server, _tmp, _cfg) = test_server_with_config_toml(
+        r#"
+default_model = "mimo"
+
+[providers.mimo]
+type = "openai"
+base_url = "https://token-plan-cn.xiaomimimo.com/v1"
+
+[models.mimo]
+provider = "mimo"
+model = "mimo-v2.6-flash"
+max_context_size = 128000
+capabilities = ["thinking"]
+"#,
+    );
+
+    // When the model list is read
+    let listed = server.call_method("model.list", json!({})).await.unwrap();
+    let row = listed
+        .as_array()
+        .expect("bare array")
+        .iter()
+        .find(|row| row["id"] == "mimo")
+        .expect("the alias is listed");
+
+    // Then the marker is absent -- off is deliverable here
+    let caps = row["capabilities"].as_array().expect("capabilities array");
+    assert!(
+        !caps.iter().any(|c| c == "always_thinking"),
+        "a deliverable dialect must not claim always-thinking: {row}"
+    );
+}
+
+#[tokio::test]
+async fn should_not_mark_an_anthropic_model_always_thinking_when_the_provider_is_not_openai() {
+    // Given an anthropic-type provider on its official host (absent from the
+    // OpenAI builtin table)
+    let (server, _tmp, _cfg) = test_server_with_config_toml(
+        r#"
+default_model = "c"
+
+[providers.c]
+type = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+
+[models.c]
+provider = "c"
+model = "claude-opus-4-7"
+max_context_size = 200000
+capabilities = ["thinking"]
+"#,
+    );
+
+    // When the model list is read
+    let listed = server.call_method("model.list", json!({})).await.unwrap();
+    let row = listed
+        .as_array()
+        .expect("bare array")
+        .iter()
+        .find(|row| row["id"] == "c")
+        .expect("the alias is listed");
+
+    // Then the always-thinking marker is absent -- anthropic closes by omission
+    let caps = row["capabilities"].as_array().expect("capabilities array");
+    assert!(!caps.iter().any(|c| c == "always_thinking"), "{row}");
+}
+
+#[tokio::test]
+async fn should_not_mark_a_non_thinking_model_always_thinking_on_an_unknown_gateway() {
+    // Given a model that declares no reasoning capability at all
+    let (server, _tmp, _cfg) = test_server_with_config_toml(
+        r#"
+default_model = "gw"
+
+[providers.gw]
+type = "openai"
+base_url = "https://gateway.example.test/v1"
+
+[models.gw]
+provider = "gw"
+model = "chat-only"
+max_context_size = 128000
+"#,
+    );
+
+    // When the model list is read
+    let listed = server.call_method("model.list", json!({})).await.unwrap();
+    let row = listed
+        .as_array()
+        .expect("bare array")
+        .iter()
+        .find(|row| row["id"] == "gw")
+        .expect("the alias is listed");
+
+    // Then no capability array claims always-thinking
+    let claims = row["capabilities"]
+        .as_array()
+        .is_some_and(|caps| caps.iter().any(|c| c == "always_thinking"));
+    assert!(!claims, "{row}");
+}
+
+#[tokio::test]
+async fn should_inherit_the_model_default_effort_when_a_session_is_created_without_one() {
+    // Given a model declaring a default effort
+    let (server, _tmp, _cfg) = test_server_with_config_toml(
+        r#"
+default_model = "p/m"
+
+[providers.p]
+type = "openai"
+base_url = "https://api.example.test/v1"
+
+[models."p/m"]
+provider = "p"
+model = "m"
+max_context_size = 128000
+capabilities = ["thinking"]
+support_efforts = ["low", "high", "max"]
+default_effort = "high"
+"#,
+    );
+
+    // When a session is created with no explicit effort
+    let created = server
+        .call_method("session.create", json!({"modelId": "p/m"}))
+        .await
+        .expect("session created");
+    let session_id = created["id"].as_str().expect("session id").to_string();
+
+    // Then the session's effective effort is the model default
+    let level = server
+        .call_method(
+            "agent.getEffectiveThinkingLevel",
+            json!({"sessionId": session_id}),
+        )
+        .await
+        .expect("level reads");
+    assert_eq!(level, json!("high"));
+}
+
+#[tokio::test]
+async fn should_keep_the_explicit_effort_when_the_request_carries_one() {
+    // Given the same model
+    let (server, _tmp, _cfg) = test_server_with_config_toml(
+        r#"
+default_model = "p/m"
+
+[providers.p]
+type = "openai"
+base_url = "https://api.example.test/v1"
+
+[models."p/m"]
+provider = "p"
+model = "m"
+max_context_size = 128000
+capabilities = ["thinking"]
+support_efforts = ["low", "high", "max"]
+default_effort = "high"
+"#,
+    );
+
+    // When a session is created with an explicit effort
+    let created = server
+        .call_method(
+            "session.create",
+            json!({"modelId": "p/m", "thinkingEffort": "low"}),
+        )
+        .await
+        .expect("session created");
+    let session_id = created["id"].as_str().expect("session id").to_string();
+
+    // Then the explicit value wins over the model default
+    let level = server
+        .call_method(
+            "agent.getEffectiveThinkingLevel",
+            json!({"sessionId": session_id}),
+        )
+        .await
+        .expect("level reads");
+    assert_eq!(level, json!("low"));
+}
+
+#[tokio::test]
+async fn should_expose_connection_settings_on_the_provider_list_when_they_are_configured() {
+    // Given a provider carrying custom headers and a thinking-off spelling
+    let (server, _tmp, _cfg) = test_server_with_config_toml(
+        r#"
+default_model = "gw/m"
+
+[providers.gw]
+type = "openai"
+base_url = "https://gw.example.test/v1"
+thinking_off = "thinking_type"
+customHeaders = { X-Route = "a" }
+
+[models."gw/m"]
+provider = "gw"
+model = "m"
+max_context_size = 128000
+"#,
+    );
+
+    // When the provider list is read
+    let listed = server
+        .call_method("model.listProviders", json!({}))
+        .await
+        .unwrap();
+    let row = listed
+        .as_array()
+        .expect("bare array")
+        .iter()
+        .find(|row| row["id"] == "gw")
+        .expect("the provider is listed");
+
+    // Then both connection fields ride the row
+    assert_eq!(row["thinking_off"], "thinking_type");
+    assert_eq!(row["custom_headers"]["X-Route"], "a");
 }

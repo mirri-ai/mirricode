@@ -93,30 +93,6 @@ export function effectiveThinkingLevel(
 }
 
 /**
- * Convert a thinking level to the daemon config shape for persistence.
- * 'off' disables thinking, boolean 'on' records only `enabled` (boolean models
- * resolve back to 'on' at runtime), and a concrete effort is recorded as the
- * global default — EXCEPT the model's highest declared level (the last entry of
- * `support_efforts`, ordered by strength), which is session-only and records
- * just `enabled`, so the most expensive tier never becomes the global
- * default for every new session. When the model's levels are unknown the
- * concrete level is persisted as-is.
- */
-export function thinkingLevelToConfig(
-  level: ThinkingLevel,
-  supportEfforts?: readonly string[],
-): {
-  enabled: boolean;
-  effort?: string;
-} {
-  if (level === 'off') return { enabled: false };
-  if (level === 'on') return { enabled: true };
-  const top = supportEfforts?.at(-1);
-  if (top !== undefined && level === top) return { enabled: true };
-  return { enabled: true, effort: level };
-}
-
-/**
  * Normalize a UI draft before it crosses the component boundary. 'on' never
  * leaks out of the control — it becomes the model's default level.
  */
@@ -145,4 +121,16 @@ export function thinkingLevelForModelSwitch(
   // as-is rather than guessing at capabilities.
   if (!isSwitch || model === undefined) return currentLevel;
   return defaultThinkingLevelFor(model);
+}
+
+/**
+ * The i18n key explaining a hidden off control, or `null` when nothing needs
+ * saying. Only an always-thinking model needs the note: a model that cannot
+ * think at all already renders its own "not supported" state.
+ */
+export function thinkingCopyKey(model: ModelThinkingInfo | undefined): string | null {
+  if (modelThinkingAvailability(model) === 'always-on') {
+    return 'composer.thinkingAlwaysOn';
+  }
+  return null;
 }

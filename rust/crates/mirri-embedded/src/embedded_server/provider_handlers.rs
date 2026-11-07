@@ -436,6 +436,9 @@ impl EmbeddedServer {
                     if let Some(support_efforts) = record.support_efforts {
                         alias.insert("support_efforts".to_string(), json!(support_efforts));
                     }
+                    if let Some(thinking_off) = record.thinking_off {
+                        alias.insert("thinkingOff".to_string(), json!(thinking_off));
+                    }
                     (format!("{target_id}/{model_id}"), Value::Object(alias))
                 })
             })

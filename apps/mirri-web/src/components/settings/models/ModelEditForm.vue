@@ -7,6 +7,7 @@
 import { computed, reactive, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { AppModelAlias } from '../../../api/types';
+import { THINKING_OFF_OPTIONS, describeThinkingOff } from '../../../lib/thinkingOff';
 import { getMirriWebApi } from '../../../api';
 import { formatTokens } from '../../../lib/formatTokens';
 import { resolveAlias } from '../../../lib/resolveAlias';
@@ -68,6 +69,7 @@ interface FormState {
   supportEfforts: string[];
   defaultEffort: string;
   reasoningKey: string;
+  thinkingOff: string;
   adaptiveThinking: boolean;
   description: string;
   protocol: string;
@@ -84,6 +86,7 @@ const form = reactive<FormState>({
   supportEfforts: [],
   defaultEffort: '',
   reasoningKey: '',
+  thinkingOff: '',
   adaptiveThinking: false,
   description: '',
   protocol: '',
@@ -101,6 +104,7 @@ function syncFromAlias(alias: AppModelAlias): void {
   form.supportEfforts = [...(resolved.supportEfforts ?? [])];
   form.defaultEffort = resolved.defaultEffort ?? '';
   form.reasoningKey = resolved.reasoningKey ?? '';
+  form.thinkingOff = resolved.thinkingOff ?? '';
   form.adaptiveThinking = resolved.adaptiveThinking ?? false;
   form.description = resolved.description ?? '';
   form.protocol = resolved.protocol ?? '';
@@ -109,7 +113,11 @@ function syncFromAlias(alias: AppModelAlias): void {
   // into top-level so buildPatch compares against effective values.
   originalAlias.value = resolved;
   // Auto-expand thinking section if it has values.
-  showThinking.value = form.supportEfforts.length > 0 || form.defaultEffort.length > 0 || form.reasoningKey.length > 0;
+  showThinking.value =
+    form.supportEfforts.length > 0 ||
+    form.defaultEffort.length > 0 ||
+    form.reasoningKey.length > 0 ||
+    form.thinkingOff.length > 0;
   showAdvanced.value = form.description.length > 0 || form.protocol.length > 0 || form.betaApi;
   dirty.value = false;
 }
@@ -131,6 +139,7 @@ function syncOriginalFromForm(): void {
     displayName: form.displayName.trim() || undefined,
     description: form.description.trim() || undefined,
     reasoningKey: form.reasoningKey.trim() || undefined,
+    thinkingOff: form.thinkingOff.trim() || undefined,
     protocol: originalAlias.value.protocol,
     adaptiveThinking: form.adaptiveThinking,
     supportEfforts: form.supportEfforts.length > 0 ? [...form.supportEfforts] : undefined,
@@ -287,6 +296,16 @@ function buildPatch(): Partial<AppModelAlias> {
     patch.reasoningKey = rk || undefined;
   }
 
+  const to = form.thinkingOff.trim();
+  const origTo = (o.thinkingOff ?? '').trim();
+  if (to !== origTo) {
+    // Empty string, not undefined: `undefined` is stripped before the merge
+    // and never reaches the stored value, so the old spelling would survive
+    // (the same trap `description` documents above). `""` is the engine's
+    // clear encoding -- `parse` rejects it and the chain falls through.
+    patch.thinkingOff = to;
+  }
+
   if (form.adaptiveThinking !== (o.adaptiveThinking ?? false)) {
     patch.adaptiveThinking = form.adaptiveThinking;
   }
@@ -433,6 +452,16 @@ const maxContextDisplay = computed(() => {
         <div class="mef-row2">
           <Field :label="t('settings.models.fieldReasoningKey')">
             <Input v-model="form.reasoningKey" :placeholder="t('settings.models.fieldOptional')" @input="scheduleSave" />
+          </Field>
+          <Field
+            :label="t('settings.models.fieldThinkingOff')"
+            :hint="t(describeThinkingOff(form.thinkingOff, undefined))"
+          >
+            <Select v-model="form.thinkingOff" @change="scheduleSave">
+              <option v-for="opt in THINKING_OFF_OPTIONS" :key="opt.value" :value="opt.value">
+                {{ t(opt.labelKey) }}
+              </option>
+            </Select>
           </Field>
           <Field v-if="form.protocol === 'anthropic'" :label="t('settings.models.fieldAdaptiveThinking')">
             <Switch :model-value="form.adaptiveThinking" :label="t('settings.models.fieldAdaptiveThinking')" @update:model-value="form.adaptiveThinking = $event; scheduleSave()" />

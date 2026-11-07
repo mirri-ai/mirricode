@@ -30,6 +30,7 @@ export default {
   quickStartPlaceholder: '输入消息开始新会话…',
   thinkingSuffix: ' · thinking',
   thinkingSuffixEffort: ' · {level}',
+  thinkingAlwaysOn: '该模型始终思考，无法关闭。',
   inlineChipSkill: '技能引用：{name}',
   inlineChipCommand: '命令引用：{name}',
   invalidRefsTitle: '这条消息中的部分引用已失效：',

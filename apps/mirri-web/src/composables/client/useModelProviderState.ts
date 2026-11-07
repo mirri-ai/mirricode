@@ -13,7 +13,6 @@ import {
   defaultThinkingLevelFor,
   levelDeclaredBy,
   thinkingLevelForModelSwitch,
-  thinkingLevelToConfig,
 } from '../../lib/modelThinking';
 import { beginLocalTurn, settleLocalTurn } from './useWorkspaceState';
 import type { ActivityState } from '../../types';
@@ -242,19 +241,6 @@ export function useModelProviderState(
     },
   );
 
-  /** Persist an explicit thinking pick as the daemon-wide default ([thinking]
-   *  in config.toml), mirroring the TUI's persistModelSelection, so sessions
-   *  created by other clients inherit it. Fire-and-forget: the session-level
-   *  and local values have already been applied. Never called for derived
-   *  values (e.g. the loadModels default pin) — only for user actions. */
-  function persistGlobalThinking(level: ThinkingLevel): void {
-    void getMirriWebApi()
-      .setConfig({
-        thinking: thinkingLevelToConfig(level, modelById(currentModelId())?.supportEfforts),
-      })
-      .catch((error: unknown) => pushOperationFailure('setConfig', error));
-  }
-
   async function loadSkillsForSession(sessionId: string): Promise<void> {
     try {
       const api = getMirriWebApi();
@@ -350,9 +336,6 @@ export function useModelProviderState(
       // masquerade as an explicit choice later).
       draftModel.value = modelId;
       rawState.thinking = nextThinking;
-      if (nextThinking !== prevThinking && nextThinking !== undefined) {
-        persistGlobalThinking(nextThinking);
-      }
       return true;
     }
     // Optimistic: show the chosen model immediately, but remember the previous
@@ -385,11 +368,6 @@ export function useModelProviderState(
       }
       pushOperationFailure('setModel', error, { sessionId: sid });
       return false;
-    }
-    // The switch reached the daemon: also persist the thinking pick as the
-    // daemon-wide default (mirrors the TUI). Skipped on rollback above.
-    if (nextThinking !== prevThinking && nextThinking !== undefined) {
-      persistGlobalThinking(nextThinking);
     }
     // refreshSessionStatus folds the authoritative current model from /status
     // back into the session (the profile echo can return ''). Best-effort: a
@@ -582,7 +560,6 @@ export function useModelProviderState(
   function setThinking(level: ThinkingLevel): void {
     const next = applyThinkingLevel(level);
     void persistSessionProfile({ thinking: next });
-    if (next !== undefined) persistGlobalThinking(next);
   }
 
   return {
