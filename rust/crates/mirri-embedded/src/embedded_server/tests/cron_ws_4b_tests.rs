@@ -4,7 +4,9 @@
 //!
 //! The bed mirrors `cron_b3_server`: a home-rooted workspace (so the
 //! default runtime carries a cron store), a scripted LLM (so execution
-//! turns actually run), and fast cron ticks.
+//! turns actually run), and — batch 4 — a DISARMED background scheduler:
+//! every run below is driven deterministically (a capturing pass produces
+//! the fire, `spawn_and_settle` walks it to its terminal record).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +16,9 @@ use serde_json::json;
 use super::*;
 
 /// The 4b test bed: home-rooted (a workspace cron store exists on the
-/// default runtime), scripted-LLM (the run turns execute), fast ticks.
+/// default runtime), scripted-LLM (the run turns execute), background
+/// scheduler disarmed (batch 4: the tests drive their own passes, so no
+/// tick can steal a due fire from under the deterministic drive).
 fn ws4b_server(mock: Arc<ScriptedLlm>) -> (EmbeddedServer, tempfile::TempDir, tempfile::TempDir) {
     let tmp = tempfile::tempdir().expect("tempdir must be creatable");
     let home = tempfile::tempdir().expect("home tempdir must be creatable");
@@ -33,7 +37,12 @@ fn ws4b_server(mock: Arc<ScriptedLlm>) -> (EmbeddedServer, tempfile::TempDir, te
         let mut config = server.config.write().unwrap_or_else(|e| e.into_inner());
         config.default_model = Some(super::TEST_DEFAULT_MODEL.to_string());
     }
-    let server = server.with_cron_tick(Duration::from_millis(50));
+    // Latch the lazy scheduler as "spawned" BEFORE the first RPC: the
+    // `maybe_spawn_cron_scheduler` early-return then never starts the
+    // tick loop (the field is crate-visible; nothing else reads it).
+    server
+        .cron_scheduler_spawned
+        .swap(true, std::sync::atomic::Ordering::SeqCst);
     (server, tmp, home)
 }
 
@@ -110,30 +119,30 @@ async fn should_record_the_terminal_run_and_keep_the_session_list_flat() {
         &task_id,
         Some(chrono::Utc::now() - chrono::Duration::seconds(5)),
     );
-    // The scheduler ticks + the turn runs + the finale records.
-    for _ in 0..100 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let runs = cron.runs(&task_id);
-        if runs
-            .iter()
-            .any(|run| run.status == mirri_core::cron::RunStatus::Succeeded)
-        {
-            // V12: the terminal record carries duration + session_ref.
-            let terminal = runs
-                .iter()
-                .find(|run| run.status == mirri_core::cron::RunStatus::Succeeded)
-                .unwrap();
-            assert!(terminal.duration_ms.is_some(), "duration recorded");
-            assert!(terminal.session_ref.is_some(), "session ref recorded");
-            break;
-        }
-    }
+    // Batch 4's deterministic drive: ONE capturing pass produces the fire
+    // (`check_due` advances the cursor and stamps the launch record), then
+    // the run settles INLINE on this task — no tick loop, no polling.
+    let fires = drive_cron_pass_capture(&server).await;
+    assert_eq!(fires.len(), 1, "the due task fires exactly once: {fires:?}");
+    let fire = fires[0].clone();
+    server
+        .workspace_run_spawner()
+        .spawn_and_settle(
+            workspace_id.clone(),
+            task_id.clone(),
+            fire.trigger,
+            fire.scheduled_at,
+            None,
+        )
+        .await;
     let runs = cron.runs(&task_id);
-    assert!(
-        runs.iter()
-            .any(|run| run.status == mirri_core::cron::RunStatus::Succeeded),
-        "the run reached a terminal state: {runs:?}"
-    );
+    let terminal = runs
+        .iter()
+        .find(|run| run.status == mirri_core::cron::RunStatus::Succeeded)
+        .unwrap_or_else(|| panic!("the run reached a terminal state: {runs:?}"));
+    // V12: the terminal record carries duration + session_ref.
+    assert!(terminal.duration_ms.is_some(), "duration recorded");
+    assert!(terminal.session_ref.is_some(), "session ref recorded");
     assert!(
         runs.iter()
             .any(|run| run.status == mirri_core::cron::RunStatus::Running)
@@ -269,20 +278,27 @@ async fn should_materialize_the_execution_session_on_explicit_open() {
         &task_id,
         Some(chrono::Utc::now() - chrono::Duration::seconds(5)),
     );
-    // Wait for the terminal run.
-    let mut session_ref = None;
-    for _ in 0..100 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let runs = cron.runs(&task_id);
-        if let Some(terminal) = runs
-            .iter()
-            .find(|run| run.status == mirri_core::cron::RunStatus::Succeeded)
-        {
-            session_ref = terminal.session_ref.clone();
-            break;
-        }
-    }
-    let session_ref = session_ref.expect("the terminal run carries the execution session's ref");
+    // Batch 4: one captured fire, settled inline — the terminal record is
+    // a fact when `spawn_and_settle` returns, no loop to hope through.
+    let fires = drive_cron_pass_capture(&server).await;
+    assert_eq!(fires.len(), 1, "the due task fires exactly once: {fires:?}");
+    let fire = fires[0].clone();
+    server
+        .workspace_run_spawner()
+        .spawn_and_settle(
+            workspace_id.clone(),
+            task_id.clone(),
+            fire.trigger,
+            fire.scheduled_at,
+            None,
+        )
+        .await;
+    let runs = cron.runs(&task_id);
+    let session_ref = runs
+        .iter()
+        .find(|run| run.status == mirri_core::cron::RunStatus::Succeeded)
+        .and_then(|terminal| terminal.session_ref.clone())
+        .unwrap_or_else(|| panic!("the terminal run carries the execution session's ref: {runs:?}"));
     // Before the open: no session directory (the lazy shape).
     // (The materialization check is the manager's own idempotent face.)
     // The explicit open (V13): materialize.
@@ -331,18 +347,28 @@ async fn should_record_the_trigger_and_the_scheduled_moment_when_a_task_fires() 
     let cron = ws_cron(&server);
     let due = chrono::Utc::now() - chrono::Duration::seconds(5);
     cron.set_next_fire_at(&task_id, Some(due));
-    let mut run = None;
-    for _ in 0..100 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        run = cron
-            .runs(&task_id)
-            .into_iter()
-            .find(|r| r.status == mirri_core::cron::RunStatus::Succeeded);
-        if run.is_some() {
-            break;
-        }
-    }
-    let run = run.expect("the run reaches Succeeded");
+    // Batch 4: the capturing pass runs the REAL `check_due` (its cursor
+    // and `scheduled_at` semantics), then the settle walks the run to
+    // Succeeded inline.
+    let fires = drive_cron_pass_capture(&server).await;
+    assert_eq!(fires.len(), 1, "the due task fires exactly once: {fires:?}");
+    let fire = fires[0].clone();
+    server
+        .workspace_run_spawner()
+        .spawn_and_settle(
+            workspace_id.clone(),
+            task_id.clone(),
+            fire.trigger,
+            fire.scheduled_at,
+            None,
+        )
+        .await;
+    let runs = cron.runs(&task_id);
+    let run = runs
+        .iter()
+        .find(|r| r.status == mirri_core::cron::RunStatus::Succeeded)
+        .cloned()
+        .unwrap_or_else(|| panic!("the run reaches Succeeded: {runs:?}"));
     assert_eq!(
         run.trigger,
         Some(mirri_core::cron::RunTrigger::Scheduled),
@@ -385,18 +411,27 @@ async fn should_record_the_run_failed_when_the_turn_produced_no_assistant_output
         &task_id,
         Some(chrono::Utc::now() - chrono::Duration::seconds(5)),
     );
-    let mut run = None;
-    for _ in 0..100 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        run = cron
-            .runs(&task_id)
-            .into_iter()
-            .find(|r| r.status != mirri_core::cron::RunStatus::Running);
-        if run.is_some() {
-            break;
-        }
-    }
-    let run = run.expect("the run reaches a terminal state");
+    // Batch 4: captured fire + inline settle — the terminal record lands
+    // before this returns.
+    let fires = drive_cron_pass_capture(&server).await;
+    assert_eq!(fires.len(), 1, "the due task fires exactly once: {fires:?}");
+    let fire = fires[0].clone();
+    server
+        .workspace_run_spawner()
+        .spawn_and_settle(
+            workspace_id.clone(),
+            task_id.clone(),
+            fire.trigger,
+            fire.scheduled_at,
+            None,
+        )
+        .await;
+    let runs = cron.runs(&task_id);
+    let run = runs
+        .iter()
+        .find(|r| r.status != mirri_core::cron::RunStatus::Running)
+        .cloned()
+        .unwrap_or_else(|| panic!("the run reaches a terminal state: {runs:?}"));
     assert_eq!(run.status, mirri_core::cron::RunStatus::Failed, "{run:?}");
     assert!(
         run.skip_reason.as_deref().is_some_and(|r| !r.is_empty()),
@@ -441,26 +476,48 @@ async fn should_show_waiting_approval_while_a_manual_run_is_parked_and_resume_af
         &task_id,
         Some(chrono::Utc::now() - chrono::Duration::seconds(5)),
     );
-    // The run parks on its approval gate: the record flips to
-    // WaitingApproval (≤5s).
-    let mut parked = None;
-    for _ in 0..100 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        if let Some(run) = cron
-            .runs(&task_id)
-            .into_iter()
-            .find(|r| r.status == mirri_core::cron::RunStatus::WaitingApproval)
-        {
-            parked = Some(run);
-            break;
-        }
-    }
-    let parked = parked.unwrap_or_else(|| {
-        panic!(
-            "the parked run is recorded WaitingApproval, runs = {:?}",
-            cron.runs(&task_id)
-        )
+    // Batch 4: the settle runs as a JOINABLE task carrying an approval
+    // tap — the tap fires only AFTER the WaitingApproval write lands, so
+    // awaiting it is the exact sync point for the parked record (no
+    // polling loop, no fixed sleep).
+    let fires = drive_cron_pass_capture(&server).await;
+    assert_eq!(fires.len(), 1, "the due task fires exactly once: {fires:?}");
+    let fire = fires[0].clone();
+    let approval_parked = Arc::new(tokio::sync::Notify::new());
+    let tap: mirri_core::turn_flow::ApprovalWaitHook = {
+        let approval_parked = Arc::clone(&approval_parked);
+        Arc::new(move |waiting| {
+            if waiting {
+                approval_parked.notify_one();
+            }
+        })
+    };
+    let spawner = server.workspace_run_spawner();
+    let (ws_settle, task_settle) = (workspace_id.clone(), task_id.clone());
+    let settle = tokio::spawn(async move {
+        spawner
+            .spawn_and_settle(
+                ws_settle,
+                task_settle,
+                fire.trigger,
+                fire.scheduled_at,
+                Some(tap),
+            )
+            .await;
     });
+    tokio::time::timeout(Duration::from_secs(10), approval_parked.notified())
+        .await
+        .expect("the run's parked ask flips the record to WaitingApproval");
+    let parked = cron
+        .runs(&task_id)
+        .into_iter()
+        .find(|r| r.status == mirri_core::cron::RunStatus::WaitingApproval)
+        .unwrap_or_else(|| {
+            panic!(
+                "the parked run is recorded WaitingApproval, runs = {:?}",
+                cron.runs(&task_id)
+            )
+        });
     let session_ref = parked.session_ref.clone().expect("the record names its session");
     // The ask is pending on the execution session's gate — decide it
     // through the shared dispatch.
@@ -488,20 +545,19 @@ async fn should_show_waiting_approval_while_a_manual_run_is_parked_and_resume_af
         )
         .await
         .expect("approval.decide");
-    // The run resumes and reaches Succeeded.
-    let mut finished = false;
-    for _ in 0..100 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        if cron
-            .runs(&task_id)
-            .into_iter()
-            .any(|r| r.status == mirri_core::cron::RunStatus::Succeeded)
-        {
-            finished = true;
-            break;
-        }
-    }
-    assert!(finished, "the approved run finished Succeeded");
+    // The run resumes and reaches Succeeded — joining the settle task is
+    // the completion signal (bounded; the turn itself carries the
+    // resume-after-decide leg).
+    tokio::time::timeout(Duration::from_secs(10), settle)
+        .await
+        .expect("the approved run settles within the bound")
+        .expect("the settle task panicked");
+    let runs = cron.runs(&task_id);
+    assert!(
+        runs.iter()
+            .any(|r| r.status == mirri_core::cron::RunStatus::Succeeded),
+        "the approved run finished Succeeded: {runs:?}"
+    );
     let _ = tmp;
 }
 
@@ -726,16 +782,13 @@ async fn should_run_the_full_create_to_approval_chain_through_the_real_tool() {
         )
         .await
         .expect("approval.decide");
-    // The approval created the task (poll: the tool call runs after the
-    // decision resolves the gate).
-    let mut tasks = Vec::new();
-    for _ in 0..100 {
-        tasks = cron.list();
-        if !tasks.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    // The approval created the task — join the fire turn (batch 4's
+    // `await_turn` seam): the tool ran INSIDE that turn, so once the join
+    // returns the task list is final (bounded, no polling loop).
+    tokio::time::timeout(Duration::from_secs(10), server.await_turn(&session_id))
+        .await
+        .expect("the fire turn finishes after the decision");
+    let tasks = cron.list();
     assert_eq!(tasks.len(), 1, "the approval created the task: {tasks:?}");
     assert_eq!(tasks[0].origin, mirri_core::cron::TaskOrigin::AgentApproved);
     assert_eq!(tasks[0].prompt, "nightly patrol");
@@ -926,14 +979,18 @@ async fn should_recover_from_a_stale_running_record_after_the_server_restarts() 
         let mut config = restarted.config.write().unwrap_or_else(|e| e.into_inner());
         config.default_model = Some(super::TEST_DEFAULT_MODEL.to_string());
     }
-    let restarted = restarted.with_cron_tick(Duration::from_millis(50));
-    // Start the restarted server's scheduler (the first RPC spawns it —
-    // the workspace pass's M2 sweep rides the first tick). The list RPC
-    // is read-only and idempotent for this purpose.
+    // Batch 4: disarm the background scheduler on the restarted server
+    // too — the sweep and the refire below are both driven directly, and
+    // no tick may race them.
+    restarted
+        .cron_scheduler_spawned
+        .swap(true, std::sync::atomic::Ordering::SeqCst);
+    // Settle the restarted engine's census/recovery through one read RPC
+    // (the list route is read-only and idempotent for this purpose).
     let _ = restarted
         .call_method("cron.listAll", json!({}))
         .await
-        .expect("cron.listAll (starts the scheduler)");
+        .expect("cron.listAll");
     // The sweep converges the orphan (the registry builds the runtime
     // on demand; the workspace pass runs `fail_orphan_running_runs`).
     // Drive ONE pass directly with a fresh (unset) orphan latch: the
@@ -962,23 +1019,33 @@ async fn should_recover_from_a_stale_running_record_after_the_server_restarts() 
     // The task is due (its schedule kept running past the crash) — the
     // recovered task fires and reaches a terminal state (the scheduling
     // un-wedged: no dead Running blocks the concurrency check anymore).
+    // Batch 4: one captured pass produces the fire, the settle walks it
+    // to Succeeded inline — no tick loop to hope through.
     restarted_cron.set_next_fire_at(
         &task_id,
         Some(chrono::Utc::now() - chrono::Duration::seconds(5)),
     );
     mock.push_text("recovered patrol done");
-    let mut fired = false;
-    for _ in 0..100 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let runs = restarted_cron.runs(&task_id);
-        if runs.iter().any(|run| {
+    let fires = drive_cron_pass_capture(&restarted).await;
+    assert_eq!(fires.len(), 1, "the recovered task fires exactly once: {fires:?}");
+    let fire = fires[0].clone();
+    restarted
+        .workspace_run_spawner()
+        .spawn_and_settle(
+            default_workspace_id(&restarted),
+            task_id.clone(),
+            fire.trigger,
+            fire.scheduled_at,
+            None,
+        )
+        .await;
+    let runs = restarted_cron.runs(&task_id);
+    assert!(
+        runs.iter().any(|run| {
             run.status == mirri_core::cron::RunStatus::Succeeded && run.run_id != "run-crashed"
-        }) {
-            fired = true;
-            break;
-        }
-    }
-    assert!(fired, "the recovered task schedules and runs again");
+        }),
+        "the recovered task schedules and runs again: {runs:?}"
+    );
 }
 
 /// Given a Queue-posture task with an in-flight run, when the next fire
@@ -1120,21 +1187,27 @@ async fn should_expose_the_asked_ops_trace_through_cron_runs_list() {
         Some(chrono::Utc::now() - chrono::Duration::seconds(5)),
     );
 
-    // The scheduler ticks, the run turn executes (the Bash call is
-    // refused by the readonly posture), the finale records.
-    let mut terminal = None;
-    for _ in 0..100 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let runs = cron.runs(&task_id);
-        if let Some(run) = runs
-            .iter()
-            .find(|run| run.status == mirri_core::cron::RunStatus::Succeeded)
-        {
-            terminal = Some(run.clone());
-            break;
-        }
-    }
-    let terminal = terminal.expect("the run reached a terminal state");
+    // Batch 4: the captured fire settles inline — the Bash refusal lands
+    // in the terminal record before this returns.
+    let fires = drive_cron_pass_capture(&server).await;
+    assert_eq!(fires.len(), 1, "the due task fires exactly once: {fires:?}");
+    let fire = fires[0].clone();
+    server
+        .workspace_run_spawner()
+        .spawn_and_settle(
+            workspace_id.clone(),
+            task_id.clone(),
+            fire.trigger,
+            fire.scheduled_at,
+            None,
+        )
+        .await;
+    let runs = cron.runs(&task_id);
+    let terminal = runs
+        .iter()
+        .find(|run| run.status == mirri_core::cron::RunStatus::Succeeded)
+        .cloned()
+        .unwrap_or_else(|| panic!("the run reached a terminal state: {runs:?}"));
 
     // The record carries the asked-ops trace: the Bash refusal with the
     // readonly reason (D.2: 哪个操作、什么结果).
@@ -1207,21 +1280,28 @@ async fn should_carry_the_task_environment_into_the_execution_session() {
         &task_id,
         Some(chrono::Utc::now() - chrono::Duration::seconds(5)),
     );
-    // Wait for the run's terminal state, then inspect the execution
-    // session through the run record's session ref.
-    let mut session_ref = None;
-    for _ in 0..100 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let runs = cron.runs(&task_id);
-        if let Some(run) = runs
-            .iter()
-            .find(|run| run.status == mirri_core::cron::RunStatus::Succeeded)
-        {
-            session_ref = run.session_ref.clone();
-            break;
-        }
-    }
-    let session_ref = session_ref.expect("the run finished");
+    // Batch 4: one captured fire, settled inline — the execution session
+    // exists (with its stamped environment) the moment the settle
+    // returns.
+    let fires = drive_cron_pass_capture(&server).await;
+    assert_eq!(fires.len(), 1, "the due task fires exactly once: {fires:?}");
+    let fire = fires[0].clone();
+    server
+        .workspace_run_spawner()
+        .spawn_and_settle(
+            workspace_id.clone(),
+            task_id.clone(),
+            fire.trigger,
+            fire.scheduled_at,
+            None,
+        )
+        .await;
+    let runs = cron.runs(&task_id);
+    let session_ref = runs
+        .iter()
+        .find(|run| run.status == mirri_core::cron::RunStatus::Succeeded)
+        .and_then(|run| run.session_ref.clone())
+        .unwrap_or_else(|| panic!("the run finished: {runs:?}"));
     let runtime = server
         .workspace_registry()
         .built_runtime(&workspace_id)
@@ -1310,19 +1390,28 @@ async fn should_refuse_the_run_when_the_task_workdir_escapes_the_workspace_root(
         &task_id,
         Some(chrono::Utc::now() - chrono::Duration::seconds(5)),
     );
-    let mut refused = None;
-    for _ in 0..100 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let runs = cron.runs(&task_id);
-        if let Some(run) = runs
-            .iter()
-            .find(|run| run.status == mirri_core::cron::RunStatus::Failed)
-        {
-            refused = Some(run.clone());
-            break;
-        }
-    }
-    let refused = refused.expect("the escape workdir refuses the run");
+    // Batch 4: the captured fire settles inline — the escape refusal is
+    // recorded in the OPENER prefix, so the Failed record exists the
+    // moment `spawn_and_settle` returns.
+    let fires = drive_cron_pass_capture(&server).await;
+    assert_eq!(fires.len(), 1, "the due task fires exactly once: {fires:?}");
+    let fire = fires[0].clone();
+    server
+        .workspace_run_spawner()
+        .spawn_and_settle(
+            workspace_id.clone(),
+            task_id.clone(),
+            fire.trigger,
+            fire.scheduled_at,
+            None,
+        )
+        .await;
+    let runs = cron.runs(&task_id);
+    let refused = runs
+        .iter()
+        .find(|run| run.status == mirri_core::cron::RunStatus::Failed)
+        .cloned()
+        .unwrap_or_else(|| panic!("the escape workdir refuses the run: {runs:?}"));
     assert!(
         refused
             .skip_reason
@@ -1373,20 +1462,27 @@ async fn should_not_create_rows_for_cron_execution_sessions_until_explicitly_ope
         Some(chrono::Utc::now() - chrono::Duration::seconds(5)),
     );
 
-    // The run fires and settles.
-    let mut execution_session = None;
-    for _ in 0..100 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let runs = cron.runs(&task_id);
-        if let Some(terminal) = runs
-            .iter()
-            .find(|run| run.status == mirri_core::cron::RunStatus::Succeeded)
-        {
-            execution_session = terminal.session_ref.clone();
-            break;
-        }
-    }
-    let session_id = execution_session.expect("the run carried the execution session ref");
+    // Batch 4: one captured fire, settled inline — the execution session
+    // exists (still row-less) when the settle returns.
+    let fires = drive_cron_pass_capture(&server).await;
+    assert_eq!(fires.len(), 1, "the due task fires exactly once: {fires:?}");
+    let fire = fires[0].clone();
+    server
+        .workspace_run_spawner()
+        .spawn_and_settle(
+            workspace_id.clone(),
+            task_id.clone(),
+            fire.trigger,
+            fire.scheduled_at,
+            None,
+        )
+        .await;
+    let runs = cron.runs(&task_id);
+    let session_id = runs
+        .iter()
+        .find(|terminal| terminal.status == mirri_core::cron::RunStatus::Succeeded)
+        .and_then(|terminal| terminal.session_ref.clone())
+        .unwrap_or_else(|| panic!("the run carried the execution session ref: {runs:?}"));
 
     // Then NO row exists for the execution session — not during the run,
     // not after its terminal state.

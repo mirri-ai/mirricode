@@ -94,7 +94,7 @@ async fn drive_notification_ticks(server: &EmbeddedServer, session_id: &str, tic
     }
 }
 
-/// Drive ONE server-level cron pass for the default workspace. The orphan
+/// Drive ONE SERVER-level cron pass for the default workspace. The orphan
 /// latch is pre-set (`true`) so a repeated call is a pure due-check + drain
 /// instead of re-running the stale-Running convergence.
 #[allow(dead_code)] // consumed by Tasks 4-6
@@ -112,6 +112,71 @@ async fn drive_cron_pass(server: &EmbeddedServer) {
         Arc::new(std::sync::atomic::AtomicBool::new(true)),
     )
     .await;
+}
+
+/// One captured workspace fire (batch 4's deterministic drive): what
+/// `check_due` handed the executor, kept for the test to settle itself.
+#[derive(Clone, Debug)]
+struct CapturedFire {
+    trigger: mirri_core::cron::RunTrigger,
+    scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// A capturing [`super::cron_driver::WorkspaceFireExecutor`]: the pass
+/// runs `check_due` for real (cursor advance, `scheduled_at`, the
+/// `Scheduled` trigger) but RECORDS the fires instead of spawning the run
+/// pipeline — the test then drives the run to its terminal record through
+/// `WorkspaceRunSpawner::spawn_and_settle` on its own task, with no
+/// background scheduler tick racing to execute the same fire.
+#[derive(Default)]
+struct CaptureFireExecutor {
+    fires: std::sync::Mutex<Vec<CapturedFire>>,
+}
+
+impl super::cron_driver::WorkspaceFireExecutor for CaptureFireExecutor {
+    fn execute(
+        &self,
+        _workspace_id: &str,
+        _task_id: &str,
+        trigger: mirri_core::cron::RunTrigger,
+        scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) {
+        self.fires
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(CapturedFire {
+                trigger,
+                scheduled_at,
+            });
+    }
+}
+
+/// Drive ONE server-level cron pass with the CAPTURING executor and hand
+/// back the fires (usually exactly one — the due task). Pair with
+/// `spawn_and_settle` for the deterministic fire → terminal drive; the
+/// orphan latch is pre-set (a capture pass never sweeps — the sweep tests
+/// drive their own latch directly).
+async fn drive_cron_pass_capture(server: &EmbeddedServer) -> Vec<CapturedFire> {
+    let workspace_id = server
+        .workspace_registry()
+        .default_workspace_id()
+        .expect("the default workspace is set")
+        .to_string();
+    let executor = Arc::new(CaptureFireExecutor::default());
+    super::cron_driver::schedule_workspace_cron_pass(
+        Arc::clone(&server.registry),
+        executor.clone(),
+        Arc::clone(&server.steer_buffers),
+        workspace_id,
+        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    )
+    .await;
+    std::mem::take(
+        &mut *executor
+            .fires
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()),
+    )
 }
 
 /// Drive ONE SESSION-scoped cron pass (`check_due` → hold → purge → idle

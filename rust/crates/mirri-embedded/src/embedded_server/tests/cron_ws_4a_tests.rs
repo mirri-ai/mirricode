@@ -368,9 +368,10 @@ async fn should_delete_a_workspace_task_through_cron_delete() {
 }
 
 /// Given a workspace task, when `cron.trigger` runs with `workspaceId`,
-/// then the manual fire goes through the 4b RunSpawner — a run record
-/// lands (Running, or its terminal state on this LLM-less bed) and the
-/// 4a "executor-pending" skip placeholder is gone (T8's 4b update).
+/// then the manual fire goes through the 4b RunSpawner — the run reaches
+/// its terminal state on this provider-less bed and records the honest
+/// reason for it (T8's 4b update; batch 4 strengthened the 4a
+/// "executor-pending" placeholder assertion into the real-reason check).
 #[tokio::test]
 async fn should_record_a_skipped_run_when_a_workspace_task_is_triggered_manually() {
     let (server, tmp) = ws4a_server();
@@ -384,6 +385,10 @@ async fn should_record_a_skipped_run_when_a_workspace_task_is_triggered_manually
                 "cron": "0 9 1 1 *",
                 "prompt": "p",
                 "recurring": true,
+                // This bed wires no LLM factory, so the injection drops
+                // early; naming the task's model gives the Dropped arm an
+                // honest reason to record (the assertion below pins it).
+                "model": "no-such-model",
             }),
         )
         .await
@@ -402,24 +407,37 @@ async fn should_record_a_skipped_run_when_a_workspace_task_is_triggered_manually
         .built_runtime(&workspace_id)
         .expect("runtime");
     let cron = runtime.cron().expect("cron");
-    // The spawner's fire is async — wait (bounded) for the run to land.
-    // Having `cron.trigger` await the opener and return the runId is a
-    // wire-contract change deferred to a follow-up; until then the
-    // sanctioned bounded condition wait is the sync point.
-    let runs = mirri_test_support::wait_for::wait_for_async(
+    // The spawner's fire is async — wait (bounded) for the run to reach
+    // its terminal state. Having `cron.trigger` await the opener and
+    // return the runId is a wire-contract change deferred to a follow-up;
+    // until then the sanctioned bounded condition wait is the sync point.
+    let terminal = mirri_test_support::wait_for::wait_for_async(
         Duration::from_secs(10),
         Duration::from_millis(20),
         || {
             let runs = cron.runs(&task_id);
-            (!runs.is_empty()).then_some(runs)
+            runs
+                .iter()
+                .find(|run| run.status != mirri_core::cron::RunStatus::Running)
+                .cloned()
         },
     )
     .await
     .expect("the manual fire recorded a run");
-    assert!(
-        runs.iter()
-            .all(|run| run.skip_reason.as_deref() != Some("executor-pending-batch-4b")),
-        "the 4a placeholder reason is gone: {runs:?}"
+    assert_eq!(
+        terminal.status,
+        mirri_core::cron::RunStatus::Failed,
+        "the provider-less bed fails the run honestly: {terminal:?}"
+    );
+    assert_eq!(
+        terminal.skip_reason.as_deref(),
+        Some("模型解析失败：no-such-model"),
+        "the run names its real failure reason (the 4a placeholder is gone): {terminal:?}"
+    );
+    assert_eq!(
+        terminal.trigger,
+        Some(mirri_core::cron::RunTrigger::RunNow),
+        "the manual trigger is the recorded launch"
     );
 }
 
