@@ -537,7 +537,7 @@ async fn should_remove_the_cron_store_when_the_workspace_is_deleted() {
 /// listing source (ADR-020's replacement for the retired store-file
 /// fingerprint cache; the listAll throttle cache still bounds the read
 /// rate, but no file-fingerprint entry exists to inspect any more).
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn should_cache_the_workspace_group_until_the_store_moves() {
     let (server, tmp) = ws4a_server();
     let _ = tmp;
@@ -574,7 +574,8 @@ async fn should_cache_the_workspace_group_until_the_store_moves() {
 
     // Second aggregation past the throttle window: the same row still
     // serves (no fingerprint, no invalidation surface).
-    tokio::time::sleep(CRON_LIST_ALL_MIN_INTERVAL + Duration::from_millis(50)).await;
+    tokio::task::yield_now().await;
+    tokio::time::advance(CRON_LIST_ALL_MIN_INTERVAL + Duration::from_millis(50)).await;
     let second = server
         .call_method("cron.listAll", json!({}))
         .await

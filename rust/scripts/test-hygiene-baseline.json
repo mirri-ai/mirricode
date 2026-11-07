@@ -336,7 +336,7 @@
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-embedded/src/embedded_server/mod.rs:5835": {
+    "crates/mirri-embedded/src/embedded_server/mod.rs:5837": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
@@ -587,10 +587,6 @@
     "crates/mirri-embedded/src/embedded_server/tests.rs:46366": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/b1_print_mode_tests.rs:218": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
     },
     "crates/mirri-embedded/src/embedded_server/tests/b1_task_lifecycle_tests.rs:87": {
       "type": "sleep",
@@ -843,18 +839,6 @@
     "crates/mirri-embedded/src/embedded_server/tests/credential_store_tests.rs:361": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_b3_user_face_tests.rs:602": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_b3_user_face_tests.rs:624": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-embedded/src/embedded_server/tests/cron_ws_4a_tests.rs:577": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
     },
     "crates/mirri-embedded/src/embedded_server/tests/e10_interrupted_recovery_tests.rs:847": {
       "type": "sleep",
