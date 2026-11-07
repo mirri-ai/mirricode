@@ -4479,7 +4479,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn should_return_cancelled_immediately_when_the_wait_is_cancelled() {
         // Given a still-running task and a cancel token that fires while a
         // blocking wait is in flight
@@ -4495,19 +4495,20 @@ mod tests {
         let cancel = crate::cancel::CancelToken::new();
         let cancel_clone = cancel.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await; // hygiene-allow: D: paused clock 虚拟定时器
             cancel_clone.cancel();
         });
 
         // When the wait runs with a 10-second timeout (far longer than the
         // cancel)
-        let start = std::time::Instant::now();
+        let start = tokio::time::Instant::now();
         let result = manager
             .wait_for_completion_with(&id, 10, Some(&cancel))
             .await;
 
         // Then the wait ends promptly with Cancelled — not after the task
-        // settles nor after the timeout (US5.3: no zombie window)
+        // settles nor after the timeout (US5.3: no zombie window). The
+        // bound measures the same virtual clock the cancel timer runs on.
         assert_eq!(result, WaitResult::Cancelled);
         assert!(
             start.elapsed() < std::time::Duration::from_secs(5),
@@ -4518,7 +4519,7 @@ mod tests {
         assert_eq!(manager.get(&id).unwrap().status, TaskStatus::Running);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn should_report_liveness_only_while_the_heartbeat_advances() {
         // Given a manager with a heartbeat interval and a liveness listener
         // that counts invocations
@@ -4543,7 +4544,7 @@ mod tests {
         let manager_for_beats = Arc::clone(&manager);
         tokio::spawn(async move {
             for _ in 0..5 {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await; // hygiene-allow: D: paused clock 虚拟定时器
                 manager_for_beats.heartbeat(&id_for_beats);
             }
         });

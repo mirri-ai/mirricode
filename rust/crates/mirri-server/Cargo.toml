@@ -50,5 +50,7 @@ rust-embed = { version = "8", optional = true, features = ["include-exclude", "c
 mirri-embedded = { path = "../mirri-embedded" }
 mirri-test-harness = { path = "../mirri-test-harness" }
 mirri-test-support = { path = "../mirri-test-support" }
+# `start_paused` in the drain tests needs tokio's test-util clock.
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 reqwest = { workspace = true }

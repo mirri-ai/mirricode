@@ -220,26 +220,6 @@
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
-    "crates/mirri-core/src/subagent/mod.rs:1041": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/subagent/mod.rs:1050": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/task.rs:4498": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/task.rs:4546": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/agent_swarm_tool.rs:1500": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
     "crates/mirri-core/src/tools/agent_tool.rs:2036": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
@@ -297,18 +277,6 @@
       "reason": "legacy: pending R2/R4 migration"
     },
     "crates/mirri-core/src/tools/bash.rs:3253": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/task_output.rs:434": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/task_output.rs:474": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-core/src/tools/task_output.rs:726": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     },
@@ -1085,10 +1053,6 @@
       "reason": "legacy: pending R2/R4 migration"
     },
     "crates/mirri-server/src/state.rs:1020": {
-      "type": "sleep",
-      "reason": "legacy: pending R2/R4 migration"
-    },
-    "crates/mirri-server/src/state.rs:1032": {
       "type": "sleep",
       "reason": "legacy: pending R2/R4 migration"
     }

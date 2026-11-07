@@ -1487,7 +1487,7 @@ mod tests {
     /// Given a swarm without a timeout (None), When a member takes a slow
     /// but finite path, Then the swarm waits it out — no deadline is
     /// injected (the print-mode unbounded semantics).
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn should_not_wrap_members_when_no_timeout_is_configured() {
         struct SlowHost;
         impl SubagentHost for SlowHost {
@@ -1497,7 +1497,7 @@ mod tests {
                     request.profile_name,
                     request.model,
                     Box::pin(async move {
-                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: D: paused clock 虚拟 fixture 工时
                         Ok(SubagentCompletion::from_text("slow but done".to_string()))
                     }),
                 ))

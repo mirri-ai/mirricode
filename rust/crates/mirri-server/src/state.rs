@@ -1022,14 +1022,15 @@ mod tests {
     }
 
     /// A stub engine whose `session.create` takes 300ms — slow enough to be
-    /// in flight when a shutdown drain starts.
+    /// in flight when a shutdown drain starts (virtual under the paused
+    /// clock of the drain test below).
     struct SlowEngine;
 
     #[async_trait::async_trait]
     impl EngineAdapter for SlowEngine {
         async fn call_method(&self, method: &str, _params: Value) -> Result<Value, EngineError> {
             if method == "session.create" {
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                tokio::time::sleep(Duration::from_millis(300)).await; // hygiene-allow: D: paused clock 虚拟 fixture 工时
                 return Ok(json!({ "id": "session-slow" }));
             }
             Err(EngineError::MethodNotFound(method.to_string()))
@@ -1054,7 +1055,7 @@ mod tests {
     /// in-flight call completes and returns its result — the drain must let
     /// tracked engine calls finish instead of abandoning them to a runtime
     /// drop (the "engine call task vanished" incident, 2026-10-12).
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn should_complete_in_flight_engine_calls_when_shutdown_drain_runs() {
         // Given a state whose engine answers slowly
         let state = test_state(Arc::new(SlowEngine));

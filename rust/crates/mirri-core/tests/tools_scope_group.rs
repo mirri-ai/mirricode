@@ -6036,9 +6036,6 @@ async fn should_update_title_and_refresh_updated_at_when_metadata_is_updated() {
 
     let original = session.metadata().await;
 
-    // Small delay so updated_at is measurably different.
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await; // hygiene-allow: D: 毫秒时钟 tick 守卫，慢机器只会拉大间隔
-
     session
         .update_metadata(|m| {
             m.title = "Updated Title".to_string();
