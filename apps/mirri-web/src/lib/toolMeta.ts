@@ -3,6 +3,7 @@
 
 import { i18n } from '../i18n';
 import { iconSvg, type IconName } from './icons';
+import { bashPrefixText, summarizeBashCommand } from './bashDisplay';
 
 const t = i18n.global.t;
 
@@ -151,7 +152,11 @@ export interface ToolChipInput {
 // Falls back to the raw arg for unknown tools. Defensive: never throws.
 // ---------------------------------------------------------------------------
 
-const SUMMARY_MAX = 80;
+// Tool summaries stay on one row and are ellipsized by the row's own CSS, so
+// this is only an upper bound on how much text is handed to the DOM. 160 keeps
+// a recognisable command (verb + subcommand + args + a tail detail) instead of
+// cutting mid-path at 80.
+const SUMMARY_MAX = 160;
 
 function clip(s: string, max = SUMMARY_MAX): string {
   const trimmed = s.trim();
@@ -205,8 +210,6 @@ function filePath(d: Record<string, unknown>): string | undefined {
   return str(d.path) ?? str(d.file_path) ?? str(d.filePath) ?? str(d.filename);
 }
 
-const BASH_MAX = 64;
-
 /**
  * @param full when true, skip the `…` length clip and return the complete
  *   summary — used by the expanded tool-card body (it has room to wrap). The
@@ -246,7 +249,19 @@ export function toolSummary(name: string, arg: string, full = false): string {
       }
       case 'bash': {
         const cmd = str(d.command) ?? str(d.cmd) ?? str(d.script);
-        return cmd ? c(cmd, BASH_MAX) : fallback();
+        if (!cmd) return fallback();
+        // Bash gets display-only normalization (a leading `cd` compressed, then a
+        // head+tail clip) instead of the plain `c` clip: a verbatim
+        // `cd <long path> && …` eats the whole row and every row looks alike.
+        // `full` returns the command untouched for the expanded body.
+        //
+        // This text form has no workspace to compare against, so an absolute
+        // `cd` compresses to `…/dir/ &&` rather than being dropped — only the
+        // tool row knows the session's working directory and can badge it.
+        const shown = summarizeBashCommand(cmd, undefined, { full, max: SUMMARY_MAX });
+        if (!shown.prefix) return shown.text || c(cmd);
+        const head = bashPrefixText(shown.prefix);
+        return shown.text ? `${head}${shown.text}` : head.replace(/\s*&&\s*$/, '');
       }
       case 'grep':
       case 'search': {

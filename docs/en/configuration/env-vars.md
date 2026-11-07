@@ -110,7 +110,6 @@ Complete variable list:
 | `MIRRICODE_MODEL_DISPLAY_NAME` | No | Name shown in `/model` | Falls back to `MIRRICODE_MODEL_NAME` |
 | `MIRRICODE_MODEL_MAX_OUTPUT_SIZE` | No | Per-request output cap (`anthropic` only); when set, overrides the built-in Claude ceiling | Model default |
 | `MIRRICODE_MODEL_REASONING_KEY` | No | Reasoning field name override (`openai` only) | Auto-detected |
-| `MIRRICODE_MODEL_THINKING_EFFORT` | No | Thinking effort level: `low`/`medium`/`high`/`xhigh`/`max` | — |
 | `MIRRICODE_MODEL_ADAPTIVE_THINKING` | No | Force adaptive thinking on or off (`anthropic` only) | Inferred from model name |
 
 If `MIRRICODE_MODEL_NAME` is set but a required variable is missing, startup fails immediately with a clear error message.
@@ -131,8 +130,6 @@ Switches that control the behavior of subsystems such as telemetry, background t
 | `MIRRICODE_MODEL_MAX_COMPLETION_TOKENS` | Hard cap on `max_completion_tokens` per LLM step; applies to the `mirri` provider only | Positive integer; `0` or negative disables clamping |
 | `MIRRICODE_MODEL_TEMPERATURE` | Sampling temperature for every request; applies to the `mirri` provider only (global — independent of `MIRRICODE_MODEL_NAME`) | Number, e.g. `0.3` |
 | `MIRRICODE_MODEL_TOP_P` | Nucleus-sampling `top_p` for every request; applies to the `mirri` provider only (global) | Number, e.g. `0.95` |
-| `MIRRICODE_MODEL_THINKING_EFFORT` | Force a specific thinking effort on the wire (`thinking.effort`), bypassing the model's declared `support_efforts`; applies to the `mirri` provider only, and only while Thinking is on | An effort value, e.g. `max` |
-| `MIRRICODE_MODEL_THINKING_KEEP` | Preserved-thinking passthrough; on `kimi` sent as `thinking.keep`, on `anthropic` (Claude and Mirri's Anthropic-compatible mode) sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API); overrides `[thinking] keep` (which defaults to `"all"`); only injected while Thinking is on | A value the API accepts, e.g. `all`; an off-value (`false`/`0`/`no`/`off`/`none`/`null`) disables it |
 | `MIRRICODE_NO_AUTO_UPDATE` | Fully disable the update preflight — no check, background install, or prompt. Legacy alias `MIRRICODE_CLI_NO_AUTO_UPDATE` is also honored | Truthy: `1`/`true`/`yes`/`on` |
 | `MIRRICODE_DISABLE_CRON` | Disable the scheduled-task tools (`SetTimer` and `CreateScheduledTask` reject new schedules; existing tasks do not fire) | `1` to disable |
 

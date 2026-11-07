@@ -543,12 +543,32 @@ impl EmbeddedServer {
         // before the session was created (explicit `modelId`, else the
         // config snapshot's `default_model` alias — else the create was
         // rejected; see above).
+        // C7.7: a session created without an explicit effort inherits the
+        // model's declared default (its `default_effort`, else the middle of
+        // `support_efforts`). Without this the model declaration only takes
+        // effect after a model switch, so an imported default is dead on the
+        // first session.
+        let thinking_effort = {
+            let explicit = params.thinking_effort.clone();
+            let from_model = || {
+                let config = self.config.read().unwrap_or_else(|e| e.into_inner());
+                let alias = config
+                    .models
+                    .as_ref()
+                    .and_then(|models| models.get(&resolved_model_alias))?;
+                mirri_core::model_catalog::default_thinking_effort(
+                    alias.default_effort.as_deref(),
+                    alias.support_efforts.as_deref().unwrap_or(&[]),
+                )
+            };
+            explicit.or_else(from_model)
+        };
         let mut agent_config = AgentScopeConfig {
             interaction_kernel,
             model_id: resolved_model_alias.clone(),
             provider_type: params.provider_type.unwrap_or_default(),
             system_prompt: params.system_prompt,
-            thinking_effort: params.thinking_effort,
+            thinking_effort,
             permission_mode: effective_permission_mode,
             ..AgentScopeConfig::default()
         };
@@ -5232,7 +5252,7 @@ impl EmbeddedServer {
         self.cron_list_all_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .replace((std::time::Instant::now(), sessions.clone()));
+            .replace((tokio::time::Instant::now(), sessions.clone()));
         self.cron_workspace_groups_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -7103,8 +7123,50 @@ impl EmbeddedServer {
                     if let Some(desc) = alias.get("description").filter(|v| !v.is_null()) {
                         obj.insert("description".to_string(), desc.clone());
                     }
-                    if let Some(caps) = alias.get("capabilities").filter(|v| !v.is_null()) {
-                        obj.insert("capabilities".to_string(), caps.clone());
+                    // Effective capabilities (D-M11.4): the declared list
+                    // plus the always-thinking marker when this endpoint has
+                    // no known off spelling. Computed only for the generic
+                    // OpenAI wire — the other adapters express off natively
+                    // (omission or their own field), so a missing OpenAI
+                    // dialect says nothing about them — and only for models
+                    // that declare thinking, since appending the marker to a
+                    // plain chat model would turn "unsupported" into
+                    // "always on".
+                    let declared: Vec<String> = alias
+                        .get("capabilities")
+                        .and_then(Value::as_array)
+                        .map(|caps| {
+                            caps.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let effective = if provider_type == "openai" {
+                        let provider_entry = providers.and_then(|p| p.get(provider_id));
+                        let declared_efforts = alias
+                            .get("supportEfforts")
+                            .and_then(Value::as_array)
+                            .is_some_and(|efforts| !efforts.is_empty());
+                        let intent = mirri_core::thinking_dialect::ThinkingIntent::resolve(
+                            &declared,
+                            declared_efforts,
+                            alias.get("thinkingOff").and_then(Value::as_str),
+                            provider_entry
+                                .and_then(|p| p.get("thinkingOff"))
+                                .and_then(Value::as_str),
+                            provider_entry
+                                .and_then(|p| p.get("baseUrl"))
+                                .and_then(Value::as_str)
+                                .unwrap_or(""),
+                            alias.get("model").and_then(Value::as_str).unwrap_or(""),
+                        );
+                        mirri_core::thinking_dialect::effective_capabilities(&declared, &intent)
+                    } else {
+                        declared.clone()
+                    };
+                    if !effective.is_empty() {
+                        obj.insert("capabilities".to_string(), json!(effective));
                     }
                     if let Some(se) = alias.get("supportEfforts").filter(|v| !v.is_null()) {
                         obj.insert("support_efforts".to_string(), se.clone());
@@ -7112,8 +7174,6 @@ impl EmbeddedServer {
                     if let Some(de) = alias.get("defaultEffort").filter(|v| !v.is_null()) {
                         obj.insert("default_effort".to_string(), de.clone());
                     }
-                    // Include provider type as metadata (not in TS schema but useful)
-                    let _ = provider_type; // provider_type used for potential future filtering
                     Value::Object(obj)
                 })
                 .collect(),
@@ -7209,6 +7269,12 @@ impl EmbeddedServer {
                     }
                     if let Some(dm) = entry.get("defaultModel").filter(|v| !v.is_null()) {
                         obj.insert("default_model".to_string(), dm.clone());
+                    }
+                    if let Some(to) = entry.get("thinkingOff").filter(|v| !v.is_null()) {
+                        obj.insert("thinking_off".to_string(), to.clone());
+                    }
+                    if let Some(ch) = entry.get("customHeaders").filter(|v| !v.is_null()) {
+                        obj.insert("custom_headers".to_string(), ch.clone());
                     }
                     Value::Object(obj)
                 })

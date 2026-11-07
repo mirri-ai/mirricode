@@ -39,11 +39,6 @@ provider = "deepseek"
 model = "deepseek-flash"
 max_context_size = 131072
 
-[thinking]
-enabled = true
-effort = "high"
-keep = "all"
-
 [loop_control]
 max_retries_per_step = 10
 reserved_context_size = 50000
@@ -73,7 +68,7 @@ timeout = 5
 
 ## 顶层字段
 
-配置文件里的字段分两类：**顶层标量**直接控制默认行为，**嵌套表**（`providers`、`models`、`thinking` 等）各有独立结构，在下文各节单独说明。
+配置文件里的字段分两类：**顶层标量**直接控制默认行为，**嵌套表**（`providers`、`models`、`loop_control` 等）各有独立结构，在下文各节单独说明。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -88,7 +83,6 @@ timeout = 5
 | `telemetry` | `boolean` | `true` | 是否启用匿名遥测；显式设为 `false` 时关闭 |
 | `providers` | `table` | `{}` | API 供应商表 → [`providers`](#providers) |
 | `models` | `table` | — | 模型别名表 → [`models`](#models) |
-| `thinking` | `table` | — | Thinking 模式默认参数 → [`thinking`](#thinking) |
 | `loop_control` | `table` | — | Agent 循环控制参数 → [`loop_control`](#loop_control) |
 | `background` | `table` | — | 后台任务运行参数 → [`background`](#background) |
 | `task` | `table` | — | 后台任务生命周期参数（当前写法）→ [`task`](#task) |
@@ -96,7 +90,7 @@ timeout = 5
 | `permission` | `table` | — | 初始权限规则 → [`permission`](#permission) |
 | `hooks` | `array<table>` | — | 生命周期 hook，详见 [Hooks](../customization/hooks.md) |
 
-以下各节对 `providers`、`models`、`thinking`、`loop_control`、`background`、`task`、`subagent`、`experimental`、`services`、`permission` 等嵌套表逐一展开。
+以下各节对 `providers`、`models`、`loop_control`、`background`、`task`、`subagent`、`experimental`、`services`、`permission` 等嵌套表逐一展开。
 
 ## `providers`
 
@@ -120,6 +114,7 @@ timeout = 5
 | `custom_headers` | `table<string, string>` | 否 | 每次请求附加的自定义 HTTP 头 |
 | `removed_model_ids` | `array<string>` | 否 | 上游模型 id 的黑名单；模型目录刷新不会重新加回在此列出的模型 |
 | `media_file_refs` | `boolean` | 否 | 仅 `anthropic` 供应商。允许通过供应商的 Files API 上传图片并以 file id 引用，替代 base64 内联；默认为 `true` |
+| `thinking_off` | `string` | 否 | 该端点如何表达"关闭思考"。取值同模型级；供应商级设置对该供应商下未单独覆盖的模型生效 |
 
 **`env` 子表**：可以把供应商惯用的键名（如 `MIRRI_API_KEY`）写在 `[providers.<name>.env]` 里——凭证存储没有活跃条目时，引擎从这里读取 `api_key` / `base_url`（显式配置层）。子表本身只从配置文件读取，不会修改 shell 环境：
 
@@ -144,6 +139,7 @@ MIRRI_BASE_URL = "https://api.moonshot.ai/v1"
 | `capabilities` | `array<string>` | 否 | 显式追加的能力标签：`thinking`、`always_thinking`、`image_in`、`video_in`、`audio_in`、`tool_use`。与供应商自动识别的能力取并集，只能追加不能移除 |
 | `support_efforts` | `array<string>` | 否 | 模型支持的 Thinking 档位（如 `["low", "high", "max"]`） |
 | `default_effort` | `string` | 否 | 模型的默认 Thinking 档位 |
+| `thinking_off` | `string` | 否 | 仅 `openai` 供应商。决定"关闭思考"时发往该端点的是哪个字段：`thinking_type` / `reasoning_effort` / `enable_thinking`。省略时按端点自动推断（内置覆盖 MiMo、DeepSeek、智谱、Kimi、Qwen、MiniMax） |
 | `display_name` | `string` | 否 | UI 中显示的名称，未设时回退到 `model` |
 | `description` | `string` | 否 | 暴露给 LLM 的简短能力描述，出现在 `Agent`/`AgentSwarm` 工具描述中。设置后，该模型会出现在"可用模型"列表中，让 LLM 在派发子代理时能做出明智的模型选择。未设置 `description` 的模型仍可用于 `default_model`，但不会作为 LLM 可选择的选项 |
 | `reasoning_key` | `string` | 否 | 仅 `openai` 供应商。当网关用非标准字段名返回推理内容时才需要设置；默认自动识别 `reasoning_content` / `reasoning_details` / `reasoning` |
@@ -165,23 +161,6 @@ max_context_size = 1047576
 provider-model 刷新（启动时、每 6 小时、或手动"刷新全部"）只**追加**在 catalog 中发现的新模型。已有模型 alias 绝不会被修改或删除——配置归你所有。你删除的模型会记录在对应 provider 的 denylist（`removed_model_ids`）中，刷新时不会把它们悄悄加回来。
 
 无需修改配置文件也可以临时切换模型——通过 `MIRRICODE_MODEL_*` 环境变量在内存里合成一个临时供应商，详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-mirricode-model)。
-
-## `thinking`
-
-`thinking` 设置 Thinking 模式的全局默认行为。
-
-| 字段 | 类型 | 默认值 | 说明 |
-| --- | --- | --- | --- |
-| `enabled` | `boolean` | `true` | 新会话是否默认开启 Thinking，设为 `false` 可强制关闭 |
-| `effort` | `string` | — | Thinking 强度（例如 `low`、`medium`、`high`、`xhigh`、`max`），实际可用等级取决于模型声明的 `support_efforts`，未识别的值会被供应商忽略 |
-| `keep` | `string` | `"all"` | 保留思考透传。在 `kimi` 上以 `thinking.keep` 发送；在 `anthropic`（Claude 以及 Mirri 的 Anthropic 兼容模式）上以 `context_management` 的 `clear_thinking_20251015` 编辑发送（开启 keep 会让 Anthropic 请求走 beta Messages API；关值可禁用 keep 并回到标准端点）。`"all"` 会保留历史轮次的思考内容（`reasoning_content` / Anthropic thinking blocks）；传入关值（`false`/`0`/`no`/`off`/`none`/`null`）可禁用。可被 `MIRRICODE_MODEL_THINKING_KEEP` 覆盖；仅在 Thinking 开启时注入 |
-
-### 已废弃字段
-
-| 字段 | 废弃版本 | 描述 |
-| --- | --- | --- |
-| `default_thinking` | 0.21.0 | 顶层布尔值，由 `[thinking] enabled` 取代。将 `default_thinking = true` 迁移为 `enabled = true`，`default_thinking = false` 迁移为 `enabled = false`。 |
-| `thinking.mode` | 0.21.0 | 可选值 `auto` / `on` / `off`，由 `[thinking] enabled` 取代。`mode = "off"` 改为 `enabled = false`；`mode = "on"` 和 `mode = "auto"` 等价于 `enabled = true`（默认值），可删除该行。 |
 
 ## `loop_control`
 

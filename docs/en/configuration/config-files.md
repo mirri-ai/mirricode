@@ -39,11 +39,6 @@ provider = "deepseek"
 model = "deepseek-flash"
 max_context_size = 131072
 
-[thinking]
-enabled = true
-effort = "high"
-keep = "all"
-
 [loop_control]
 max_retries_per_step = 10
 reserved_context_size = 50000
@@ -74,7 +69,7 @@ timeout = 5
 
 ## Top-level fields
 
-Fields in the config file fall into two categories: **top-level scalars** that directly control default behavior, and **nested tables** (`providers`, `models`, `thinking`, etc.) that each have their own structure, described individually in the sections below.
+Fields in the config file fall into two categories: **top-level scalars** that directly control default behavior, and **nested tables** (`providers`, `models`, `loop_control`, etc.) that each have their own structure, described individually in the sections below.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -120,6 +115,7 @@ See [Config overrides](./overrides.md#provider-credentials) for the full priorit
 | `env` | `table<string, string>` | No | Extra key-value pairs passed to the provider adapter; values support `${VAR}` expansion. Provider-conventional key names (such as `MIRRI_API_KEY`) also serve as the credential source for `api_key` / `base_url` — see below |
 | `custom_headers` | `table<string, string>` | No | Custom HTTP headers attached to each request |
 | `removed_model_ids` | `array<string>` | No | Denylist of upstream model ids; catalog refreshes never re-add a model listed here |
+| `thinking_off` | `string` | No | How this endpoint expresses "stop thinking"; same values as the model-level key. Applies to every model under the provider that does not override it |
 | `media_file_refs` | `boolean` | No | `anthropic` provider only. Allow image uploads through the provider's Files API and reference by file id instead of inlining base64; defaults to `true` |
 
 **`env` sub-table**: You can write provider-conventional key names (such as `MIRRI_API_KEY`) inside `[providers.<name>.env]` — the explicit configuration tier the engine reads for `api_key` / `base_url` when the credential store has no active entry. The sub-table itself is read from the config file only and does not modify the shell environment:
@@ -145,6 +141,7 @@ Each entry in the `models` table defines a model alias (the name used in `defaul
 | `capabilities` | `array<string>` | No | Capability tags to add explicitly: `thinking`, `always_thinking`, `image_in`, `video_in`, `audio_in`, `tool_use`. Unioned with the capabilities auto-detected by the provider — entries can only be added, never removed |
 | `support_efforts` | `array<string>` | No | Thinking effort levels the model supports for extended thinking (e.g. `["low", "high", "max"]`) |
 | `default_effort` | `string` | No | Default thinking effort for the model |
+| `thinking_off` | `string` | No | `openai` providers only. Which field carries "stop thinking" to this endpoint: `thinking_type` / `reasoning_effort` / `enable_thinking`. Omit to infer it from the endpoint (the builtin table covers MiMo, DeepSeek, Zhipu, Kimi, Qwen, MiniMax) |
 | `display_name` | `string` | No | Name shown in the UI; falls back to `model` when unset |
 | `description` | `string` | No | Short capability description exposed to the LLM in the `Agent`/`AgentSwarm` tool description. When set, this model appears in the "Available models" list, allowing the LLM to make informed model-selection decisions when dispatching subagents. Models without `description` remain valid for `default_model` but are not offered as LLM-selectable overrides |
 | `reasoning_key` | `string` | No | `openai` provider only. Override the field name used for reasoning content when the gateway returns it under a non-standard name; by default `reasoning_content`, `reasoning_details`, and `reasoning` are auto-detected |
@@ -166,23 +163,6 @@ max_context_size = 1047576
 Provider-model refreshes (startup, every 6 hours, or manual "Refresh All") only **append** new models discovered in the catalog. Existing model aliases are never modified or deleted — your configuration is your own. Models you delete are remembered on a per-provider denylist (`removed_model_ids`) so a refresh cannot silently re-add them.
 
 You can also switch models temporarily without touching the config file — by setting `MIRRICODE_MODEL_*` environment variables, the CLI synthesizes a temporary provider in memory that does not persist after restart. See [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-mirricode-model).
-
-## `thinking`
-
-`thinking` sets the global default behavior for Thinking mode.
-
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `enabled` | `boolean` | `true` | Whether Thinking is enabled by default for new sessions; set to `false` to force Thinking off |
-| `effort` | `string` | — | Thinking effort level (for example `low`, `medium`, `high`, `xhigh`, `max`); the levels actually available depend on the model's declared `support_efforts`, and unrecognized values are ignored by the provider |
-| `keep` | `string` | `"all"` | Preserved Thinking passthrough. On `kimi` it is sent as `thinking.keep`; on `anthropic` (Claude and Mirri's Anthropic-compatible mode) it is sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API; an off-value disables keep and returns to the standard endpoint). `"all"` preserves prior turns' reasoning (`reasoning_content` / Anthropic thinking blocks); set to an off-value (`false`/`0`/`no`/`off`/`none`/`null`) to disable. Overridden by `MIRRICODE_MODEL_THINKING_KEEP`; only injected while Thinking is on |
-
-### Deprecated fields
-
-| Field | Deprecated in | Description |
-| --- | --- | --- |
-| `default_thinking` | 0.21.0 | Top-level boolean, replaced by `[thinking] enabled`. Migrate `default_thinking = true` to `enabled = true`, and `default_thinking = false` to `enabled = false`. |
-| `thinking.mode` | 0.21.0 | One of `auto` / `on` / `off`, replaced by `[thinking] enabled`. `mode = "off"` becomes `enabled = false`; `mode = "on"` and `mode = "auto"` are equivalent to `enabled = true` (the default) and can be removed. |
 
 ## `loop_control`
 

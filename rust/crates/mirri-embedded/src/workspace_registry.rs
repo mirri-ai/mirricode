@@ -786,11 +786,13 @@ impl WorkspaceRegistry {
     /// `<home>/cron-index.db` — the same home the shared session index
     /// roots at, sibling file. The first open builds ONLY the connection
     /// (ADR-006 Task 8): the ONE-TIME legacy JSON import
-    /// ([`Self::import_legacy_cron_once`]) rides a background task gated
-    /// on the startup census settlement instead — e956f5e8a's principle
-    /// (startup housekeeping stays off the first-request path) applies to
-    /// the import too: it walks EVERY registered workspace's bucket files,
-    /// so it must not run inline under the first `shared_cron_index` call.
+    /// ([`Self::import_legacy_cron_once`]) is awaited inside the startup
+    /// census settlement instead — e956f5e8a's principle (startup
+    /// housekeeping stays off the first-request path) applies to the
+    /// import too: it walks EVERY registered workspace's bucket files,
+    /// so it must not run inline under the first `shared_cron_index`
+    /// call; and because the settlement AWAITS it (batch 4), no census
+    /// waiter is released before the import completes.
     ///
     /// Degrade posture (the `shared_session_index` precedent): a failed
     /// open logs a warning and the engine runs on an in-memory index —
@@ -822,8 +824,10 @@ impl WorkspaceRegistry {
     }
 
     /// Run the one-time legacy cron JSON import (ADR-006 Task 8): the
-    /// census-settled background task's body, invoked after the startup
-    /// settlement so the import never rides the first request path. The
+    /// census-settled body's own step, AWAITED inside the settlement so
+    /// no census waiter (the first dispatch, the cron driver's first
+    /// tick) is released before the import completes (batch 4: the
+    /// detached-spawn form of this call raced those readers). The
     /// `cron_import_done` OnceCell makes it idempotent per process (the
     /// SQLite-side persisted flag covers the cross-boot cases); a failure
     /// logs and the next boot retries (the persisted flag is only set

@@ -123,12 +123,12 @@ impl EmbeddedServer {
                 self.spawn_orphan_lifetime_sweeper();
                 // ADR-006 Task 9: the one-shot metadata migration (裁决 5)
                 // rides the census-settled body — INLINE in the settlement
-                // (not a fire-and-forget spawn like the cron import below):
-                // the read face waits for the census on its first dispatch,
-                // and a row-only read face without the seeded rows would
-                // answer every legacy session as not-found. Running the seed
-                // inside the census settlement is the e956f5e8a-compatible
-                // point — the census itself already settles off the first
+                // (never a detached background task): the read face waits
+                // for the census on its first dispatch, and a row-only
+                // read face without the seeded rows would answer every
+                // legacy session as not-found. Running the seed inside the
+                // census settlement is the e956f5e8a-compatible point —
+                // the census itself already settles off the first
                 // request's INLINE path (the OnceCell initializer runs when
                 // the first gate waiter arrives, and `spawn_blocking` keeps
                 // the state.json reads off the async workers) — while still
@@ -157,21 +157,30 @@ impl EmbeddedServer {
                     None => {} // no shared index (no home) — nothing to migrate
                 }
                 // ADR-006 Task 8: the one-time legacy cron JSON import
-                // rides the census-settled body — the `spawn_orphan_
-                // lifetime_sweeper` spawn pattern, one background task
-                // exactly once per server. The import is bounded local-disk
-                // I/O (reading every registered workspace's bucket files)
-                // and it must NOT ride the first request path
-                // (e956f5e8a's principle): the census settlement is the
-                // first point where the engine is off the request path,
-                // and the cron driver's first tick — which the census
-                // also gates — can never observe a half-imported
-                // manifest (the import completes before any settlement
-                // waiter is released).
+                // rides the census-settled body — AWAITED here, never a
+                // detached spawn (batch 4's fix: the documented contract —
+                // "the import completes before any settlement waiter is
+                // released" — was NOT implemented while the import was a
+                // fire-and-forget `tokio::spawn`, so the first
+                // `cron.listAll` / the cron driver's first tick could race
+                // a half-imported manifest). The import is synchronous
+                // SQLite + filesystem I/O, so it rides `spawn_blocking`
+                // (off the async workers) and joins before this
+                // settlement completes: the census gate every consumer
+                // already waits on is then the synchronization point. The
+                // e956f5e8a first-request principle still holds — the
+                // direct index OPEN never imports; only the
+                // census-settled dispatch pays this bounded local-disk
+                // cost, exactly like the migration seed above.
                 let registry = Arc::clone(&self.registry);
-                tokio::spawn(async move {
-                    registry.import_legacy_cron_once();
-                });
+                tokio::task::spawn_blocking(move || registry.import_legacy_cron_once())
+                    .await
+                    .unwrap_or_else(|join_error| {
+                        tracing::warn!(
+                            %join_error,
+                            "startup legacy cron import task failed to join"
+                        );
+                    });
                 // ADR-006 Task 10: the existence reaper rides the same
                 // settlement body — one best-effort sweep of the tombstone
                 // set right after the migration, then the retired

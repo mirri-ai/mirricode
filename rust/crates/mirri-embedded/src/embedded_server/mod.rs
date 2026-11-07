@@ -1530,8 +1530,10 @@ pub struct EmbeddedServer {
     /// stored answer verbatim. `disabled` is NOT read from the snapshot but
     /// re-read live, so a config flip surfaces on the very next call even
     /// inside the window (the flag is one cheap field read — the sessions
-    /// walk is what the throttle exists to protect).
-    cron_list_all_cache: std::sync::Mutex<Option<(std::time::Instant, Vec<serde_json::Value>)>>,
+    /// walk is what the throttle exists to protect). The stamp is a
+    /// `tokio::time::Instant`: identical to `std` off a paused clock, and
+    /// it lets paused-clock tests step over the window with `advance`.
+    cron_list_all_cache: std::sync::Mutex<Option<(tokio::time::Instant, Vec<serde_json::Value>)>>,
     /// The last `cron.listAll` aggregation's WORKSPACE groups (stage-2 T6)
     /// — the workspace arm of the same throttle: a second call inside
     /// the window answers these groups verbatim alongside the stored
@@ -5736,6 +5738,42 @@ impl EmbeddedServer {
         }
     }
 
+    /// Join the session's in-flight FIRE turn (batch 4's test seam): take
+    /// the session's fire-mode entries out of the registry and await their
+    /// task handles, so a test observes "the turn finished" as a fact
+    /// instead of polling for its side effects. The task removes its own
+    /// entry right after the engine turn returns — by then every tool the
+    /// turn ran has run — so an already-absent entry means the same thing
+    /// and nothing is joined. Wait-mode entries are skipped (they run
+    /// inline on their own dispatch future; there is no handle to join).
+    /// Taking the entry also retires it from `message.abort`/busy probes
+    /// for the duration of the join — fine for the single-flow tests that
+    /// call this.
+    #[cfg(test)]
+    pub(super) async fn await_turn(&self, session_id: &str) {
+        let prefix = format!("{session_id}:");
+        let handles: Vec<tokio::task::JoinHandle<()>> = {
+            let mut turns = self
+                .in_flight_turns
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let keys: Vec<String> = turns
+                .keys()
+                .filter(|key| key.starts_with(&prefix))
+                .cloned()
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| match turns.remove(&key) {
+                    Some(InFlightTurn::Fire { handle, .. }) => Some(handle),
+                    _ => None,
+                })
+                .collect()
+        };
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+
     /// The census gate for `call_method` (ADR-003 c / ADR-012 c): every
     /// route waits for the one-time startup orphan census (and the
     /// lifetime-sweeper spawn behind it), regardless of class — the census
@@ -5796,7 +5834,7 @@ impl EmbeddedServer {
         });
         let mut pace = std::pin::pin!(async {
             loop {
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await; // hygiene-allow: D: settlement-hold pacing timer (waker registration; released by the test probe)
             }
         });
         std::future::poll_fn(|cx| match hold.as_mut().poll(cx) {

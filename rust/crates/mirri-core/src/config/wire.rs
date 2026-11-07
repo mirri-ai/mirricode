@@ -82,9 +82,6 @@ impl ServerConfig {
         if !models.as_object().map(|m| m.is_empty()).unwrap_or(true) {
             wire.insert("models".into(), models);
         }
-        if let Some(v) = self.thinking.as_ref().map(thinking_to_wire) {
-            wire.insert("thinking".into(), v);
-        }
         if let Some(v) = self.permission.as_ref().map(permission_to_wire) {
             wire.insert("permission".into(), v);
         }
@@ -230,6 +227,14 @@ impl ServerConfig {
             }
         }
 
+        // `customHeaders` is a user-defined key→value map: merging it would
+        // make deleting a single header inexpressible (an empty patch object
+        // is a no-op), which is what the provider-connection form needs. Mark
+        // those paths so the merge below replaces them wholesale instead.
+        // Collected AFTER the snake_case conversion, so the field name matches
+        // the struct mirror the merge writes into (`custom_headers`).
+        let replace_paths = collect_replace_map_paths(&patch);
+
         // Merge the patch into a JSON mirror of self (so the camelCase⇄
         // snake_case conversion applies uniformly), then deserialize the
         // merged value back into the struct.
@@ -237,6 +242,15 @@ impl ServerConfig {
             EngineError::RequestInvalid(format!("cannot serialize config for merge: {err}"))
         })?;
         deep_merge_json(&mut merged, &patch);
+        // Re-apply the replace semantics after the generic merge: for each
+        // marked path, copy the patch value over the merged one.
+        for path in &replace_paths {
+            if let Some(patch_value) = value_at_path(&patch, path)
+                && let Some(target) = value_at_path_mut(&mut merged, path)
+            {
+                *target = patch_value.clone();
+            }
+        }
         let mut merged_config: ServerConfig = serde_json::from_value(merged).map_err(|err| {
             EngineError::RequestInvalid(format!("cannot apply config patch: {err}"))
         })?;
@@ -273,6 +287,7 @@ impl ServerConfig {
         Ok(())
     }
 }
+
 impl ServerConfig {
     /// The layered section record for the klient `configService` reads
     /// (`config.getAll` / `config.inspect`): every top-level section as a
@@ -475,7 +490,10 @@ pub(crate) const KNOWN_CONFIG_TOP_LEVEL_KEYS: &[&str] = &[
     "permission",
     "loop_control",
     "hooks",
-    "thinking",
+    // `thinking` is deliberately absent: the section is retired, and leaving
+    // it in this list would make the struct serialization treat it as
+    // struct-owned — dropping the user's section on the next save instead of
+    // preserving it as raw passthrough.
     "experimental",
     "providers",
     "models",
@@ -550,7 +568,12 @@ pub fn convert_keys_to_snake_case(value: &mut Value) {
         Value::Object(map) => {
             let mut renamed = serde_json::Map::with_capacity(map.len());
             for (key, mut entry) in std::mem::take(map) {
-                convert_keys_to_snake_case(&mut entry);
+                // A user-defined map: its keys are header names, not config
+                // field names. Renaming them would rewrite `X-Route` into
+                // `x-_route` on the way in.
+                if !USER_KEYED_MAPS.contains(&key.as_str()) {
+                    convert_keys_to_snake_case(&mut entry);
+                }
                 renamed.insert(camel_to_snake(&key), entry);
             }
             *map = renamed;
@@ -697,6 +720,9 @@ fn providers_to_wire(providers: &HashMap<String, ProviderEntry>) -> Value {
         if let Some(v) = &entry.media_file_refs {
             entry_map.insert("mediaFileRefs".into(), Value::Bool(*v));
         }
+        if let Some(v) = &entry.thinking_off {
+            entry_map.insert("thinkingOff".into(), Value::String(v.clone()));
+        }
         if let Some(v) = &entry.source {
             entry_map.insert("source".into(), v.clone());
         }
@@ -757,26 +783,14 @@ fn models_to_wire(models: &HashMap<String, ModelAlias>) -> Value {
         if let Some(v) = alias.beta_api {
             entry.insert("betaApi".into(), Value::Bool(v));
         }
+        if let Some(v) = &alias.thinking_off {
+            entry.insert("thinkingOff".into(), Value::String(v.clone()));
+        }
         map.insert(alias_id.clone(), Value::Object(entry));
     }
     Value::Object(map)
 }
 
-/// Serialize a [`ThinkingConfig`] with the wire's `{enabled, effort, keep}`
-/// keys. Absent fields are omitted.
-fn thinking_to_wire(thinking: &ThinkingConfig) -> Value {
-    let mut map = serde_json::Map::new();
-    if let Some(v) = thinking.enabled {
-        map.insert("enabled".into(), Value::Bool(v));
-    }
-    if let Some(v) = &thinking.effort {
-        map.insert("effort".into(), Value::String(v.clone()));
-    }
-    if let Some(v) = &thinking.keep {
-        map.insert("keep".into(), Value::String(v.clone()));
-    }
-    Value::Object(map)
-}
 
 /// Serialize one [`PermissionRule`] into the klient wire row shape:
 /// lowercase `decision`, kebab-case `scope`, `pattern`, and `reason`
@@ -1067,6 +1081,60 @@ pub fn json_to_toml_value(value: &Value) -> EngineResult<toml::Value> {
         .map_err(|err| EngineError::RequestInvalid(format!("cannot convert value to TOML: {err}")))
 }
 
+/// Provider sub-fields whose patch value REPLACES the stored map instead of
+/// merging into it.
+///
+/// `customHeaders` is a user-defined key→value map: merging makes deleting a
+/// header impossible (an empty patch object would be a no-op), which is why
+/// the provider-connection form cannot otherwise remove one. Replacing is the
+/// only semantics under which "I deleted this row" reaches the file.
+const REPLACE_MAP_PROVIDER_FIELDS: &[&str] = &["custom_headers"];
+
+/// Maps whose KEYS are user data (header names, env var names), not config
+/// field names — the camelCase⇄snake transform must leave them alone.
+const USER_KEYED_MAPS: &[&str] = &["customHeaders", "custom_headers", "env"];
+
+/// Every `providers.<id>.<field>` path a patch marks for replace semantics.
+fn collect_replace_map_paths(patch: &Value) -> Vec<Vec<String>> {
+    let mut paths = Vec::new();
+    let Some(providers) = patch.get("providers").and_then(Value::as_object) else {
+        return paths;
+    };
+    for (provider_id, entry) in providers {
+        let Some(entry) = entry.as_object() else {
+            continue;
+        };
+        for field in REPLACE_MAP_PROVIDER_FIELDS {
+            if entry.contains_key(*field) {
+                paths.push(vec![
+                    "providers".to_string(),
+                    provider_id.clone(),
+                    (*field).to_string(),
+                ]);
+            }
+        }
+    }
+    paths
+}
+
+/// Read the value at `path`, when every segment exists.
+fn value_at_path<'a>(value: &'a Value, path: &[String]) -> Option<&'a Value> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(segment)?;
+    }
+    Some(current)
+}
+
+/// Read the value at `path` mutably, when every segment exists.
+fn value_at_path_mut<'a>(value: &'a mut Value, path: &[String]) -> Option<&'a mut Value> {
+    let mut current = value;
+    for segment in path {
+        current = current.get_mut(segment)?;
+    }
+    Some(current)
+}
+
 /// Per-entry keys of [`ProviderEntry`] in their TOML (snake_case) spelling —
 /// the keys a struct-path serialization owns inside `[providers.<id>]`.
 pub(crate) const KNOWN_PROVIDER_ENTRY_KEYS: &[&str] = &[
@@ -1080,6 +1148,7 @@ pub(crate) const KNOWN_PROVIDER_ENTRY_KEYS: &[&str] = &[
     "env",
     "custom_headers",
     "media_file_refs",
+    "thinking_off",
     "source",
 ];
 
@@ -1099,6 +1168,7 @@ pub(crate) const KNOWN_PROVIDER_ENTRY_ALIAS_KEYS: &[&str] = &[
     "modelSource",
     "customHeaders",
     "mediaFileRefs",
+    "thinkingOff",
 ];
 
 /// Per-entry keys of [`ModelAlias`] in their TOML (snake_case) spelling —
@@ -1117,6 +1187,7 @@ pub(crate) const KNOWN_MODEL_ENTRY_KEYS: &[&str] = &[
     "default_effort",
     "protocol",
     "beta_api",
+    "thinking_off",
 ];
 
 /// camelCase serde aliases of [`ModelAlias`] fields (see `config/mod.rs`) —
@@ -1135,6 +1206,7 @@ pub(crate) const KNOWN_MODEL_ENTRY_ALIAS_KEYS: &[&str] = &[
     "supportEfforts",
     "defaultEffort",
     "betaApi",
+    "thinkingOff",
 ];
 
 /// Per-entry keys of a `[[hooks]]` entry in their TOML spellings — both the
@@ -1165,7 +1237,6 @@ pub(crate) const KNOWN_PERMISSION_RULE_KEYS: &[&str] = &["decision", "scope", "p
 /// handled by their per-entry lists above; this table covers the scalar /
 /// struct-shaped sections. Consumed by the doctor's unknown-key detection.
 pub(crate) const KNOWN_SECTION_KEYS: &[(&str, &[&str])] = &[
-    ("thinking", &["enabled", "effort", "keep"]),
     (
         "loop_control",
         &[

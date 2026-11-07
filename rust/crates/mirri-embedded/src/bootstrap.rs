@@ -19,7 +19,7 @@
 //! Everything else is shared between the policies: `mirri serve` gained the
 //! funnel's plugins and local `FetchURL` provider, and the funnel gained
 //! serve's one-shot config migrations — the config-load order is upgraded to
-//! `load_without_env` → `migrate_config` → `expand_env_vars` → `apply_env`
+//! `load_without_env` → `expand_env_vars` → `apply_env`
 //! (see [`load_config_with_migration`]).
 
 use std::path::{Path, PathBuf};
@@ -30,7 +30,7 @@ use mirri_core::cron::WorkspaceCronManager;
 use mirri_core::{
     PermissionMode, ProfileManager, ServerConfig, SessionManager, SkillRootChannel, SkillSource,
     WorkspaceId, WorkspaceScope, WorkspaceScopeConfig, WorkspaceTrustLevel, dedupe_skill_roots,
-    default_skill_root_channels, encode_work_dir_key, migrate_config,
+    default_skill_root_channels, encode_work_dir_key,
 };
 
 use crate::providers::{ConfigAwareLlmFactory, LocalFetchUrlProvider};
@@ -1246,37 +1246,23 @@ fn load_config_from_home(
 }
 
 /// Load `config.toml` with the upgraded M5 load order:
-/// `load_without_env` → `migrate_config` → `expand_env_vars` → `apply_env`.
+/// `load_without_env` → `expand_env_vars` → `apply_env`.
 ///
 /// This unifies `mirri serve`'s historical order (`load_without_env` →
 /// `migrate_config` → `apply_env`, no `${VAR}` expansion) with the embedded
 /// funnel's (`load_without_env` + expand + env, no migration): serve gains
 /// `${VAR}` expansion, and the ACP/NAPI funnel gains the marker-file-driven
-/// one-shot config migrations (idempotent — a migration already marked in
-/// `<home>/<marker-file>` is skipped on the next boot). The parse runs
-/// **without** environment overrides first because a config migration may
-/// rewrite config.toml, and the rewrite must persist exactly what the file
-/// held — never env-merged values (e.g. an injected `MIRRI_API_KEY` must
-/// not be baked into config.toml). `${VAR}` expansion runs before
-/// `apply_env` so that a whole-field env override still wins over an inline
-/// `${...}` reference in the file.
+/// one-shot config migrations. The parse runs **without** environment
+/// overrides first so a future migration can rewrite config.toml with
+/// exactly what the file held — never env-merged values (e.g. an injected
+/// `MIRRI_API_KEY` must not be baked into config.toml). `${VAR}` expansion
+/// runs before `apply_env` so that a whole-field env override still wins
+/// over an inline `${...}` reference in the file.
 fn load_config_with_migration(
     config_path: &Path,
-    home_dir: &Path,
+    _home_dir: &Path,
 ) -> mirri_core::EngineResult<ServerConfig> {
     let mut config = ServerConfig::load_without_env(config_path, &mirri_os::LocalSyncFs)?;
-
-    // One-shot config migrations (marker-file driven, mirroring the
-    // TypeScript mechanism). Runs only on a successfully parsed file, never
-    // blocks startup: a failure is logged and the marker stays absent, so
-    // the migration is retried on the next start.
-    if let Err(error) = migrate_config(&mut config, config_path, home_dir, &mirri_os::LocalSyncFs) {
-        tracing::warn!(
-            %error,
-            "config migration failed; using the in-memory migrated config for this \
-             run, migration will be retried on next start"
-        );
-    }
 
     config.expand_env_vars();
 
@@ -1966,59 +1952,6 @@ mod tests {
             "the plugin-only profile must register with the plugin source"
         );
         assert_eq!(reviewer_provenance.source.as_str(), "plugin");
-    }
-
-    #[test]
-    fn should_apply_migrations_then_expand_env_when_config_is_loaded() {
-        // Given a config.toml carrying a migration candidate (`max` effort)
-        // and a model id referencing an environment variable
-        let workspace = tempfile::tempdir().expect("workspace tempdir");
-        let home = tempfile::tempdir().expect("home tempdir");
-        std::fs::write(
-            home.path().join("config.toml"),
-            "[thinking]\neffort = \"max\"\n\n[model]\nid = \"m5-${MIRRI_M5_BOOTSTRAP_EXPANSION}\"\n",
-        )
-        .expect("write config.toml");
-        let env_name = "MIRRI_M5_BOOTSTRAP_EXPANSION";
-        // SAFETY: unique var name owned by this test; no other code reads
-        // it — set under the workspace env lock anyway (the iron rules:
-        // no bare env mutation even for uniquely named vars).
-        let mut _env = mirri_test_support::env::EnvGuard::new();
-        _env.set(env_name, "expanded");
-
-        // When the engine parts are assembled through the funnel path
-        let parts = assemble(
-            WorkspaceId::new("migration-test"),
-            workspace.path().to_path_buf(),
-            Some(home.path().to_path_buf()),
-            None,
-            WorkspacePolicy::UntrustedDefault,
-            Vec::new(),
-        );
-        drop(_env); // restore the uniquely named var (EnvGuard Drop)
-
-        // Then the one-shot migration ran BEFORE env expansion: the loaded
-        // config carries the migrated effort AND the expanded model id
-        let config = parts.config.read().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(
-            config.thinking.as_ref().and_then(|t| t.effort.as_deref()),
-            Some("high"),
-            "migration must rewrite thinking.effort max -> high"
-        );
-        assert_eq!(
-            config.model.as_ref().map(|m| m.id.as_str()),
-            Some("m5-expanded"),
-            "env-var expansion must run after migration and before apply_env"
-        );
-
-        // And the marker file was persisted, so a second boot skips the
-        // migration (idempotent) — the same marker serve's boot writes
-        // (`MIGRATIONS_MARKER_FILE` is private to mirri-core; the literal
-        // name is the stable contract `migrate_config` persists).
-        assert!(
-            home.path().join("migrations-effort.json").exists(),
-            "the migration marker must be recorded under the home"
-        );
     }
 
     #[test]

@@ -368,9 +368,10 @@ async fn should_delete_a_workspace_task_through_cron_delete() {
 }
 
 /// Given a workspace task, when `cron.trigger` runs with `workspaceId`,
-/// then the manual fire goes through the 4b RunSpawner — a run record
-/// lands (Running, or its terminal state on this LLM-less bed) and the
-/// 4a "executor-pending" skip placeholder is gone (T8's 4b update).
+/// then the manual fire goes through the 4b RunSpawner — the run reaches
+/// its terminal state on this provider-less bed and records the honest
+/// reason for it (T8's 4b update; batch 4 strengthened the 4a
+/// "executor-pending" placeholder assertion into the real-reason check).
 #[tokio::test]
 async fn should_record_a_skipped_run_when_a_workspace_task_is_triggered_manually() {
     let (server, tmp) = ws4a_server();
@@ -384,6 +385,10 @@ async fn should_record_a_skipped_run_when_a_workspace_task_is_triggered_manually
                 "cron": "0 9 1 1 *",
                 "prompt": "p",
                 "recurring": true,
+                // This bed wires no LLM factory, so the injection drops
+                // early; naming the task's model gives the Dropped arm an
+                // honest reason to record (the assertion below pins it).
+                "model": "no-such-model",
             }),
         )
         .await
@@ -402,20 +407,37 @@ async fn should_record_a_skipped_run_when_a_workspace_task_is_triggered_manually
         .built_runtime(&workspace_id)
         .expect("runtime");
     let cron = runtime.cron().expect("cron");
-    // The spawner's fire is async — wait for the run to land.
-    let mut runs = Vec::new();
-    for _ in 0..50 {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        runs = cron.runs(&task_id);
-        if !runs.is_empty() {
-            break;
-        }
-    }
-    assert!(!runs.is_empty(), "the manual fire recorded a run: {runs:?}");
-    assert!(
-        runs.iter()
-            .all(|run| run.skip_reason.as_deref() != Some("executor-pending-batch-4b")),
-        "the 4a placeholder reason is gone: {runs:?}"
+    // The spawner's fire is async — wait (bounded) for the run to reach
+    // its terminal state. Having `cron.trigger` await the opener and
+    // return the runId is a wire-contract change deferred to a follow-up;
+    // until then the sanctioned bounded condition wait is the sync point.
+    let terminal = mirri_test_support::wait_for::wait_for_async(
+        Duration::from_secs(10),
+        Duration::from_millis(20),
+        || {
+            let runs = cron.runs(&task_id);
+            runs
+                .iter()
+                .find(|run| run.status != mirri_core::cron::RunStatus::Running)
+                .cloned()
+        },
+    )
+    .await
+    .expect("the manual fire recorded a run");
+    assert_eq!(
+        terminal.status,
+        mirri_core::cron::RunStatus::Failed,
+        "the provider-less bed fails the run honestly: {terminal:?}"
+    );
+    assert_eq!(
+        terminal.skip_reason.as_deref(),
+        Some("模型解析失败：no-such-model"),
+        "the run names its real failure reason (the 4a placeholder is gone): {terminal:?}"
+    );
+    assert_eq!(
+        terminal.trigger,
+        Some(mirri_core::cron::RunTrigger::RunNow),
+        "the manual trigger is the recorded launch"
     );
 }
 
@@ -515,7 +537,7 @@ async fn should_remove_the_cron_store_when_the_workspace_is_deleted() {
 /// listing source (ADR-020's replacement for the retired store-file
 /// fingerprint cache; the listAll throttle cache still bounds the read
 /// rate, but no file-fingerprint entry exists to inspect any more).
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn should_cache_the_workspace_group_until_the_store_moves() {
     let (server, tmp) = ws4a_server();
     let _ = tmp;
@@ -552,7 +574,8 @@ async fn should_cache_the_workspace_group_until_the_store_moves() {
 
     // Second aggregation past the throttle window: the same row still
     // serves (no fingerprint, no invalidation surface).
-    tokio::time::sleep(CRON_LIST_ALL_MIN_INTERVAL + Duration::from_millis(50)).await;
+    tokio::task::yield_now().await;
+    tokio::time::advance(CRON_LIST_ALL_MIN_INTERVAL + Duration::from_millis(50)).await;
     let second = server
         .call_method("cron.listAll", json!({}))
         .await
@@ -723,32 +746,27 @@ async fn given_the_import_already_ran_when_the_engine_reboots_then_the_archive_n
     );
 }
 
-/// Poll `cron.listAll` (bounded) until the task id appears in the
-/// workspace groups — the import task is asynchronous, so the first
-/// listing after the census settlement may still race its table write.
-async fn poll_cron_list_all(server: &EmbeddedServer, task_id: &str) -> serde_json::Value {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let listed = server
-            .call_method("cron.listAll", json!({}))
-            .await
-            .expect("cron.listAll");
-        let found = listed["workspaces"]
+/// ONE `cron.listAll` dispatch asserting the adopted task id appears in
+/// the workspace groups — batch 4's fix AWAITS the legacy import inside
+/// the census settlement, so the first listing after dispatch must
+/// already carry the rows (no poll: a missing row here is a contract
+/// violation, not a scheduling delay).
+async fn listed_after_import_settles(server: &EmbeddedServer, task_id: &str) -> serde_json::Value {
+    let listed = server
+        .call_method("cron.listAll", json!({}))
+        .await
+        .expect("cron.listAll");
+    assert!(
+        listed["workspaces"]
             .as_array()
             .expect("workspaces array")
             .iter()
             .any(|g| g["tasks"]
                 .as_array()
-                .is_some_and(|tasks| tasks.iter().any(|row| row["id"] == task_id)));
-        if found || std::time::Instant::now() >= deadline {
-            assert!(
-                found,
-                "task {task_id} never showed in the aggregate within the poll window: {listed}"
-            );
-            return listed;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+                .is_some_and(|tasks| tasks.iter().any(|row| row["id"] == task_id))),
+        "task {task_id} must show in the first listing after the census settlement: {listed}"
+    );
+    listed
 }
 
 // --- Task 8 (ADR-006): the ACP legacy-cron adoption + the import's
@@ -801,12 +819,10 @@ async fn should_import_legacy_cron_tasks_when_acp_engine_boots() {
     .with_cron_tick(Duration::from_millis(50));
     assert_eq!(default_workspace_id(&server), workspace_id);
 
-    // The import rides the census-settled background task: the first
-    // dispatch settles the census (which releases the import), and the
-    // read face then observes the adopted rows. The poll is bounded —
-    // the import task is asynchronous, so the first listing after the
-    // settlement may still race its table write.
-    let _listed = poll_cron_list_all(&server, "cron-acp-legacy-1").await;
+    // The import is AWAITED inside the census settlement (batch 4's
+    // fix): the first dispatch settles the census — import included —
+    // and the read face observes the adopted rows on that very listing.
+    let _listed = listed_after_import_settles(&server, "cron-acp-legacy-1").await;
 
     // The durable row landed through the shared index (the manager's
     // workspace rows and the listing read the same database).
@@ -838,9 +854,10 @@ async fn should_import_legacy_cron_tasks_when_acp_engine_boots() {
 
 /// Given a legacy cron manifest, when the shared cron index is first
 /// opened, then the import does NOT run inline — the open is
-/// connection-only and the import rides the census-settled background
-/// task (e956f5e8a's principle: startup housekeeping stays off the
-/// first-request path).
+/// connection-only and the import is awaited inside the census
+/// settlement instead (e956f5e8a's principle: startup housekeeping stays
+/// off the first-request path; batch 4: the settlement itself joins the
+/// import before releasing any waiter).
 #[tokio::test]
 async fn should_not_block_first_request_when_cron_import_runs() {
     let home = tempfile::tempdir().unwrap();
@@ -855,9 +872,9 @@ async fn should_not_block_first_request_when_cron_import_runs() {
     );
 
     // The first open builds the connection only: the rows are NOT there
-    // yet (the import is a background task gated on the census
-    // settlement, which only the first dispatched RPC triggers — this
-    // direct call precedes every dispatch).
+    // yet (the import runs inside the census settlement, which only the
+    // first dispatched RPC triggers — this direct call precedes every
+    // dispatch).
     let index = server
         .shared_cron_index()
         .expect("the home-rooted engine carries a shared cron index");
@@ -866,10 +883,9 @@ async fn should_not_block_first_request_when_cron_import_runs() {
         "the shared index's first open does not import inline"
     );
 
-    // The settlement-gated task performs it: a dispatched RPC settles
-    // the census (the import's gate) and the read face then observes the
-    // adopted rows.
-    let _ = poll_cron_list_all(&server, "cron-acp-legacy-1").await;
+    // The settlement performs it — AWAITED, so the first dispatched RPC
+    // (this listing) already observes the adopted rows.
+    let _ = listed_after_import_settles(&server, "cron-acp-legacy-1").await;
 }
 
 /// Given the import already ran (this boot or an earlier one), when the
@@ -887,9 +903,10 @@ async fn should_not_reimport_the_workspace_local_archive_on_a_later_boot() {
         Some(home.path().to_path_buf()),
         Vec::new(),
     );
-    // First boot: settle the census (the import's gate) and wait for
-    // the adopted row, then delete the task through the durable face.
-    let _ = poll_cron_list_all(&server, "cron-acp-legacy-1").await;
+    // First boot: settle the census (which AWAITS the import — batch 4)
+    // and read the adopted row, then delete the task through the durable
+    // face.
+    let _ = listed_after_import_settles(&server, "cron-acp-legacy-1").await;
     let deleted = server
         .call_method(
             "cron.delete",
@@ -908,10 +925,11 @@ async fn should_not_reimport_the_workspace_local_archive_on_a_later_boot() {
         Some(home.path().to_path_buf()),
         Vec::new(),
     );
-    // The reboot's import settles through the census gate. Waiting for the
-    // housekeeping is the signal — and it does not cover the cron import,
-    // which the census body spawns, so drive one cron pass afterwards: the
-    // import must have landed before that pass reads the store.
+    // The reboot's import settles through the census gate — and batch
+    // 4's fix AWAITED it inside that settlement, so once the housekeeping
+    // settles the store is final. Drive one cron pass afterwards to prove
+    // the first pass reads that final store (no "must have landed"
+    // probability: the ordering is structural now).
     let _ = server2.call_method("cron.listAll", json!({})).await;
     server2.await_housekeeping_settled().await;
     drive_cron_pass(&server2).await;

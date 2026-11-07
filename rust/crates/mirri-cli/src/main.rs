@@ -706,20 +706,35 @@ fn serve_default_workspace_root_at(registry_path: &Path) -> PathBuf {
 /// workspace, but a packaged front end (the Desktop app) spawns the binary
 /// with the filesystem root as its cwd — a workspace of `/` is useless, so
 /// the fallback is the user's home directory. The decision is factored into
-/// [`web_workspace_for`] so it can be tested without touching the process
-/// cwd.
+/// [`web_workspace_default_at`] / [`web_workspace_for_at`] so it can be
+/// tested without touching the process cwd or environment.
 fn web_workspace_default() -> PathBuf {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    web_workspace_for(&cwd)
+    web_workspace_default_at(
+        &std::env::current_dir().unwrap_or_default(),
+        |name| std::env::var_os(name),
+    )
+}
+
+/// [`web_workspace_default`] on an explicit cwd and env lookup: the root
+/// cwd falls back to the OS home resolved through mirri-os (`HOME`, then
+/// `USERPROFILE` — a plain Windows environment has no `HOME`, so reading
+/// only that variable would leave a packaged app started from `C:\` with
+/// the useless drive root). Factored so tests can drive that Windows
+/// launch shape with a fake env instead of mutating the process one.
+fn web_workspace_default_at(
+    cwd: &Path,
+    get_env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> PathBuf {
+    web_workspace_for_at(cwd, mirri_os::resolve_os_home_dir_from(get_env).as_deref())
 }
 
 /// The cwd-vs-home decision of [`web_workspace_default`], on an explicit
-/// path: a path with no parent is the filesystem root (`/`, or a drive root
-/// on Windows), so the workspace falls back to `$HOME`.
-fn web_workspace_for(cwd: &Path) -> PathBuf {
+/// path and home: a path with no parent is the filesystem root (`/`, or a
+/// drive root on Windows), so the workspace falls back to the resolved
+/// home — or to the cwd itself when no home variable exists at all.
+fn web_workspace_for_at(cwd: &Path, home: Option<&Path>) -> PathBuf {
     if cwd.parent().is_none() {
-        std::env::var_os("HOME")
-            .map(PathBuf::from)
+        home.map(Path::to_path_buf)
             .unwrap_or_else(|| cwd.to_path_buf())
     } else {
         cwd.to_path_buf()
@@ -947,21 +962,40 @@ mod tests {
     #[test]
     fn should_fall_back_to_home_when_the_cwd_is_the_filesystem_root() {
         // Given a cwd at the filesystem root (a packaged app inherits `/`)
-        // and a HOME pointing into a temporary directory
-        let home = std::env::temp_dir().join("mirri-web-workspace-test-home");
-        std::fs::create_dir_all(&home).expect("create the test home dir");
-        let previous = std::env::var_os("HOME");
-        unsafe { std::env::set_var("HOME", &home) };
+        // and a home pointing into a temporary directory
+        let home = tempfile::tempdir().expect("home tempdir");
 
         // When the default web workspace is derived from that cwd
-        let resolved = web_workspace_for(Path::new("/"));
+        let resolved = web_workspace_for_at(Path::new("/"), Some(home.path()));
 
         // Then the user home is used instead of the root
-        assert_eq!(resolved, home);
-        match previous {
-            Some(value) => unsafe { std::env::set_var("HOME", value) },
-            None => unsafe { std::env::remove_var("HOME") },
-        }
+        assert_eq!(resolved, home.path());
+    }
+
+    #[test]
+    fn should_fall_back_to_the_user_profile_when_windows_has_no_home() {
+        // Given the Windows packaged-app launch shape: a root cwd (the
+        // same parentless branch as `C:\`) and a plain Windows environment
+        // carrying no `HOME`, only `USERPROFILE`
+        let get_env = |name: &str| {
+            (name == "USERPROFILE").then(|| std::ffi::OsString::from(r"C:\Users\alice"))
+        };
+
+        // When the default web workspace is resolved from that cwd
+        let resolved = web_workspace_default_at(Path::new("/"), get_env);
+
+        // Then the user profile is used instead of the useless drive root
+        assert_eq!(resolved, Path::new(r"C:\Users\alice"));
+    }
+
+    #[test]
+    fn should_keep_the_root_cwd_when_no_home_can_be_resolved() {
+        // Given an environment where neither `HOME` nor `USERPROFILE` exists
+        // When the default web workspace is resolved from a root cwd
+        let resolved = web_workspace_default_at(Path::new("/"), |_| None);
+
+        // Then the cwd stays — with no home there is nothing better to use
+        assert_eq!(resolved, Path::new("/"));
     }
 
     #[test]
@@ -970,7 +1004,7 @@ mod tests {
         let cwd = Path::new("/tmp/some-project");
 
         // When the default web workspace is derived from that cwd
-        let resolved = web_workspace_for(cwd);
+        let resolved = web_workspace_for_at(cwd, None);
 
         // Then the cwd is kept as the workspace
         assert_eq!(resolved, cwd);
@@ -1114,9 +1148,10 @@ mod tests {
     #[test]
     fn should_delegate_provider_construction_to_the_shared_core_factory() {
         // Given an agent configured for the Google provider with no API key
-        // in the environment
-        let previous = std::env::var("GOOGLE_API_KEY").ok();
-        unsafe { std::env::remove_var("GOOGLE_API_KEY") };
+        // in the environment (the guard holds the workspace env lock for the
+        // whole check and restores the key on drop)
+        let mut env = mirri_test_support::env::EnvGuard::new();
+        env.remove("GOOGLE_API_KEY");
         let config = AgentScopeConfig {
             provider_type: mirri_core::ProviderType::Google,
             ..AgentScopeConfig::default()
@@ -1137,8 +1172,5 @@ mod tests {
             panic!("google provider must not be constructible without a key");
         };
         assert!(error.contains("GOOGLE_API_KEY"), "got: {error}");
-        if let Some(previous) = previous {
-            unsafe { std::env::set_var("GOOGLE_API_KEY", previous) };
-        }
     }
 }

@@ -55,4 +55,5 @@ mock-llm = ["dep:mirri-test-harness", "dep:mirri-plugin-host"]
 [dev-dependencies]
 tempfile = "3"
 mirri-test-harness = { path = "../mirri-test-harness" }
+mirri-test-support = { path = "../mirri-test-support" }
 chrono = { workspace = true }

@@ -315,6 +315,31 @@ describe('toolMeta', () => {
       JSON.stringify({ args: '-m "fix bug"' }),
     );
   });
+
+  it('should compress a leading cd so the command stays readable in a one-line digest', () => {
+    const command = 'cd /Users/me/proj && pnpm gate:rust';
+    // Given the command starts with a cd to an absolute path
+    // When it is rendered as a one-line digest (no workspace to compare against)
+    // Then the path is compressed and the digest leads with the command
+    expect(toolSummary('Bash', JSON.stringify({ command }))).toBe('…/proj/ && pnpm gate:rust');
+  });
+
+  it('should leave a command without a cd prefix untouched', () => {
+    expect(toolSummary('Bash', JSON.stringify({ command: 'pnpm gate' }))).toBe('pnpm gate');
+  });
+
+  it('should show the command verbatim in the expanded summary when it carries a cd prefix', () => {
+    const command = 'cd /Users/me/proj && pnpm test';
+    expect(toolSummary('Bash', JSON.stringify({ command }), true)).toBe(command);
+  });
+
+  it('should keep both ends of an over-long command so the tail detail survives', () => {
+    const command = `pnpm run build ${'x'.repeat(300)} --filter=@mirri-ai/web`;
+    const summary = toolSummary('Bash', JSON.stringify({ command }), false);
+    expect(summary.length).toBeLessThanOrEqual(160);
+    expect(summary.startsWith('pnpm run build')).toBe(true);
+    expect(summary.endsWith('--filter=@mirri-ai/web')).toBe(true);
+  });
 });
 
 describe('toolPayload', () => {

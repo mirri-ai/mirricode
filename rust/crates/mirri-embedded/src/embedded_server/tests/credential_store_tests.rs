@@ -530,7 +530,8 @@ fn should_carry_provider_id_from_the_real_factory_constructed_adapter() {
         )])),
         ..Default::default()
     }));
-    let factory = ConfigAwareLlmFactory::new(config, None);
+    let home = tempfile::tempdir().expect("home tempdir");
+    let factory = ConfigAwareLlmFactory::new(config, Some(home.path().to_path_buf()));
 
     // When the factory constructs the adapter for the alias
     let llm = factory

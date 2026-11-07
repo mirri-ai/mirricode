@@ -1,6 +1,6 @@
 # Model 设置页现状盘点（Context）
 
-> 快照日期：2026-09-08（评审后更新：display name 根因修订；感知面 curated 机制与 provider 删除级联已复核）；2026-09-18 增补：models.dev → 别名能力字段推导链路侦察（§6）；2026-10-28 增补：批量删除 / 过滤保持 / 导入时模型选择三需求侦察（§7） ·
+> 快照日期：2026-09-08（评审后更新：display name 根因修订；感知面 curated 机制与 provider 删除级联已复核）；2026-09-18 增补：models.dev → 别名能力字段推导链路侦察（§6）；2026-10-28 增补：批量删除 / 过滤保持 / 导入时模型选择三需求侦察（§7）；2026-11-07 增补：思考开关表达力侦察（§8） ·
 > 本文是 provider/model 配置域的**现状参考**（代码事实、两侧差异矩阵、侦察产出），随现状变化更新，不含目标与裁决。
 > 目标定义见 [model-settings-page-requirements.md](model-settings-page-requirements.md)（下称「需求文档」）；技术架构见 [model-settings-architecture.md](model-settings-architecture.md)（下称「架构文档」）；契约基准为 TS v2 server（`packages/kap-server`）。
 
@@ -111,3 +111,68 @@ rust 侧已有能力承接面（缺口 1 的修复不需要 schema 改动）：`
 | 5 | **注释与实现不一致（两处）**：`AddProviderDialog.vue` 头注释称"user-deleted models are never resurrected"（实际不成立，见 #2）且仍写"v2-only (kap-server)"（v3 已实现同名能力） | `AddProviderDialog.vue:1-11` |
 | 6 | **可复用 UI 地基**：`Checkbox` 原语已支持 `indeterminate` 半选态（源码注释即"select all over a partially selected set"，`AgentProfilesPanel`/`RetentionPanel` 在用）；chip 勾选（`ModelEditForm` 的 `.chip.on` toggle）适配导入排除清单；`ToolbarSearch` 为标准过滤输入原语；批量操作栏无现成模式需新建 | `ui/Checkbox.vue:9-38`；`AgentProfilesPanel.vue:762-779`；`ModelEditForm.vue:392-395` |
 | 7 | **`config.set` 深合并语义**：对象递归合并、标量/数组整体替换——批量删除不能走"提交截断后的 models 映射"路径（会整体替换整个 models 节），必须走逐键删除语义的接口；手动建 provider 的原子分节写（B7）是加法合并，与删除语义不冲突 | `wire.rs:194-215`；ADR-005 决策 2 |
+
+## 8. 思考开关表达力现状侦察（2026-11-07）
+
+用户报告"点关闭思考后模型仍在思考"。侦察定位：引擎里"关闭思考"在多数端点上**无法表达**，且失败是静默的。以下是代码事实与厂商文档事实（设计裁决见需求文档 D-M11/SDR-2026-11-07、架构文档 C7/ADR-006）。
+
+### 8.1 引擎侧：`ThinkingEffort::None` 的三种落点
+
+| 适配器 | 显式关闭时发出的字段 | 实际效果 |
+|---|---|---|
+| `openai`（含所有 `type = "openai"` 的 provider） | 无（省略 `reasoning_effort`） | 省略 = 厂商默认；各厂商默认均为开 → **关闭无效** |
+| `kimi` | `thinking: {"type": "disabled"}` | 有效（但仅该适配器） |
+| `anthropic` | 无 thinking 键 | 有效（该协议思考是 opt-in，省略即关） |
+| `openai_responses` | 无 `reasoning` 字段 | 有效（同上，opt-in 协议） |
+
+证据：`rust/crates/mirri-embedded/src/providers/openai.rs:185-195`（`None` 与未配置合并为同一分支，不发字段）；`providers/kimi.rs:118-121`；`providers/anthropic.rs:196-199`；`providers/openai_responses.rs:153`。适配器分派只看 provider 的 `type`（`providers/config_factory.rs:195`），因此 `type = "openai"` 的 provider 无论上游是哪家厂商，都走第一条路径。
+
+### 8.2 引擎侧：能力词表缺"能否关闭"
+
+- `ModelAlias` 有 `support_efforts` / `default_effort` / `adaptive_thinking`（`rust/crates/mirri-core/src/config/mod.rs:237-241`），但没有表达"这个模型能否关闭思考"的字段。
+- 词表 `always_thinking` 在 rust 侧零消费：`rust/crates/mirri-embedded/src/embedded_server/models_dev_import.rs:41-42` 注释即记"`always_thinking` have no rust landing field, G-18"；`grep always_thinking rust/` 仅该注释命中。
+- **web 侧消费方已存在且有测试**：`apps/mirri-web/src/lib/modelThinking.ts:17`（`always_thinking` → `always-on`）、`:53-62`（`always-on` 时不给 `off` 段），测试 `modelThinking.test.ts:44-105`。即 UI 已能正确渲染"关不掉"，只是引擎从不产出该值。
+
+### 8.3 引擎侧：`[thinking]` 配置节不生效
+
+`rust/crates/mirri-core/src/config/mod.rs:370-380`，`ThinkingConfig` 的文档注释自陈 "All fields are parse-only and host-interpreted"。全仓消费者核查（不只有请求路径）：`config/env_layer.rs:121`（`keep` 的 env 展开）、`config/env_layer.rs:445-450`（`MIRRICODE_MODEL_THINKING_EFFORT` 只写 `effort`）、`config/mod.rs:835`（变更检测，`ConfigChange::Thinking` 无下游消费者）、`config/wire.rs:85`（wire 展示）、`config/mod.rs:1229`（`migrate_config` 的一次性 `effort: max → high` 改写）、以及 `KNOWN_CONFIG_TOP_LEVEL_KEYS` / `KNOWN_SECTION_KEYS` 两张键表把它当作一等顶层节。**请求构造路径无任何消费者**。用户 config.toml 中 `[thinking] enabled = false` 从未生效。
+
+移除该节时有两处连带影响需要一并处理（设计见架构 C7.8、实施见计划 Task 9）：`KNOWN_CONFIG_TOP_LEVEL_KEYS` 里保留 `thinking` 会让结构体序列化时把它当作"结构体自有"键，导致下一次保存把用户的节整段删掉；`migrate_config` 直接读取 `config.thinking.effort`，删字段即编译失败。
+
+### 8.4 会话创建不解析模型默认档位
+
+模型声明的默认档位（`default_effort`，缺省取 `support_efforts` 中位）只在**切换模型**时解析并写入 agent：`rust/crates/mirri-embedded/src/embedded_server/session_handlers.rs:7623-7650`。创建会话时 `thinking_effort` 直接取请求参数（`:551`），web 的 `createSession` 不传该参数（`apps/mirri-web/src/api/daemon/ws-rpc-api.ts:774-795`）→ 新会话 `thinking_effort = None`，模型档位声明不生效，需先切换一次模型。
+
+### 8.5 models.dev 快照对"能否关闭"的编码
+
+快照内 463 个 `reasoning === true` 的模型，其 `reasoning_options` 分布：
+
+| 形态 | 数量 | 可用于推导 |
+|---|---|---|
+| 含 `toggle` | 151 | 关闭可行；wire 拼写需厂商知识 |
+| `effort` 值含 `"none"` | 69 | 关闭 = `reasoning_effort: "none"`，可机械推导 |
+| 仅 `effort`（不含 none）或空数组 | 243 | 关不掉，可机械推导为 `always_thinking` |
+
+证据：`rust/crates/mirri-embedded/data/models-dev-snapshot.json`；解析现状 `models_dev_import.rs:100-142`（`models_dev_thinking_options` 只取 effort 档、丢弃 `none`，`toggle` 仅用于标记 thinking 能力存在）；`models_dev_import.rs:41-42` 记录 `offEffort`/`always_thinking` 无落点。
+
+含 `toggle` 的 provider 分布：amazon-bedrock 78（该 wire 不受支持）、alibaba 26、zhipuai 13、google-vertex 9、deepseek 4、google 4、azure 4、kimi-code-plan-* 4、anthropic 2、cohere 2、moonshotai(-cn) 2、minimax 1。
+
+### 8.6 厂商 API 事实（2026-11-07 从官方文档核实）
+
+| 厂商 | 关闭思考的参数 | 形状 | 省略的语义 |
+|---|---|---|---|
+| Xiaomi MiMo | `thinking.type` | 顶层对象，枚举 `enabled`/`disabled`；对象内**无** effort 字段 | 默认 `enabled` |
+| Moonshot Kimi K2.x | `thinking.type`（另有 `thinking.keep`） | 同上 | 默认 `enabled` |
+| Moonshot Kimi K3/K3.1 | 仅 `reasoning_effort`（`low`/`high`/`max`） | **不接受 `thinking` 对象** | 默认 `max`，无关闭档 |
+| Zhipu GLM-4.6+ / 5.x | `thinking.type`（另有 `clear_thinking`）+ 顶层 `reasoning_effort` | 同上 | 默认 `enabled`；GLM-5.3/5.3-FLASH 强制思考，传 `disabled` 报错 |
+| DeepSeek | `thinking.type` 或 `reasoning_effort: "none"` | 同上 | 省略时先看 `reasoning_effort`，两者都缺则开启 |
+| Alibaba Qwen / DashScope | `enable_thinking`（顶层布尔） | `{"enable_thinking": false}` | 逐模型不同（qwen3.5+ 默认开，qwen-plus/qwen-flash 默认关） |
+| MiniMax | `thinking.type` | 枚举 `adaptive`/`disabled`（**无 `enabled`**） | 默认 `adaptive`；M3.1-Flash 传 `disabled` 报 400 |
+| Anthropic | `thinking.type` | `enabled`（带 `budget_tokens`）/`disabled`/`adaptive`/`between_tools` | 取决于模型 |
+| OpenAI | 仅 `reasoning_effort` | 枚举含 `none`，但"并非所有推理模型支持每个值" | 默认 `medium`（思考保持开） |
+
+共性事实：**effort 从不在 `thinking` 对象内部**，一律是顶层兄弟字段（Anthropic 为 `output_config.effort`）。因此"用某种统一对象同时承载开关与档位"在任何一家都不成立。
+
+### 8.7 用户实际配置的现状
+
+`mirri config-show` 输出的三个 provider 全部为 `type = "openai"`（`xiaomi-token-plan-cn` / `deepseek` / `kimi-code-plan-cn`），两个 MiMo 别名未声明 `support_efforts`/`default_effort`。因此当前状态下：MiMo 的"关闭"无效、档位无法选择、`[thinking] enabled = false` 从未生效。`kimi-code-plan-cn` 指向 K3（`kimi-k3`）而标 `type="openai"` —— 恰好是 K3 唯一接受的 wire，若为统一而改标 `type="kimi"` 会立刻破坏该 provider。

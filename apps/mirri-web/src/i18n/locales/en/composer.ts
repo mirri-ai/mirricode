@@ -30,6 +30,7 @@ export default {
   quickStartPlaceholder: 'Type a message to start a new session…',
   thinkingSuffix: ' · thinking',
   thinkingSuffixEffort: ' · {level}',
+  thinkingAlwaysOn: 'This model always thinks and cannot be turned off.',
   inlineChipSkill: 'Skill reference: {name}',
   inlineChipCommand: 'Command reference: {name}',
   invalidRefsTitle: 'Some references in this message are no longer valid:',

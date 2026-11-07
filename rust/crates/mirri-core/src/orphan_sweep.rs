@@ -993,7 +993,7 @@ mod tests {
 
     /// Spawn `program args...` as its own process-group leader.
     fn spawn_leader(program: &str, args: &[&str]) -> SpawnedGroup {
-        let child = Command::new(program)
+        let child = Command::new(program) // hygiene-allow: real-process-group-harness
             .args(args)
             .process_group(0)
             .stdout(Stdio::null())
@@ -1011,7 +1011,7 @@ mod tests {
     /// Spawn `sh -c script` as a group leader and wait for it to exit,
     /// leaving descendants in the group behind.
     fn spawn_exiting_leader(script: &str) -> i32 {
-        let mut leader = Command::new("sh")
+        let mut leader = Command::new("sh") // hygiene-allow: real-process-group-harness
             .arg("-c")
             .arg(script)
             .process_group(0)
@@ -1026,14 +1026,13 @@ mod tests {
     }
 
     /// Poll until `predicate` holds or ~5 s elapse.
-    fn eventually<T>(mut predicate: impl FnMut() -> Option<T>) -> Option<T> {
-        for _ in 0..50 {
-            if let Some(value) = predicate() {
-                return Some(value);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        predicate()
+    fn eventually<T>(predicate: impl FnMut() -> Option<T>) -> Option<T> {
+        mirri_test_support::wait_for::wait_for(
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(100),
+            predicate,
+        )
+        .ok()
     }
 
     /// Wait until the process group `pgid` has at least one live member.
@@ -1137,6 +1136,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // R-layer: real process-group sampling (design §3)
     fn should_report_a_live_orphan_when_fingerprint_matches_a_live_process() {
         // Given a live process-group leader and a Running archive whose
         // fingerprint truly points at it
@@ -1180,6 +1180,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // R-layer: real process-group sampling (design §3)
     fn should_not_signal_anything_when_policy_is_report_only() {
         // Given a live orphan under the report-only policy
         let spawned = spawn_leader("sleep", &[SLEEP_SECONDS]);
@@ -1206,6 +1207,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // R-layer: real process-group sampling (design §3)
     fn should_terminate_a_verified_orphan_when_policy_is_report_and_terminate() {
         // Given a live orphan under the terminate policy
         let mut spawned = spawn_leader("sleep", &[SLEEP_SECONDS]);
@@ -1245,6 +1247,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // R-layer: real process-group sampling (design §3)
     fn should_report_group_residue_when_the_leader_died_but_descendants_live() {
         // Given a leader that already exited, leaving a live descendant
         // in its process group, and an archive pointing at the dead
@@ -1286,6 +1289,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // R-layer: real process-group sampling (design §3)
     fn should_reconcile_a_dead_process_archive_when_fingerprint_matches_no_live_process() {
         // Given an archive whose fingerprint points at a long-gone
         // process and whose process group is empty
@@ -1339,6 +1343,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // R-layer: real process-group sampling (design §3)
     fn should_refuse_to_treat_a_recycled_pid_as_an_orphan() {
         // Given a live process and an archive whose fingerprint carries
         // that pid but start ticks from a different epoch
@@ -1405,6 +1410,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // R-layer: real process-group sampling (design §3)
     fn should_report_an_undeterminable_verdict_and_touch_neither_process_nor_archive_when_start_ticks_are_unreadable()
      {
         // Given a live process and an archive whose fingerprint carries
@@ -1440,6 +1446,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // R-layer: real process-group sampling (design §3)
     fn should_terminate_group_residue_when_policy_is_report_and_terminate() {
         // Given a leader that already exited, leaving a live descendant
         // in its process group, and an archive pointing at the dead

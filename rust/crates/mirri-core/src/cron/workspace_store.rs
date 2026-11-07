@@ -732,6 +732,12 @@ pub struct WorkspaceCronManager {
     /// mutation (the server side forwards them as
     /// `event.cron.workspaceChanged`).
     change_listeners: std::sync::Mutex<Vec<Box<dyn Fn() + Send + Sync>>>,
+    /// Batch 4's apply-window test seam: a one-shot closure fired between
+    /// the durable fire write and the in-memory apply, so a test can land
+    /// a concurrent removal exactly inside that window instead of hoping
+    /// a raced thread lands there (the C-13 determinization).
+    #[cfg(test)]
+    apply_hook: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 /// One stored task row of the SQLite write-through backend, mirroring the
@@ -827,6 +833,8 @@ impl WorkspaceCronManager {
             runs: std::sync::Mutex::new(runs),
             options,
             change_listeners: std::sync::Mutex::new(Vec::new()),
+            #[cfg(test)]
+            apply_hook: std::sync::Mutex::new(None),
         }
     }
 
@@ -859,6 +867,18 @@ impl WorkspaceCronManager {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(Box::new(listener));
+    }
+
+    /// Install the one-shot apply-window hook (batch 4's C-13 test
+    /// seam): it fires inside [`Self::check_due`] AFTER the durable fire
+    /// write and BEFORE the in-memory apply — the exact window a
+    /// concurrent removal must win without the task being resurrected.
+    #[cfg(test)]
+    pub(crate) fn set_apply_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *self
+            .apply_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Box::new(hook));
     }
 
     /// Fire the registered change listeners (post-mutation).
@@ -2012,6 +2032,19 @@ impl WorkspaceCronManager {
             );
             return Vec::new();
         }
+        // Batch 4's apply-window seam (C-13): fire the one-shot test hook
+        // in the exact window between the durable write and the in-memory
+        // apply — a removal landed here must win (the apply below is
+        // conditional on the CURRENT entry, never a blind overwrite).
+        #[cfg(test)]
+        if let Some(hook) = self
+            .apply_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            hook();
+        }
         // Apply pass (review M4 — the compare-and-swap posture): each
         // plan is applied against the task's CURRENT in-memory entry,
         // re-read by id under the table lock, not the plan's stale
@@ -2878,25 +2911,28 @@ mod tests {
         .unwrap();
         manager.set_next_fire_at(&id, Some(Utc::now() - chrono::Duration::seconds(5)));
 
-        // The race: one thread drives check_due (plan → durable write →
-        // apply), the other removes the task. Whatever the interleaving,
-        // the end state must hold: the task is GONE (a removal that
-        // landed after the durable fire write wins — the apply skips a
-        // removed entry) and never resurrected with a stale plan.
-        let racer = std::sync::Arc::clone(&manager);
-        let raced_id = id.clone();
-        let remover = std::thread::spawn(move || {
-            // A tiny pre-removal pause biases the race toward the
-            // interesting window (the removal landing between the
-            // durable write and the apply).
-            std::thread::sleep(std::time::Duration::from_millis(5));
-            futures_executor_block_on(racer.remove(&raced_id));
-        });
+        // Batch 4's apply-window seam: the removal lands EXACTLY between
+        // the durable fire write and the in-memory apply — the one-shot
+        // hook fires inside `check_due` at that point, so the window is
+        // constructed, not hoped for (the raced thread + 5ms sleep is
+        // gone: whatever the interleaving used to be, the invariant below
+        // now runs against the precise interleaving that matters).
+        {
+            let racer = std::sync::Arc::clone(&manager);
+            let raced_id = id.clone();
+            manager.set_apply_hook(move || {
+                // `futures::executor`, NOT the test helper's tokio
+                // runtime: this hook runs INSIDE `check_due`'s own
+                // `block_on`, and building a second tokio runtime there
+                // panics (nested runtime). `remove`'s body is fully
+                // synchronous, so the plain park loop drives it fine.
+                futures::executor::block_on(racer.remove(&raced_id));
+            });
+        }
         let fired = futures_executor_block_on(manager.check_due());
-        let _ = remover.join();
-        // The fire itself may or may not have surfaced (the plan's timing
-        // decides); the INVARIANT is the removal: the task is gone from
-        // memory and from the store, whatever the interleaving was.
+        // The invariant: the task is GONE (the removal landed after the
+        // durable fire write and wins — the apply skips a removed entry)
+        // and never resurrected with a stale plan.
         assert!(
             manager.get(&id).is_none(),
             "the removed task is never resurrected (M4)"

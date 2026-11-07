@@ -1310,9 +1310,9 @@ async fn should_treat_reachable_port_with_dead_pid_as_dead() {
     // construction is NOT required; the unit pins the AND: the combined
     // probe answers dead when the pid is dead even though the port arm
     // alone would say alive)
-    use std::process::Command;
+    use std::process::Command; // hygiene-allow: D: spawn of `true` to mint a reaped pid; wait() is synchronous, a slower machine cannot change the dead-pid verdict
     let dead_pid = {
-        let mut child = Command::new("true").spawn().expect("spawn true");
+        let mut child = Command::new("true").spawn().expect("spawn true"); // hygiene-allow: D: spawn of `true` to mint a reaped pid; wait() is synchronous, a slower machine cannot change the dead-pid verdict
         let pid = child.id();
         child.wait().expect("reap true");
         pid

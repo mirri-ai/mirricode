@@ -1028,7 +1028,7 @@ mod tests {
         assert_eq!(sink.stop_reason.as_deref(), Some("cancelled"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn should_settle_as_stopped_when_cancelled_during_execution() {
         // Given a subagent task with a delayed completion
         let cancel = CancelToken::new();
@@ -1038,7 +1038,7 @@ mod tests {
             "coder".into(),
             None,
             Box::pin(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await; // hygiene-allow: D: paused clock 虚拟定时器（永不到达，取消先触发）
                 Ok(SubagentCompletion::from_text("should never see this"))
             }),
         );
@@ -1047,7 +1047,7 @@ mod tests {
 
         // Schedule cancellation after a short delay
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await; // hygiene-allow: D: paused clock 虚拟定时器（先于 60s 完成）
             cancel_clone.cancel();
         });
 

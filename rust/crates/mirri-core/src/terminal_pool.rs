@@ -652,7 +652,6 @@ impl Default for TerminalPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     /// A hand-built terminal record with no PTY — frames are injected
     /// directly through [`TerminalRecord::emit_output`], the same path the
@@ -685,8 +684,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn should_deliver_every_frame_exactly_once_when_attaching_with_replay_mid_stream() {
         // Vary the attach cadence across rounds so different interleavings
-        // of the writer and the attaching task are exercised.
-        for cycle_pause_us in [0u64, 50, 200, 1000] {
+        // of the writer and the attaching task are exercised — as scheduling
+        // turns (yields), not wall-clock pauses.
+        for cadence_yields in [0usize, 1, 5, 20] {
             let pool = TerminalPool::with_defaults();
             let record = ptyless_record("term_race");
             pool.terminals
@@ -748,14 +748,14 @@ mod tests {
                     assert!(
                         !replay_seqs.contains(seq),
                         "seq {seq} delivered twice within one view (replay + sink), \
-                         cycle_pause_us={cycle_pause_us}"
+                         cadence_yields={cadence_yields}"
                     );
                 }
                 pool.detach_sink("term_race", handle)
                     .await
                     .expect("detach should succeed");
-                if cycle_pause_us > 0 {
-                    tokio::time::sleep(Duration::from_micros(cycle_pause_us)).await;
+                for _ in 0..cadence_yields {
+                    tokio::task::yield_now().await;
                 }
             }
 
@@ -777,7 +777,7 @@ mod tests {
             assert_eq!(
                 union, expected,
                 "the final view must cover 1..=100 exactly once each, \
-                 cycle_pause_us={cycle_pause_us}"
+                 cadence_yields={cadence_yields}"
             );
         }
     }

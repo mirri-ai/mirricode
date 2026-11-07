@@ -12,6 +12,7 @@ use mirri_core::error::EngineResult;
 use mirri_core::llm::{Llm, LlmChatParams, LlmEventStream, ModelCapability, ProviderErrorInfo};
 use mirri_core::message::{ContentPart, Message, Role, ToolCall};
 use mirri_core::profile::ThinkingEffort;
+use mirri_core::thinking_dialect::{ThinkingDialect, ThinkingIntent};
 use mirri_core::tool::ToolDefinition;
 use mirri_kosong::OpenAILegacyProvider;
 use serde_json::{Map, Value, json};
@@ -43,6 +44,10 @@ pub struct OpenAILlm {
     /// name the provider. `None` marks an unattributed adapter (direct
     /// constructions, test code).
     provider_id: Option<String>,
+    /// How this endpoint spells "stop thinking", and whether an off request
+    /// may be sent at all. `None` keeps the historical behaviour: an explicit
+    /// off omits the field.
+    thinking_intent: Option<ThinkingIntent>,
 }
 
 impl OpenAILlm {
@@ -91,6 +96,7 @@ impl OpenAILlm {
             },
             emit_video_url_parts: false,
             provider_id: None,
+            thinking_intent: None,
         }
     }
 
@@ -98,6 +104,12 @@ impl OpenAILlm {
     /// surfaced auth failure carries (O-5, ADR-009).
     pub fn with_provider_id(mut self, provider_id: impl Into<String>) -> Self {
         self.provider_id = Some(provider_id.into());
+        self
+    }
+
+    /// Set how this endpoint expresses "off" and whether it may be requested.
+    pub fn with_thinking_intent(mut self, intent: ThinkingIntent) -> Self {
+        self.thinking_intent = Some(intent);
         self
     }
 
@@ -175,27 +187,97 @@ impl OpenAILlm {
     /// The translation is currently total; the `Result` return keeps the
     /// signature aligned with [`Llm::chat`] and leaves room for fallible
     /// conversions (a failure would surface as an engine provider error).
-    fn build_request(&self, params: &LlmChatParams) -> EngineResult<Value> {
+    pub(crate) fn build_request(&self, params: &LlmChatParams) -> EngineResult<Value> {
         let mut request = self.build_base_request(params)?;
+        self.apply_thinking_intent(&mut request);
+        Ok(request)
+    }
 
-        // o-series style models accept a reasoning effort; other models ignore
-        // the field, so it is only sent when configured. Model-declared efforts
-        // (e.g. "max") pass through verbatim — the kosong openai-legacy wire
-        // behavior (`packages/kosong/src/providers/openai-legacy.ts:564-569`).
-        let reasoning_effort = match &self.thinking_effort {
-            Some(ThinkingEffort::Low) => Some("low".to_string()),
-            Some(ThinkingEffort::Medium) => Some("medium".to_string()),
-            Some(ThinkingEffort::High) => Some("high".to_string()),
-            Some(ThinkingEffort::Custom(effort)) => Some(effort.clone()),
+    /// Write the thinking intent onto a Chat Completions request body.
+    ///
+    /// - **No intent** (legacy construction): a declared effort rides
+    ///   `reasoning_effort`; an explicit off omits the field.
+    /// - **An explicit off with a resolved dialect**: the endpoint's own
+    ///   spelling.
+    /// - **An effort level**: `reasoning_effort` when the model declares
+    ///   tiers. Neither `thinking` nor `enable_thinking` carries an effort
+    ///   tier, so an undeclared effort sends no field at all.
+    /// - **Nothing configured**: no field, leaving the provider default.
+    ///
+    /// A model whose intent forbids off never emits the off payload: an
+    /// explicit off degrades to "no field", so the UI's missing switch and
+    /// the wire agree.
+    fn apply_thinking_intent(&self, request: &mut Value) {
+        let Some(map) = request.as_object_mut() else {
+            return;
+        };
+        let effort_level = match &self.thinking_effort {
+            Some(ThinkingEffort::Low) => Some("low"),
+            Some(ThinkingEffort::Medium) => Some("medium"),
+            Some(ThinkingEffort::High) => Some("high"),
+            Some(ThinkingEffort::Custom(level)) => Some(level.as_str()),
             Some(ThinkingEffort::None) | None => None,
         };
-        if let Some(level) = reasoning_effort
-            && let Some(map) = request.as_object_mut()
-        {
-            map.insert("reasoning_effort".to_string(), Value::String(level));
+        let explicitly_off = matches!(&self.thinking_effort, Some(ThinkingEffort::None));
+
+        let Some(intent) = &self.thinking_intent else {
+            if let Some(level) = effort_level {
+                map.insert("reasoning_effort".to_string(), json!(level));
+            }
+            return;
+        };
+
+        if explicitly_off && !intent.off_allowed {
+            return;
         }
 
-        Ok(request)
+        match intent.dialect {
+            Some(ThinkingDialect::ThinkingType) => {
+                if explicitly_off {
+                    map.insert("thinking".to_string(), json!({ "type": "disabled" }));
+                    return;
+                }
+                // Only endpoints that document a top-level effort field get
+                // one; the ones that document the thinking object alone
+                // (MiMo, Kimi K2, MiniMax) receive no tier field at all.
+                if intent.declared_efforts
+                    && intent.emits_sibling_effort
+                    && let Some(level) = effort_level
+                {
+                    map.insert("reasoning_effort".to_string(), json!(level));
+                }
+            }
+            Some(ThinkingDialect::ReasoningEffort) => {
+                if explicitly_off {
+                    map.insert("reasoning_effort".to_string(), json!("none"));
+                } else if let Some(level) = effort_level {
+                    map.insert("reasoning_effort".to_string(), json!(level));
+                }
+            }
+            Some(ThinkingDialect::EnableThinking) => {
+                if explicitly_off {
+                    map.insert("enable_thinking".to_string(), json!(false));
+                    return;
+                }
+                // Any non-off state needs the flag: these endpoints may
+                // default to NOT thinking, and the directory usually declares
+                // only a toggle for them (no tier array). Without the flag,
+                // picking "on" or picking a tier both leave thinking off.
+                if self.thinking_effort.is_some() {
+                    map.insert("enable_thinking".to_string(), json!(true));
+                }
+                if intent.declared_efforts
+                    && let Some(level) = effort_level
+                {
+                    map.insert("reasoning_effort".to_string(), json!(level));
+                }
+            }
+            None => {
+                if let Some(level) = effort_level {
+                    map.insert("reasoning_effort".to_string(), json!(level));
+                }
+            }
+        }
     }
 
     /// Translate engine [`Message`]s into OpenAI `messages` entries.
@@ -284,6 +366,10 @@ impl OpenAILlm {
 }
 
 impl Llm for OpenAILlm {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn provider_id(&self) -> Option<&str> {
         self.provider_id.as_deref()
     }
@@ -1274,5 +1360,157 @@ data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
             mirri_core::error::EngineError::ProviderConnectionError(_) => {}
             other => panic!("expected ProviderConnectionError, got {other:?}"),
         }
+    }
+    #[test]
+    fn should_send_the_thinking_object_when_off_is_requested_on_a_thinking_type_endpoint() {
+        // Given an adapter on MiMo's endpoint whose intent resolves to the
+        // thinking-object dialect
+        let llm = OpenAILlm::new(
+            "k",
+            "https://token-plan-cn.xiaomimimo.com/v1",
+            "mimo-v2.6-flash",
+            "",
+            Some(ThinkingEffort::None),
+        )
+        .with_thinking_intent(ThinkingIntent::resolve(
+            &["thinking".to_string()],
+            false,
+            None,
+            None,
+            "https://token-plan-cn.xiaomimimo.com/v1",
+            "mimo-v2.6-flash",
+        ));
+
+        // When the request is built
+        let request = llm
+            .build_request(&chat_params_with(vec![Message::user("hi")], vec![]))
+            .expect("request builds");
+
+        // Then the off is spelled out, not omitted
+        assert_eq!(request["thinking"], serde_json::json!({"type": "disabled"}));
+        assert!(request.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn should_send_none_when_off_is_requested_on_a_reasoning_effort_endpoint() {
+        // Given an adapter whose intent resolves to reasoning_effort
+        let llm = OpenAILlm::new("k", "https://api.example.test/v1", "m", "", Some(ThinkingEffort::None))
+            .with_thinking_intent(ThinkingIntent::resolve(
+                &["thinking".to_string()],
+                false,
+                Some("reasoning_effort"),
+                None,
+                "https://api.example.test/v1",
+                "m",
+            ));
+
+        // When the request is built
+        let request = llm
+            .build_request(&chat_params_with(vec![Message::user("hi")], vec![]))
+            .expect("request builds");
+
+        // Then the none tier carries the off
+        assert_eq!(request["reasoning_effort"], "none");
+    }
+
+    #[test]
+    fn should_send_the_false_flag_when_off_is_requested_on_an_enable_thinking_endpoint() {
+        // Given an adapter whose intent resolves to enable_thinking
+        let llm = OpenAILlm::new("k", "https://api.example.test/v1", "qwen", "", Some(ThinkingEffort::None))
+            .with_thinking_intent(ThinkingIntent::resolve(
+                &["thinking".to_string()],
+                false,
+                Some("enable_thinking"),
+                None,
+                "https://api.example.test/v1",
+                "qwen",
+            ));
+
+        // When the request is built
+        let request = llm
+            .build_request(&chat_params_with(vec![Message::user("hi")], vec![]))
+            .expect("request builds");
+
+        // Then the boolean off is sent
+        assert_eq!(request["enable_thinking"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn should_send_no_thinking_field_when_off_is_requested_but_the_model_forbids_it() {
+        // Given a model declaring always_thinking
+        let llm = OpenAILlm::new("k", "https://api.deepseek.com", "deepseek-flash", "", Some(ThinkingEffort::None))
+            .with_thinking_intent(ThinkingIntent::resolve(
+                &["thinking".to_string(), "always_thinking".to_string()],
+                false,
+                None,
+                None,
+                "https://api.deepseek.com",
+                "deepseek-flash",
+            ));
+
+        // When the request is built
+        let request = llm
+            .build_request(&chat_params_with(vec![Message::user("hi")], vec![]))
+            .expect("request builds");
+
+        // Then no thinking-related field is emitted at all
+        assert!(request.get("thinking").is_none());
+        assert!(request.get("reasoning_effort").is_none());
+        assert!(request.get("enable_thinking").is_none());
+    }
+
+    #[test]
+    fn should_send_a_sibling_effort_only_when_the_endpoint_documents_one() {
+        // Given DeepSeek — a thinking-object endpoint that ALSO documents a
+        // top-level effort field — with a model declaring tiers
+        let deepseek = OpenAILlm::new("k", "https://api.deepseek.com", "deepseek-flash", "", Some(ThinkingEffort::High))
+            .with_thinking_intent(ThinkingIntent::resolve(
+                &["thinking".to_string()],
+                true,
+                None,
+                None,
+                "https://api.deepseek.com",
+                "deepseek-flash",
+            ));
+        let request = deepseek
+            .build_request(&chat_params_with(vec![Message::user("hi")], vec![]))
+            .expect("request builds");
+        // Then the tier rides the sibling field, not the object
+        assert_eq!(request["reasoning_effort"], "high");
+        assert!(request.get("thinking").is_none());
+
+        // Given MiMo — a thinking-object endpoint that documents NO sibling
+        // effort field — with the same declared tiers
+        let mimo = OpenAILlm::new("k", "https://token-plan-cn.xiaomimimo.com/v1", "mimo-v2.6-flash", "", Some(ThinkingEffort::High))
+            .with_thinking_intent(ThinkingIntent::resolve(
+                &["thinking".to_string()],
+                true,
+                None,
+                None,
+                "https://token-plan-cn.xiaomimimo.com/v1",
+                "mimo-v2.6-flash",
+            ));
+        let request = mimo
+            .build_request(&chat_params_with(vec![Message::user("hi")], vec![]))
+            .expect("request builds");
+        // Then no effort field is emitted at all — the vendor does not
+        // document one, so sending it is the rejected-field case
+        assert!(request.get("reasoning_effort").is_none());
+        assert!(request.get("thinking").is_none());
+    }
+
+    #[test]
+    fn should_keep_the_legacy_omission_when_no_intent_is_attached() {
+        // Given an adapter built without an intent (the legacy path)
+        let llm = OpenAILlm::new("k", "https://api.openai.com/v1", "gpt", "", Some(ThinkingEffort::None));
+
+        // When the request is built
+        let request = llm
+            .build_request(&chat_params_with(vec![Message::user("hi")], vec![]))
+            .expect("request builds");
+
+        // Then no thinking field is emitted, the historical wire
+        assert!(request.get("thinking").is_none());
+        assert!(request.get("reasoning_effort").is_none());
     }
 }

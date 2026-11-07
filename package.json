@@ -27,6 +27,7 @@
     "gate": "node scripts/gate.mjs",
     "gate:rust": "node scripts/gate.mjs --rust",
     "gate:full": "node scripts/gate.mjs --full",
+    "gate:real": "node scripts/gate.mjs --real",
     "changeset": "changeset",
     "version": "changeset version && node rust/scripts/sync-version.mjs",
     "version:release": "pnpm run version",

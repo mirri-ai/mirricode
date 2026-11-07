@@ -514,6 +514,14 @@ pub trait Llm: Send + Sync {
             Ok(())
         })
     }
+
+    /// The upcast seam for concrete-adapter capabilities the trait does not
+    /// model (the thinking-dialect encoding is one). The default returns a
+    /// unit value, so an adapter that never opted in is simply not
+    /// downcastable — `downcast_ref` answers `None` instead of panicking.
+    fn as_any(&self) -> &dyn std::any::Any {
+        &()
+    }
 }
 
 /// A factory that builds an [`Llm`] provider for an agent's engine loop.

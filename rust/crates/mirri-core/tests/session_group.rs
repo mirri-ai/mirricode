@@ -19297,6 +19297,100 @@ async fn should_not_record_goal_update_when_no_goal_is_active() {
     );
 }
 
+/// Given a turn flow with a wire recorder and a goal whose usage has been
+/// accounted for one turn, When the goal is completed and another turn runs,
+/// Then the new turn records no goal.update op, the usage counters stay
+/// frozen at the pre-completion totals, and the completed goal stays
+/// completed (never flipped to blocked by budget enforcement).
+#[tokio::test]
+async fn should_not_record_goal_update_or_advance_usage_after_the_goal_is_completed() {
+    // Given a turn flow with a wire recorder and an active goal carrying a
+    // 2-turn budget (the second step would exhaust it), with two scripted
+    // steps reporting 100 input + 50 output tokens each
+    let llm: Arc<dyn Llm> = Arc::new(MockLlm::new(vec![
+        MockResponse::end_turn("First!").with_usage(100, 50),
+        MockResponse::end_turn("Second!").with_usage(100, 50),
+    ]));
+    let tools = ToolManager::new();
+    let mut validators = ValidatorCache::new();
+    let cancel = CancelToken::new();
+    let gm = Arc::new(GoalManager::new());
+    gm.create("Track usage".to_string(), None).unwrap();
+    gm.set_budget(GoalBudget {
+        turns: Some(2),
+        tokens: Some(100_000),
+        wall_clock_ms: None,
+    });
+
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let mut turn_flow = TurnFlow::new(TurnFlowConfig::default());
+    turn_flow.set_wire_recorder(Some(
+        Arc::new(CollectingWireRecorder(Arc::clone(&recorded))) as Arc<dyn WireOpRecorder>,
+    ));
+    // The accounting-only slot (the embedded main-flow wiring): no goal
+    // continuation, so a scripted end_turn ends the turn after one step.
+    turn_flow.set_goal_usage_accounting(Arc::clone(&gm));
+
+    // When a turn runs under the active goal
+    turn_flow
+        .run_one_turn(
+            vec![ContentPart::Text {
+                text: "Hello".to_string(),
+            }],
+            PromptOrigin::User,
+            Arc::new(Mutex::new(ContextMemory::new())),
+            &tools,
+            Arc::new(FixedLlmResolver::new(Arc::clone(&llm))),
+            &cancel,
+            &mut validators,
+            None,
+            None,
+        )
+        .await
+        .expect("turn should succeed");
+
+    // Then the first turn's usage was accounted
+    assert_eq!(gm.used_turns(), 1);
+    assert_eq!(gm.used_tokens(), 150);
+
+    // When the goal is completed and another turn runs
+    gm.update(GoalStatus::Complete);
+    recorded
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    turn_flow
+        .run_one_turn(
+            vec![ContentPart::Text {
+                text: "More".to_string(),
+            }],
+            PromptOrigin::User,
+            Arc::new(Mutex::new(ContextMemory::new())),
+            &tools,
+            Arc::new(FixedLlmResolver::new(Arc::clone(&llm))),
+            &cancel,
+            &mut validators,
+            None,
+            None,
+        )
+        .await
+        .expect("turn should succeed");
+
+    // Then no goal.update op is recorded for the post-completion turn
+    let ops = recorded.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(
+        !ops.iter().any(|op| matches!(op, WireOp::GoalUpdate { .. })),
+        "no goal.update expected after the goal is completed: {ops:?}"
+    );
+    // The usage counters stay frozen at the pre-completion totals
+    assert_eq!(gm.used_turns(), 1);
+    assert_eq!(gm.used_tokens(), 150);
+    // And the completed goal stays completed — the second step would have
+    // exhausted the 2-turn budget and flipped it to blocked if accounting
+    // still ran for terminal goals.
+    assert_eq!(gm.get().unwrap().status, GoalStatus::Complete);
+}
+
 // ---------------------------------------------------------------------------
 // Goal hard-budget stop (T9): blocked transition + one grace step + reminder
 // ---------------------------------------------------------------------------

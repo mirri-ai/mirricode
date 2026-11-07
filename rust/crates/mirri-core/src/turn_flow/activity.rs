@@ -505,7 +505,7 @@ mod tests {
         let tracker = tracker();
         tracker.on_turn_started(1, PromptOrigin::User);
         let before = tracker.last_activity_ms();
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(std::time::Duration::from_millis(5)); // hygiene-allow: D: 毫秒时钟 tick 守卫，慢机器只会拉大间隔
         tracker.observe_live(&crate::loop_engine::LiveEvent::TextDelta {
             text: "chunk".to_string(),
         });
@@ -514,7 +514,7 @@ mod tests {
             after_text > before,
             "a TextDelta must touch the activity clock: {after_text} !> {before}"
         );
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(std::time::Duration::from_millis(5)); // hygiene-allow: D: 毫秒时钟 tick 守卫，慢机器只会拉大间隔
         tracker.observe_live(&crate::loop_engine::LiveEvent::ThinkDelta {
             text: "think".to_string(),
         });
@@ -536,9 +536,9 @@ mod tests {
         tracker.on_turn_started(1, PromptOrigin::User);
         let first = tracker.last_activity_ms();
         assert!(first > 0, "an observation must stamp the activity clock");
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(std::time::Duration::from_millis(5)); // hygiene-allow: D: 毫秒时钟 tick 守卫，慢机器只会拉大间隔
         tracker.on_step(1);
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(std::time::Duration::from_millis(5)); // hygiene-allow: D: 毫秒时钟 tick 守卫，慢机器只会拉大间隔
         tracker.on_tool_call("call_1", "Read");
         let second = tracker.last_activity_ms();
         assert!(

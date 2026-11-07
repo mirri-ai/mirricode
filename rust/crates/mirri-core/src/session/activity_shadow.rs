@@ -264,15 +264,25 @@ mod tests {
 
     #[tokio::test]
     async fn should_not_flip_main_turn_when_a_subagent_turn_runs() {
-        let bus = bus();
-        let shadow = SessionActivityShadow::spawn(&bus);
-        bus.publish(SessionEvent::TurnStarted {
+        // Given a subagent's TurnStarted event, folded straight through the
+        // shadow's apply — the fold is the unit under test, so no spawn, no
+        // bus subscription, and no wait for a task to catch up.
+        let mut view = SessionActivityView::new();
+        let event = SessionEvent::TurnStarted {
             agent_id: "agent-<uuid>".to_string(),
             session_id: "sess-1".to_string(),
             turn_id: "turn-2".to_string(),
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let state = shadow.snapshot_value();
+        };
+
+        // When the event folds
+        let transition = SessionActivityShadow::apply(&mut view, &event);
+
+        // Then nothing flips: a subagent turn is not the main turn
+        assert!(
+            transition.is_none(),
+            "a subagent turn produces no main-turn transition"
+        );
+        let state = view.state();
         assert!(
             !state.main_turn_active,
             "subagent turn is not the main turn"

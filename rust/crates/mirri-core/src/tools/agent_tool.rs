@@ -2033,7 +2033,7 @@ mod tests {
                 let started = std::time::Instant::now();
                 let mut step = 1u32;
                 while started.elapsed() < run_for {
-                    tokio::time::sleep(touch_every).await;
+                    tokio::time::sleep(touch_every).await; // hygiene-allow: real-activity-fixture
                     if touch {
                         tracker.on_step(step);
                         step += 1;
@@ -2074,7 +2074,7 @@ mod tests {
             let completion = Box::pin(async move {
                 let started = std::time::Instant::now();
                 while started.elapsed() < run_for {
-                    tokio::time::sleep(beat_every).await;
+                    tokio::time::sleep(beat_every).await; // hygiene-allow: real-activity-fixture
                     tracker.observe_live(&crate::LiveEvent::LlmPending { elapsed_ms: 1 });
                 }
                 Ok(crate::subagent::SubagentCompletion::from_text("done"))
@@ -2109,6 +2109,7 @@ mod tests {
     /// working subagent must not trip the stale detector that exists to
     /// catch a dead runner).
     #[tokio::test]
+    #[ignore] // R-layer: real work-time window — 150ms sampling against a 200ms heartbeat window (design §3)
     async fn should_keep_a_background_agent_task_fresh_while_the_child_stays_active() {
         let tracker = activity_tracker();
         let tasks =
@@ -2141,7 +2142,7 @@ mod tests {
         // Then: at every sample point well past the 200ms liveness window,
         // the still-running task is not stale.
         for _ in 0..6 {
-            tokio::time::sleep(Duration::from_millis(150)).await;
+            tokio::time::sleep(Duration::from_millis(150)).await; // hygiene-allow: real-time: 150ms sampling vs 200ms window (R-layer host, design §3)
             assert!(
                 !tasks.is_stale(&task_id),
                 "an active subagent must never read as stale (window 200ms)"
@@ -2149,20 +2150,19 @@ mod tests {
         }
 
         // The run settles normally.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            if matches!(
-                tasks.get(&task_id).map(|task| task.status),
-                Some(crate::task::TaskStatus::Completed { .. })
-            ) {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the background task must settle after its run completes"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(50),
+            || {
+                matches!(
+                    tasks.get(&task_id).map(|task| task.status),
+                    Some(crate::task::TaskStatus::Completed { .. })
+                )
+                .then_some(())
+            },
+        )
+        .await
+        .expect("the background task must settle after its run completes");
     }
 
     /// Given a background subagent whose engine goes silent (no
@@ -2170,6 +2170,7 @@ mod tests {
     /// elapses, Then the tracked task reads as stale — the detector must
     /// still surface a runner that stopped reporting.
     #[tokio::test]
+    #[ignore] // R-layer: real work-time window — 250ms wait against a 100ms heartbeat window (design §3)
     async fn should_read_as_stale_when_a_background_agent_stops_reporting_activity() {
         let tasks =
             Arc::new(TaskManager::new().with_heartbeat_interval(Duration::from_millis(100)));
@@ -2198,7 +2199,7 @@ mod tests {
         assert!(!result.is_error);
         let task_id = background_task_id(&result);
 
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await; // hygiene-allow: real-time: 250ms real wait vs 100ms window (R-layer host, design §3)
         assert!(
             tasks.is_stale(&task_id),
             "a subagent that stopped reporting activity must read as stale"
@@ -2211,6 +2212,7 @@ mod tests {
     /// the forwarding covers foreground dispatches too (the sweeper warns
     /// about every non-terminal task, not just detached ones).
     #[tokio::test]
+    #[ignore] // R-layer: real work-time window — 75ms sampler against a 200ms heartbeat window (design §3)
     async fn should_keep_a_foreground_agent_task_fresh_while_the_child_stays_active() {
         let tracker = activity_tracker();
         let tasks =
@@ -2242,7 +2244,7 @@ mod tests {
                         sampler_flag.store(true, std::sync::atomic::Ordering::SeqCst);
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(75)).await;
+                tokio::time::sleep(Duration::from_millis(75)).await; // hygiene-allow: real-time: 75ms sampler vs 200ms window (R-layer host, design §3)
             }
         });
 

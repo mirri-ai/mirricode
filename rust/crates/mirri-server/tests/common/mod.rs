@@ -68,7 +68,7 @@ impl TestServer {
     /// provider factory (the `message.send` engine loop stays disabled) and
     /// without authentication (open mode).
     pub async fn start() -> Self {
-        Self::start_with_parts(None, None, None, false, false, None, None).await
+        Self::start_with_parts(None, None, None, false, false, None, None, None).await
     }
 
     /// Boot a server against a temp-dir persistence root, with an optional
@@ -76,33 +76,56 @@ impl TestServer {
     /// factory here; tests that verify the no-provider error path use
     /// [`start`](Self::start).
     pub async fn start_with_llm_factory(llm_factory: Option<Arc<dyn LlmFactory>>) -> Self {
-        Self::start_with_parts(None, llm_factory, None, false, false, None, None).await
+        Self::start_with_parts(None, llm_factory, None, false, false, None, None, None).await
+    }
+
+    /// Boot a server against a temp-dir persistence root, with an LLM
+    /// provider factory AND a seconds-scale turn-stall watchdog (plus the
+    /// ADR-006 long backstop) — for the turn-timeout test, which would
+    /// otherwise wait out the production 600 s / 1800 s defaults.
+    pub async fn start_with_llm_factory_and_turn_stall_timeouts(
+        llm_factory: Option<Arc<dyn LlmFactory>>,
+        stall: Duration,
+        backstop: Duration,
+    ) -> Self {
+        Self::start_with_parts(
+            None,
+            llm_factory,
+            None,
+            false,
+            false,
+            None,
+            None,
+            Some((stall, backstop)),
+        )
+        .await
     }
 
     /// Boot a server that requires `Authorization: Bearer <auth_token>` on
     /// every HTTP route except the public `/api/v1/healthz` and `/api/v1/meta`
     /// probes, without an LLM provider factory.
     pub async fn start_with_auth(auth_token: impl Into<String>) -> Self {
-        Self::start_with_parts(Some(auth_token.into()), None, None, false, false, None, None).await
+        Self::start_with_parts(Some(auth_token.into()), None, None, false, false, None, None, None)
+            .await
     }
 
     /// Boot an open-mode server whose `/api/v1/rpc` endpoint heartbeats at
     /// the given interval (instead of the 15s default), so heartbeat tests
     /// run in milliseconds.
     pub async fn start_with_heartbeat_interval(interval: Duration) -> Self {
-        Self::start_with_parts(None, None, Some(interval), false, false, None, None).await
+        Self::start_with_parts(None, None, Some(interval), false, false, None, None, None).await
     }
 
     /// Boot an open-mode server that also serves line-delimited JSON-RPC 2.0
     /// over a Unix domain socket, for the IPC transport tests.
     pub async fn start_with_ipc() -> Self {
-        Self::start_with_parts(None, None, None, true, false, None, None).await
+        Self::start_with_parts(None, None, None, true, false, None, None, None).await
     }
 
     /// Boot an open-mode server whose files store (and engine files root)
     /// live in a temp dir, for the files REST tests.
     pub async fn start_with_files_dir() -> Self {
-        Self::start_with_parts(None, None, None, false, true, None, None).await
+        Self::start_with_parts(None, None, None, false, true, None, None, None).await
     }
 
     /// Boot an open-mode server whose engine roots its Mirri home in the
@@ -111,7 +134,7 @@ impl TestServer {
     /// a second server over the same home observes the persisted state (the
     /// restart-persistence tests).
     pub async fn start_with_home_dir(home_dir: PathBuf) -> Self {
-        Self::start_with_parts(None, None, None, false, false, Some(home_dir), None).await
+        Self::start_with_parts(None, None, None, false, false, Some(home_dir), None, None).await
     }
 
     /// Boot an open-mode server whose engine is the caller's: HTTP/WS on an
@@ -223,7 +246,7 @@ impl TestServer {
     /// config snapshot (wired into the `session.status` model-window read),
     /// for the status tests that assert config-sourced context ceilings.
     pub async fn start_with_state_config(state_config: Arc<RwLock<ServerConfig>>) -> Self {
-        Self::start_with_parts(None, None, None, false, false, None, Some(state_config)).await
+        Self::start_with_parts(None, None, None, false, false, None, Some(state_config), None).await
     }
 
     /// Shared bootstrap for every [`TestServer`] variant: builds the engine
@@ -245,6 +268,7 @@ impl TestServer {
         with_files_dir: bool,
         home_dir: Option<PathBuf>,
         state_config: Option<Arc<RwLock<ServerConfig>>>,
+        turn_stall_timeouts: Option<(Duration, Duration)>,
     ) -> Self {
         let tmp = tempfile::tempdir().expect("create temp dir");
         let app = AppScope::new(AppScopeConfig::default());
@@ -307,6 +331,18 @@ impl TestServer {
             }
             if let Some(dir) = &files_dir {
                 embedded = embedded.with_files_dir(dir.clone());
+            }
+            // Seconds-scale turn-stall watchdog for the turn-timeout test.
+            // The backstop must shrink TOGETHER with the stall window: a
+            // never-answering model registers WaitingProvider/InStep, which
+            // probes Degraded — the classic stall window then only ARMS the
+            // ADR-006 long backstop (1800 s by default) instead of killing
+            // the turn, so shortening the stall alone would still wait out
+            // the production backstop.
+            if let Some((stall, backstop)) = turn_stall_timeouts {
+                embedded = embedded
+                    .with_turn_stall_timeout(stall)
+                    .with_turn_backstop_timeout(backstop);
             }
             Arc::new(embedded)
         };

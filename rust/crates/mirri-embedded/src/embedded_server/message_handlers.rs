@@ -3497,7 +3497,7 @@ mod tests {
             let progress_tx = progress_tx.clone();
             async move {
                 for _ in 0..10 {
-                    tokio::time::sleep(Duration::from_secs(100)).await;
+                    tokio::time::sleep(Duration::from_secs(100)).await; // hygiene-allow: D: paused clock virtual timer
                     let _ = progress_tx.send(());
                 }
                 "turn done"
@@ -3533,7 +3533,7 @@ mod tests {
         let (progress_tx, progress_rx) = watch::channel(());
         let turn = async {
             for _ in 0..2 {
-                tokio::time::sleep(Duration::from_secs(100)).await;
+                tokio::time::sleep(Duration::from_secs(100)).await; // hygiene-allow: D: paused clock virtual timer
                 let _ = progress_tx.send(());
             }
             pending::<()>().await
@@ -3611,7 +3611,7 @@ mod tests {
         let turn = async move {
             let beat_task = tokio::spawn(async move {
                 for _ in 0..5 {
-                    tokio::time::sleep(Duration::from_secs(100)).await;
+                    tokio::time::sleep(Duration::from_secs(100)).await; // hygiene-allow: D: paused clock virtual timer
                     tasks_for_beats.heartbeat(&id_for_beats);
                 }
             });
@@ -3730,7 +3730,7 @@ mod tests {
         // When running far past the classic window (1000s > 300s) under
         // the stall deadline
         let turn = async {
-            tokio::time::sleep(Duration::from_secs(1000)).await;
+            tokio::time::sleep(Duration::from_secs(1000)).await; // hygiene-allow: D: paused clock virtual timer
             "turn done"
         };
         let started = tokio::time::Instant::now();

@@ -1600,6 +1600,24 @@ impl SessionScope {
         guard.updated_at = chrono::Utc::now();
     }
 
+    /// [`Self::update_metadata`] with an EXPLICIT `updated_at` stamp —
+    /// the deterministic fixture seam for ordering-sensitive tests:
+    /// `list_sessions` sorts on the in-memory metadata's `updated_at`
+    /// (`(updated_at DESC, id DESC)`), and `Utc::now()` alone cannot
+    /// express "this session is older than that one" when two creates
+    /// land in the same clock tick. Production callers keep
+    /// [`Self::update_metadata`]; this variant exists so a test can pin
+    /// the stamp instead of racing the wall clock.
+    pub async fn update_metadata_at(
+        &self,
+        stamp: chrono::DateTime<chrono::Utc>,
+        f: impl FnOnce(&mut SessionMetadata),
+    ) {
+        let mut guard = self.metadata.write().await;
+        f(&mut guard);
+        guard.updated_at = stamp;
+    }
+
     /// Bump ONLY the "last used" recency key — unlike [`update_metadata`],
     /// this never refreshes `updated_at` (a touch is not a content change;
     /// event-delivery ADR-003 / SDR-014).

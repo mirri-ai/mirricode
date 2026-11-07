@@ -7,9 +7,10 @@ rust 引擎还在开发中，很多功能可能还不成熟甚至是错误的。
 
 一切本地质量检查**先走 `pnpm gate`**（`node scripts/gate.mjs`），不要自己拼各门禁命令——顺序、已知失败记账、fast-fail 都在入口里统一维护：
 
-- `pnpm gate` — 快速面（~3 秒，无编译无测试）：service-naming → nix-workspace → sherif → zero-io → spawn → test-hygiene，轻→重 fail-fast。
+- `pnpm gate` — 快速面（约 3 秒，无编译无测试）：service-naming → sherif → rust-zero-io → rust-spawn → rust-test-hygiene，轻→重 fail-fast。
 - `pnpm gate:rust` — 快速面 + clippy（分钟级）。
 - `pnpm gate:full` — 全套：typecheck → lint → clippy → **rust 全量测试（最重，永远最后）** → TS 测试。
+- `pnpm gate:real` — 快速面 + R 层（真实环境层）`#[ignore]` 测试（本地 opt-in，不进默认门禁；R 层语义见「测试铁律」规则 R）。
 - `node scripts/gate.mjs --list` — 查看全部阶段与顺序。
 - 退出码：0 = 全绿；2 = 通过但有已知失败（`gate.mjs` 的 KNOWN_FAILURES 记账，见下方）；1 = 新失败（fast-fail 中止）。
 - **agent 作业纪律**：改完代码先 `pnpm gate`（秒级），过了再按需 `gate:rust` / `gate:full`；全量测试只在批次收尾跑，不在每步迭代跑。
@@ -40,16 +41,17 @@ rust 引擎还在开发中，很多功能可能还不成熟甚至是错误的。
 
 ## 测试铁律（违反 = 返工；源自 `docs/specs/rust-core-design/16-test-execution-strategy.md` §4）
 
-### 测试分层（唯一允许的层级定义，设计 §4.1；命名裁决 SDR-016.2：用 T0–T3 前缀，与 TUI 规范的 L1–L4 分层无关）
+### 测试分层（唯一允许的层级定义，设计 §4.1；命名裁决 SDR-016.2：用 T0–T3 前缀，与 TUI 规范的 L1–L4 分层无关；T3 行同时承载执行维度 R，见下方「执行维度」）
 
 | 层 | 名称 | 位置 | 职责 | 并行安全 | 速度预算 |
 |---|---|---|---|---|---|
 | T0 | 单元测试 | `src/` 内 `#[cfg(test)]` | 纯逻辑：reducer、解析、纯函数。禁止 IO、禁止真实时间、禁止环境变量读写 | 天然可并行 | 单测 ≤5s |
 | T1 | 组件集成测试 | `tests/` 目录 | 单 crate 内组件协作，使用注入的假件（Fake FS / 暂停时钟 / MockLlm） | 必须可并行 | 单测 ≤5s |
 | T2 | 服务级集成测试 | `tests/` 目录（server/embedded 等） | 起真实服务实例（随机端口 + 私有 HOME），验证协议行为 | 必须可并行 | 单测 ≤30s |
-| T3 | 真实二进制 e2e | `#[ignore]` gated 或独立命令 | 真实网络/真实 LLM/真实子进程链路 | 显式串行/手动触发 | 不设预算（不进全量门禁） |
+| T3/R | 真实环境层 | `#[ignore]` gated | **失败判定依赖真实环境**的测试：真实时间语义窗口、真实子进程抽样、性能探针、真实链路 e2e | 不进默认并行池；CI R 层 profile 固定 `test-threads = 2`（见规则 R）。本地 opt-in `pnpm gate:real`，CI `rust-real-env`（非阻塞）+ nightly（必过） | 不设预算（不进默认门禁） |
 
 - **层级判定规则**：一个测试属于哪层，取决于它**需要什么真实资源**。需要假件即可覆盖的归 T0/T1；需要真实进程/端口的归 T2；需要真实外部网络的归 T3。T3 不参与 `cargo test --workspace` 默认门禁，仅 `--ignored` 或专用命令触发。
+- **执行维度（R/D，设计文档 `docs/superpowers/specs/2026-11-06-rust-test-execution-optimization-design.md` §3）**：在资源维度之上叠加执行维度判定——"放到慢 10 倍的机器上跑，结果会变吗？"会变（或可能变）→ R 层（`#[ignore]`）；不变 → D 层。真实子进程本身不是 R 的充分条件，断言依赖真实墙窗/真实世界不可观测检查/外部服务才是（条件驱动 + 宽 backstop 的子进程测试留 D 层）。`// hygiene-allow: real-...` reason 前缀 = 强制 R 归因，由 test-hygiene 规则 R 机械执行。R 层套件语义、执行入口见下方「机械守卫与速度预算」的规则 R。
 - **层级声明**：每个测试模块（`mod` 或文件）头部必须携带 `// layer: T<n>` 注释标签（如 `// layer: T1`）。新测试缺标签不得进入评审；存量缺标签由 baseline 白名单豁免，R3 移动批回填。
 
 ### 隔离契约（八条，设计 §4.2）
@@ -68,8 +70,20 @@ rust 引擎还在开发中，很多功能可能还不成熟甚至是错误的。
 - 新测试必须声明层级（`// layer: T<n>` 模块头标签），按上表判定。T3 必须 `#[ignore]`。
 - 新测试必须满足全部八条隔离契约，方可进入评审。
 - 需要环境变量语义 → 注入式优先；确需 `set_var` → `mirri-test-support::env::lock()` + 最小集合 + 不跨 await。
-- 存量测试不满足隔离契约的，按 ROADMAP 分批迁移，不阻塞新贡献（baseline 白名单：`rust/scripts/test-hygiene-baseline.json`）。
-- **主门禁**：`node rust/scripts/check-test-hygiene.mjs`（挂 `pnpm gate:rust-test-hygiene`，与 zero-io 守卫同级别）——扫 test cfg 内裸 `std::env::set_var`/`remove_var`、裸 `thread::sleep`、`tests/` 文件缺 `// layer:` 标签；行内 `// hygiene-allow: <reason>` 豁免。clippy `disallowed-methods` 因全局作用域无法限定 test cfg（会误伤生产合法 `set_var`），仅作为 ROADMAP 增量项（SDR-016.3）。
+- 存量测试不满足隔离契约的，按 ROADMAP 分批迁移，不阻塞新贡献（baseline 白名单：`rust/scripts/test-hygiene-baseline.json`）。**sleep 规则零容忍 + 覆盖判定 allow-list 化（批 6a/6b 起）**：baseline 的 sleep 条目**只有 reason 匹配 `^(poll-step|negative-wait|real-|D:)` 才算已覆盖**——其余（无 reason、`legacy:`、`Legacy:` 大写变体、随口写的 prose）一律不覆盖，任何新裸 sleep 或 legacy 复活都直接报违规；`--write-baseline` 重锚时对「file+type 组内无可配对旧条目」的新增条目 stderr 告警并列出（不阻断写入）。
+- **主门禁**：`node rust/scripts/check-test-hygiene.mjs`（挂 `pnpm gate:rust-test-hygiene`，与 zero-io 守卫同级别）——扫 test cfg 内裸 `std::env::set_var`/`remove_var`、裸 `thread::sleep`、`tests/` 文件缺 `// layer:` 标签、规则 R 的 real-env 信号（见下条）；行内 `// hygiene-allow: <reason>` 豁免（规则 R 的 `real-` 窗口分支除外）。clippy `disallowed-methods` 因全局作用域无法限定 test cfg（会误伤生产合法 `set_var`），仅作为 ROADMAP 增量项（SDR-016.3）。
+- **规则 R（real-env 归因棘轮）**：测试代码里有两类信号，必须归因到 R 层，由 test-hygiene 机械执行：
+  - **裸真实子进程 spawn**（`std::process::Command` / `tokio::process::Command` / `Command::new`）：所在行必须在 `#[ignore]` 的测试 fn 内，或带行级 `// hygiene-allow: <reason>`。helper fn 挂不了 `#[ignore]`，所以它的 spawn 行**默认保持可见**——只能靠行级 `// hygiene-allow` 豁免；caller 测试上的 `#[ignore]` **不为 helper 的 spawn 背书**。
+  - **`// hygiene-allow: real-...` 语义窗口**：必须写在 `#[ignore]` 的测试 fn 内；helper 里的窗口 gate 不报（不检查 caller）——审计时按 caller 归因。此分支不接受 `hygiene-allow` 当逃生门——reason 前缀本身就是 R 信号。
+  - 包装 spawn（mirri_os 族）不被覆盖，由审计台账逐处判定。
+  - **R 层套件**（CI 口径）：`#[ignore]` 测试集 **减** `e2e_real_llm`（需真实 LLM 凭证，手动触发）**减** G-30 占位 stub（`should_handle_create_rpc_independently` / `should_handle_plugins_rpc_independently`，故意 panic 的 TODO 桩，按测试名排除）。
+  - **本地入口**：`pnpm gate:real` = `cargo test -- --ignored` 减两个 stub（libtest `--skip`）。`gate:real` 不按名排除 `e2e_real_llm`——无凭证时它自行跳过；但本地若导出了 `OPENAI_API_KEY`，`gate:real` 会真的打真实 LLM（成本/挂起风险，跑前记得 `unset OPENAI_API_KEY`）。本地跑 R 层不碰 nextest——macOS 逐 exec 税实测 14×–80×+（"80×+" 是 ">18min 未跑完" 换算出的下界，不是天花板）。
+  - **CI 选择**：`rust-real-env`（非阻塞）+ nightly（必过）跑 `cargo nextest run --workspace --locked --run-ignored only --no-fail-fast -E 'not (binary(e2e_real_llm) or test(should_handle_create_rpc_independently) or test(should_handle_plugins_rpc_independently))' --profile real`（`--no-fail-fast` 承重：一次红要列全所有失败测试，那是归因输入）；profile 在 `rust/.config/nextest.toml`（retries 1、slow-timeout 2m×3、`test-threads = 2`）。
+  - **并发例外**：`test-threads = 2` 是**有意硬编码**——R 层对真实子进程/端口争抢敏感，不跟 nproc 走；这是 D 层「不硬编码并发、按 nproc/实测降并发」策略的明确例外（设计 §6；该节写的 `max-threads` 是笔误，nextest 的真实键名是 `test-threads`，不要照着改配置）。
+  - **执行器采纳**：nextest 仅限 R 层；D 层采纳需过 A/B 门槛（≤1.1×，`.github/workflows/rust-nextest-ab.yml`）。
+  - **`#[ignore]` 风格**：R 层测试用裸 `#[ignore]` + 紧邻注释 `// R-layer: <理由> (design §3)`。先例（都是这个形态）：`mirri-acp/tests/conformance.rs` 的 `should_not_spawn_the_real_homes_mcp_servers_when_the_conformance_child_creates_a_session`（pgrep 缺失抽样）、`mirri-embedded/src/embedded_server/tests.rs` 的 `should_not_connect_plugin_mcp_servers_when_installed_until_reload`（plugin 缺失抽样）、`mirri-embedded/src/skill_watcher.rs` 的 `should_mount_the_watcher_within_a_fixed_time_budget`（mount 探针）。（`b1_print_mode_tests.rs` 的 drain 工时测试曾是本列表先例，已迁 D 层 paused-clock——批 5 摘 `#[ignore]`。）`e2e_real_llm.rs` 用裸 `#[ignore]` + 模块头说明理由。`#[ignore = "reason"]` 形式也接受，但非必需。
+  - **已知约束**：`#[ignore]` 当前一词两义（R 层 vs TODO 桩）。新 TODO 桩必须二选一：按同名约定加进 R 层排除列表，或先实现再落地（不留永不可运行的桩）。
+  - **配置陷阱**：nextest 对未知配置键只警告不报错（exit 0）——改 `rust/.config/nextest.toml` 后必须核对 stderr 无 `ignoring unknown configuration key` 警告，否则写错键名的 profile 会静默失效。
 - 速度预算：单测试 ≤5s（T0/T1）/ ≤30s（T2）；全量 workspace ≤7min（热缓存口径）。超预算的测试须拆分或降层（改用假件）。
 - 每个测试 crate 维护共享 `tests/common/` 模块；新增测试搭建代码必须进 common，不得在各测试文件内重复。
 

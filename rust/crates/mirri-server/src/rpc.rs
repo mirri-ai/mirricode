@@ -2977,8 +2977,9 @@ impl RpcHandler for ListMessagesHandler {
 ///
 /// Limitation: the engine turn itself runs on the blocking pool and cannot be
 /// unwound mid-LLM-call; the abort drops the client-visible task and its
-/// registration, while the blocking turn stays bounded by
-/// [`ENGINE_TURN_TIMEOUT`].
+/// registration, while the blocking turn stays bounded by the engine's
+/// turn-stall watchdog (`ENGINE_TURN_STALL_TIMEOUT` in `mirri-embedded`,
+/// 600 s by default).
 pub struct CatalogToolsHandler {
     manager: Arc<SessionManager>,
 }
@@ -8055,14 +8056,19 @@ mod tests {
         handler: &SearchFilesHandler,
         params: serde_json::Value,
     ) -> serde_json::Value {
-        for _ in 0..40 {
-            let value = handler.handle(params.clone()).await.expect("search resolves");
-            if value["indexState"] != json!("building") {
-                return value;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        panic!("file.search index never became ready");
+        mirri_test_support::wait_for::wait_for_async_result(
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_millis(50),
+            || {
+                let params = params.clone();
+                async move {
+                    let value = handler.handle(params).await.expect("search resolves");
+                    (value["indexState"] != json!("building")).then_some(value)
+                }
+            },
+        )
+        .await
+        .expect("file.search index never became ready")
     }
 
     /// A session manager with one session whose workspace root holds a
@@ -8434,7 +8440,7 @@ mod tests {
 
     /// Return `true` if the `rg` binary is available on PATH.
     fn rg_available() -> bool {
-        std::process::Command::new("rg")
+        std::process::Command::new("rg") // hygiene-allow: D: 能力探测
             .arg("--version")
             .output()
             .is_ok()
@@ -8559,7 +8565,7 @@ mod tests {
 
     /// Return `true` if the `git` binary is available on PATH.
     fn git_available() -> bool {
-        std::process::Command::new("git")
+        std::process::Command::new("git") // hygiene-allow: D: 能力探测
             .arg("--version")
             .output()
             .is_ok()
@@ -8567,7 +8573,7 @@ mod tests {
 
     /// Run `git <args>` in `dir`. Test helper.
     fn run_git(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
-        std::process::Command::new("git")
+        std::process::Command::new("git") // hygiene-allow: D: 能力探测
             .args(args)
             .current_dir(dir)
             .output()
