@@ -18850,7 +18850,7 @@ async fn should_report_zero_startup_duration_when_no_mcp_configs_discovered() {
 /// layer connects — the second engine's claim is refused and its own layer
 /// never registers (the desktop N-workspaces case: one connection set per
 /// home, not one per workspace).
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn should_connect_the_user_layer_once_when_engines_share_a_pool() {
     let (home_a, workspace_a) = layered_mcp_fixture(
         json!({"alpha": {"command": "echo", "args": [], "enabled": false}}),
@@ -18886,9 +18886,13 @@ async fn should_connect_the_user_layer_once_when_engines_share_a_pool() {
 
     wait_for_connection(&shared_pool.manager(), "alpha").await;
     // A wrong claim from engine B would register "beta" within one
-    // scheduler tick of its returned call; a short stability window is
-    // enough to let that betrayal show up.
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    // scheduler tick of its returned call. Under a paused clock this
+    // window only elapses once the runtime has drained every task it
+    // already has queued, so a betrayal spawned by engine B's call has
+    // run by the time the assertion below reads the connection list —
+    // the window is a scheduler quiescence barrier, not a bet on how
+    // much wall clock "short" means.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await; // hygiene-allow: D: paused clock 虚拟定时器，作调度静止屏障
     let names: Vec<String> = shared_pool
         .manager()
         .list_connections()
@@ -21763,6 +21767,11 @@ struct MockMcpHttpServer {
     #[allow(dead_code)] // held for lifetime; the loop ends with the runtime
     handle: tokio::task::JoinHandle<()>,
     url: String,
+    /// Fires once per `tools/call` request the mock receives, before the
+    /// tool delay starts: a test that needs the call provably in flight
+    /// awaits this instead of sleeping through a fixed window (the delay
+    /// then keeps the response pending for its own duration).
+    tool_calls: tokio::sync::mpsc::UnboundedReceiver<()>,
 }
 
 async fn spawn_mock_mcp_http_server(tool_delay_ms: u64, tool_error: bool) -> MockMcpHttpServer {
@@ -21786,30 +21795,41 @@ async fn spawn_mock_mcp_http_server_with_tools(
         .iter()
         .map(|(name, description)| (name.to_string(), description.to_string()))
         .collect();
+    let (tool_calls_tx, tool_calls_rx) = tokio::sync::mpsc::unbounded_channel();
     let handle = tokio::spawn(async move {
         loop {
             let Ok((stream, _)) = listener.accept().await else {
                 return;
             };
+            let tool_calls_tx = tool_calls_tx.clone();
             tokio::spawn(serve_mock_mcp_connection(
                 stream,
                 tool_delay_ms,
                 tool_error,
                 tools.clone(),
+                Some(tool_calls_tx),
             ));
         }
     });
-    MockMcpHttpServer { handle, url }
+    MockMcpHttpServer {
+        handle,
+        url,
+        tool_calls: tool_calls_rx,
+    }
 }
 
 /// Serve one connection of the mock MCP HTTP server (the per-connection
 /// half of [`spawn_mock_mcp_http_server`], extracted so other tests — the
 /// T8 restart helper — can serve the same protocol on a rebound port).
+/// `tool_calls`, when present, receives one message per `tools/call`
+/// request the moment it arrives — before the tool delay — so callers can
+/// synchronize on the call being in flight.
 async fn serve_mock_mcp_connection(
     stream: tokio::net::TcpStream,
     tool_delay_ms: u64,
     tool_error: bool,
     tools: Vec<(String, String)>,
+    tool_calls: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 ) {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
     let mut stream = tokio::io::BufReader::new(stream);
@@ -21844,6 +21864,14 @@ async fn serve_mock_mcp_connection(
     let method = request["method"].as_str().unwrap_or_default().to_string();
     let id = request["id"].clone();
     let is_notification = id.is_null();
+
+    // Report the call's arrival before the delay starts, so a test awaiting
+    // `tool_calls` wakes while the response is still guaranteed pending.
+    if method == "tools/call"
+        && let Some(tool_calls) = &tool_calls
+    {
+        let _ = tool_calls.send(());
+    }
 
     if tool_delay_ms > 0 {
         tokio::time::sleep(std::time::Duration::from_millis(tool_delay_ms)).await;
@@ -22897,7 +22925,7 @@ async fn should_refresh_tool_registrations_without_reconnecting_when_the_filter_
 /// R2's "let in-flight calls finish" half.
 #[tokio::test]
 async fn should_wait_for_the_in_flight_tool_call_when_the_reconcile_tears_a_connection_down() {
-    let mock = spawn_mock_mcp_http_server(300, false).await;
+    let mut mock = spawn_mock_mcp_http_server(300, false).await;
     let (home, workspace) = layered_mcp_fixture(
         json!({}),
         Some(json!({"mock": {"transport": "http", "url": mock.url}})),
@@ -22923,8 +22951,14 @@ async fn should_wait_for_the_in_flight_tool_call_when_the_reconcile_tears_a_conn
         let manager = Arc::clone(&manager);
         async move { manager.call_tool("mock", "echo", json!({})).await }
     });
-    // Let the call get in flight before the disabling write.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Wait until the mock has the call in flight: its response is still
+    // pending behind the 300ms tool delay, so the disabling write below
+    // lands while the call is guaranteed mid-flight — no fixed window
+    // whose sufficiency would depend on machine speed.
+    mock.tool_calls
+        .recv()
+        .await
+        .expect("the mock received the tools/call request");
 
     server
         .call_method(
@@ -22958,7 +22992,7 @@ async fn should_wait_for_the_in_flight_tool_call_when_the_reconcile_tears_a_conn
 /// force-fail half.
 #[tokio::test]
 async fn should_fail_an_in_flight_call_with_the_server_named_when_the_teardown_is_forced() {
-    let mock = spawn_mock_mcp_http_server(300, true).await;
+    let mut mock = spawn_mock_mcp_http_server(300, true).await;
     let (home, workspace) = layered_mcp_fixture(
         json!({}),
         Some(json!({"mock": {"transport": "http", "url": mock.url}})),
@@ -22984,7 +23018,14 @@ async fn should_fail_an_in_flight_call_with_the_server_named_when_the_teardown_i
         let manager = Arc::clone(&manager);
         async move { manager.call_tool("mock", "echo", json!({})).await }
     });
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Wait until the mock has the call in flight (its response still
+    // pending behind the 300ms tool delay), so the forced teardown below
+    // races a call that is provably mid-flight — not one a slow machine
+    // has not even sent yet.
+    mock.tool_calls
+        .recv()
+        .await
+        .expect("the mock received the tools/call request");
 
     // A drain wait shorter than the tool call: the teardown must not stall
     // on it (the embedded reconcile uses a 10s budget; this exercises the
@@ -23018,7 +23059,7 @@ async fn should_fail_a_timed_out_in_flight_call_with_the_server_named_when_the_t
     // The mock delays every request by 1s; the connect cycle (initialize +
     // tools/list) finishes well inside the 5s pool wait, while a tool call
     // outlives the 400ms `toolTimeoutMs` below.
-    let mock = spawn_mock_mcp_http_server(1000, false).await;
+    let mut mock = spawn_mock_mcp_http_server(1000, false).await;
     let (home, workspace) = layered_mcp_fixture(
         json!({}),
         Some(json!({
@@ -23050,7 +23091,14 @@ async fn should_fail_a_timed_out_in_flight_call_with_the_server_named_when_the_t
         let manager = Arc::clone(&manager);
         async move { manager.call_tool("mock", "echo", json!({})).await }
     });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Wait until the mock has the call in flight (its response still
+    // pending behind the 1s tool delay — far beyond the 400ms tool
+    // timeout), so the forced teardown below lands while the call is
+    // provably hung rather than racing a fixed 50ms window.
+    mock.tool_calls
+        .recv()
+        .await
+        .expect("the mock received the tools/call request");
 
     // Force the teardown well before the call's own timeout fires: the
     // client is taken off the connection, so when the tool timeout elapses
