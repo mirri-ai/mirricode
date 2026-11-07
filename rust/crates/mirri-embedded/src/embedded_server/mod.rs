@@ -5736,6 +5736,42 @@ impl EmbeddedServer {
         }
     }
 
+    /// Join the session's in-flight FIRE turn (batch 4's test seam): take
+    /// the session's fire-mode entries out of the registry and await their
+    /// task handles, so a test observes "the turn finished" as a fact
+    /// instead of polling for its side effects. The task removes its own
+    /// entry right after the engine turn returns — by then every tool the
+    /// turn ran has run — so an already-absent entry means the same thing
+    /// and nothing is joined. Wait-mode entries are skipped (they run
+    /// inline on their own dispatch future; there is no handle to join).
+    /// Taking the entry also retires it from `message.abort`/busy probes
+    /// for the duration of the join — fine for the single-flow tests that
+    /// call this.
+    #[cfg(test)]
+    pub(super) async fn await_turn(&self, session_id: &str) {
+        let prefix = format!("{session_id}:");
+        let handles: Vec<tokio::task::JoinHandle<()>> = {
+            let mut turns = self
+                .in_flight_turns
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let keys: Vec<String> = turns
+                .keys()
+                .filter(|key| key.starts_with(&prefix))
+                .cloned()
+                .collect();
+            keys.into_iter()
+                .filter_map(|key| match turns.remove(&key) {
+                    Some(InFlightTurn::Fire { handle, .. }) => Some(handle),
+                    _ => None,
+                })
+                .collect()
+        };
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+
     /// The census gate for `call_method` (ADR-003 c / ADR-012 c): every
     /// route waits for the one-time startup orphan census (and the
     /// lifetime-sweeper spawn behind it), regardless of class — the census

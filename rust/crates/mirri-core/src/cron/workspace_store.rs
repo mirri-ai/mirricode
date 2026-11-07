@@ -732,6 +732,12 @@ pub struct WorkspaceCronManager {
     /// mutation (the server side forwards them as
     /// `event.cron.workspaceChanged`).
     change_listeners: std::sync::Mutex<Vec<Box<dyn Fn() + Send + Sync>>>,
+    /// Batch 4's apply-window test seam: a one-shot closure fired between
+    /// the durable fire write and the in-memory apply, so a test can land
+    /// a concurrent removal exactly inside that window instead of hoping
+    /// a raced thread lands there (the C-13 determinization).
+    #[cfg(test)]
+    apply_hook: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 /// One stored task row of the SQLite write-through backend, mirroring the
@@ -827,6 +833,8 @@ impl WorkspaceCronManager {
             runs: std::sync::Mutex::new(runs),
             options,
             change_listeners: std::sync::Mutex::new(Vec::new()),
+            #[cfg(test)]
+            apply_hook: std::sync::Mutex::new(None),
         }
     }
 
@@ -859,6 +867,18 @@ impl WorkspaceCronManager {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(Box::new(listener));
+    }
+
+    /// Install the one-shot apply-window hook (batch 4's C-13 test
+    /// seam): it fires inside [`Self::check_due`] AFTER the durable fire
+    /// write and BEFORE the in-memory apply — the exact window a
+    /// concurrent removal must win without the task being resurrected.
+    #[cfg(test)]
+    pub(crate) fn set_apply_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *self
+            .apply_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Box::new(hook));
     }
 
     /// Fire the registered change listeners (post-mutation).
@@ -2011,6 +2031,19 @@ impl WorkspaceCronManager {
                 "persisting the workspace cron fire transitions failed; the pass is skipped"
             );
             return Vec::new();
+        }
+        // Batch 4's apply-window seam (C-13): fire the one-shot test hook
+        // in the exact window between the durable write and the in-memory
+        // apply — a removal landed here must win (the apply below is
+        // conditional on the CURRENT entry, never a blind overwrite).
+        #[cfg(test)]
+        if let Some(hook) = self
+            .apply_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            hook();
         }
         // Apply pass (review M4 — the compare-and-swap posture): each
         // plan is applied against the task's CURRENT in-memory entry,

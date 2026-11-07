@@ -95,6 +95,22 @@ pub(crate) struct WorkspaceRunSpawner {
     pub(crate) tool_result_home: Option<std::path::PathBuf>,
 }
 
+/// The opener prefix's product (batch 4's seam split): everything
+/// [`WorkspaceRunSpawner::open_awaited`] produced, bundled for
+/// [`WorkspaceRunSpawner::settle_run`] — the injection + finale stage
+/// travels either on a spawned task (production, fire-and-forget R1) or
+/// inline on the caller's task (the `spawn_and_settle` test seam).
+pub(super) struct PreparedRun {
+    session: Arc<mirri_core::SessionScope>,
+    task: mirri_core::cron::CronTask,
+    cron: Arc<mirri_core::cron::WorkspaceCronManager>,
+    workspace_id: String,
+    run_id: String,
+    trigger: mirri_core::cron::RunTrigger,
+    scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
+    run_hook: mirri_core::turn_flow::ApprovalWaitHook,
+}
+
 impl EmbeddedServer {
     /// Build the workspace run spawner over the server's own fields (the
     /// run-now face's path — the scheduler loop builds the same shape from
@@ -202,15 +218,44 @@ impl WorkspaceRunSpawner {
         trigger: mirri_core::cron::RunTrigger,
         scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
     ) {
-        let Some(runtime) = self.registry.built_runtime(&workspace_id) else {
-            return;
-        };
-        let Some(cron) = runtime.cron() else {
-            return;
-        };
-        let Some(task) = cron.get(&task_id) else {
-            return;
-        };
+        if let Some(prepared) = self
+            .open_awaited(
+                workspace_id,
+                task_id,
+                queued_run_id,
+                trigger,
+                scheduled_at,
+                None,
+            )
+            .await
+        {
+            let spawner = self.clone();
+            tokio::spawn(async move {
+                spawner.settle_run(prepared).await;
+            });
+        }
+    }
+
+    /// The opener prefix of the §8 pipeline (batch 4's seam split): the
+    /// concurrency posture, the workdir refusal, the lazy execution
+    /// session create, and the session-ref stamp — everything UP TO the
+    /// turn — awaited on the caller's task. `None` means the prefix
+    /// already recorded the run's terminal verdict (skip / refusal /
+    /// create failure) or the fire was parked in the Queue slot; the
+    /// caller must NOT settle. `tap` rides the approval-wait hook (the
+    /// ADR-021 status flips) and fires after each flip's write lands.
+    pub(super) async fn open_awaited(
+        &self,
+        workspace_id: String,
+        task_id: String,
+        queued_run_id: Option<String>,
+        trigger: mirri_core::cron::RunTrigger,
+        scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
+        tap: Option<mirri_core::turn_flow::ApprovalWaitHook>,
+    ) -> Option<PreparedRun> {
+        let runtime = self.registry.built_runtime(&workspace_id)?;
+        let cron = Arc::clone(runtime.cron()?);
+        let task = cron.get(&task_id)?;
 
         // 1. Concurrency posture (D-M3) + M4 (TOCTOU): the has-Running
         // check and the Running opener land in ONE manager-level critical
@@ -247,7 +292,7 @@ impl WorkspaceRunSpawner {
                     // The Queue posture parked this fire in the single
                     // backlog slot (merged one-deep): do NOT execute now —
                     // the terminal side of the current run drains it once.
-                    return;
+                    return None;
                 }
                 OpenRunOutcome::Declined(mut skip) => {
                     // The Skip posture: record and leave (the fire budget is
@@ -258,7 +303,7 @@ impl WorkspaceRunSpawner {
                     skip.ended_at = Some(chrono::Utc::now());
                     skip.duration_ms = Some(0);
                     cron.record_run(&task_id, skip).await;
-                    return;
+                    return None;
                 }
             }
         };
@@ -312,7 +357,7 @@ impl WorkspaceRunSpawner {
                             },
                         )
                         .await;
-                        return;
+                        return None;
                     }
                 }
             }
@@ -379,7 +424,7 @@ impl WorkspaceRunSpawner {
                 },
             )
             .await;
-            return;
+            return None;
         };
         let session_id = session.id().as_str().to_string();
         // Stamp the session ref onto the SAME run record (the opener
@@ -391,27 +436,27 @@ impl WorkspaceRunSpawner {
         cron.set_run_session_ref(&task_id, &opened_run_id, &session_id)
             .await;
 
-        // 3-4. The injection + finale travel on their own task. The
-        // session Arc travels with it (ADR-008: the execution session is
-        // NOT in the routing tables — the active table and the index only
-        // learn it on the explicit-open path — so `resolve_session_via`
-        // would fail; the create returned the authoritative Arc). The
-        // SAME run id rides the terminal record (the opener and the
-        // finale are one run — review Minor's unified run_id).
-        let spawner = self.clone();
-        let task = task.clone();
-        let cron = Arc::clone(cron);
-        let workspace_id = workspace_id.clone();
+        // 3-4. The injection + finale travel on their own task (or, on the
+        // test seam's `spawn_and_settle`, inline). The session Arc travels
+        // with the prepared run (ADR-008: the execution session is NOT in
+        // the routing tables — the active table and the index only learn
+        // it on the explicit-open path — so `resolve_session_via` would
+        // fail; the create returned the authoritative Arc). The SAME run
+        // id rides the terminal record (the opener and the finale are one
+        // run — review Minor's unified run_id).
         let run_id = opened_run_id;
         // ADR-021: the run-level approval-wait signal — the turn's parked
         // ask flips this run's record to WaitingApproval (and back to
         // Running when the wait resolves, any exit included). Fire-and-
-        // forget: the hook never blocks the authorize path.
+        // forget: the hook never blocks the authorize path. Batch 4's
+        // optional `tap` fires AFTER each flip's write lands, so an
+        // awaiting test observes the flipped record, never the gap.
         let run_hook: mirri_core::turn_flow::ApprovalWaitHook = {
             let cron = Arc::clone(&cron);
             let (task_id, run_id) = (task.id.clone(), run_id.clone());
             std::sync::Arc::new(move |waiting: bool| {
                 let (cron, task_id, run_id) = (Arc::clone(&cron), task_id.clone(), run_id.clone());
+                let tap = tap.clone();
                 if let Ok(handle) = tokio::runtime::Handle::try_current() {
                     handle.spawn(async move {
                         let status = if waiting {
@@ -420,15 +465,45 @@ impl WorkspaceRunSpawner {
                             mirri_core::cron::RunStatus::Running
                         };
                         cron.set_run_status(&task_id, &run_id, status).await;
+                        if let Some(tap) = tap {
+                            tap(waiting);
+                        }
                     });
                 }
             })
         };
-        tokio::spawn(async move {
+        Some(PreparedRun {
+            session,
+            task,
+            cron,
+            workspace_id,
+            run_id,
+            trigger,
+            scheduled_at,
+            run_hook,
+        })
+    }
+
+    /// Steps 3-4 on the prepared run: the execution turn + the terminal
+    /// record. Production rides this on a spawned task (fire-and-forget,
+    /// R1); the `spawn_and_settle` test seam awaits it inline.
+    pub(super) async fn settle_run(&self, prepared: PreparedRun) {
+        let PreparedRun {
+            session,
+            task,
+            cron,
+            workspace_id,
+            run_id,
+            trigger,
+            scheduled_at,
+            run_hook,
+        } = prepared;
+        {
+            let session_id = session.id().as_str().to_string();
             // ADR-021's launch record rides the terminal too (Copy pair).
             let (trigger, scheduled_at) = (trigger, scheduled_at);
             let started = std::time::Instant::now();
-            let outcome = spawner.run_turn(session, &task, run_hook).await;
+            let outcome = self.run_turn(session, &task, run_hook).await;
             let (status, usage, summary, skip_reason, asked_ops) = outcome;
             let duration_ms = started.elapsed().as_millis() as u64;
             let ended_at = chrono::Utc::now();
@@ -439,7 +514,7 @@ impl WorkspaceRunSpawner {
                 ended_at: Some(ended_at),
                 duration_ms: Some(duration_ms),
                 usage,
-                session_ref: Some(session_id.clone()),
+                session_ref: Some(session_id),
                 skip_reason,
                 // V15 (stage-2 D.2): the run's asked-ops trace (D-M2's
                 // leave-a-trace contract — 哪次运行、哪个操作、结果).
@@ -472,14 +547,35 @@ impl WorkspaceRunSpawner {
                 // re-entered through the executor face, which IS Send
                 // (the captured-Arcs shape), running the same pipeline.
                 let executor = QueueDrainExecutor {
-                    spawner: spawner.clone(),
+                    spawner: self.clone(),
                 };
                 let workspace_id = workspace_id.clone();
                 tokio::spawn(async move {
                     executor.execute(&workspace_id, &task_id, &run_id);
                 });
             }
-        });
+        }
+    }
+
+    /// The deterministic test seam (batch 4): the WHOLE §8 pipeline —
+    /// opener prefix AND settle — on the caller's task, so a test drives
+    /// a fired run to its terminal record with no polling loop. `tap`
+    /// rides the approval-wait hook (see [`Self::open_awaited`]).
+    #[cfg(test)]
+    pub(super) async fn spawn_and_settle(
+        &self,
+        workspace_id: String,
+        task_id: String,
+        trigger: mirri_core::cron::RunTrigger,
+        scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
+        tap: Option<mirri_core::turn_flow::ApprovalWaitHook>,
+    ) {
+        if let Some(prepared) = self
+            .open_awaited(workspace_id, task_id, None, trigger, scheduled_at, tap)
+            .await
+        {
+            self.settle_run(prepared).await;
+        }
     }
 
     /// Steps 3-4: the execution turn + the terminal outcome bundle. The
