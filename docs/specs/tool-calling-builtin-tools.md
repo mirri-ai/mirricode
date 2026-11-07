@@ -75,17 +75,16 @@
 
 ### 1.1 Read
 
-- **注册**：名称 `Read`；目录描述 `Read a file from the local filesystem.`；domain `os/backends`；capabilities `['code.read']`；无 when。
+- **注册**：名称 `Read`；目录描述 `Read a text file with line numbers.`；domain `os/backends`；capabilities `['code.read']`；无 when。
 - **执行元数据**：描述 `Reading ${path}`；展示 `file_io/read`；审批刻面 `Read` + 路径主体；资源访问 读单文件。
 
 **面向模型的描述（原文，经模板渲染注入 1000/100/2000 三个上限值）**：
 
 ```
-Read a text file from the local filesystem.
+Read a text file and return its content with 1-based line numbers. This is the tool for any known file, including one line range of it — do not shell out to `cat` / `head` / `tail` / `sed -n 'A,Bp'` for that. Use 'line_offset' (1-based, default 1; negative values read from the end, e.g. -100 reads the last 100 lines) and 'n_lines' (default 1000, which is also the per-call maximum) to page through large files. A whole-file read of a file longer than 1000 lines returns the first 1000 lines and says so; re-read with 'line_offset' to continue. Whole-file reads of files larger than 100 KB are refused — re-read those with 'line_offset'/'n_lines'. Refuses directories, binary files (NUL bytes), non-UTF-8 content, and image/video files (use ReadMediaFile for those). Lines longer than 2000 characters are truncated.
+```
 
-If the user provides a concrete file path to a text file, call Read directly. Do not `Glob`, `ls`, or otherwise pre-check known text file paths; missing or invalid file paths return errors you can handle. Do not use Read for directories; use `ls` via Bash for a known directory, or Glob when you need files matching a name pattern (Glob lists files only, never directories). Use `Grep` only when the task is to search for unknown content or locations.
-
-When you need several files, prefer to read them in parallel: emit multiple `Read` calls in a single response instead of reading one file per turn.
+**行为契约（描述之外的实现事实）**：
 
 - Relative paths resolve against the working directory; a path outside the working directory must be absolute.
 - Returns up to 1000 lines or 100 KB per call, whichever comes first; lines longer than 2000 chars are truncated mid-line.
@@ -98,7 +97,6 @@ When you need several files, prefer to read them in parallel: emit multiple `Rea
 - Pure CRLF files are displayed with LF line endings; `Edit` matches this output and preserves CRLF when writing back.
 - Mixed or lone carriage-return line endings are shown as `\r` and require exact `Edit.old_string` escapes.
 - After a successful `Edit`/`Write`, do not re-read solely to prove the write landed. When the task depends on an exact file, API, or output shape, inspect the final external contract before finishing.
-```
 
 **参数契约**：
 
@@ -113,7 +111,7 @@ When you need several files, prefer to read them in parallel: emit multiple `Rea
 **输出契约**：
 - 成功输出 = 逐行 `<lineNo>\t<content>`（行号 1 起）；超长行截断为前 1997 字符 + `...`（总长恰 2000）。
 - 行尾归一化：纯 CRLF 文件显示为 LF；mixed/lone-CR 显示字面 `\r`。
-- **note 侧信道**（仅模型可见，不进 UI），`<system>` 包裹，语句空格连接：有行 `${lineCount} lines read from file starting from line ${startLine}.`；空 `No lines read from file.`；`Total lines in file: ${totalLines}.`；上限命中三选一 `Max 1000 lines reached.` / `Max 102400 bytes reached.` / `End of file reached.`；截断行 `Lines [${numbers}] were truncated.`；mixed 行尾提示 `Mixed or lone carriage-return line endings are shown as \r. Use exact \r\n or \r escapes in Edit.old_string for those lines.`。
+- **note 侧信道**（仅模型可见，不进 UI），`<system>` 包裹，语句空格连接：请求被完整交付时只回报区间 `Read lines ${start}-${end} of ${total}.`（不含「截断/请继续」措辞）；被单次上限截短时为 `Read truncated: showing lines ${start}-${end} of ${total}; continue with 'line_offset': ${end+1}`；单行超长追加 `some lines exceed 2000 characters and were truncated`（分号连接）；mixed 行尾提示 `Mixed or lone carriage-return line endings are shown as \r. Use exact \r\n or \r escapes in Edit.old_string for those lines.`。
 - 尾部模式（负偏移）：读最后 `|line_offset|` 行构成尾部窗口，再收缩——`n_lines` 保留窗口内**靠前**的 n_lines 行（例：`line_offset:-100, n_lines:50` 返回倒数第 100~51 行），100 KB 从末尾向前保留能装下的行。
 
 **错误面**：
@@ -374,15 +372,16 @@ Hidden files are searched by default; `include_ignored: true` also searches giti
 ```
 Execute a `${SHELL_NAME}` command. Use this for shell semantics — pipes, env, processes, git, package managers, build/test runners, anything genuinely interactive or multi-step.
 
-**Translate these to a dedicated tool instead:**
-- `cat` / `head` / `tail` (known path) → `Read`
-- `sed` / `awk` (in-place edit) → `Edit`
-- `echo > file` / `cat <<EOF` → `Write`
-- `find` / recursive `ls` to locate files by name pattern → `Glob` (plain `ls <known-directory>` is fine for listing a directory)
-- `grep` / `rg` (search file contents) → `Grep`
-- `echo` / `printf` (talk to the user) → just output text directly
+Translate these shell idioms to the dedicated tool instead — plain shell file access is not the supported path:
+- `cat` / `head` / `tail` on a known file -> `Read`
+- `sed -n 'A,Bp'` to view lines A..B of a known file -> `Read` with 'line_offset': A, 'n_lines': B-A+1
+- `grep` / `rg` to search file contents -> `Grep` (add context lines with -A/-B/-C there instead of piping)
+- `find` / recursive `ls` to locate files by name pattern -> `Glob`
+- `sed -i` / `awk -i inplace` to change a file -> `Edit`
+- `echo > file` / `cat <<EOF` to create a file -> `Write`
+- `echo` / `printf` to talk to the user -> reply in text
 
-The dedicated tools render in the per-tool permission UI and keep raw stdout out of the conversation; that is why they are worth reaching for whenever one fits.
+The dedicated tools resolve paths through the workspace access policy, cap their output, and render in the per-tool approval UI — that is why they are worth reaching for whenever one fits.
 
 **Output:**
 The stdout and stderr will be combined and returned as a string. The output may be truncated if it is too long. If the command exits non-zero, the output ends with a `Command failed with exit code: N` line; a command killed by its timeout or interrupted by the user ends with its own message instead.

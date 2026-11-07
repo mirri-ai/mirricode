@@ -154,8 +154,19 @@ impl Tool for PowerShellTool {
          expected. The command runs in the session's working directory unless \
          'cwd' is given; 'timeout' is in seconds (default 60, max 300 — \
          clamped). Runs in the foreground only: use the Bash tool's \
-         run_in_background for long-running tasks. Prefer Read/Glob/Grep over \
-         shell file access."
+         run_in_background for long-running tasks.\n\n\
+         Translate these shell idioms to the dedicated tool instead — plain \
+         shell file access is not the supported path:\n\
+         - `Get-Content` / `Get-Content -TotalCount` / `Select-Object -Skip` \
+         on a known file -> `Read` (with 'line_offset' and 'n_lines')\n\
+         - `Select-String` to search file contents -> `Grep`\n\
+         - `Get-ChildItem -Recurse` to locate files by name pattern -> `Glob`\n\
+         - `Set-Content` / `Out-File` / `Add-Content` to create a file -> `Write`\n\
+         - `(Get-Content ...) -replace ... | Set-Content` to change a file -> `Edit`\n\
+         \n\
+         The dedicated tools resolve paths through the workspace access policy, \
+         cap their output, and render in the per-tool approval UI — that is why \
+         they are worth reaching for whenever one fits."
     }
 
     fn parameters(&self) -> &serde_json::Value {
@@ -414,7 +425,39 @@ async fn run_windows_shell(
 
 #[cfg(test)]
 mod tests {
-    use super::build_ps_command_payload;
+    use super::{build_ps_command_payload, PowerShellTool};
+    use crate::task::TaskManager;
+    use crate::tool::Tool;
+    use std::sync::Arc;
+
+    fn test_tool() -> PowerShellTool {
+        PowerShellTool::new(
+            Arc::new(TaskManager::new()),
+            "agent-main".to_string(),
+            "session-1".to_string(),
+            Arc::new(mirri_os::LocalProcess::new()),
+            None,
+        )
+    }
+
+    #[test]
+    fn should_name_the_powershell_to_dedicated_tool_mapping_in_the_description() {
+        let tool = test_tool();
+        let description = tool.description();
+        for needle in [
+            "`Get-Content`",
+            "-> `Read`",
+            "-> `Grep`",
+            "-> `Glob`",
+            "-> `Write`",
+            "-> `Edit`",
+        ] {
+            assert!(
+                description.contains(needle),
+                "description must contain {needle:?}: {description}"
+            );
+        }
+    }
 
     /// Given a user command, when the -Command payload is built, then it
     /// opens with the UTF-8 encoding prelude, runs the command inside the

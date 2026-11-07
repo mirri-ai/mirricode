@@ -20,7 +20,9 @@ use crate::tools::tool_execution_error;
 use crate::tools::{PathClassification, WorkspacePaths};
 
 /// Default number of lines to show when the model does not specify `n_lines`.
-const DEFAULT_N_LINES: u64 = 2000;
+/// Equal to [`MAX_LINES`]: the per-call cap is the default, so a whole-file
+/// read returns the first 1000 lines and reports itself truncated.
+const DEFAULT_N_LINES: u64 = MAX_LINES;
 
 /// Maximum line length: longer lines are truncated with a `... (truncated)`
 /// suffix so a single pathological line cannot blow up the output.
@@ -85,13 +87,18 @@ impl Tool for ReadTool {
 
     fn description(&self) -> &str {
         "Read a text file and return its content with 1-based line numbers. \
+         This is the tool for any known file, including one line range of it — \
+         do not shell out to `cat` / `head` / `tail` / `sed -n 'A,Bp'` for that. \
          Use 'line_offset' (1-based, default 1; negative values read from the \
-         end, e.g. -100 reads the last 100 lines) and 'n_lines' (default 2000, \
-         capped at 1000 per call) to page through large files. Whole-file \
-         reads of files larger than 100 KB are refused — re-read those with \
-         'line_offset'/'n_lines'. Refuses directories, binary files (NUL \
-         bytes), non-UTF-8 content, and image/video files (use ReadMediaFile \
-         for those). Lines longer than 2000 characters are truncated."
+         end, e.g. -100 reads the last 100 lines) and 'n_lines' (default 1000, \
+         which is also the per-call maximum) to page through large files. A \
+         whole-file read of a file longer than 1000 lines returns the first \
+         1000 lines and says so; re-read with 'line_offset' to continue. \
+         Whole-file reads of files larger than 100 KB are refused — re-read \
+         those with 'line_offset'/'n_lines'. Refuses directories, binary files \
+         (NUL bytes), non-UTF-8 content, and image/video files (use \
+         ReadMediaFile for those). Lines longer than 2000 characters are \
+         truncated."
     }
 
     fn parameters(&self) -> &serde_json::Value {
@@ -114,7 +121,7 @@ impl Tool for ReadTool {
                     "n_lines": {
                         "type": "integer",
                         "minimum": 1,
-                        "description": "Maximum number of lines to show. Defaults to 2000."
+                        "description": "Maximum number of lines to show. Defaults to 1000, which is also the per-call maximum; larger values are capped."
                     }
                 },
                 "required": ["path"],
@@ -352,22 +359,37 @@ async fn read_file_range(
         ));
     }
 
-    let truncated = sink.end() < sink.total() || any_line_truncated;
-    let note = truncated.then(|| {
-        let mut note = format!(
-            "Read truncated: showing lines {}-{} of {}; re-read with \
-             'line_offset' to continue",
-            sink.start() + 1,
-            sink.end(),
-            sink.total()
-        );
-        if any_line_truncated {
-            note.push_str(&format!(
-                "; some lines exceed {MAX_LINE_LENGTH} characters and were truncated"
-            ));
+    // A read is truncated only when content the model asked for could not be
+    // delivered: the per-call line cap cut the window short, or a single line
+    // was clipped. A window the caller explicitly narrowed and then fully
+    // received is complete — reporting it as truncated pushes the model to
+    // re-read what it already has.
+    let range_clause = format!(
+        "lines {}-{} of {}",
+        sink.start() + 1,
+        sink.end(),
+        sink.total()
+    );
+    let truncated = (sink.end() < sink.total() && n_lines >= MAX_LINES) || any_line_truncated;
+    let mut note = if truncated {
+        format!(
+            "Read truncated: showing {range_clause}; continue with 'line_offset': {}",
+            sink.end() + 1
+        )
+    } else if sink.end() < sink.total() {
+        format!("Read {range_clause}.")
+    } else {
+        String::new()
+    };
+    if any_line_truncated {
+        if !note.is_empty() {
+            note.push_str("; ");
         }
-        note
-    });
+        note.push_str(&format!(
+            "some lines exceed {MAX_LINE_LENGTH} characters and were truncated"
+        ));
+    }
+    let note = (!note.is_empty()).then_some(note);
 
     ToolResult {
         output: ToolOutput::text(output),
@@ -546,16 +568,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn should_set_truncated_flag_and_note_when_file_is_longer_than_requested_range() {
+    async fn should_not_flag_truncation_when_the_requested_window_is_fully_delivered() {
+        // Given a five-line file and an explicit request for lines 1-2
         let tmp = tempfile::tempdir().unwrap();
         let path = write_fixture(tmp.path(), "d.txt", "1\n2\n3\n4\n5\n");
         let result =
-            read_file_range(local_fs(), path.to_string_lossy().into_owned(), 1, 2, false).await;
+            read_file_range(local_fs(), path.to_string_lossy().into_owned(), 1, 2, true).await;
+
+        // Then the model gets exactly what it asked for and no truncation
+        // signal, only a factual line-range note
+        assert!(!result.is_error);
+        assert!(
+            !result.truncated,
+            "a fully delivered window must not be flagged truncated"
+        );
+        let note = result.note.clone().expect("line-range note");
+        assert_eq!(note, "Read lines 1-2 of 5.");
+        assert_eq!(output_text(&result), "1\t1\n2\t2\n");
+    }
+
+    #[tokio::test]
+    async fn should_flag_truncation_when_the_requested_window_exceeds_the_per_call_cap() {
+        // Given a 1200-line file and a request for more lines than one call
+        // can return
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_fixture(
+            tmp.path(),
+            "cap.txt",
+            &(1..=1200).map(|n| format!("{n}\n")).collect::<String>(),
+        );
+        let result =
+            read_file_range(local_fs(), path.to_string_lossy().into_owned(), 1, 5000, true).await;
+
+        // Then the result is capped at 1000 lines and says it was cut short,
+        // with the next line offset to continue from
         assert!(!result.is_error);
         assert!(result.truncated);
         let note = result.note.clone().expect("truncation note");
-        assert!(note.contains("lines 1-2 of 5"), "note was: {note}");
-        assert_eq!(output_text(&result), "1\t1\n2\t2\n");
+        assert_eq!(
+            note,
+            "Read truncated: showing lines 1-1000 of 1200; continue with 'line_offset': 1001"
+        );
+        assert_eq!(output_text(&result).lines().count(), 1000);
     }
 
     #[tokio::test]
@@ -1074,10 +1128,11 @@ mod tests {
         assert!(output.starts_with("101\t0101"), "output was: {output}");
         assert!(output.contains("\n102\t0102"), "output was: {output}");
         assert!(output.contains("\n103\t0103"), "output was: {output}");
-        // And the truncation note still reports the exact file-wide total
-        assert!(result.truncated);
-        let note = result.note.clone().expect("truncation note");
-        assert!(note.contains("lines 101-103 of 300"), "note was: {note}");
+        // And the note reports the exact file-wide total without claiming a
+        // truncation the caller never suffered
+        assert!(!result.truncated);
+        let note = result.note.clone().expect("line-range note");
+        assert_eq!(note, "Read lines 101-103 of 300.");
     }
 
     #[tokio::test]
@@ -1214,5 +1269,34 @@ mod tests {
             .expect("path description present");
         assert!(description.contains("workspace sandbox"), "{description}");
         assert!(description.contains("user authorization"), "{description}");
+    }
+
+    #[test]
+    fn should_state_the_per_call_line_cap_consistently_in_the_description_and_schema() {
+        let tool = ReadTool::new(None, local_fs());
+        let description = tool.description();
+
+        // The default and the cap are the same number, stated once.
+        assert!(
+            description.contains("default 1000"),
+            "the description must state the real default: {description}"
+        );
+        assert!(
+            !description.contains("default 2000"),
+            "the default must not contradict the per-call cap: {description}"
+        );
+        // The line-range idiom is claimed as Read's own job.
+        assert!(
+            description.contains("sed -n"),
+            "the description must name the shell idiom it replaces: {description}"
+        );
+
+        let n_lines = tool.parameters()["properties"]["n_lines"]["description"]
+            .as_str()
+            .expect("n_lines description present");
+        assert!(
+            n_lines.contains("1000") && !n_lines.contains("2000"),
+            "the schema must state 1000, not 2000: {n_lines}"
+        );
     }
 }

@@ -176,8 +176,22 @@ impl Tool for BashTool {
          start the command as a background task and return its task id \
          immediately; 'disable_timeout' removes the timeout (the background task \
          is still bounded by the global lifetime ceiling unless 'exempt_lifetime' \
-         exempts it), and 'description' labels the background task. \
-         Prefer Read/Glob/Grep over shell file access."
+         exempts it), and 'description' labels the background task.\n\n\
+         Translate these shell idioms to the dedicated tool instead — plain \
+         shell file access is not the supported path:\n\
+         - `cat` / `head` / `tail` on a known file -> `Read`\n\
+         - `sed -n 'A,Bp'` to view lines A..B of a known file -> `Read` with \
+         'line_offset': A, 'n_lines': B-A+1\n\
+         - `grep` / `rg` to search file contents -> `Grep` (add context lines \
+         with -A/-B/-C there instead of piping)\n\
+         - `find` / recursive `ls` to locate files by name pattern -> `Glob`\n\
+         - `sed -i` / `awk -i inplace` to change a file -> `Edit`\n\
+         - `echo > file` / `cat <<EOF` to create a file -> `Write`\n\
+         - `echo` / `printf` to talk to the user -> reply in text\n\
+         \n\
+         The dedicated tools resolve paths through the workspace access policy, \
+         cap their output, and render in the per-tool approval UI — that is why \
+         they are worth reaching for whenever one fits."
     }
 
     fn parameters(&self) -> &serde_json::Value {
@@ -1657,6 +1671,36 @@ mod tests {
             None,
         );
         (tasks, tool)
+    }
+
+    #[test]
+    fn should_name_the_shell_to_dedicated_tool_mapping_in_the_description() {
+        let (_tasks, tool) = test_tool();
+        let description = tool.description();
+
+        // The range-view idiom the model actually types must be named, and
+        // its dedicated replacement spelled out with the exact parameters.
+        assert!(
+            description.contains("sed -n 'A,Bp'"),
+            "the line-range idiom must be named verbatim: {description}"
+        );
+        assert!(
+            description.contains("'line_offset': A, 'n_lines': B-A+1"),
+            "the replacement must carry the exact parameter shape: {description}"
+        );
+        // The remaining read/edit/search idioms must each name their tool.
+        for needle in [
+            "`cat` / `head` / `tail`",
+            "-> `Edit`",
+            "-> `Write`",
+            "-> `Glob`",
+            "-> `Grep`",
+        ] {
+            assert!(
+                description.contains(needle),
+                "description must contain {needle:?}: {description}"
+            );
+        }
     }
 
     #[tokio::test]
