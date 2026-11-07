@@ -243,6 +243,116 @@ function testBinary(body) {
   return ['// layer: T2', ...body, ''].join('\n');
 }
 
+test('should only let allow-listed sleep reasons cover a baseline entry', () => {
+  // 覆盖判定 allow-list（批 6b）：sleep 基线条目只有 reason 匹配
+  // /^(poll-step|negative-wait|real-|D:)/ 才算已覆盖；其余（无 reason、
+  // `Legacy:` 大写变体、随口写的 prose）一律不覆盖 → exit 1。
+  const file = 'crates/demo/tests/integration.rs';
+  const content = [
+    '// layer: T1',
+    '#[test]',
+    'fn waits() {',
+    '    thread::sleep(std::time::Duration::from_millis(1));',
+    '}',
+    '',
+  ].join('\n');
+  const covering = [
+    'negative-wait: bounded absence probe (sanctioned)',
+    'real-io: hermetic child window (sanctioned)',
+    'D: operator-adjudicated line (sanctioned)',
+  ];
+  for (const reason of covering) {
+    const ok = runGate(
+      { [file]: content },
+      { baseline: { violations: { 'crates/demo/tests/integration.rs:4': { type: 'sleep', reason } } } },
+    );
+    assert.equal(ok.status, 0, `reason \`${reason}\` should cover:\n${ok.stderr}`);
+  }
+  const nonCovering = [
+    undefined, // 无 reason
+    'Legacy: pending R2/R4 migration', // 大写变体
+    'operator note: kept for now', // allow-list 之外的 prose
+  ];
+  for (const reason of nonCovering) {
+    const entry = { type: 'sleep' };
+    if (reason !== undefined) entry.reason = reason;
+    const bad = runGate(
+      { [file]: content },
+      { baseline: { violations: { 'crates/demo/tests/integration.rs:4': entry } } },
+    );
+    assert.equal(bad.status, 1, `reason \`${reason}\` must NOT cover:\n${bad.stdout}`);
+    assert.ok(bad.stderr.includes('integration.rs:4'), bad.stderr);
+  }
+});
+
+test('should warn about baseline growth when writing new file+type group entries', () => {
+  // --write-baseline 新条目守卫（批 6b）：重锚时该 file+type 组内没有可配对
+  // 旧条目的新增（组缺失或组条数增长）→ stderr 告警并显式列出，但不阻断
+  // 写入（重锚是操作员动作）。
+  const file = 'crates/demo/tests/integration.rs';
+  const oneSleep = [
+    '// layer: T1',
+    '#[test]',
+    'fn waits() {',
+    '    thread::sleep(std::time::Duration::from_millis(1));',
+    '}',
+    '',
+  ].join('\n');
+  const twoSleeps = [
+    '// layer: T1',
+    '#[test]',
+    'fn waits() {',
+    '    thread::sleep(std::time::Duration::from_millis(1));',
+    '    tokio::time::sleep(std::time::Duration::from_millis(2));',
+    '}',
+    '',
+  ].join('\n');
+  const writeWithBaseline = (content, baseline) => {
+    const root = mkdtempSync(join(tmpdir(), 'test-hygiene-'));
+    const cratePath = join(root, file);
+    mkdirSync(dirname(cratePath), { recursive: true });
+    writeFileSync(cratePath, content);
+    if (baseline !== undefined) {
+      mkdirSync(join(root, 'scripts'), { recursive: true });
+      writeFileSync(join(root, 'scripts', 'test-hygiene-baseline.json'), JSON.stringify(baseline));
+    }
+    return spawnSync(process.execPath, [SCRIPT, '--root', root, '--write-baseline'], {
+      encoding: 'utf-8',
+    });
+  };
+
+  // 组完全缺失（首跑）→ 告警 + 列出 file:line，exit 0（写入不被阻断）
+  const first = writeWithBaseline(oneSleep, undefined);
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stderr, /NEW/);
+  assert.ok(first.stderr.includes('crates/demo/tests/integration.rs:4'), first.stderr);
+
+  // 组存在且条数不变（纯行号漂移重锚）→ 不告警
+  const reanchor = writeWithBaseline(oneSleep, {
+    violations: {
+      'crates/demo/tests/integration.rs:99': {
+        type: 'sleep',
+        reason: 'poll-step: deadline-bounded polling step (sanctioned)',
+      },
+    },
+  });
+  assert.equal(reanchor.status, 0, reanchor.stderr);
+  assert.ok(!reanchor.stderr.includes('NEW'), reanchor.stderr);
+
+  // 组存在但条数增长（1 → 2）→ 多出的条目告警并列出
+  const grown = writeWithBaseline(twoSleeps, {
+    violations: {
+      'crates/demo/tests/integration.rs:4': {
+        type: 'sleep',
+        reason: 'poll-step: deadline-bounded polling step (sanctioned)',
+      },
+    },
+  });
+  assert.equal(grown.status, 0, grown.stderr);
+  assert.match(grown.stderr, /NEW/);
+  assert.ok(grown.stderr.includes('crates/demo/tests/integration.rs:5'), grown.stderr);
+});
+
 test('should flag a raw subprocess spawn in a test fn without #[ignore]', () => {
   const file = 'crates/demo/tests/procs.rs';
   const content = testBinary([
