@@ -1950,7 +1950,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-acp"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1979,7 +1979,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-cli"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2009,7 +2009,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-collaboration"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "chrono",
  "serde",
@@ -2023,7 +2023,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-core"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2060,7 +2060,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-credentials"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "anyhow",
  "mirri-core",
@@ -2076,7 +2076,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-cron-index"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "anyhow",
  "rusqlite",
@@ -2086,7 +2086,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-embedded"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2127,7 +2127,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-kosong"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2143,7 +2143,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-mcp"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -2165,7 +2165,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-node"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2191,7 +2191,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-os"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "anyhow",
  "globset",
@@ -2215,7 +2215,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-persistence"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2234,7 +2234,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-plugin-host"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "chrono",
  "minijinja",
@@ -2255,7 +2255,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-proto"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "chrono",
  "pretty_assertions",
@@ -2269,7 +2269,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-remote"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -2291,7 +2291,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-server"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -2328,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-session-index"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2345,7 +2345,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-test-harness"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -2370,7 +2370,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-test-support"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "tempfile",
  "tokio",
@@ -2378,7 +2378,7 @@ dependencies = [
 
 [[package]]
 name = "mirri-transport"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "async-trait",
  "serde",

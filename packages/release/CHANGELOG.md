@@ -1,5 +1,35 @@
 # Changelog
 
+## 3.1.1
+
+### Patch Changes
+
+- [#199](https://github.com/mirri-ai/mirricode/pull/199) [`4f6f3ef`](https://github.com/mirri-ai/mirricode/commit/4f6f3ef80de0ff767fff303a760134bca198d48d) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Make the agent's default reasoning discipline sharper, so reasoning models spend less time on deliberation that does not change the answer. Reasoning now stops once the next action and its arguments can be named; a chosen approach is carried through instead of re-litigated; recognized hedging loops ("wait", "let me double-check") are dropped; and a finished edit is no longer re-read to confirm it landed — verification means running the check that covers the change.
+
+- [#199](https://github.com/mirri-ai/mirricode/pull/199) [`4f6f3ef`](https://github.com/mirri-ai/mirricode/commit/4f6f3ef80de0ff767fff303a760134bca198d48d) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix a first-launch race after an upgrade where importing legacy scheduled tasks could overlap the first task-list reads, briefly showing an incomplete set of imported tasks.
+
+- [#199](https://github.com/mirri-ai/mirricode/pull/199) [`4f6f3ef`](https://github.com/mirri-ai/mirricode/commit/4f6f3ef80de0ff767fff303a760134bca198d48d) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix goal usage being tracked after the goal is completed: post-completion turns no longer record goal usage entries in the session log, and a completed goal can no longer flip to blocked when an old budget limit is reached.
+
+- [#199](https://github.com/mirri-ai/mirricode/pull/199) [`4f6f3ef`](https://github.com/mirri-ai/mirricode/commit/4f6f3ef80de0ff767fff303a760134bca198d48d) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Stop the Read tool from reporting a line window it fully delivered as truncated, so the agent no longer re-reads content it already has or falls back to shell commands. The shell tools' descriptions and the base prompt now name the idioms they replace (`sed -n 'A,Bp'`, `head`/`tail`, `grep`), pointing them at Read/Grep/Glob/Edit/Write instead.
+
+- [#199](https://github.com/mirri-ai/mirricode/pull/199) [`4f6f3ef`](https://github.com/mirri-ai/mirricode/commit/4f6f3ef80de0ff767fff303a760134bca198d48d) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Turning thinking off now actually reaches the provider. Previously the off request omitted the reasoning field entirely, which every OpenAI-compatible vendor reads as "use the default" — reasoning stayed on with no visible signal. Each endpoint's own spelling is now sent (`thinking.type: disabled`, `reasoning_effort: none`, or `enable_thinking: false`), inferred per vendor with a per-model override (`thinking_off`) for gateways.
+
+  Models that cannot be turned off no longer offer an off switch: the composer shows only their effort tiers, with a note saying the model always thinks.
+
+  Provider connection settings — protocol type, endpoint, custom headers, thinking-off — are now editable in one dialog instead of requiring the provider to be deleted and recreated, which also keeps the configured model list. Switching the protocol no longer loses models or credentials.
+
+  The global `[thinking]` config section is retired: its `effort` duplicated each model's `default_effort`, `enabled` duplicated per-model closeability, and `keep` was never implemented. A leftover section is preserved in your file but has no effect, and `mirri doctor` says so. `MIRRICODE_MODEL_THINKING_EFFORT` and `MIRRICODE_MODEL_THINKING_KEEP` are removed with it.
+
+  New sessions now inherit the model's declared default effort instead of starting with none.
+
+- [#199](https://github.com/mirri-ai/mirricode/pull/199) [`4f6f3ef`](https://github.com/mirri-ai/mirricode/commit/4f6f3ef80de0ff767fff303a760134bca198d48d) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Make tool-call rows lead with the command itself. A Bash call that starts by changing into the current workspace now shows that directory as a badge instead of repeating its full path, and other directories collapse to `…/folder/`, so consecutive tool calls are distinguishable at a glance. The hover view of a call is now as wide as the conversation column, capped at four lines with the rest scrollable.
+
+- [#199](https://github.com/mirri-ai/mirricode/pull/199) [`4f6f3ef`](https://github.com/mirri-ai/mirricode/commit/4f6f3ef80de0ff767fff303a760134bca198d48d) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Fix a duplicated tool group rendering when the same subagent dispatch step reached the transcript twice (e.g. after a service crash and recovery) — each tool call now renders once, with the live progress kept on the surviving card.
+
+- [#199](https://github.com/mirri-ai/mirricode/pull/199) [`4f6f3ef`](https://github.com/mirri-ai/mirricode/commit/4f6f3ef80de0ff767fff303a760134bca198d48d) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Show the full thinking text while it streams instead of clamping it to a two-line window, in a darker shade that is easier to read. Once thinking ends it folds into a collapsible header as before, and subagent work logs now use the same thinking presentation as the main conversation.
+
+- [#199](https://github.com/mirri-ai/mirricode/pull/199) [`4f6f3ef`](https://github.com/mirri-ai/mirricode/commit/4f6f3ef80de0ff767fff303a760134bca198d48d) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix `mirri web` falling back to a useless workspace when started from the filesystem root on Windows packaged app launches — it now resolves the user's home directory instead of the drive root.
+
 ## 3.1.0
 
 ### Minor Changes
