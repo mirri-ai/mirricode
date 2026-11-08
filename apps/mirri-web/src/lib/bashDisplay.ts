@@ -15,9 +15,15 @@
 // So the prefix is collapsed:
 //   - path === the session workspace  → a workspace badge (folder + dir name);
 //     the command reads from its first real token.
+//   - <workspace>/.worktrees/<name>   → a worktree badge (branch glyph + the
+//     checkout name) — the conventional in-repo worktree directory.
+//   - any other directory inside the workspace → a subdir badge showing the
+//     workspace-relative path.
 //   - any other absolute/`~` directory → `cd …/a_folder/ &&`, last segment kept.
 //   - anything else (relative paths, a mid-command `cd`, subshells) → untouched,
 //     because compressing those would misreport where the command runs.
+//   - a trailing `# comment` is stripped from the collapsed text only (the
+//     expanded body / copy path keep it verbatim).
 //
 // Judgement is deliberately strict: a non-matching directory is never shown as
 // the workspace badge. Showing one path segment too many is a cosmetic cost;
@@ -25,10 +31,15 @@
 
 /** The `cd` prefix split off a Bash command, for row rendering. */
 export interface BashPrefix {
-  /** `workspace`: the path is the session's working directory (badge).
-   *  `other`: a different directory (compressed `cd …/dir/ &&` text). */
-  kind: 'workspace' | 'other';
-  /** Directory name for the row, e.g. `mirricode`. */
+  /** `workspace`: exactly the session's working directory (badge).
+   *  `worktree`: `<root>/.worktrees/<name>` — an isolated checkout inside the
+   *    workspace (community convention, not a git standard); the label is the
+   *    checkout name, usually the branch.
+   *  `subdir`: another directory inside the workspace; the label is the path
+   *    relative to the workspace root.
+   *  `other`: a directory outside the workspace (compressed `…/dir`). */
+  kind: 'workspace' | 'worktree' | 'subdir' | 'other';
+  /** Directory name / relative path for the row, e.g. `mirricode`. */
   label: string;
   /** The directory exactly as the model wrote it, quotes stripped. */
   path: string;
@@ -149,6 +160,28 @@ function isWorkspace(path: string, workspaceRoot: string | undefined): boolean {
   return false;
 }
 
+/** Classify a collapsible `cd` target against the session workspace.
+    Strict by design: only provable matches get a specific badge — an
+    in-workspace path becomes a `subdir` (shown relative to the root), the
+    conventional `<root>/.worktrees/<name>` checkout becomes a `worktree`,
+    everything else stays `other` with only its last segment. */
+function classifyPrefix(path: string, workspaceRoot: string | undefined): BashPrefix {
+  const p = normalizePath(path);
+  if (isWorkspace(path, workspaceRoot)) {
+    const root = workspaceRoot ? normalizePath(workspaceRoot) : '';
+    return { kind: 'workspace', label: lastSegment(root || p), path };
+  }
+  const root = workspaceRoot ? normalizePath(workspaceRoot) : '';
+  if (root && root.startsWith('/') && p.startsWith(`${root}/`)) {
+    const rel = p.slice(root.length + 1);
+    if (/^\.worktrees\/[^/]+$/.test(rel)) {
+      return { kind: 'worktree', label: rel.slice('.worktrees/'.length), path };
+    }
+    return { kind: 'subdir', label: rel, path };
+  }
+  return { kind: 'other', label: lastSegment(p), path };
+}
+
 /**
  * Split a Bash command into `{ prefix, text }` for the collapsed row.
  *
@@ -171,16 +204,7 @@ export function summarizeBashCommand(
   if (!isCollapsible(path)) return { text: clipBashSummary(raw, options.max) };
 
   const rest = (m[4] ?? '').trim();
-  const root = workspaceRoot ? normalizePath(workspaceRoot) : '';
-  const prefix: BashPrefix = isWorkspace(path, workspaceRoot)
-    ? {
-        kind: 'workspace',
-        // The badge names the directory the session lives in; fall back to the
-        // cd path itself when the workspace root is unknown.
-        label: lastSegment(root || normalizePath(path)),
-        path,
-      }
-    : { kind: 'other', label: lastSegment(normalizePath(path)), path };
+  const prefix = classifyPrefix(path, workspaceRoot);
 
   return { prefix, text: clipBashSummary(rest, options.max) };
 }
@@ -189,7 +213,15 @@ export function summarizeBashCommand(
     single-line digests built by `toolSummary`). The workspace badge form is
     only used by the tool row itself. */
 export function bashPrefixText(prefix: BashPrefix): string {
-  return prefix.kind === 'workspace' ? `${prefix.label}/ && ` : `…/${prefix.label}/ && `;
+  switch (prefix.kind) {
+    case 'workspace':
+      return `${prefix.label}/ && `;
+    case 'worktree':
+    case 'subdir':
+      return `${prefix.label} && `;
+    case 'other':
+      return `…/${prefix.label}/ && `;
+  }
 }
 
 /** Parse a tool `arg` into the Bash command it carries. `arg` is normally the

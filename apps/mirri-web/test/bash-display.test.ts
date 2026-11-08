@@ -41,10 +41,13 @@ describe('summarizeBashCommand', () => {
     expect(d.text).toBe('make all');
   });
 
-  it('should not badge a workspace subdirectory as the workspace', () => {
+  it('should badge a workspace subdirectory as its relative path, never as the workspace', () => {
+    // Given a cd into a directory inside the workspace but not the root
+    // When the row summary is built
+    // Then it badges the workspace-relative path — still never the workspace badge
     const d = summarizeBashCommand(`cd ${WS}/packages/web && pnpm dev`, WS);
-    expect(d.prefix?.kind).toBe('other');
-    expect(d.prefix?.label).toBe('web');
+    expect(d.prefix?.kind).toBe('subdir');
+    expect(d.prefix?.label).toBe('packages/web');
   });
 
   it('should keep a relative cd path verbatim because it cannot be proven to be the workspace', () => {
@@ -173,6 +176,63 @@ describe('summarizeBashCommand', () => {
   it('should keep the trailing comment verbatim in full mode', () => {
     const cmd = 'git status # 看';
     expect(summarizeBashCommand(cmd, WS, { full: true }).text).toBe(cmd);
+  });
+
+  it('should badge an in-repo worktree checkout with its name', () => {
+    // Given a cd into the conventional .worktrees checkout directory under the workspace
+    // When the row summary is built
+    // Then the badge names the worktree (usually the branch), not the full path
+    const d = summarizeBashCommand(`cd ${WS}/.worktrees/fix-ask-exitplan && git diff`, WS);
+    expect(d.prefix).toEqual({
+      kind: 'worktree',
+      label: 'fix-ask-exitplan',
+      path: `${WS}/.worktrees/fix-ask-exitplan`,
+    });
+    expect(d.text).toBe('git diff');
+  });
+
+  it('should treat a trailing slash on the worktree path as the same worktree', () => {
+    const d = summarizeBashCommand(`cd ${WS}/.worktrees/fix-x/ && git status`, WS);
+    expect(d.prefix?.kind).toBe('worktree');
+    expect(d.prefix?.label).toBe('fix-x');
+  });
+
+  it('should fall back to a relative-path badge below the worktree root', () => {
+    const d = summarizeBashCommand(`cd ${WS}/.worktrees/fix-x/src && pnpm test`, WS);
+    expect(d.prefix?.kind).toBe('subdir');
+    expect(d.prefix?.label).toBe('.worktrees/fix-x/src');
+  });
+
+  it('should badge a deep in-workspace path relative to the workspace root', () => {
+    const d = summarizeBashCommand(`cd ${WS}/apps/mirri-web/src && pnpm dev`, WS);
+    expect(d.prefix?.kind).toBe('subdir');
+    expect(d.prefix?.label).toBe('apps/mirri-web/src');
+  });
+
+  it('should not worktree-badge a .worktrees path outside the workspace', () => {
+    const d = summarizeBashCommand('cd /other/repo/.worktrees/x && git status', WS);
+    expect(d.prefix?.kind).toBe('other');
+    expect(d.prefix?.label).toBe('x');
+  });
+
+  it('should keep a relative .worktrees cd verbatim because it cannot be proven', () => {
+    const d = summarizeBashCommand('cd .worktrees/x && git status', WS);
+    expect(d.prefix).toBeUndefined();
+    expect(d.text).toBe('cd .worktrees/x && git status');
+  });
+});
+
+describe('bashPrefixText', () => {
+  it('should render the worktree prefix as the bare checkout name', () => {
+    expect(
+      bashPrefixText({ kind: 'worktree', label: 'fix-x', path: `${WS}/.worktrees/fix-x` }),
+    ).toBe('fix-x && ');
+  });
+
+  it('should render a subdir prefix as the workspace-relative path', () => {
+    expect(bashPrefixText({ kind: 'subdir', label: 'packages/web', path: `${WS}/packages/web` })).toBe(
+      'packages/web && ',
+    );
   });
 });
 
