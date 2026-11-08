@@ -175,6 +175,21 @@ impl SessionManager {
             None => self.persistence.load_state(session_id).await?,
         };
 
+        // Re-mint the prompt-cache attribution when the loaded metadata
+        // carries none: the metadata ROW has no lineage column (ADR-006),
+        // so a cold resume would otherwise drop the session's cache key
+        // and its provider requests would land on the default shard again
+        // — the same "a fork inherits a shard nobody warmed" failure the
+        // create-time mint prevents. A `state.json` fallback that does
+        // carry a root keeps it untouched. A resumed FORK re-anchors on
+        // itself here: the row carries neither `forkedFrom` nor the chain
+        // root, the same lossiness the lineage field already has on the
+        // row path.
+        let mut metadata = metadata;
+        if metadata.cache_root_id.is_none() {
+            metadata.cache_root_id = Some(session_id.as_str().to_string());
+        }
+
         // An explicit resume clears any close record from this process —
         // the session is live again.
         self.closed_ids

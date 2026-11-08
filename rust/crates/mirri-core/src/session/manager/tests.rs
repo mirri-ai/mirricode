@@ -3283,6 +3283,99 @@ async fn should_leave_cache_root_absent_when_source_state_is_unreadable() {
     assert_eq!(state.cache_root_id.as_deref(), Some(source.id().as_str()));
 }
 
+/// Given a freshly created session, When its metadata is read, Then the
+/// cache root is the session's own id: the attribution rides every
+/// provider request as the prompt-cache key, so the shard a later fork
+/// inherits is warmed by the source itself. Without the mint, the fork
+/// would query a shard nobody ever wrote and miss the whole prefix.
+#[tokio::test]
+async fn should_mint_own_id_as_cache_root_when_creating_a_session() {
+    let (manager, _tmp) = make_manager();
+
+    let session = manager
+        .create_session(SessionMetadata::default(), SessionScopeConfig::default())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        session.metadata().await.cache_root_id.as_deref(),
+        Some(session.id().as_str()),
+        "a session with no chain root of its own is its own root"
+    );
+}
+
+/// Given a source session that minted its own cache root, When it is
+/// forked, Then the fork routes at exactly that root — the key the
+/// source's warm shard lives under, not a freshly derived one.
+#[tokio::test]
+async fn should_route_a_fork_at_the_root_the_source_actually_warmed() {
+    let (manager, _tmp) = make_manager();
+    let source = manager
+        .create_session(SessionMetadata::default(), SessionScopeConfig::default())
+        .await
+        .unwrap();
+    source
+        .create_agent(
+            crate::AgentId::new(MAIN_AGENT_ID),
+            crate::AgentScopeConfig::default(),
+        )
+        .await
+        .unwrap();
+    let source_root = source.metadata().await.cache_root_id;
+
+    let forked = manager
+        .fork_session(
+            &source,
+            &AgentId::new(MAIN_AGENT_ID),
+            SessionMetadata::default(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        forked.metadata().await.cache_root_id,
+        source_root,
+        "the fork must query the shard the source itself warmed"
+    );
+}
+
+/// Given a resumed session whose metadata came from an index row (no
+/// persisted `cacheRootId`), When it resumes, Then the cache root is
+/// minted as its own id — a restart must not silently drop the session's
+/// prompt-cache attribution.
+#[tokio::test]
+async fn should_mint_own_id_as_cache_root_when_resuming_a_session_without_a_persisted_root() {
+    let (manager, _tmp) = make_manager();
+    let session = manager
+        .create_session(SessionMetadata::default(), SessionScopeConfig::default())
+        .await
+        .unwrap();
+    let session_id = session.id().clone();
+    // The model record a real embedded create writes — resume's model
+    // fallback chain needs one.
+    session
+        .record_op(WireOp::ConfigUpdate {
+            model_alias: Some("test-resume-model".to_string()),
+            profile_name: None,
+            thinking_effort: None,
+            system_prompt: None,
+            disallowed_tools: None,
+        })
+        .await;
+    manager
+        .close_session(&session_id, CloseReason::UserInitiated)
+        .await
+        .unwrap();
+
+    let resumed = manager.resume_session(&session_id).await.unwrap();
+
+    assert_eq!(
+        resumed.metadata().await.cache_root_id.as_deref(),
+        Some(session_id.as_str()),
+        "a resumed session keeps an attribution of its own id"
+    );
+}
+
 /// Given a `state.json` that predates the fork feature (no `forkedFrom`
 /// key), When it goes through a load-mutate-save cycle, Then the existing
 /// TS extra fields (`agents`, `custom`) survive untouched — the write path

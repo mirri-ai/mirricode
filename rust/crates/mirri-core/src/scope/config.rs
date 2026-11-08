@@ -594,9 +594,12 @@ pub struct SessionMetadata {
     /// resume keeps the lineage.
     pub forked_from: Option<String>,
     /// Root session id of the fork chain — the provider prompt-cache key
-    /// lineage (TS parity planned). Minted by the fork pipeline: the source's
-    /// root when the source is itself a fork, else the source's own id;
-    /// `None` on fresh sessions and legacy states predating the field.
+    /// attribution. Minted at session creation as the session's OWN id
+    /// (a root session is its own chain root, so the shard it warms is
+    /// the shard a later fork inherits), and carried forward by the fork
+    /// pipeline: the source's root when the source is itself a fork, else
+    /// the source's own id. `None` only on legacy in-memory states
+    /// predating the field.
     pub cache_root_id: Option<String>,
     /// Free-form custom metadata (TS `custom`): a JSON object carried
     /// verbatim in `state.json`. The fork pipeline seeds it from the
