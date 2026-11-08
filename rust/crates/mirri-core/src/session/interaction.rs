@@ -189,8 +189,10 @@ impl InteractionKernel {
 
         if self.approval_gate.is_pending(request_id) {
             // Approval branch: the response carries the klient
-            // approvalResponse shape `{decision, scope?, feedback?}` (parsed
-            // leniently — the contract types the payload `unknown`).
+            // approvalResponse shape `{decision, scope?, feedback?,
+            // selectedLabel?}` (parsed leniently — the contract types the
+            // payload `unknown`). The selected-option label (plan reviews)
+            // rides the approved decision (issue #206).
             let decision = response
                 .get("decision")
                 .and_then(Value::as_str)
@@ -200,10 +202,20 @@ impl InteractionKernel {
                     )
                 })?;
             let scope = response.get("scope").and_then(Value::as_str);
+            let selected_label = response
+                .get("selectedLabel")
+                .or_else(|| response.get("selected_label"))
+                .and_then(Value::as_str)
+                .filter(|label| !label.trim().is_empty())
+                .map(str::to_string);
             let mut approval = match decision {
                 "approved" => match scope {
-                    Some("session") => ApprovalDecision::ApprovedForSession,
-                    _ => ApprovalDecision::Approved,
+                    Some("session") => ApprovalDecision::ApprovedForSession {
+                        label: selected_label.clone(),
+                    },
+                    _ => ApprovalDecision::Approved {
+                        label: selected_label.clone(),
+                    },
                 },
                 "rejected" => ApprovalDecision::Denied(
                     response
@@ -235,7 +247,9 @@ impl InteractionKernel {
                         if let Some(sink) = &self.grant_sink {
                             sink.apply_grant(&dir, scope == Some("persist"));
                         }
-                        approval = ApprovalDecision::Approved;
+                        approval = ApprovalDecision::Approved {
+                            label: selected_label.clone(),
+                        };
                     }
                     _ => {}
                 }
@@ -630,7 +644,7 @@ mod tests {
 
         // Then the awaiting side receives the session-scoped approval
         let decision = receiver.await.expect("the receiver resolves");
-        assert!(matches!(decision, ApprovalDecision::ApprovedForSession));
+        assert!(matches!(decision, ApprovalDecision::ApprovedForSession { label: None }));
 
         // And a scope-less approval still resolves to the plain variant
         let (request_id2, receiver2) = approval_gate.register(ApprovalSnapshot {
@@ -648,7 +662,7 @@ mod tests {
             .respond(&request_id2.to_string(), json!({ "decision": "approved" }))
             .expect("the approval resolves");
         let decision2 = receiver2.await.expect("the receiver resolves");
-        assert!(matches!(decision2, ApprovalDecision::Approved));
+        assert!(matches!(decision2, ApprovalDecision::Approved { label: None }));
     }
 
     /// A test grant sink that records every `(dir, persist)` application.
@@ -721,7 +735,7 @@ mod tests {
         );
         let decision = receiver.await.expect("the receiver resolves");
         assert!(
-            matches!(decision, ApprovalDecision::Approved),
+            matches!(decision, ApprovalDecision::Approved { label: None }),
             "a grant ask must resolve plain Approved, not ApprovedForSession, got {decision:?}"
         );
     }
@@ -748,7 +762,7 @@ mod tests {
             "persist scope must apply the dir grant with persist=true"
         );
         let decision = receiver.await.expect("the receiver resolves");
-        assert!(matches!(decision, ApprovalDecision::Approved));
+        assert!(matches!(decision, ApprovalDecision::Approved { label: None }));
     }
 
     /// Given a grant-carrying pending approval, when `interaction.respond`
@@ -771,7 +785,7 @@ mod tests {
             "a once-scope approval must not apply any grant"
         );
         let decision = receiver.await.expect("the receiver resolves");
-        assert!(matches!(decision, ApprovalDecision::Approved));
+        assert!(matches!(decision, ApprovalDecision::Approved { label: None }));
     }
 
     /// Given a grant-carrying pending approval, when `interaction.respond`

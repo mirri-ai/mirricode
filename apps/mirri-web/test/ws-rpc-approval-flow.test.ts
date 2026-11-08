@@ -343,6 +343,43 @@ describe('WsRpcApi approval ask flow', () => {
     expect(result).toEqual({ resolved: true, resolvedAt: expect.any(String) });
   });
 
+  it('should carry the selected approach label on the approval.decide fallback when the plan review picks a variant', async () => {
+    const { api, client } = createApi();
+    client.call.mockResolvedValue({ ok: true });
+
+    const result = await api.respondApproval('s1', 'req-1', {
+      decision: 'approved',
+      selectedLabel: 'Approach A',
+    });
+    expect(client.call).toHaveBeenCalledWith('approval.decide', {
+      session_id: 's1',
+      request_id: 'req-1',
+      approved: true,
+      reason: 'Approach A',
+      selected_label: 'Approach A',
+    });
+    expect(result).toEqual({ resolved: true, resolvedAt: expect.any(String) });
+  });
+
+  it('should carry the Revise feedback as reason and the label as selected_label on the approval.decide fallback', async () => {
+    const { api, client } = createApi();
+    client.call.mockResolvedValue({ ok: true });
+
+    const result = await api.respondApproval('s1', 'req-1', {
+      decision: 'rejected',
+      selectedLabel: 'Revise',
+      feedback: 'please simplify',
+    });
+    expect(client.call).toHaveBeenCalledWith('approval.decide', {
+      session_id: 's1',
+      request_id: 'req-1',
+      approved: false,
+      reason: 'please simplify',
+      selected_label: 'Revise',
+    });
+    expect(result).toEqual({ resolved: true, resolvedAt: expect.any(String) });
+  });
+
   it('should treat approval.decide\'s NotFound answer as idempotent success when another client already decided', async () => {
     const { api, client } = createApi();
     client.call.mockRejectedValue(

@@ -20,6 +20,8 @@ export default {
   searchScope: '范围：{scope}',
   feedbackPlaceholder: '说明拒绝原因… (Enter 提交, Esc 取消)',
   feedbackHint: 'Enter 提交 · Esc 取消',
+  feedbackSubmit: '提交',
+  feedbackCancel: '取消',
   approve: '批准',
   approveSession: '本会话内批准',
   reject: '拒绝',

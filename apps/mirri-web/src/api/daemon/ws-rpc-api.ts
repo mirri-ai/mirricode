@@ -988,6 +988,11 @@ export class WsRpcApi implements Partial<MirriWebApi> {
       respondParked(response);
       return { resolved: true, resolvedAt: new Date().toISOString() };
     }
+    // `reason` carries the user's typed feedback (the denial text). The
+    // selected-option label rides its own `selected_label` field (issue
+    // #206) — the engine's gate folds it into the plan-review verdict the
+    // same way the parked `approval.ask` reply's `selectedLabel` does. It
+    // is only a legacy fallback for `reason` when no feedback was typed.
     const reason = response.feedback ?? response.selectedLabel;
     try {
       await this.client.call<{ ok: boolean }>('approval.decide', {
@@ -996,6 +1001,9 @@ export class WsRpcApi implements Partial<MirriWebApi> {
         approved: response.decision === 'approved',
         ...(reason !== undefined ? { reason } : {}),
         ...(response.scope !== undefined ? { scope: response.scope } : {}),
+        ...(response.selectedLabel !== undefined
+          ? { selected_label: response.selectedLabel }
+          : {}),
       });
     } catch (error) {
       // First-one-wins gate: when another client (or the ask's own reverse

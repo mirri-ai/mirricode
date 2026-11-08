@@ -240,8 +240,11 @@ function rejectAndExitPlan(): void { act('rejectAndExit', { decision: 'rejected'
 
 // ---------------------------------------------------------------------------
 // Number key shortcuts. Generic cards: 1=approve, 2=session, 3=reject,
-// 4=feedback. Plan review cards: 1/2/3 map to the offered approaches (or
-// approve / revise / reject-and-exit when no approaches are offered).
+// 4=feedback. Plan review cards: [1] is always "Approve plan" (the plan as
+// submitted is a distinct action — an offered approach never replaces it),
+// then the offered approaches map to [2..] (≤3 options). Revise / Reject and
+// Exit keep their digits only when no approaches are offered (options take
+// those slots otherwise).
 // Guard: do not fire when a textarea/input is focused
 // ---------------------------------------------------------------------------
 
@@ -266,15 +269,17 @@ function handleKeydown(e: KeyboardEvent): void {
   }
   const pr = planReview.value;
   if (pr) {
+    if (e.key === '1') { e.preventDefault(); approvePlan(); return; }
     if (pr.options.length === 0) {
-      if (e.key === '1') { e.preventDefault(); approvePlan(); }
-      else if (e.key === '2') { e.preventDefault(); revisePlan(); }
+      if (e.key === '2') { e.preventDefault(); revisePlan(); }
       else if (e.key === '3') { e.preventDefault(); rejectAndExitPlan(); }
       return;
     }
-    if (e.key === '1' && pr.options[0]) { e.preventDefault(); approveOption(pr.options[0].label); }
-    else if (e.key === '2' && pr.options[1]) { e.preventDefault(); approveOption(pr.options[1].label); }
-    else if (e.key === '3' && pr.options[2]) { e.preventDefault(); approveOption(pr.options[2].label); }
+    // Approaches occupy [2..]: three offered options keep Revise / Reject and
+    // Exit reachable by click only (the card shows no digit for them there).
+    if (e.key === '2' && pr.options[0]) { e.preventDefault(); approveOption(pr.options[0].label); }
+    else if (e.key === '3' && pr.options[1]) { e.preventDefault(); approveOption(pr.options[1].label); }
+    else if (e.key === '4' && pr.options[2]) { e.preventDefault(); approveOption(pr.options[2].label); }
     return;
   }
   if (e.key === '1') { e.preventDefault(); approve(); }
@@ -423,7 +428,8 @@ onUnmounted(() => {
         <span class="gen-text">{{ block.summary }}</span>
       </div>
 
-      <!-- Inline feedback textarea -->
+      <!-- Inline feedback textarea (submit / cancel are real buttons so touch
+           users have an explicit tap target — the Enter shortcut stays). -->
       <div v-if="feedbackOpen" class="feedback-wrap">
         <textarea
           ref="feedbackRef"
@@ -433,7 +439,11 @@ onUnmounted(() => {
           rows="2"
           @keydown="onFeedbackKeydown"
         />
-        <div class="feedback-hint">{{ t('approval.feedbackHint') }}</div>
+        <div class="feedback-actions">
+          <Button size="sm" variant="primary" :disabled="busy" @click="submitFeedback">{{ t('approval.feedbackSubmit') }}</Button>
+          <Button size="sm" variant="secondary" :disabled="busy" @click="cancelFeedback">{{ t('approval.feedbackCancel') }}</Button>
+          <span class="feedback-hint">{{ t('approval.feedbackHint') }}</span>
+        </div>
       </div>
 
       <!-- Always-allow confirm strip (B9 / P-012) — the exact pattern to be
@@ -457,23 +467,26 @@ onUnmounted(() => {
     <template v-if="!minimized" #foot>
       <!-- plan_review actions -->
       <div v-if="planReview" class="plan-actions">
-        <template v-if="planReview.options.length > 0">
-          <Tooltip
-            v-for="(opt, i) in planReview.options"
-            :key="i"
-            :text="opt.description"
-          >
-            <Button
-              class="kbtn"
-              size="sm"
-              variant="primary"
-              :loading="pendingAction === `option:${opt.label}`"
-              :disabled="busy"
-              @click="approveOption(opt.label)"
-            >{{ opt.label }}<span class="k">[{{ i + 1 }}]</span></Button>
-          </Tooltip>
-        </template>
-        <Button v-else class="kbtn" size="sm" variant="primary" :loading="pendingAction === 'approvePlan'" :disabled="busy" @click="approvePlan">{{ t('approval.approvePlan') }}<span class="k">[1]</span></Button>
+        <!-- "Approve plan" is always available (spec approval-architecture §150
+             / requirements US3.4): the plan text as submitted is a distinct
+             action — the offered approaches are alternatives, never a
+             replacement. Approving an approach still carries its label as
+             `selectedLabel`. -->
+        <Button class="kbtn" size="sm" variant="primary" :loading="pendingAction === 'approvePlan'" :disabled="busy" @click="approvePlan">{{ t('approval.approvePlan') }}<span class="k">[1]</span></Button>
+        <Tooltip
+          v-for="(opt, i) in planReview.options"
+          :key="i"
+          :text="opt.description"
+        >
+          <Button
+            class="kbtn"
+            size="sm"
+            variant="secondary"
+            :loading="pendingAction === `option:${opt.label}`"
+            :disabled="busy"
+            @click="approveOption(opt.label)"
+          >{{ opt.label }}<span class="k">[{{ i + 2 }}]</span></Button>
+        </Tooltip>
         <Button class="kbtn" size="sm" variant="secondary" :disabled="busy" @click="revisePlan">{{ t('approval.revise') }}<span v-if="planReview.options.length === 0" class="k">[2]</span></Button>
         <Button class="kbtn" size="sm" variant="danger-soft" :loading="pendingAction === 'rejectAndExit'" :disabled="busy" @click="rejectAndExitPlan">{{ t('approval.rejectAndExit') }}<span v-if="planReview.options.length === 0" class="k">[3]</span></Button>
       </div>
@@ -738,7 +751,15 @@ onUnmounted(() => {
   box-shadow: var(--p-focus-ring);
 }
 
-.feedback-hint { font: var(--text-xs) var(--font-ui); color: var(--color-text-muted); margin-top: var(--space-1); }
+/* Submit / cancel row — visible buttons (touch users have an explicit tap
+   target) with the Enter/Esc shortcuts still shown in the hint. */
+.feedback-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+.feedback-hint { font: var(--text-xs) var(--font-ui); color: var(--color-text-muted); }
 
 /* Always-allow confirm strip (B9) — the pattern verbatim in mono, actions
    right-aligned to mirror the feedback strip's layout. */
@@ -799,6 +820,19 @@ onUnmounted(() => {
   .always-actions > * {
     width: 100%;
     min-height: 46px;
+  }
+
+  /* Feedback submit / cancel: full-width tall tap targets like the action
+     rows; the keyboard-shortcut hint moves below the buttons. */
+  .feedback-actions {
+    flex-wrap: wrap;
+  }
+  .feedback-actions > button {
+    flex: 1 1 auto;
+    min-height: 46px;
+  }
+  .feedback-hint {
+    flex-basis: 100%;
   }
 }
 </style>

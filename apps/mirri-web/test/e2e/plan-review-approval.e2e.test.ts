@@ -132,8 +132,7 @@ describe('plan review approval (no offered approaches)', () => {
     const textarea = wrapper.find('textarea.feedback-ta');
     expect(textarea.exists()).toBe(true);
     await textarea.setValue('please simplify');
-    // The feedback strip has no submit button: Enter sends, Shift+Enter breaks
-    // the line (ApprovalCard.onFeedbackKeydown).
+    // Enter sends (Shift+Enter breaks the line — ApprovalCard.onFeedbackKeydown).
     await textarea.trigger('keydown', { key: 'Enter' });
 
     expect(respondApproval).toHaveBeenCalledTimes(1);
@@ -142,6 +141,47 @@ describe('plan review approval (no offered approaches)', () => {
       selectedLabel: 'Revise',
       feedback: 'please simplify',
     });
+    wrapper.unmount();
+  });
+
+  it('should respond with the typed feedback when the user taps the visible submit button instead of Enter', async () => {
+    const { wrapper, respondApproval } = mountPlanReview(planReviewBlock());
+
+    await clickPlanButton(wrapper, 'Revise');
+    await nextTick();
+
+    const textarea = wrapper.find('textarea.feedback-ta');
+    await textarea.setValue('use a smaller scope');
+    // The strip must expose a visible, tappable submit target (touch users
+    // cannot rely on the Enter key alone).
+    const submit = wrapper.find('.feedback-actions button');
+    expect(submit.exists()).toBe(true);
+    await submit.trigger('click');
+
+    expect(respondApproval).toHaveBeenCalledTimes(1);
+    expect(respondApproval).toHaveBeenCalledWith(APPROVAL_ID, {
+      decision: 'rejected',
+      selectedLabel: 'Revise',
+      feedback: 'use a smaller scope',
+    });
+    wrapper.unmount();
+  });
+
+  it('should close the feedback strip without deciding when the user taps the visible cancel button', async () => {
+    const { wrapper, respondApproval } = mountPlanReview(planReviewBlock());
+
+    await clickPlanButton(wrapper, 'Revise');
+    await nextTick();
+
+    const textarea = wrapper.find('textarea.feedback-ta');
+    await textarea.setValue('not sent');
+    const buttons = wrapper.findAll('.feedback-actions button');
+    expect(buttons.length).toBe(2);
+    await buttons[1]!.trigger('click');
+    await nextTick();
+
+    expect(respondApproval).not.toHaveBeenCalled();
+    expect(wrapper.find('textarea.feedback-ta').exists()).toBe(false);
     wrapper.unmount();
   });
 
@@ -164,7 +204,7 @@ describe('plan review approval (no offered approaches)', () => {
 // ---------------------------------------------------------------------------
 
 describe('plan review approval (offered approaches)', () => {
-  it('should respond approved with the chosen approach label when the user picks one', async () => {
+  it('should keep the Approve plan button alongside the approach buttons when approaches are offered', async () => {
     const { wrapper, respondApproval } = mountPlanReview(
       planReviewBlock([
         { label: 'Approach A', description: 'Use caching' },
@@ -172,14 +212,30 @@ describe('plan review approval (offered approaches)', () => {
       ]),
     );
 
-    // Both approaches render as decision buttons, and the single-plan
-    // "Approve plan" button is replaced by them.
+    // The offered approaches are alternatives: the plan-as-submitted stays
+    // available as its own decision, and approaches occupy the next digits.
     expect(planButtons(wrapper).map((b) => b.text())).toEqual([
-      'Approach A[1]',
-      'Approach B[2]',
+      'Approve plan[1]',
+      'Approach A[2]',
+      'Approach B[3]',
       'Revise',
       'Reject and Exit',
     ]);
+
+    await clickPlanButton(wrapper, 'Approve plan');
+
+    expect(respondApproval).toHaveBeenCalledTimes(1);
+    expect(respondApproval).toHaveBeenCalledWith(APPROVAL_ID, { decision: 'approved' });
+    wrapper.unmount();
+  });
+
+  it('should respond approved with the chosen approach label when the user picks one', async () => {
+    const { wrapper, respondApproval } = mountPlanReview(
+      planReviewBlock([
+        { label: 'Approach A', description: 'Use caching' },
+        { label: 'Approach B', description: 'Rewrite' },
+      ]),
+    );
 
     await clickPlanButton(wrapper, 'Approach A');
 

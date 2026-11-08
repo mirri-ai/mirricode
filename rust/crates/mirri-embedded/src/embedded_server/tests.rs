@@ -7220,6 +7220,89 @@ async fn should_restore_the_plan_text_after_exit_plan_mode_and_a_restart() {
     assert_eq!(status["plan"], plan_text, "status: {status}");
 }
 
+/// Given a plan-review approval resolved through the `approval.decide` gate
+/// channel (no parked `approval.ask` reply — issue #206's reconnect path),
+/// when the decide carries a `selected_label`, then the label survives the
+/// gate channel and names the chosen approach in the `ExitPlanMode` tool
+/// result — exactly like the parked reply's `selectedLabel` does.
+#[tokio::test]
+async fn should_carry_the_selected_label_when_the_plan_review_is_decided_through_the_gate_channel() {
+    // Given a server with a created session in plan mode
+    let (server, _tmp) = test_server(None);
+    let created = server
+        .call_method("session.create", json!({}))
+        .await
+        .unwrap();
+    let session_id = created["id"].as_str().unwrap().to_string();
+    converse_once(&server, &session_id).await;
+    server
+        .call_method(
+            "plan.enter",
+            json!({ "session_id": &session_id, "plan": "1. Map the migration chain" }),
+        )
+        .await
+        .unwrap();
+
+    // When the plan review is decided through the gate channel, naming the
+    // approach the user picked — the decide wire's `selected_label` rides the
+    // `ApprovalDecision` into the fold exactly like the gate delivers it
+    let manager = server.session_manager();
+    let session = manager
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("session stays live");
+    let agent = session
+        .get_agent(&AgentId::new(DEFAULT_MAIN_AGENT_ID))
+        .await
+        .expect("default agent stays live");
+    let execution = {
+        let tools = agent.tool_manager();
+        let tools = tools.read();
+        let tool = tools
+            .find_tool("ExitPlanMode")
+            .expect("ExitPlanMode is registered");
+        tool.resolve_execution(json!({
+            "plan": "1. Map the migration chain\n2. Convert the task payload",
+            "options": [
+                {"label": "Approach A", "description": "Use caching"},
+                {"label": "Approach B", "description": "Rewrite"},
+            ],
+        }))
+        .expect("ExitPlanMode resolves")
+    };
+    let mirri_core::ToolExecution::Runnable { execute, .. } = execution else {
+        panic!("expected a runnable execution");
+    };
+
+    // The gate's approval metadata carries the plan-review verdict with the
+    // label the decide channel preserved (issue #206).
+    let metadata = serde_json::json!({
+        "planReview": {"decision": "approved", "selectedLabel": "Approach A"},
+    });
+    let result = execute(mirri_core::ExecutableToolContext {
+        approval_metadata: Some(metadata),
+        wait_registry: None,
+        turn_id: "test-turn".to_string(),
+        tool_call_id: "test-call".to_string(),
+        cancel: mirri_core::CancelToken::default(),
+        progress: mirri_core::ToolProgressHandle::default(),
+        turn_origin: Default::default(),
+    })
+    .await;
+
+    // Then the tool result names the chosen approach — the gate channel must
+    // carry the label exactly like the parked `approval.ask` reply does
+    assert!(!result.is_error, "{result:?}");
+    let output_text = match &result.output {
+        mirri_core::ToolOutput::Text(text) => text.clone(),
+        mirri_core::ToolOutput::Parts(_) => serde_json::to_string(&result.output).unwrap_or_default(),
+    };
+    assert!(
+        output_text.contains("Selected approach: Approach A"),
+        "the gate channel must carry the selected label into the tool result, got {output_text:?}"
+    );
+}
+
 /// Given a persisted session, when plan mode is entered and left through
 /// both faces (RPC and agent tools), then the wire log records the
 /// `plan_mode.*` lifecycle in dispatch order, and a resume of the exited
