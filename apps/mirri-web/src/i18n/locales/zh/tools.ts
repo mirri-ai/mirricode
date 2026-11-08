@@ -59,6 +59,11 @@ export default {
   workspacePrefixHint: '当前工作区（命令开头省略了 cd 到此目录）',
   /** 非当前工作区的目录前缀：只保留末段路径，其余压缩为 …。 */
   otherDirPrefixHint: '切换到此目录后执行',
+  /** Bash 行 worktree 徽标：cd 指向 `<工作区>/.worktrees/<name>`（本工作区的
+   *  隔离检出），徽标显示检出名（通常是分支名）。 */
+  worktreePrefixHint: '本工作区的 worktree（隔离检出）',
+  /** Bash 行子目录徽标：cd 指向工作区内目录，徽标显示相对工作区根的路径。 */
+  subdirPrefixHint: '当前工作区内的目录',
   group: {
     title: '{count} 个工具调用',
     running: '运行中',

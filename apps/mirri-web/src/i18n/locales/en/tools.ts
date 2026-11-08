@@ -61,6 +61,12 @@ export default {
   /** Directory prefix for a workspace other than the current one: only the last
    *  path segment is kept, the rest is compressed to `…`. */
   otherDirPrefixHint: 'Runs after changing into this directory',
+  /** Bash row worktree badge: the cd targets `<workspace>/.worktrees/<name>`,
+   *  an isolated checkout of this workspace; the badge shows its name. */
+  worktreePrefixHint: 'Worktree of this workspace (isolated checkout)',
+  /** Bash row subdir badge: the cd targets a directory inside the workspace;
+   *  the badge shows the path relative to the workspace root. */
+  subdirPrefixHint: 'Directory inside the current workspace',
   group: {
     title: '{count} tool call | {count} tool calls',
     running: 'running',
