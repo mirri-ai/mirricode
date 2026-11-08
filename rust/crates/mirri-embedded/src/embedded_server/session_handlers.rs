@@ -2157,6 +2157,22 @@ impl EmbeddedServer {
                 .resolve_session_owner(&parsed.session_id)
                 .map_err(|_| resume_session_not_found(&parsed.session_id))?;
             let session_id = SessionId::new(&parsed.session_id);
+            // A session whose body is gone (the user deleted the sessions
+            // directory outside the engine) must not reach
+            // `restore_decompress`: acquiring the directory lock would
+            // re-create the empty session directory, resurrecting what the
+            // user deleted. Drop the dead row (a conversed session's row is
+            // reclaimed by the helper; a never-conversed one is kept) and
+            // answer not-found.
+            if owner_manager.get_session(&session_id).await.is_none() {
+                let dir = owner_manager.persistence().session_dir(&session_id);
+                if mirri_persistence::probe_compressed(&dir)
+                    == mirri_persistence::CompressedShape::Missing
+                {
+                    owner_manager.discard_row_without_body(&session_id).await;
+                    return Err(resume_session_not_found(&parsed.session_id));
+                }
+            }
             mirri_core::session::retention::restore_decompress(
                 owner_manager.persistence(),
                 &session_id,

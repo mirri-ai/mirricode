@@ -77,7 +77,9 @@ $MIRRICODE_HOME  （默认 ~/.mirri-code）
 
 ## 会话数据
 
-会话数据按引擎分目录存储：TS 引擎（当前默认）写在 `sessions/`，Rust 引擎（`MIRRICODE_RUST_ENGINE=1` 时启用）写在 `v3_sessions/`——两个目录互不读取对方的会话。目录内部布局一致：每个会话存在 `<workDirKey>/<sessionId>/` 下。索引有两套：`session_index.jsonl` 是 TS 引擎的 v1 兼容清单（每行一条记录，含 `sessionId`、`sessionDir`、`workDir` 三个字段）；TS v2 引擎读自己的 SQLite 读模型 `cache/session-index.db`，Rust 引擎读 `session-index.db`。两者都是同一批磁盘会话的可重建缓存，删除只会让会话列表退化为磁盘扫描。`workDirKey` 是从工作目录路径生成的桶名，格式为 `wd_<slug>_<sha256前12位>`。
+会话数据按引擎分目录存储：TS 引擎（当前默认）写在 `sessions/`，Rust 引擎（`MIRRICODE_RUST_ENGINE=1` 时启用）写在 `v3_sessions/`——两个目录互不读取对方的会话。目录内部布局一致：每个会话存在 `<workDirKey>/<sessionId>/` 下。索引有两套：`session_index.jsonl` 是 TS 引擎的 v1 兼容清单（每行一条记录，含 `sessionId`、`sessionDir`、`workDir` 三个字段）；TS v2 引擎读自己的 SQLite 读模型 `cache/session-index.db`，Rust 引擎读 `session-index.db`。TS 引擎的两套索引是同一批磁盘会话的可重建缓存，删除只会让会话列表退化为磁盘扫描；Rust 引擎的 `session-index.db` 则保存会话的标题、标签、归档与置顶状态，删除会丢失这些信息，不要当作缓存随手清理。`workDirKey` 是从工作目录路径生成的桶名，格式为 `wd_<slug>_<sha256前12位>`。
+
+如果你在应用外删除了某个会话的目录（或整个 `v3_sessions/`），会话列表里可能还留着这些会话的旧条目；下一次打开该会话时，残留条目会被自动清理。要立即清空整个列表，同时删除 `v3_sessions/` 和 `session-index.db`。
 
 会话目录内部包含：
 
@@ -115,7 +117,7 @@ $MIRRICODE_HOME  （默认 ~/.mirri-code）
 | --- | --- |
 | 重置配置 | 删除 `~/.mirri-code/config.toml` |
 | 重置终端界面偏好 | 删除 `~/.mirri-code/tui.toml` |
-| 清理所有会话 | 删除 `~/.mirri-code/sessions/`、`~/.mirri-code/v3_sessions/` 和 `session_index.jsonl` |
+| 清理所有会话 | 删除 `~/.mirri-code/sessions/` 和 `~/.mirri-code/v3_sessions/`，以及索引入口 `session_index.jsonl`、`session-index.db` |
 | 清理诊断日志 | 删除 `~/.mirri-code/logs/` |
 | 清理输入历史 | 删除 `~/.mirri-code/user-history/` |
 | 重置更新状态 | 删除 `~/.mirri-code/updates/latest.json` |

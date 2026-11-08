@@ -25034,6 +25034,157 @@ async fn should_delete_the_directory_before_the_index_row_when_the_unified_delet
     );
 }
 
+/// Give the fixture's server the production registry wiring (the home
+/// installed for the index fallback, so `manager_for` resolves a persisted
+/// session through its row) and publish that session's row — the state a
+/// listing produces before the user deletes the session directory.
+fn publish_session_row(
+    fixture: &RetentionDeleteFixture,
+) -> std::sync::Arc<mirri_session_index::SessionIndex> {
+    fixture
+        .server
+        .registry
+        .install_session_index(fixture._home.path().to_path_buf());
+    let index = fixture.server.session_index().expect("the index opens");
+    let now = chrono::Utc::now();
+    index
+        .upsert_session(&mirri_session_index::SessionRow {
+            id: fixture.id().to_string(),
+            workspace_id: mirri_core::encode_work_dir_key(fixture._home.path()),
+            cwd: Some(fixture._home.path().to_string_lossy().into_owned()),
+            title: Some("Body-less test".to_string()),
+            created_at: now,
+            updated_at: now,
+            archived: false,
+            tags: Vec::new(),
+            custom: None,
+            last_prompt: Some("a prompt the row still remembers".to_string()),
+            state_mtime: None,
+            archived_at: None,
+            compressed: false,
+            compressed_at: None,
+            pinned: false,
+            pinned_at: None,
+            pin_color: None,
+            last_used_at: None,
+            pre_compressed_size: None,
+        })
+        .unwrap();
+    assert!(index.get_session(fixture.id()).is_some());
+    index
+}
+
+/// Given a session listed by the index whose session directory the user
+/// deleted outside the engine, when the session is opened
+/// (`session.resume`), then the open fails AND the index row is reclaimed —
+/// the listing stops offering a session that can never open again.
+#[tokio::test]
+async fn should_drop_the_index_row_when_opening_a_session_whose_directory_is_gone() {
+    // Given a listed session whose directory was deleted behind the engine
+    let fixture = RetentionDeleteFixture::new().await;
+    let index = publish_session_row(&fixture);
+    std::fs::remove_dir_all(fixture.session_dir()).expect("the directory removes");
+
+    // When the session is opened
+    let error = fixture
+        .server
+        .call_method("session.resume", json!({ "session_id": fixture.id() }))
+        .await
+        .expect_err("the body is gone — the open must fail");
+
+    // Then the open reports the failure and the row is reclaimed (the
+    // listing no longer resurrects the dead session)
+    assert!(
+        error.to_string().contains("wire log not found"),
+        "the open reports the missing body: {error}"
+    );
+    assert!(
+        index.get_session(fixture.id()).is_none(),
+        "the body-less session's index row is reclaimed"
+    );
+}
+
+/// Given the same body-less session, when it is opened through
+/// `session.restore`, then the row is reclaimed WITHOUT the directory
+/// being re-created: the restore's directory lock must never resurrect a
+/// session the user deleted.
+#[tokio::test]
+async fn should_not_recreate_the_directory_when_restoring_a_session_whose_body_is_gone() {
+    // Given a listed session whose directory was deleted behind the engine
+    let fixture = RetentionDeleteFixture::new().await;
+    let index = publish_session_row(&fixture);
+    std::fs::remove_dir_all(fixture.session_dir()).expect("the directory removes");
+
+    // When the session is restored
+    fixture
+        .server
+        .call_method("session.restore", json!({ "session_id": fixture.id() }))
+        .await
+        .expect_err("the body is gone — the restore must fail");
+
+    // Then the row is reclaimed and no empty directory (nor its lock file)
+    // came back
+    assert!(index.get_session(fixture.id()).is_none());
+    assert!(
+        !fixture.session_dir().exists(),
+        "the restore must not resurrect the deleted session directory"
+    );
+}
+
+/// Given a session whose body still exists in its compressed shape, when
+/// the open fails (a bare resume cannot replay a `.gz`), then the index row
+/// SURVIVES — a compressed body is restorable, never garbage to reclaim.
+#[tokio::test]
+async fn should_keep_the_index_row_when_the_session_body_is_compressed() {
+    // Given a listed session compressed into the `.gz` shape
+    let fixture = RetentionDeleteFixture::new().await;
+    let index = publish_session_row(&fixture);
+    mirri_persistence::compress::compress_wire_log(&fixture.session_dir())
+        .expect("the wire log compresses");
+
+    // When a bare resume fails on the compressed shape
+    fixture
+        .server
+        .call_method("session.resume", json!({ "session_id": fixture.id() }))
+        .await
+        .expect_err("a bare resume cannot replay a compressed wire log");
+
+    // Then the row stays: only a MISSING body is reclaimed
+    assert!(
+        index.get_session(fixture.id()).is_some(),
+        "a compressed session keeps its row (restore it, never drop it)"
+    );
+}
+
+/// Given a never-conversed session's row (no `last_prompt`) whose
+/// directory does not exist — ADR-006's LEGAL "row present, body absent"
+/// state, e.g. a lazy create that survived a restart before its first
+/// message — when the session is opened, then the open fails honestly and
+/// the row SURVIVES: only a conversed session's vanished body is garbage.
+#[tokio::test]
+async fn should_keep_the_index_row_when_a_never_conversed_session_has_no_body() {
+    // Given a listed row that never conversed and has no directory
+    let fixture = RetentionDeleteFixture::new().await;
+    let index = publish_session_row(&fixture);
+    let mut row = index.get_session(fixture.id()).expect("the row exists");
+    row.last_prompt = None;
+    index.upsert_session(&row).unwrap();
+    std::fs::remove_dir_all(fixture.session_dir()).expect("the directory removes");
+
+    // When the session is opened
+    fixture
+        .server
+        .call_method("session.resume", json!({ "session_id": fixture.id() }))
+        .await
+        .expect_err("no body — the open must fail");
+
+    // Then the row stays (the legal never-conversed shape, ADR-006 b)
+    assert!(
+        index.get_session(fixture.id()).is_some(),
+        "a never-conversed session keeps its row"
+    );
+}
+
 /// Given a session whose directory lock is held (a delete×restore /
 /// delete×compress race — US5.1 #5/#6), when the unified delete runs,
 /// then it fails with the busy business error and NOTHING is deleted

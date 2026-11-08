@@ -2226,6 +2226,61 @@ impl SessionManager {
         Ok(materialized)
     }
 
+    /// Reclaim the metadata row of a session whose persisted body has
+    /// vanished — the maintenance a failed open owes when the user deleted
+    /// the sessions directory (or one session's folder) out from under the
+    /// engine.
+    ///
+    /// ADR-006 made the row the metadata source of truth, so "row present,
+    /// body absent" is a LEGAL state for a never-conversed lazy create
+    /// (decision b): such a row stays (the listing's `exclude_empty` filter
+    /// hides it, and the first message can still materialize it). The row
+    /// that is not legal is the one that once conversed — its `last_prompt`
+    /// proves a body existed — and whose body then disappeared: it can never
+    /// be opened again, yet every listing re-offers it. This helper drops
+    /// exactly that row.
+    ///
+    /// Guards: a live session is never discarded (its body is memory), a row
+    /// without a recorded conversation is kept, and the port's delete is the
+    /// ordinary row delete (its tombstone is harmless — a tombstone with no
+    /// directory is cleared by the next reaper sweep).
+    ///
+    /// Returns whether a row was dropped.
+    pub async fn discard_row_without_body(&self, session_id: &SessionId) -> bool {
+        if self.get_session(session_id).await.is_some() {
+            return false;
+        }
+        let Some(record) = self.metadata_store.get(session_id).await else {
+            return false;
+        };
+        let conversed = record
+            .last_prompt
+            .as_deref()
+            .is_some_and(|prompt| !prompt.is_empty());
+        if !conversed {
+            return false;
+        }
+        let dir = self.persistence.session_dir(session_id);
+        if mirri_persistence::probe_compressed(&dir) != mirri_persistence::CompressedShape::Missing {
+            return false;
+        }
+        if let Err(error) = self.metadata_store.delete(session_id).await {
+            tracing::warn!(
+                session_id = %session_id,
+                %error,
+                "dropping the metadata row of a body-less session failed"
+            );
+            return false;
+        }
+        tracing::info!(
+            session_id = %session_id,
+            directory = %dir.display(),
+            "dropped the metadata row of a conversed session whose persisted body is gone \
+             (its session directory was deleted outside the engine)"
+        );
+        true
+    }
+
     /// Whether this process closed the session (see [`Self::close_session`]).
     /// Read paths use this to avoid silently resurrecting a closed session;
     /// a fresh manager after a restart reports `false` for every persisted
