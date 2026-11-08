@@ -347,6 +347,13 @@ export interface UseWorkspaceStateDeps {
   /** Diagnostic for the connecting splash, set by checkAuth on transient
    *  failures and cleared once a check gets through. */
   connectIssue: Ref<string | null>;
+  /** True while the auth readiness probe itself is failing (transient
+   *  network/5xx on GET /auth). Distinct from `authReady === false` ("the
+   *  daemon is up but no model is configured"): a connectivity failure must
+   *  keep the connecting splash up instead of bouncing the user into the
+   *  model-setup guide over an already-configured daemon. Cleared on the
+   *  first check that gets through (ready or not). */
+  authFailed: Ref<boolean>;
   selectedDiffPath: Ref<string | null>;
   fileDiffLines: Ref<DiffViewLine[]>;
   fileDiffLoading: Ref<boolean>;
@@ -401,6 +408,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     resetFastMoon,
     initialized,
     connectIssue,
+    authFailed,
     selectedDiffPath,
     fileDiffLines,
     fileDiffLoading,
@@ -529,19 +537,26 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       rawState.authReady = result.ready;
       rawState.defaultModel = result.defaultModel;
       connectIssue.value = null;
+      // The probe got through — whatever it reported, this is no longer a
+      // connectivity failure.
+      authFailed.value = false;
       return 'proceed';
     } catch (error) {
       if (
         isDaemonApiError(error) &&
         (error.code === 401 || error.code === SERVER_AUTH_UNAUTHORIZED_CODE)
       ) {
-        // The ServerAuthDialog explains this one — nothing to surface.
+        // The ServerAuthDialog explains this one — nothing to surface. A
+        // rejected credential is not a connectivity failure either.
         connectIssue.value = null;
         return 'server-auth-required';
       }
       // Surface the reason on the splash so "cannot connect" is diagnosable
       // instead of an unexplained spinner.
       connectIssue.value = (error instanceof Error ? error.message : String(error)).slice(0, 140);
+      // The readiness verdict is UNKNOWN, not "not ready" — flag the outage so
+      // the setup gate cannot render "configure your model" over it.
+      authFailed.value = true;
       return 'retry';
     }
   }
@@ -1267,6 +1282,14 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         authResolved = false;
         return;
       }
+      // The legacy order that skipped the eager gate (meta outage / bypass
+      // engine) must not read a stale `authReady: false` as "no model
+      // configured" — run one plain check so a probe failure lands in
+      // authFailed (keeping the splash up) instead of the setup gate. The
+      // firstLoad-with-gate path already got its verdict from
+      // waitForFirstAuth; non-first loads check below with the parallel
+      // fetches.
+      if (!authGateRequired && firstLoad) await checkAuth();
       // Parallel: health + models (meta already fetched above)
       await Promise.all([
         api.getHealth().catch(() => null),

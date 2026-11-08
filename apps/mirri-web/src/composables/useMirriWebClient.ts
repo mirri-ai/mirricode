@@ -9,6 +9,7 @@ import { i18n } from '../i18n';
 import { traceClientEvent } from '../debug/trace';
 import { getMirriWebApi } from '../api';
 import { isDaemonApiError, isDaemonNetworkError } from '../api/errors';
+import { onAuthRequired } from '../api/daemon/serverAuth';
 import { classifyOperationFailure, operationFailureCopy } from '../lib/operationFailureNotice';
 import { isSessionNotFoundError } from '../lib/sessionErrors';
 import {
@@ -378,6 +379,10 @@ export interface ExtendedState extends MirriClientState {
   unreadBySession: Record<string, boolean>;
   // Auth state (real daemon)
   authReady: boolean;
+  /** True while the auth readiness probe itself is failing (GET /auth
+   *  unreachable/5xx) — "unknown", not "not ready". Guards the setup gate
+   *  against rendering "configure your model" over a connectivity failure. */
+  authFailed: boolean;
   defaultModel: string | null;
   // Workspace state
   workspaces: AppWorkspace[];
@@ -461,6 +466,7 @@ const rawState: ExtendedState = reactive({
   inFlightBySession: {},
   unreadBySession: loadUnread(),
   authReady: false,
+  authFailed: false,
   defaultModel: null,
   workspaces: [],
   activeWorkspaceId: loadActiveWorkspaceFromStorage(),
@@ -704,6 +710,25 @@ const fileDiffLoading = ref(false);
 // gate keeps retrying (e.g. the daemon's error message). Null when no attempt
 // has failed yet or the last attempt got through.
 const connectIssue = ref<string | null>(null);
+
+// True while the auth readiness probe itself is failing (GET /auth
+// unreachable/5xx). "Unknown readiness", not "not ready" — the setup gate
+// reads it to keep the connecting splash up instead of bouncing the user into
+// the model-setup guide over a connectivity failure.
+const authFailed = ref(false);
+
+// True once the daemon rejected our server credential (HTTP 401 / envelope
+// 40101). The ServerAuthDialog owns recovery; the setup gate must not render
+// over it. Mirrors App.vue's `authRequired` so the gate composable can read
+// one client surface.
+const serverAuthRequired = ref(false);
+// Registered at module scope (before the first request can 401) so the gate's
+// computed never misses a rejection — same reasoning as App.vue's listener.
+onAuthRequired(() => {
+  serverAuthRequired.value = true;
+});
+// One-way latch: only a full page reload (the ServerAuthDialog's recovery
+// flow) clears it, same as App.vue's authRequired.
 
 // False until the very first load() settles (success OR failure). Gates the
 // global connecting-splash so a page refresh doesn't flash a half-empty app.
@@ -3032,6 +3057,7 @@ const workspaceState = useWorkspaceState(rawState, {
   resetFastMoon: appearance.resetFastMoon,
   initialized,
   connectIssue,
+  authFailed,
   selectedDiffPath,
   fileDiffLines,
   fileDiffLoading,
@@ -3322,6 +3348,8 @@ export function useMirriWebClient() {
     clearDangerousBypassAuth,
     initialized,
     connectIssue,
+    authFailed,
+    serverAuthRequired,
     permission,
     thinking,
     planMode,

@@ -193,13 +193,22 @@ pub(crate) struct AuthSummaryData {
     ready: bool,
     providers_count: usize,
     default_model: Option<String>,
+    /// Per-process count of rejected bearer credentials since startup (see
+    /// [`crate::auth::record_auth_failure`]). Diagnostic only: a non-zero
+    /// value on a client that shows "cannot connect" means the credential was
+    /// rejected — not that the daemon is unreachable. Additive field; older
+    /// clients ignore it.
+    recent_auth_failures: u64,
 }
 
 /// Project the v1 auth summary from the config.
 ///
 /// `ready` mirrors the TS semantics: at least one provider and a
 /// resolvable default model.
-pub(crate) fn project_auth_summary(config: &mirri_core::ServerConfig) -> AuthSummaryData {
+pub(crate) fn project_auth_summary(
+    config: &mirri_core::ServerConfig,
+    recent_auth_failures: u64,
+) -> AuthSummaryData {
     let mut providers_count = config.providers.as_ref().map_or(0, |m| m.len());
     // Legacy single-provider section counts once when it carries a key or
     // endpoint.
@@ -224,6 +233,7 @@ pub(crate) fn project_auth_summary(config: &mirri_core::ServerConfig) -> AuthSum
         ready,
         providers_count,
         default_model,
+        recent_auth_failures,
     }
 }
 
@@ -238,7 +248,11 @@ async fn auth_summary(
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    Json(ApiResponse::ok(project_auth_summary(&config), &request_id))
+    let recent_auth_failures = state.auth_failures.load(std::sync::atomic::Ordering::Relaxed);
+    Json(ApiResponse::ok(
+        project_auth_summary(&config, recent_auth_failures),
+        &request_id,
+    ))
 }
 
 /// Wire shape of the metadata response — the v1 REST contract the protocol

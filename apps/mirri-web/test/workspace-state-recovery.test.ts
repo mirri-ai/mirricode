@@ -180,6 +180,7 @@ function createHarness(opts?: { initialized?: boolean }) {
     resetFastMoon: vi.fn(),
     initialized: ref(opts?.initialized ?? true),
     connectIssue: ref(null),
+    authFailed: ref(false),
     selectedDiffPath: ref(null),
     fileDiffLines: ref([]),
     fileDiffLoading: ref(false),
@@ -327,6 +328,7 @@ describe('useWorkspaceState — recovery cold start', () => {
   });
 
   it('should fetch the recovery list in the background on cold start', async () => {
+    apiMock.getAuth.mockResolvedValue({ ready: true, defaultModel: 'mirri-code' });
     apiMock.listRecovery.mockResolvedValue({ interruptions: [interruption('sess_1')] });
     const { ws, recoveryInterruptions } = createHarness({ initialized: false });
 

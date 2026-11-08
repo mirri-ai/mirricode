@@ -39,6 +39,25 @@ const HEALTH_POLL_MS = 200;
 /** Timeout for the stale-server health check before deciding not to kill. */
 const STALE_HEALTH_TIMEOUT_MS = 2_000;
 
+/** Environment variable overriding the Desktop-spawned server's `--log-level`.
+ *  Unset (or blank) keeps the quiet `error` default — the server's file sink
+ *  under `<mirri-home>/logs/` always keeps `info` regardless, so this only
+ *  controls what lands in the Desktop's `server-desktop.log` (stdout/stderr).
+ *  Values are passed through to `mirri web --log-level` as-is (`error` |
+ *  `warn` | `info` | `debug` | `trace`, or an EnvFilter directive). */
+export const DESKTOP_LOG_LEVEL_ENV = 'MIRRICODE_DESKTOP_LOG_LEVEL';
+
+/** Resolve the `--log-level` for the spawned server: the
+ *  `MIRRICODE_DESKTOP_LOG_LEVEL` override when set and non-blank, else `error`.
+ *  Reads `process.env` (callers that need a different env pass `env`). */
+export function resolveServerLogLevel(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const override = env[DESKTOP_LOG_LEVEL_ENV];
+  const trimmed = override === undefined ? '' : override.trim();
+  return trimmed.length > 0 ? trimmed : 'error';
+}
+
 // ---------------------------------------------------------------------------
 // Health check
 // ---------------------------------------------------------------------------
@@ -106,7 +125,7 @@ export function startMirriServer(
     '--port',
     String(DESKTOP_PORT),
     '--log-level',
-    'error',
+    resolveServerLogLevel(env),
   ];
 
   // Dev: point the server at the locally built web SPA when one exists. The

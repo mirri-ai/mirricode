@@ -180,6 +180,7 @@ pub async fn handle_ws_rpc(
             // Same response for a missing and a wrong token (design §13.1):
             // nothing beyond token validity is revealed.
             tracing::warn!("rejected /api/v1/rpc upgrade: missing or invalid bearer subprotocol");
+            auth::record_auth_failure(&state, "/api/v1/rpc");
             let request_id = crate::http::request_id_from(&headers);
             auth::unauthorized_response(&request_id)
         }

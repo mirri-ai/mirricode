@@ -75,6 +75,13 @@ pub struct ServerState {
     /// shutdown route still only accepts loopback peers). Never log this
     /// value.
     pub auth_token: Option<String>,
+    /// Per-process count of rejected bearer credentials (missing or wrong
+    /// `Authorization` on a protected route, and rejected WS upgrade
+    /// attempts). Monotonic — reset only by a process restart — so a later
+    /// `GET /api/v1/auth` can tell the operator how many 401s the server
+    /// issued while the UI was showing "cannot connect" (`recent_auth_failures`).
+    /// Shared behind an `Arc` so `Clone` keeps one counter per server.
+    pub auth_failures: Arc<std::sync::atomic::AtomicU64>,
     /// Application-level heartbeat interval for the unified JSON-RPC
     /// WebSocket endpoint (`/api/v1/rpc`): the server sends a `ping`
     /// notification every interval and drops a connection that sends no
@@ -227,6 +234,7 @@ impl ServerState {
             started_at,
             shutdown_tx,
             auth_token,
+            auth_failures: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             heartbeat_interval: Duration::from_secs(15),
             session_event_channels,
             mcp_manager: None,
