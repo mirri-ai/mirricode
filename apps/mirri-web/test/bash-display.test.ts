@@ -220,6 +220,39 @@ describe('summarizeBashCommand', () => {
     expect(d.prefix).toBeUndefined();
     expect(d.text).toBe('cd .worktrees/x && git status');
   });
+
+  it('should not badge a path that escapes the workspace via ..', () => {
+    // Given a cd whose path climbs out of the workspace with `..`
+    // When the row summary is built
+    // Then it is never presented as inside the workspace
+    const d = summarizeBashCommand(`cd ${WS}/.. && ls`, WS);
+    expect(d.prefix?.kind).toBe('other');
+  });
+
+  it('should not worktree-badge a .worktrees path that escapes via ..', () => {
+    const d = summarizeBashCommand(`cd ${WS}/.worktrees/.. && git status`, WS);
+    expect(d.prefix?.kind).toBe('other');
+  });
+
+  it('should badge a workspace path with a redundant /. segment as the workspace', () => {
+    const d = summarizeBashCommand(`cd ${WS}/. && ls`, WS);
+    expect(d.prefix?.kind).toBe('workspace');
+  });
+
+  it('should fold duplicate slashes in an in-workspace path to a clean relative label', () => {
+    const d = summarizeBashCommand(`cd ${WS}//packages/web && pnpm dev`, WS);
+    expect(d.prefix?.kind).toBe('subdir');
+    expect(d.prefix?.label).toBe('packages/web');
+  });
+
+  it('should strip the trailing comment even when the cd path stays verbatim', () => {
+    // Given a relative cd that cannot be folded, carrying a trailing comment
+    // When the row summary is built
+    // Then the comment still drops out of the collapsed text
+    const d = summarizeBashCommand('cd ../sibling && git status # note', WS);
+    expect(d.prefix).toBeUndefined();
+    expect(d.text).toBe('cd ../sibling && git status');
+  });
 });
 
 describe('bashPrefixText', () => {

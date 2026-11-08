@@ -174,10 +174,18 @@ function classifyPrefix(path: string, workspaceRoot: string | undefined): BashPr
   const root = workspaceRoot ? normalizePath(workspaceRoot) : '';
   if (root && root.startsWith('/') && p.startsWith(`${root}/`)) {
     const rel = p.slice(root.length + 1);
-    if (/^\.worktrees\/[^/]+$/.test(rel)) {
-      return { kind: 'worktree', label: rel.slice('.worktrees/'.length), path };
+    // Drop empty/`.` segments so `//` and `/./` collapse; a `..` segment can
+    // climb out of the workspace, so the path is NOT provably inside it —
+    // degrade to `other` rather than mislabel an outside directory (strict
+    // proof: showing the wrong directory is a correctness bug).
+    const segments = rel.split('/').filter((s) => s !== '' && s !== '.');
+    if (segments.includes('..')) return { kind: 'other', label: lastSegment(p), path };
+    const clean = segments.join('/');
+    if (clean === '') return { kind: 'workspace', label: lastSegment(root), path };
+    if (/^\.worktrees\/[^/]+$/.test(clean)) {
+      return { kind: 'worktree', label: clean.slice('.worktrees/'.length), path };
     }
-    return { kind: 'subdir', label: rel, path };
+    return { kind: 'subdir', label: clean, path };
   }
   return { kind: 'other', label: lastSegment(p), path };
 }
@@ -201,7 +209,7 @@ export function summarizeBashCommand(
   if (!m) return { text: clipBashSummary(stripped, options.max) };
 
   const path = (m[1] ?? m[2] ?? m[3] ?? '').trim();
-  if (!isCollapsible(path)) return { text: clipBashSummary(raw, options.max) };
+  if (!isCollapsible(path)) return { text: clipBashSummary(stripped, options.max) };
 
   const rest = (m[4] ?? '').trim();
   const prefix = classifyPrefix(path, workspaceRoot);
