@@ -6268,6 +6268,7 @@ mod mcp_config_handlers;
 mod message_handlers;
 mod migration_v3;
 mod model_handlers;
+mod model_prompts;
 mod models_dev_import;
 mod orphan_governance;
 mod permission_handlers;

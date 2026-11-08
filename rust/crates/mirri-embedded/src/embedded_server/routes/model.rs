@@ -42,4 +42,16 @@ pub(super) const ROUTES: &[Route] = &[
         handler: |server, params| Box::pin(server.dispatch_model_set_default_model(params)),
         settlement: Route::SETTLES,
     },
+    Route {
+        method: "model.getPrompt",
+        aliases: &[],
+        handler: |server, params| Box::pin(server.dispatch_model_get_prompt(params)),
+        settlement: Route::SETTLES,
+    },
+    Route {
+        method: "model.setPrompt",
+        aliases: &[],
+        handler: |server, params| Box::pin(server.dispatch_model_set_prompt(params)),
+        settlement: Route::SETTLES,
+    },
 ];

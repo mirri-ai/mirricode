@@ -190,6 +190,15 @@ pub struct SessionScopeConfig {
     /// chain: explicit intent > SYSTEM.md > builtin default), and a fork or
     /// resume inherits the value through the scope-config clone.
     pub base_prompt_override: Option<String>,
+    /// The model-specific prompt table (D-M13.5 / architecture C9.5): one
+    /// `model_prompts/` body per raw model name, plus the id → raw-name
+    /// resolution the agent's model id needs. Seeded by the composition root
+    /// at session creation (the same zero-IO data channel as
+    /// `base_prompt_override`) and read once per agent, so a session's agents
+    /// keep the content captured when the session was created. Empty (the
+    /// default) makes every prompt byte-identical to the pre-feature
+    /// assembly.
+    pub model_prompts: crate::model_prompt::ModelPromptTable,
 }
 
 /// The interactive-channel settings a [`SessionScope`](super::SessionScope)
@@ -280,6 +289,7 @@ impl Default for SessionScopeConfig {
             permission_mode: PermissionMode::default(),
             plugin_system_prompts: Vec::new(),
             base_prompt_override: None,
+            model_prompts: crate::model_prompt::ModelPromptTable::default(),
         }
     }
 }

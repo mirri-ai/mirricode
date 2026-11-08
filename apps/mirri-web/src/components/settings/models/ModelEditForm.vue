@@ -59,6 +59,76 @@ const savedTimer = ref<ReturnType<typeof setTimeout> | undefined>(undefined);
  *  into `overrides`, so unmodified fields still follow catalog refreshes. */
 const originalAlias = ref<AppModelAlias | null>(null);
 
+// -------------------------------------------------------------------------
+// Model-specific prompt (D-M13 / architecture C9.7)
+//
+// The file belongs to the RAW model name, not the alias: two providers
+// reaching the same model share one file. The editor therefore reads and
+// writes `form.model`, and says so — an edit here is wider than this alias.
+//
+// The transport is optional: only the rust backend implements these RPCs, so
+// the entry itself is gated on availability rather than rendered and erroring
+// (R5 — no control that breaks when clicked).
+// -------------------------------------------------------------------------
+const promptSupported = computed(
+  () => typeof api.getModelPrompt === 'function' && typeof api.setModelPrompt === 'function',
+);
+const showPrompt = ref(false);
+const promptLoading = ref(false);
+const promptSaving = ref(false);
+const promptError = ref('');
+const promptLoaded = ref(false);
+const promptHasFile = ref(false);
+const promptBuiltinRule = ref(false);
+const promptPath = ref<string | null>(null);
+const promptText = ref('');
+/** The text last read from / written to the server — the dirty comparison. */
+const promptSavedText = ref('');
+const promptDirty = computed(() => promptText.value !== promptSavedText.value);
+
+async function loadModelPrompt(): Promise<void> {
+  if (promptLoaded.value || promptLoading.value || !form.model) return;
+  const read = api.getModelPrompt;
+  if (!read) return;
+  promptLoading.value = true;
+  promptError.value = '';
+  try {
+    const got = await read.call(api, form.model);
+    promptHasFile.value = got.hasFile;
+    promptBuiltinRule.value = got.builtinRule;
+    promptPath.value = got.path;
+    promptText.value = got.content ?? '';
+    promptSavedText.value = promptText.value;
+    promptLoaded.value = true;
+  } catch (error) {
+    promptError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    promptLoading.value = false;
+  }
+}
+
+function togglePrompt(): void {
+  showPrompt.value = !showPrompt.value;
+  if (showPrompt.value) void loadModelPrompt();
+}
+
+async function saveModelPrompt(): Promise<void> {
+  const write = api.setModelPrompt;
+  if (!form.model || promptSaving.value || !write) return;
+  promptSaving.value = true;
+  promptError.value = '';
+  try {
+    const result = await write.call(api, form.model, promptText.value);
+    promptPath.value = result.path;
+    promptHasFile.value = true;
+    promptSavedText.value = promptText.value;
+  } catch (error) {
+    promptError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    promptSaving.value = false;
+  }
+}
+
 interface FormState {
   provider: string;
   model: string;
@@ -494,6 +564,47 @@ const maxContextDisplay = computed(() => {
       </div>
     </section>
 
+    <!-- Model-specific prompt (D-M13): one file per RAW model name, shared by
+         every provider reaching that model. Collapsed by default; loads on
+         open so the common case costs no extra RPC. -->
+    <section v-if="promptSupported" class="mef-sec">
+      <button type="button" class="sec-toggle" @click="togglePrompt">
+        <Icon :name="showPrompt ? 'chevron-down' : 'chevron-right'" size="sm" />
+        <span>{{ t('settings.models.sectionModelPrompt') }}</span>
+        <Badge v-if="promptHasFile" variant="neutral" size="sm">{{ t('settings.models.modelPromptExists') }}</Badge>
+      </button>
+      <div v-show="showPrompt" class="sec-body">
+        <p class="mef-prompt-note">{{ t('settings.models.modelPromptSharedNote', { model: form.model }) }}</p>
+        <Spinner v-if="promptLoading" size="sm" />
+        <template v-else>
+          <p v-if="!promptHasFile" class="mef-prompt-note">
+            {{ promptBuiltinRule
+              ? t('settings.models.modelPromptEmptyWithRule')
+              : t('settings.models.modelPromptEmpty') }}
+          </p>
+          <Field
+            :label="t('settings.models.fieldModelPrompt')"
+            :hint="t('settings.models.fieldModelPromptHint')"
+          >
+            <Textarea v-model="promptText" :rows="8" :placeholder="t('settings.models.modelPromptPlaceholder')" />
+          </Field>
+          <p v-if="promptPath" class="mef-prompt-path">{{ promptPath }}</p>
+          <div class="mef-prompt-actions">
+            <Button
+              variant="primary"
+              size="sm"
+              :disabled="!promptDirty || promptSaving"
+              @click="saveModelPrompt"
+            >
+              {{ promptSaving ? t('settings.models.saving') : t('settings.models.modelPromptSave') }}
+            </Button>
+            <span class="mef-prompt-note">{{ t('settings.models.modelPromptTakesEffect') }}</span>
+          </div>
+          <p v-if="promptError" class="mef-prompt-error">{{ promptError }}</p>
+        </template>
+      </div>
+    </section>
+
     <div class="mef-foot">
       <Button v-if="dirty" variant="primary" size="sm" @click="flushNow">{{ t('settings.models.saveNow') }}</Button>
       <span class="mef-foot-state">
@@ -538,6 +649,11 @@ const maxContextDisplay = computed(() => {
 
 .mef-llm-toggle { display: flex; align-items: flex-start; gap: var(--space-2); padding: var(--space-2) var(--space-3); border: 1px solid var(--color-accent-bd); border-radius: var(--radius-md); background: var(--color-accent-soft); }
 .mef-llm-desc { font-size: var(--text-xs); color: var(--color-text-muted); line-height: 1.4; flex: 1; min-width: 0; }
+
+.mef-prompt-note { font-size: var(--text-xs); color: var(--color-text-muted); line-height: 1.5; margin: 0; }
+.mef-prompt-path { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--color-text-muted); word-break: break-all; margin: 0; }
+.mef-prompt-actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.mef-prompt-error { font-size: var(--text-xs); color: var(--color-danger); margin: 0; }
 
 .mef-foot { display: flex; align-items: center; gap: var(--space-3); padding-top: var(--space-2); }
 .mef-foot-state { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--text-xs); color: var(--color-text-faint); }

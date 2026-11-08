@@ -788,8 +788,13 @@ pub const METHODS: &[MethodEntry] = &[
     both("model.generate", D::Model),
     both("model.get", D::Model),
     both("model.getProvider", D::Model),
+    // model.getPrompt / model.setPrompt — D-M13 / ADR-008: the per-model
+    // prompt file read/write face. The key is a RAW model name (glossary
+    // M2), never an alias, so providers sharing one model share one file.
+    both_kept("model.getPrompt", D::Model),
     both("model.set", D::Model),
     both("model.setDefaultModel", D::Model),
+    both_kept("model.setPrompt", D::Model),
     // provider.* — B5-b gap implementations (embedded routes over the
     // config.toml [providers] sections; the serve wire rides the engine
     // fall-through). Klient providerService CRUD shapes.
@@ -1036,15 +1041,15 @@ mod tests {
             .count();
         let total = all_methods().count();
 
-        assert_eq!(embedded, 218, "embedded-available method count");
+        assert_eq!(embedded, 220, "embedded-available method count");
         assert_eq!(
-            server, 210,
+            server, 212,
             "server-available method count (ADR-010 flipped the 4 credential.* rows to both; the stage-2 batch-4b cron rows joined them; the batch-2 cron management rows — update/pause/resume — joined them; cron.pendingApprovals retired with the pending zone, ADR-022; session.pin/unpin joined, SDR-016/017)"
         );
-        assert_eq!(both, 193, "embedded ∩ server method count");
-        assert_eq!(total, 235, "total registered rows");
+        assert_eq!(both, 195, "embedded ∩ server method count");
+        assert_eq!(total, 237, "total registered rows");
         // The current surface is self-consistent: the union of
-        // the two backend views equals the 235 registered rows
+        // the two backend views equals the 237 registered rows
         // (the last unimplemented set was cleared in B5; the 8 auth rows
         // left again with the managed-login domain removal).
         assert_eq!(total, embedded + server - both);
@@ -1079,7 +1084,7 @@ mod tests {
             "retired rows (23 embedded; the 2 server rows were removed in batch ⑥)"
         );
         assert_eq!(
-            rust_first, 51,
+            rust_first, 53,
             "rust-first keeps (the M7 mcp.subscribe row joined them; the R4 Task 25 profile lifecycle rows — enable/disable/reset — joined them next; the W8 workspace.setTrust row joined them after that; the 3 B9 approval rule CRUD rows joined them after that; the 2 B6 cron management rows joined them, the B7 task.listWorkspace overview row joined them, the 6 session-retention rows joined them, the ADR-010 skill.reload / skill.subscribe rows joined them, the E9 file.stat pre-send reference validation row joined them, the 5 interrupted-task recovery rows joined them, and the 2 stage-1 batch-3 cron rows — cron.add the user-creation face and cron.listAll the aggregated listing — joined them, and the stage-2 batch-4b cron rows — cron.runs.list, cron.run.open — joined them (cron.proposals.list retired with the proposal channel in batch 3), and the form batch-6 cron.preview row joined them, and the 3 batch-2 cron management rows — cron.update / cron.pause / cron.resume — joined them last; cron.pendingApprovals retired with the pending zone, ADR-022; the SDR-016/017 session.pin/unpin rows joined)"
         );
         assert_eq!(
@@ -1090,19 +1095,19 @@ mod tests {
             settled, 161,
             "drift + remaining MISSING-ONE rows (98 both + the embedded-only and server-only settled rows + the 4 batch-3 P1 MCP config rows + the 2 batch-4 P2 MCP pool rows + the M1 mcp.tools row + the P6 providerDiscovery.listCatalog row + the M5 mcp.config.preview row + the P7 providerDiscovery.importCatalog row + the M6 mcp.sync row + the 2 collaboration mode-gate rows; the 8 B5-d auth rows left with the managed-login removal; the SDR-014 session.touch row joined; the 4 provider-credential credential.* rows joined last)"
         );
-        assert_eq!(retired + rust_first + unimplemented + settled, 235);
+        assert_eq!(retired + rust_first + unimplemented + settled, 237);
         // The live surface check: every registered
         // row is currently dispatched (the last unimplemented set was
         // cleared in B5; the 8 auth rows left again with the managed-login
         // domain removal).
         assert_eq!(
             retired + rust_first + settled,
-            235,
+            237,
             "currently-dispatched rows"
         );
         assert_eq!(
             all_methods().count() - retired,
-            212,
+            214,
             "non-retired rows (48 rust-first + the settled rows + 0 unimplemented gap rows; the SDR-016/017 pin rows joined the rust-first set)"
         );
     }
@@ -1138,8 +1143,8 @@ mod tests {
             names
         }
 
-        let embedded = assert_unique_and_count(RpcBackend::Embedded, 218);
-        let server = assert_unique_and_count(RpcBackend::Server, 210);
+        let embedded = assert_unique_and_count(RpcBackend::Embedded, 220);
+        let server = assert_unique_and_count(RpcBackend::Server, 212);
 
         // Rename-affected names, spot-checked per backend:
         // - embedded dispatches `plan.status` (the M3-c rename); `plan.get`,

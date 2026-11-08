@@ -149,6 +149,14 @@ pub struct ServerConfig {
     #[serde(default)]
     pub telemetry: Option<bool>,
 
+    /// Model-specific prompt injection master switch (D-M13.6): when `true`,
+    /// no `model_prompts/` file is injected into any system prompt. The files
+    /// themselves are left untouched — the switch governs injection, not
+    /// materialization or editing (C9.6). Read at session creation; absent
+    /// means enabled.
+    #[serde(default, alias = "disableModelPrompts")]
+    pub disable_model_prompts: Option<bool>,
+
     /// The original parsed TOML document (before camelCase alias resolution),
     /// preserved for round-trip fidelity and wire exposure. Mirrors the TS
     /// `config.raw` field.
