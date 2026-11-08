@@ -375,6 +375,104 @@ fn denial_contract_appended(feedback: &str, grant_dir: Option<&std::path::Path>)
     }
 }
 
+/// The reserved plan-review labels and the default denial text a rejecting
+/// client sends when it types nothing (see
+/// `crate::tools::exit_plan_mode::RESERVED_OPTION_LABELS`).
+const PLAN_REVIEW_REJECT_AND_EXIT: &str = "reject and exit";
+const PLAN_REVIEW_REVISE: &str = "revise";
+/// The text a reject-without-feedback hands the model: plan mode stays
+/// active and the model re-plans.
+const PLAN_REVIEW_REJECTED_MESSAGE: &str = "Plan rejected. Revise and resubmit.";
+
+/// Fold an `ExitPlanMode` plan-review verdict into the authorize outcome
+/// (spec approval-architecture §2.6 — the plan-review face).
+///
+/// Returns the outcome the loop engine acts on plus the
+/// `approval_metadata` payload that rides an approval into the tool
+/// (`ctx.approval_metadata`, which `ExitPlanMode` reads to decide whether to
+/// exit plan mode, exit without approving, or stay).
+///
+/// - **approved** (with or without a chosen approach label) → the tool runs
+///   and exits plan mode; the metadata names the selected approach.
+/// - **rejected / "Reject and Exit"** → the tool still runs, but only to
+///   leave plan mode WITHOUT approving the plan (the metadata carries the
+///   `rejected` verdict — the outcome stays approved because the call is
+///   authorized to proceed, and the tool's own result states the rejection).
+/// - **rejected / "Revise" or with feedback text** → plan mode stays active:
+///   the call is blocked and the feedback becomes the model-visible reason.
+/// - **error (cancelled / timed out)** → unchanged; nothing was decided.
+///
+/// A non-plan-review ask (`is_plan_review == false`) passes through verbatim.
+fn fold_plan_review_outcome(
+    outcome: PermissionResultOutcome,
+    selected_label: Option<&str>,
+    is_plan_review: bool,
+) -> (PermissionResultOutcome, Option<serde_json::Value>) {
+    if !is_plan_review {
+        return (outcome, None);
+    }
+    match outcome {
+        PermissionResultOutcome::Approved => {
+            let mut verdict = serde_json::Map::new();
+            verdict.insert("decision".to_string(), json!("approved"));
+            if let Some(label) = selected_label {
+                verdict.insert("selectedLabel".to_string(), json!(label));
+            }
+            (
+                PermissionResultOutcome::Approved,
+                Some(json!({ "planReview": serde_json::Value::Object(verdict) })),
+            )
+        }
+        PermissionResultOutcome::Rejected { feedback } => {
+            // The rejecting client's text doubles as the selected label on
+            // the decide wire (`reason = feedback ?? selectedLabel`), and the
+            // parked-ask wire carries the label verbatim. Only "Reject and
+            // Exit" is a distinct exit verdict; every other label ("Revise",
+            // absent) means the plan stays rejected-and-pending.
+            let label = selected_label.unwrap_or(&feedback);
+            if label.trim().eq_ignore_ascii_case(PLAN_REVIEW_REJECT_AND_EXIT) {
+                return (
+                    PermissionResultOutcome::Approved,
+                    Some(json!({
+                        "planReview": {
+                            "decision": "rejected",
+                            "selectedLabel": "Reject and Exit",
+                        }
+                    })),
+                );
+            }
+            // The feedback is only worth relaying when it says something the
+            // label does not: the card's Revise button sends
+            // `selectedLabel: "Revise"` alongside the typed text, and a bare
+            // reject falls through to the engine's default denial text.
+            let mut text = feedback.trim();
+            if text.eq_ignore_ascii_case(PLAN_REVIEW_REVISE) {
+                text = "";
+            }
+            if text.is_empty() {
+                text = selected_label.unwrap_or_default().trim();
+                if text.eq_ignore_ascii_case(PLAN_REVIEW_REVISE) {
+                    text = "";
+                }
+            }
+            let meaningful =
+                !text.is_empty() && !text.eq_ignore_ascii_case("denied by user");
+            let message = if meaningful {
+                format!("{PLAN_REVIEW_REJECTED_MESSAGE}\n\nUser feedback: {text}")
+            } else {
+                PLAN_REVIEW_REJECTED_MESSAGE.to_string()
+            };
+            (
+                PermissionResultOutcome::Rejected { feedback: message },
+                None,
+            )
+        }
+        // A cancelled / errored ask decided nothing: plan mode stays active
+        // and the model gets the cancellation reason as usual.
+        other @ PermissionResultOutcome::Error { .. } => (other, None),
+    }
+}
+
 /// The `LoopHooks` implementation for `TurnFlow`.
 ///
 /// Holds shared state via `Arc<Mutex<>>` so both the loop engine and the hooks
@@ -1185,6 +1283,14 @@ impl LoopHooks for TurnFlowHooks {
         // The owned display the policy context borrows (the async block
         // cannot borrow `ctx`).
         let display = ctx.display.clone();
+        // A plan-review ask (the `ExitPlanMode` review surface): the user's
+        // verdict is a DOMAIN decision about the plan, not a permission
+        // verdict about running a tool. It rides into execution as
+        // `approval_metadata` so the tool folds it into the synthesized
+        // result (spec approval-architecture §2.6) instead of exiting plan
+        // mode unconditionally.
+        let is_plan_review = tool_name == "ExitPlanMode"
+            && matches!(display, crate::tool::ToolInputDisplay::PlanReview { .. });
         // The approval-rule pattern this tool call was gated on — the
         // pattern a session-scoped approval memorizes (TS parity: the v2
         // kernel derives `sessionApprovalRule` from the execution's
@@ -1357,6 +1463,14 @@ impl LoopHooks for TurnFlowHooks {
             // produced the approval (rule / gate / reverse-rpc / headless /
             // pass), so the ledger entry states WHO or WHAT granted it.
             let mut approved_reason: Option<String> = None;
+            // Plan review (spec approval-architecture §2.6): the user's
+            // verdict, filled by the ask branch below when this call is an
+            // `ExitPlanMode` review. The ExitPlanMode tool folds it into the
+            // tool result — an approval exits plan mode, a rejection with
+            // feedback keeps plan mode active, "Reject and Exit" exits
+            // without approving. `None` (no ask at all: auto mode, headless,
+            // an allow rule) leaves the tool's default approved behavior.
+            let mut plan_review_metadata: Option<serde_json::Value> = None;
             let outcome = match policy_result {
                 PermissionPolicyResult::Approve { .. } => {
                     approved_reason = Some("auto-approved (permission rule)".to_string());
@@ -1455,17 +1569,32 @@ impl LoopHooks for TurnFlowHooks {
                             feedback: crate::permission::CRON_ASK_DENY_MESSAGE.to_string(),
                         }
                     } else if deny_when_unattended && headless {
+                        // SDR-007 d: nobody is present to approve, so the ask
+                        // is a rejection (never an auto-approval). An
+                        // attended, non-headless turn falls through to the
+                        // gate park below — there IS someone to ask.
                         PermissionResultOutcome::Rejected {
                             feedback: "private-network fetch requires user approval; none available in headless mode"
                                 .to_string(),
                         }
                     } else if let Some(kernel) = interaction_kernel.as_ref().filter(|_| {
-                        // ADR-021 / A4's park rule FIRST: a workspace run
-                        // (nobody watches its chat) parks the ask on the
-                        // gate ALONE — a live reverse-RPC client is not
-                        // required (the lazy execution session has no
-                        // subscriber until the user opens it; the ask
-                        // waits on the gate for `approval.decide`).
+                        // Two gate-alone postures — both park the ask with NO
+                        // reverse-RPC card pushed, because the pending row IS
+                        // the only face the user has:
+                        //
+                        // - ADR-021 / A4: a workspace run (nobody watches its
+                        //   chat) parks on the gate; a live reverse-RPC client
+                        //   is not required (the lazy execution session has no
+                        //   subscriber until the user opens it).
+                        // - An INTERACTIVE turn whose reverse-RPC channel is
+                        //   absent still has a user in front of a surface
+                        //   (`approval.listPending` / `approval.decide` /
+                        //   `interaction.respond`). A transiently disconnected
+                        //   client (reload, dropped socket) is not an absent
+                        //   user, so the ask waits there instead of failing
+                        //   with "no approval mechanism available". A HEADLESS
+                        //   run has no such surface — it keeps the auto-approve
+                        //   branch below.
                         matches!(
                             turn_origin,
                             crate::permission::TurnOriginContext::Cron {
@@ -1473,7 +1602,12 @@ impl LoopHooks for TurnFlowHooks {
                                 workspace: true,
                                 ..
                             }
-                        )
+                        ) || (!headless
+                            && reverse_rpc.is_none()
+                            && matches!(
+                                turn_origin,
+                                crate::permission::TurnOriginContext::Interactive
+                            ))
                     }) {
                         // The parked ask: gate-only (A13's channel — the
                         // task page / approval.listPending face), no chat
@@ -1553,6 +1687,14 @@ impl LoopHooks for TurnFlowHooks {
                         if let Some(hook) = &approval_wait_hook {
                             hook(false);
                         }
+                        // The gate decision carries no selected-option label
+                        // (its `Denied` slot holds the reason text, which the
+                        // fold reads as the label — "Reject and Exit" still
+                        // resolves). The plan-review verdict rides into the
+                        // tool from here.
+                        let (resolved, metadata) =
+                            fold_plan_review_outcome(resolved, None, is_plan_review);
+                        plan_review_metadata = metadata;
                         resolved
                     } else if let Some(ref callback) = reverse_rpc {
                         // Issue an `approval.ask` reverse RPC to the client.
@@ -1896,6 +2038,11 @@ impl LoopHooks for TurnFlowHooks {
                                 None => AskChannel::Cancelled,
                             },
                         };
+                        // The selected-option label a plan-review reply may
+                        // carry (`selectedLabel` / `selected_label`) — the
+                        // approach the user chose. Only the plan-review fold
+                        // below consumes it; every other ask ignores it.
+                        let mut plan_review_label: Option<String> = None;
                         let (resolved, record_result) = match channel {
                             AskChannel::Rpc(Ok(response)) => {
                                 // The reverse-RPC reply carries the TS
@@ -1919,6 +2066,15 @@ impl LoopHooks for TurnFlowHooks {
                                     response.get("feedback").and_then(serde_json::Value::as_str)
                                 {
                                     record_result.insert("feedback".to_string(), json!(feedback));
+                                }
+                                plan_review_label = response
+                                    .get("selectedLabel")
+                                    .or_else(|| response.get("selected_label"))
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_string);
+                                if let Some(label) = &plan_review_label {
+                                    record_result
+                                        .insert("selectedLabel".to_string(), json!(label.clone()));
                                 }
                                 let decision = response
                                     .get("decision")
@@ -2054,6 +2210,17 @@ impl LoopHooks for TurnFlowHooks {
                             }
                         }
 
+                        // The plan-review fold (spec approval-architecture
+                        // §2.6): the user's verdict on an ExitPlanMode plan is
+                        // a domain decision, not a tool-permission one — an
+                        // approval lets the tool exit plan mode, a rejection
+                        // keeps plan mode active and hands the feedback back
+                        // to the model as the block reason, and "Reject and
+                        // Exit" lets the tool run only to leave plan mode
+                        // without approving the plan.
+                        let (resolved, metadata) =
+                            fold_plan_review_outcome(resolved, plan_review_label.as_deref(), is_plan_review);
+                        plan_review_metadata = metadata;
                         resolved
                     } else if headless {
                         // No callback wired and headless mode: auto-approve
@@ -2075,7 +2242,7 @@ impl LoopHooks for TurnFlowHooks {
                             PermissionResultOutcome::Approved
                         }
                     } else {
-                        // No callback wired and non-headless: block to
+                        // No callback wired, no gate, non-headless: block to
                         // prevent silent auto-approval of tools that require
                         // user confirmation.
                         PermissionResultOutcome::Rejected {
@@ -2150,6 +2317,26 @@ impl LoopHooks for TurnFlowHooks {
                             "approved_ips": ips.iter().map(|ip| ip.to_string()).collect::<Vec<_>>(),
                         }
                     })),
+                };
+            }
+            // The plan-review verdict rides an approved ExitPlanMode call into
+            // execution (spec approval-architecture §2.6): the tool folds it
+            // into the synthesized result — exit on approval, exit-without-
+            // approving on "Reject and Exit", stay on revise.
+            if let Some(metadata) = plan_review_metadata
+                && let AuthorizeToolResult::Approved { metadata: existing } = authorize_result
+            {
+                let merged = match existing {
+                    Some(serde_json::Value::Object(mut map)) => {
+                        if let Some(fields) = metadata.as_object() {
+                            map.extend(fields.clone());
+                        }
+                        serde_json::Value::Object(map)
+                    }
+                    _ => metadata,
+                };
+                authorize_result = AuthorizeToolResult::Approved {
+                    metadata: Some(merged),
                 };
             }
             Ok(authorize_result)
@@ -3918,5 +4105,166 @@ mod tests {
             denial_contract_appended("cancelled by user", None),
             "cancelled by user"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Plan-review verdicts (spec approval-architecture §2.6)
+    // -----------------------------------------------------------------------
+
+    /// Given a non-plan-review ask, when the fold runs, then the outcome passes
+    /// through untouched — ordinary approvals never carry plan metadata.
+    #[test]
+    fn should_pass_through_when_the_ask_is_not_a_plan_review() {
+        let (outcome, metadata) =
+            fold_plan_review_outcome(PermissionResultOutcome::Approved, None, false);
+
+        assert!(matches!(outcome, PermissionResultOutcome::Approved));
+        assert!(metadata.is_none());
+    }
+
+    /// Given an approved plan review with a chosen approach, when the fold
+    /// runs, then the approval proceeds and the metadata names the approach.
+    #[test]
+    fn should_carry_the_selected_approach_when_a_plan_review_is_approved() {
+        let (outcome, metadata) = fold_plan_review_outcome(
+            PermissionResultOutcome::Approved,
+            Some("Option A"),
+            true,
+        );
+
+        assert!(matches!(outcome, PermissionResultOutcome::Approved));
+        let verdict = metadata.expect("approved plan reviews carry a verdict");
+        assert_eq!(verdict["planReview"]["decision"], json!("approved"));
+        assert_eq!(verdict["planReview"]["selectedLabel"], json!("Option A"));
+    }
+
+    /// Given a plan review rejected via "Reject and Exit", when the fold runs,
+    /// then the call proceeds so the tool can leave plan mode — carrying the
+    /// rejected verdict (never an approval).
+    #[test]
+    fn should_let_the_call_proceed_when_a_plan_review_rejects_and_exits() {
+        let (outcome, metadata) = fold_plan_review_outcome(
+            PermissionResultOutcome::Rejected {
+                feedback: "Reject and Exit".to_string(),
+            },
+            Some("Reject and Exit"),
+            true,
+        );
+
+        assert!(matches!(outcome, PermissionResultOutcome::Approved));
+        let verdict = metadata.expect("reject-and-exit carries a verdict");
+        assert_eq!(verdict["planReview"]["decision"], json!("rejected"));
+        assert_eq!(
+            verdict["planReview"]["selectedLabel"],
+            json!("Reject and Exit")
+        );
+    }
+
+    /// Given a plan review rejected via the Revise button with typed feedback,
+    /// when the fold runs, then the real feedback rides the block reason (the
+    /// "Revise" label is not mistaken for the feedback).
+    #[test]
+    fn should_relay_the_typed_feedback_when_a_plan_review_is_revised_with_text() {
+        let (outcome, metadata) = fold_plan_review_outcome(
+            PermissionResultOutcome::Rejected {
+                feedback: "add a rollback step".to_string(),
+            },
+            Some("Revise"),
+            true,
+        );
+
+        assert!(metadata.is_none(), "a revise never reaches the tool");
+        match outcome {
+            PermissionResultOutcome::Rejected { feedback } => {
+                assert!(feedback.contains("add a rollback step"), "{feedback}");
+                assert!(
+                    !feedback.contains("User feedback: Revise"),
+                    "the Revise label must not be echoed as the feedback: {feedback}"
+                );
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+    }
+
+    /// Given a plan review rejected with feedback, when the fold runs, then the
+    /// call stays blocked, plan mode is untouched, and the feedback rides the
+    /// block reason so the model can revise.
+    #[test]
+    fn should_keep_plan_mode_and_return_feedback_when_a_plan_review_is_revised() {
+        let (outcome, metadata) = fold_plan_review_outcome(
+            PermissionResultOutcome::Rejected {
+                feedback: "add a rollback step".to_string(),
+            },
+            None,
+            true,
+        );
+
+        assert!(metadata.is_none(), "a revise never reaches the tool");
+        match outcome {
+            PermissionResultOutcome::Rejected { feedback } => {
+                assert!(feedback.contains("Plan rejected. Revise and resubmit."));
+                assert!(feedback.contains("add a rollback step"));
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+    }
+
+    /// Given a plan review rejected without any feedback text, when the fold
+    /// runs, then the model gets the bare revise instruction.
+    #[test]
+    fn should_return_the_bare_revise_message_when_a_plan_review_is_rejected_silently() {
+        let (outcome, metadata) = fold_plan_review_outcome(
+            PermissionResultOutcome::Rejected {
+                feedback: "denied by user".to_string(),
+            },
+            None,
+            true,
+        );
+
+        assert!(metadata.is_none());
+        match outcome {
+            PermissionResultOutcome::Rejected { feedback } => {
+                assert_eq!(feedback, PLAN_REVIEW_REJECTED_MESSAGE);
+            }
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+    }
+
+    /// Given a plan review rejected through `approval.decide` (whose only
+    /// label channel is the denial reason), when the fold runs with no
+    /// separate label, then "Reject and Exit" is still recognized and the
+    /// call proceeds to leave plan mode.
+    #[test]
+    fn should_recognize_reject_and_exit_from_the_denial_reason_when_no_label_rides() {
+        let (outcome, metadata) = fold_plan_review_outcome(
+            PermissionResultOutcome::Rejected {
+                feedback: "Reject and Exit".to_string(),
+            },
+            None,
+            true,
+        );
+
+        assert!(matches!(outcome, PermissionResultOutcome::Approved));
+        let verdict = metadata.expect("reject-and-exit carries a verdict");
+        assert_eq!(verdict["planReview"]["decision"], json!("rejected"));
+    }
+
+    /// Given a cancelled plan review, when the fold runs, then nothing was
+    /// decided — the cancellation error passes through and plan mode stays.
+    #[test]
+    fn should_pass_the_cancellation_through_when_a_plan_review_was_cancelled() {
+        let (outcome, metadata) = fold_plan_review_outcome(
+            PermissionResultOutcome::Error {
+                error: "cancelled by user".to_string(),
+            },
+            None,
+            true,
+        );
+
+        assert!(metadata.is_none());
+        assert!(matches!(
+            outcome,
+            PermissionResultOutcome::Error { .. }
+        ));
     }
 }

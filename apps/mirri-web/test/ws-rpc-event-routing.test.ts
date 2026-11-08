@@ -224,10 +224,13 @@ describe('approval.ask bridge', () => {
     ).toEqual({ decision: 'rejected', feedback: 'not allowed' });
   });
 
-  it('drops the selected_label the rust engine does not read from the wire shape', () => {
+  it('forwards the selected_label so a plan-review choice reaches the engine', () => {
     expect(
-      approvalResponseToEngineWire({ decision: 'approved', selectedLabel: 'Always allow' }),
-    ).toEqual({ decision: 'approved' });
+      approvalResponseToEngineWire({ decision: 'approved', selectedLabel: 'Option A' }),
+    ).toEqual({ decision: 'approved', selected_label: 'Option A' });
+    expect(
+      approvalResponseToEngineWire({ decision: 'rejected', selectedLabel: 'Reject and Exit' }),
+    ).toEqual({ decision: 'rejected', selected_label: 'Reject and Exit' });
   });
 });
 

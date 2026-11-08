@@ -92,7 +92,7 @@ use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
 use mirri_core::{
-    EventBus, SessionEvent, SinkHandle, TerminalFrame, event_projection,
+    EventBus, ReverseRpcCallback, SessionEvent, SinkHandle, TerminalFrame, event_projection,
     reverse_rpc::CHANNEL_ERROR_PREFIX, terminal_pool::TerminalPool,
 };
 
@@ -758,6 +758,17 @@ impl mirri_core::ReverseRpcCallback for WsReverseRpcCallback {
     }
 }
 
+/// One connection's live subscription to a session.
+struct SessionSubscription {
+    /// The task relaying the session's events onto this connection's outbox.
+    forwarder: JoinHandle<()>,
+    /// The reverse-RPC callback this subscription stamped onto the
+    /// session's artifacts. Kept so an explicit unsubscribe can tell ITS
+    /// callback apart from a newer subscriber's (last-subscriber-wins) and
+    /// only revoke its own.
+    callback: Arc<dyn ReverseRpcCallback>,
+}
+
 /// Per-connection state of one `/api/v1/rpc` connection.
 struct RpcConnection {
     state: ServerState,
@@ -767,8 +778,9 @@ struct RpcConnection {
     /// [`run_connection`], never by the connection loop itself — that is
     /// what keeps handler-internal enqueue loops (replay) drain-safe.
     outbox: mpsc::Sender<Outbound>,
-    /// Live event forwarder per subscribed session.
-    subscriptions: HashMap<String, JoinHandle<()>>,
+    /// Live event forwarder per subscribed session, with the reverse-RPC
+    /// callback that subscription installed.
+    subscriptions: HashMap<String, SessionSubscription>,
     /// Reverse-RPC id minting, whitelist, and pending responses — shared
     /// with the [`WsReverseRpcCallback`] instances stamped onto subscribed
     /// sessions' artifacts, so the engine-side callback can send requests
@@ -1046,9 +1058,9 @@ impl RpcConnection {
         // A cursor-carrying re-subscribe replaces this connection's stale
         // live forwarder (the new subscribe spawns its own below).
         if self.subscriptions.contains_key(session_id)
-            && let Some(forwarder) = self.subscriptions.remove(session_id)
+            && let Some(subscription) = self.subscriptions.remove(session_id)
         {
-            forwarder.abort();
+            subscription.forwarder.abort();
             tracing::debug!(
                 session_id,
                 "cursor resubscribe replaced the stale live forwarder"
@@ -1085,7 +1097,7 @@ impl RpcConnection {
         *artifacts
             .reverse_rpc_callback
             .write()
-            .unwrap_or_else(|e| e.into_inner()) = Some(callback);
+            .unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&callback));
         let channel = self.state.session_event_channels.get_or_create(
             session_id,
             Arc::clone(&artifacts.event_bus),
@@ -1217,7 +1229,13 @@ impl RpcConnection {
             Arc::clone(&channel),
             live_rx,
         );
-        self.subscriptions.insert(session_id.to_string(), forwarder);
+        self.subscriptions.insert(
+            session_id.to_string(),
+            SessionSubscription {
+                forwarder,
+                callback,
+            },
+        );
         tracing::info!(session_id, "session subscribed (json-rpc)");
     }
 
@@ -1248,9 +1266,38 @@ impl RpcConnection {
     /// `session.unsubscribe`).
     async fn unsubscribe_session(&mut self, session_id: &str) -> Result<Value, JsonRpcError> {
         match self.subscriptions.remove(session_id) {
-            Some(forwarder) => {
-                forwarder.abort();
-                tracing::debug!(session_id, "session unsubscribed (json-rpc)");
+            Some(subscription) => {
+                subscription.forwarder.abort();
+                // Revoke the callback this subscription installed so the
+                // engine cannot keep issuing `approval.ask` / `question.ask`
+                // into a dead connection. Only OUR callback is cleared: with
+                // last-subscriber-wins another live connection may already
+                // have stamped its own over the slot, and clearing that one
+                // would silently strip the remaining viewer of its approval
+                // channel.
+                if let Some(artifacts) = self.state.session_routing.session_artifacts(session_id) {
+                    let mut slot = artifacts
+                        .reverse_rpc_callback
+                        .write()
+                        .unwrap_or_else(|e| e.into_inner());
+                    let ours = slot
+                        .as_ref()
+                        .is_some_and(|installed| Arc::ptr_eq(installed, &subscription.callback));
+                    if ours {
+                        *slot = None;
+                    }
+                    drop(slot);
+                    tracing::debug!(
+                        session_id,
+                        cleared = ours,
+                        "session unsubscribed (json-rpc)"
+                    );
+                } else {
+                    tracing::debug!(
+                        session_id,
+                        "session unsubscribed (json-rpc); artifacts gone, no callback to clear"
+                    );
+                }
             }
             None => {
                 tracing::debug!(
@@ -2082,8 +2129,8 @@ async fn run_connection(socket: WebSocket, state: ServerState) {
                 // subscription (the session's `SessionClosed` event was
                 // already queued ahead of it).
                 Some(session_id) => {
-                    if let Some(forwarder) = connection.subscriptions.remove(&session_id) {
-                        forwarder.abort();
+                    if let Some(subscription) = connection.subscriptions.remove(&session_id) {
+                        subscription.forwarder.abort();
                         tracing::debug!(session_id, "subscription dropped; session closed");
                     }
                 }
@@ -2128,7 +2175,10 @@ async fn run_connection(socket: WebSocket, state: ServerState) {
     // a re-subscribe to re-install a fresh callback) from "no client was
     // ever attached" (the slot is empty — fail fast). Clearing the slot
     // here would silently regress the question-channel resilience into
-    // the never-attached fast-fail. Do not add slot clearing here.
+    // the never-attached fast-fail. Do not add slot clearing here — an
+    // explicit `session.unsubscribe` is different and DOES revoke its own
+    // callback (see `unsubscribe_session`): that client said it stops
+    // listening, whereas a broken connection may come back.
     {
         let mut reverse_rpc = connection
             .reverse_rpc

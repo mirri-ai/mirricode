@@ -1257,6 +1257,47 @@ fn empty_session_metadata(title: &str) -> mirri_core::SessionMetadata {
     }
 }
 
+/// Spawn a background responder that answers every pending approval of the
+/// session with `approved: true` (and, when the row offers one, selects the
+/// first plan-review option).
+///
+/// A `Manual`-mode turn with no connected client now parks its ask on the
+/// session's approval gate and waits for a real decision — the fix for the
+/// "approval required but no approval mechanism available" refusal that made
+/// interactive plan review unreachable. Tests that drive a real turn with no
+/// UI therefore need a stand-in client, or the turn waits forever. The
+/// returned handle must be aborted when the test finishes.
+fn spawn_auto_approver(
+    server: Arc<EmbeddedServer>,
+    session_id: String,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            if let Ok(Value::Array(rows)) = server
+                .call_method("approval.listPending", json!({ "session_id": &session_id }))
+                .await
+            {
+                for row in rows {
+                    let Some(request_id) = row.get("id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let _ = server
+                        .call_method(
+                            "approval.decide",
+                            json!({
+                                "session_id": &session_id,
+                                "request_id": request_id,
+                                "approved": true,
+                            }),
+                        )
+                        .await;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+}
+
 fn test_server(llm_factory: Option<Arc<dyn LlmFactory>>) -> (EmbeddedServer, tempfile::TempDir) {
     let tmp = tempfile::tempdir().expect("tempdir must be creatable");
     let workspace = Arc::new(WorkspaceScope::new(
@@ -46351,6 +46392,8 @@ async fn should_not_clobber_concurrent_field_writes_when_turn_settles() {
             tokio::time::Instant::now() < deadline,
             "the second turn must settle before the clobber assertion"
         );
+        // hygiene-allow: poll-step — deadline-bounded wait for the clobber
+        // assertion's settle window.
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 

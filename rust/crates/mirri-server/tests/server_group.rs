@@ -3643,6 +3643,36 @@ fn publish_message(server: &TestServer, session_id: &str, summary: &str) {
         });
 }
 
+/// Read the session's reverse-RPC callback slot.
+fn reverse_rpc_callback(
+    server: &TestServer,
+    session_id: &str,
+) -> Option<Arc<dyn mirri_core::ReverseRpcCallback>> {
+    let artifacts = server
+        .state
+        .session_manager
+        .session_artifacts(&mirri_core::SessionId::new(session_id))
+        .expect("session artifacts");
+    artifacts
+        .reverse_rpc_callback
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// Send a `session.unsubscribe` request and return the server's response.
+async fn unsubscribe(socket: &mut TestSocket, session_id: &str, id: i64) -> Value {
+    socket
+        .send(Message::Text(
+            json!({ "id": id, "method": "session.unsubscribe", "params": { "sessionId": session_id } })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .expect("send unsubscribe");
+    next_response(socket, id).await
+}
+
 /// Extract `(seq, epoch)` from an `event` notification's params.
 fn event_position(event: &Value) -> (u64, &str) {
     let params = &event["params"];
@@ -4046,6 +4076,36 @@ async fn should_replay_missed_events_when_subscribing_with_cursor() {
         .map(|event| event["params"]["contentSummary"].as_str().expect("summary"))
         .collect();
     assert_eq!(summaries, vec!["after disconnect 1", "after disconnect 2"]);
+}
+
+// ===========================================================================
+// Unsubscribe cleanup
+// ===========================================================================
+
+#[tokio::test]
+async fn should_clear_reverse_rpc_callback_when_client_unsubscribes() {
+    // Given a session whose client subscribed (which installs its reverse-RPC
+    // callback on the session artifacts)
+    let server = TestServer::start().await;
+    let session_id = create_session(&server, "Unsubscribe cleanup").await;
+    let mut socket = connected_socket(&server).await;
+    let ack = subscribe(&mut socket, &session_id, 2).await;
+    assert_eq!(ack["error"], Value::Null, "subscribe succeeds: {ack}");
+    assert!(
+        reverse_rpc_callback(&server, &session_id).is_some(),
+        "subscribing installs the connection's reverse-RPC callback"
+    );
+
+    // When the same client unsubscribes
+    let ack = unsubscribe(&mut socket, &session_id, 3).await;
+    assert_eq!(ack["result"]["ok"], true, "unsubscribe acknowledged: {ack}");
+
+    // Then the session's callback slot is cleared, so a later approval can
+    // never be routed into this (now detached) connection
+    assert!(
+        reverse_rpc_callback(&server, &session_id).is_none(),
+        "unsubscribe revokes the callback it installed"
+    );
 }
 
 // ===========================================================================

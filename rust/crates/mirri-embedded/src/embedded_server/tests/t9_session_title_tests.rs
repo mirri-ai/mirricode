@@ -139,11 +139,17 @@ async fn should_title_via_side_llm_call_when_the_first_response_lands_mid_turn()
     // title text in the first place.
     let release_final = mock.push_gated("Done.");
     let (server, tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
+    let server = Arc::new(server);
     let created = server
         .call_method("session.create", json!({}))
         .await
         .unwrap();
     let session_id = created["id"].as_str().unwrap().to_string();
+    // The scripted `Read` targets a path outside the test workspace, so the
+    // boundary policy raises an approval ask; a connected client would answer
+    // it, so the fixture installs one (the turn now waits for a real decision
+    // instead of failing the call fast).
+    let approver = spawn_auto_approver(Arc::clone(&server), session_id.clone());
     let session = server
         .session_manager()
         .get_session(&SessionId::new(&session_id))
@@ -202,6 +208,7 @@ async fn should_title_via_side_llm_call_when_the_first_response_lands_mid_turn()
     // mid-turn title, not a settle-time one.
     release_final.send(()).unwrap();
     next_event_where(&mut events, |n| n.method == "event.turn.ended", |_| {}).await;
+    approver.abort();
 }
 
 /// Given an untitled session whose side title call fails in turn (the

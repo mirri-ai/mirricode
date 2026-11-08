@@ -165,14 +165,19 @@ export function approvalRequestFromAskParams(
 
 /**
  * Map the UI's approval decision onto the `approval.ask` response wire the
- * engine's permission gate reads: `decision` plus the optional feedback
- * field (mirri-core reads `feedback` as the block reason). `selected_label`
- * is deliberately NOT sent — the rust gate does not deserialize it (only the
- * v1 daemon mapper still carries it).
+ * engine's permission gate reads: `decision`, the optional feedback field
+ * (mirri-core reads `feedback` as the block reason), and `selected_label` when
+ * the card reports one.
+ *
+ * `selected_label` matters only for the plan-review ask — it names the
+ * alternative approach the user picked (or the `Reject and Exit` verdict), and
+ * `ExitPlanMode` folds it into its result. Other asks ignore the field, so
+ * sending it unconditionally keeps one wire shape for every card.
  */
 export function approvalResponseToEngineWire(response: ApprovalResponse): Record<string, unknown> {
   const wire: Record<string, unknown> = { decision: response.decision };
   if (response.feedback !== undefined) wire['feedback'] = response.feedback;
+  if (response.selectedLabel !== undefined) wire['selected_label'] = response.selectedLabel;
   return wire;
 }
 

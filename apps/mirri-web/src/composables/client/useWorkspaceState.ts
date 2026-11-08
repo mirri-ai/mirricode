@@ -2564,16 +2564,11 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
           });
         },
       );
-      // Plan review "Reject and Exit" (spec approval-architecture §2.6):
-      // the engine folds the rejection into tool feedback only, so the web
-      // drives the exit — cancel plan mode so the next injected reminder
-      // tells the model plan mode is over. Fire-and-forget: the approval
-      // decision itself has already landed.
-      if (response.decision === 'rejected' && response.selectedLabel === 'Reject and Exit') {
-        void api
-          .updateSession(sid, { planMode: false })
-          .catch((error) => pushOperationFailure('updateSession', error, { sessionId: sid }));
-      }
+      // Plan review "Reject and Exit" (spec approval-architecture §2.6): the
+      // engine owns the plan-mode exit now — the verdict rides the approval
+      // decision and ExitPlanMode itself leaves plan mode without recording an
+      // approved revision. Driving `planMode: false` from here would discard
+      // the retained plan text right after the engine already exited.
       // Remove from local approvals immediately (WS event will confirm)
       removePendingApproval(sid, approvalId);
     } catch (error) {

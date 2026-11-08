@@ -1,11 +1,22 @@
 //! `ExitPlanModeTool` — exit plan mode and present the plan for approval.
 //!
-//! Mirrors the TypeScript `ExitPlanModeTool`: the model calls this after
-//! writing a plan to signal readiness for execution. The tool reads the
-//! current plan text from the [`PlanManager`], records a revision for
-//! audit history, deactivates plan mode, and returns the plan formatted
-//! for the model. Calling `ExitPlanMode` while plan mode is inactive, or
-//! with an empty plan, is an error.
+//! The model calls this after writing a plan to signal readiness for
+//! execution. The permission chain raises a **plan-review ask** for the call
+//! (`ExitPlanModeReviewAskPolicy`), and the ask's verdict rides back into the
+//! tool through `ExecutableToolContext::approval_metadata` (spec
+//! approval-architecture §2.6):
+//!
+//! - **approved** → record the plan revision for audit history, deactivate
+//!   plan mode, and return the plan formatted for the model (naming the
+//!   approach the user picked, when one was offered).
+//! - **rejected / "Reject and Exit"** → deactivate plan mode WITHOUT recording
+//!   a revision and tell the model the plan was rejected.
+//! - **no verdict at all** (auto mode, headless, an allow rule — no ask was
+//!   presented) → the approved behavior, so non-interactive surfaces keep
+//!   working.
+//!
+//! Calling `ExitPlanMode` while plan mode is inactive, or with an empty plan,
+//! is an error.
 //!
 //! The tool also accepts optional alternative-approach `options` (up to 3)
 //! so the user can choose which approach to execute. Option labels must be
@@ -227,7 +238,7 @@ impl Tool for ExitPlanModeTool {
 
         Ok(ToolExecution::Runnable {
             plan: execution_plan,
-            execute: Box::new(move |_ctx| {
+            execute: Box::new(move |ctx| {
                 Box::pin(async move {
                     // Guard: ExitPlanMode only makes sense while plan mode is
                     // active.
@@ -255,6 +266,42 @@ impl Tool for ExitPlanModeTool {
                             "No plan text found. Pass the complete plan text via the `plan` \
                              parameter of ExitPlanMode, then retry.",
                         );
+                    }
+
+                    // The approval verdict the permission gate folded into
+                    // this call's metadata (spec approval-architecture §2.6).
+                    // `None` (auto mode, headless, an allow rule — no ask was
+                    // ever presented) keeps the default approved behavior.
+                    let verdict = ctx
+                        .approval_metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.get("planReview"));
+                    let rejected = verdict
+                        .and_then(|v| v.get("decision"))
+                        .and_then(serde_json::Value::as_str)
+                        == Some("rejected");
+                    let selected_label = verdict
+                        .and_then(|v| v.get("selectedLabel"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string);
+
+                    // "Reject and Exit": plan mode ends without the plan being
+                    // approved — no revision is recorded (the plan was
+                    // rejected, so it is not history worth approving) and the
+                    // model is told the plan was rejected so it does not
+                    // proceed with it.
+                    if rejected {
+                        // Write-before-mutate: persist the plan_mode.exit op
+                        // before deactivating plan mode in memory.
+                        if let Some(recorder) = wire_recorder.as_ref() {
+                            recorder.record_op(WireOp::PlanModeExit { id: None }).await;
+                        }
+                        plan.exit();
+                        return ToolResult::success(format!(
+                            "Plan rejected and exited. Plan mode is no longer active; the plan \
+                             was NOT approved. Do not start implementing it. If the user wants \
+                             changes, wait for their instructions.\n\n## Rejected Plan:\n{plan_text}"
+                        ));
                     }
 
                     // Record this revision for audit history before exiting.
@@ -315,7 +362,11 @@ impl Tool for ExitPlanModeTool {
                     // reference via `get_plan`.
                     plan.exit();
 
-                    ToolResult::success(format_plan_for_output(&plan_text, &options))
+                    ToolResult::success(format_plan_for_output(
+                        &plan_text,
+                        &options,
+                        selected_label.as_deref(),
+                    ))
                 })
             }),
         })
@@ -332,13 +383,25 @@ fn normalize_label(label: &str) -> String {
 
 /// Format the plan text and optional alternatives into the model-visible
 /// output message.
-fn format_plan_for_output(plan_text: &str, options: &[(String, String)]) -> String {
+///
+/// `selected_label` is the approach the user picked in the review card (the
+/// `selectedLabel` the approval wire carried). It is echoed so the model knows
+/// which approach the plan was approved for; absent (a plain plan approval)
+/// leaves the message as before.
+fn format_plan_for_output(
+    plan_text: &str,
+    options: &[(String, String)],
+    selected_label: Option<&str>,
+) -> String {
     let mut lines = vec![
         "Plan mode deactivated. All tools are now available.".to_string(),
-        String::new(),
-        "## Approved Plan:".to_string(),
-        plan_text.to_string(),
     ];
+    if let Some(label) = selected_label {
+        lines.push(format!("Selected approach: {label}"));
+    }
+    lines.push(String::new());
+    lines.push("## Approved Plan:".to_string());
+    lines.push(plan_text.to_string());
 
     if !options.is_empty() {
         lines.push(String::new());
@@ -364,12 +427,23 @@ mod tests {
     }
 
     async fn execute_tool(tool: &ExitPlanModeTool, input: serde_json::Value) -> ToolResult {
+        execute_tool_with_metadata(tool, input, None).await
+    }
+
+    /// Run the tool with the permission gate's plan-review verdict riding
+    /// `ctx.approval_metadata` — the channel the plan-review ask uses to hand
+    /// its decision into the tool.
+    async fn execute_tool_with_metadata(
+        tool: &ExitPlanModeTool,
+        input: serde_json::Value,
+        approval_metadata: Option<serde_json::Value>,
+    ) -> ToolResult {
         let execution = tool.resolve_execution(input).expect("resolve");
         let ToolExecution::Runnable { execute, .. } = execution else {
             panic!("expected runnable execution");
         };
         let ctx = crate::tool::ExecutableToolContext {
-            approval_metadata: None,
+            approval_metadata,
             wait_registry: None,
             turn_id: "test-turn".to_string(),
             tool_call_id: "test-call".to_string(),
@@ -600,5 +674,123 @@ mod tests {
             plan.stop_batch_after_this,
             "exiting plan mode must stop the batch so the permission change is visible"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Plan-review verdicts (spec approval-architecture §2.6): the permission
+    // gate's decision rides `ctx.approval_metadata` into the tool.
+    // -----------------------------------------------------------------------
+
+    /// Given an approved plan review, when the tool executes, then plan mode
+    /// is left and the result carries the approved plan.
+    #[tokio::test]
+    async fn should_exit_plan_mode_when_the_review_is_approved() {
+        let plan = Arc::new(PlanManager::new());
+        plan.enter("Step 1: do the thing".to_string()).unwrap();
+        let tool = ExitPlanModeTool::new(Arc::clone(&plan));
+
+        let result = execute_tool_with_metadata(
+            &tool,
+            serde_json::json!({}),
+            Some(serde_json::json!({ "planReview": { "decision": "approved" } })),
+        )
+        .await;
+
+        assert!(!result.is_error, "result: {result:?}");
+        assert!(!plan.is_active(), "an approved review must leave plan mode");
+        let message = output_text(&result);
+        assert!(
+            message.contains("Approved Plan"),
+            "the approved verdict must name the approval: {message}"
+        );
+        assert!(message.contains("Step 1: do the thing"));
+    }
+
+    /// Given an approved plan review with a chosen alternative approach, when
+    /// the tool executes, then the result names the selected approach.
+    #[tokio::test]
+    async fn should_name_the_selected_approach_when_a_plan_review_option_is_chosen() {
+        let plan = Arc::new(PlanManager::new());
+        plan.enter("Refactor the module".to_string()).unwrap();
+        let tool = ExitPlanModeTool::new(Arc::clone(&plan));
+
+        let result = execute_tool_with_metadata(
+            &tool,
+            serde_json::json!({
+                "options": [{"label": "Option A (Recommended)", "description": "Use caching"}]
+            }),
+            Some(serde_json::json!({
+                "planReview": {
+                    "decision": "approved",
+                    "selectedLabel": "Option A (Recommended)",
+                }
+            })),
+        )
+        .await;
+
+        assert!(!result.is_error, "result: {result:?}");
+        assert!(!plan.is_active());
+        let message = output_text(&result);
+        assert!(
+            message.contains("Selected approach: Option A (Recommended)"),
+            "the chosen approach must be echoed to the model: {message}"
+        );
+    }
+
+    /// Given a rejected plan review whose rejection came from the "Reject and
+    /// Exit" button, when the tool executes, then plan mode is left but the
+    /// plan is NOT recorded as approved.
+    #[tokio::test]
+    async fn should_leave_plan_mode_without_approving_when_the_review_rejects_and_exits() {
+        let plan = Arc::new(PlanManager::new());
+        plan.enter("Step 1: do the thing".to_string()).unwrap();
+        let tool = ExitPlanModeTool::new(Arc::clone(&plan));
+
+        let result = execute_tool_with_metadata(
+            &tool,
+            serde_json::json!({}),
+            Some(serde_json::json!({
+                "planReview": { "decision": "rejected", "selectedLabel": "Reject and Exit" }
+            })),
+        )
+        .await;
+
+        assert!(!result.is_error, "result: {result:?}");
+        assert!(
+            !plan.is_active(),
+            "Reject and Exit must leave plan mode"
+        );
+        assert_eq!(
+            plan.revision_count(),
+            0,
+            "a rejected plan must not be recorded as an approved revision"
+        );
+        let message = output_text(&result);
+        assert!(
+            message.contains("Plan rejected and exited"),
+            "the result must state the rejection: {message}"
+        );
+        assert!(
+            !message.contains("Approved Plan"),
+            "a rejected plan must never be presented as approved: {message}"
+        );
+    }
+
+    /// Given no approval metadata at all (auto mode, headless, an allow rule),
+    /// when the tool executes, then it keeps the pre-ask behavior and exits.
+    #[tokio::test]
+    async fn should_exit_plan_mode_when_no_review_verdict_was_produced() {
+        let plan = Arc::new(PlanManager::new());
+        plan.enter("Step 1: do the thing".to_string()).unwrap();
+        let tool = ExitPlanModeTool::new(Arc::clone(&plan));
+
+        let result = execute_tool_with_metadata(&tool, serde_json::json!({}), None).await;
+
+        assert!(!result.is_error, "result: {result:?}");
+        assert!(
+            !plan.is_active(),
+            "without an ask the tool keeps its default exit behavior"
+        );
+        assert!(output_text(&result).contains("Approved Plan"));
     }
 }

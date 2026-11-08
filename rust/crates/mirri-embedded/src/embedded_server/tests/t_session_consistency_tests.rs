@@ -1470,6 +1470,12 @@ async fn should_abort_own_turn_before_next_tool_batch_when_foreign_writes_arrive
         .call_method("session.resume", json!({ "sessionId": &session_id }))
         .await
         .expect("B resumes the shared session");
+    // B's turn runs Bash in Manual mode, so the call raises an approval ask.
+    // A connected client answers it; with no client the ask now parks on the
+    // session's approval gate (instead of being refused outright), so the
+    // fixture stands in for that client — without it the first tool batch
+    // never settles and the turn never reaches the gated second step.
+    let approver = spawn_auto_approver(Arc::clone(&server_b), session_id.clone());
 
     // B's wait-mode turn: step 1's tool call settles (the first tool
     // batch completes durably), then the turn parks inside the gated
@@ -1594,6 +1600,8 @@ async fn should_abort_own_turn_before_next_tool_batch_when_foreign_writes_arrive
             .contains_key(&session_id),
         "the follow driver must stay alive across the aborted turn"
     );
+
+    approver.abort();
 }
 
 /// The journal file's full text — the abort test's inspection unit.
