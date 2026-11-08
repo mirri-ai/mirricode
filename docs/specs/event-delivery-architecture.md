@@ -47,7 +47,7 @@
 - **通道职责排他**：互动关键级与状态摘要级**唯一**由全局通道（§2.2）承载——per-session forwarder（两种模式）一律过滤掉这两级，不重复投递（避免同一连接收到双份 work_changed，durable seq 的重复投递对客户端 seq 推进/gap 检测的影响不定义）。"full 不做过滤"的语义限定为内容流级。
 - **replay 同样按模式过滤**：digest 订阅带 cursor 的重放也按目录过滤（不灌入内容事件）；digest 会话的 cursor 落后于真实日志水位是**设计内状态**（被过滤的 durable 事件 seq 未被客户端观察），恢复一律走快照重建——digest 重开必须按 `sessionsWithStaleCursor` 语义处理（快照重建，不做 cursor 续传）。
 - 互动关键级与状态摘要级**绕过订阅与模式**：经 §2.2 全局通道投递，不论该会话是否被订阅、模式如何。取消订阅后仍持续到达。
-- **反向 RPC 挂接只认 full 订阅**：`subscribe_session` 在 `mode=digest` 时**跳过** `reverse_rpc_callback` 挂接（避免后到的 digest 订阅以 last-subscriber-wins 抢走回答权——例如端 1 正 full 查看会话 B，端 2 仅为保活对 B 发 digest 订阅，不应夺走 `approval.ask` 路由）。降级路径（full→unsubscribe→digest re-subscribe）依赖 slot 残留语义保持回答能力：unsubscribe 不清 callback slot——**依赖的代码事实**（`unsubscribe_session` 只 abort forwarder 不动 slot；连接 teardown 不清槽位有 approval 域 ADR-008 锚定，`session.unsubscribe` 的槽位语义**未裁决**），本连接仍能收到 ask，配合全局通知引导用户切回；W2 落地时把 unsubscribe 的槽位语义固化为契约（approval 域补 ADR 或本域登记）。此依赖登记进 §6 边界表。
+- **反向 RPC 挂接只认 full 订阅**：`subscribe_session` 在 `mode=digest` 时**跳过** `reverse_rpc_callback` 挂接（避免后到的 digest 订阅以 last-subscriber-wins 抢走回答权——例如端 1 正 full 查看会话 B，端 2 仅为保活对 B 发 digest 订阅，不应夺走 `approval.ask` 路由）。**显式 unsubscribe 清槽位（ADR-005）**：`unsubscribe_session` abort forwarder 的同时把本连接装上的 callback 置空——用 `Arc::ptr_eq` 只清自己的，别的活连接的 callback 不动；连接 teardown 仍不清槽位（approval 域 ADR-008 的 never-attached vs attached-then-broken 约束不变）。据此，降级路径（full→unsubscribe→digest re-subscribe）**不再**继承回答能力：unsubscribe 之后到达的 ask 只能经审批门（`approval.decide` / `interaction.respond`）回答，直到某次 full re-subscribe 重新装上 callback——digest 落地（W2）时需按此口径设计"切换时不得先 unsubscribe"或"digest 升级回 full 时重装"，不得假设槽位残留。此边界登记进 §6 边界表。
 - MRU 4 上限**退役**（W3 批次）：digest 订阅成本 = 状态迁移帧，接近零；full 订阅任意时刻至多一个。
 
 ### 2.4 digest 的客户端适配（配套机制改造）
@@ -146,6 +146,14 @@ web 客户端维护"每会话消费模式"表：
 - **否决的替代**：(a) 增量高亮（按行 diff）——shiki 不支持增量 API，自研成本不成比例；(b) 降帧率高亮（每 N 帧一次）——中间态闪烁，体验更差。
 - **影响面**：`Markdown.vue`、`markdownPerformance.ts`、对话渲染域 §2.5 消费端管线（呈现层，不动转录语义）。
 
+### ADR-005 显式 unsubscribe 撤销本连接自己装的 reverse-RPC callback
+
+- **编号与日期**：ADR-005 · 2026-11-08
+- **背景与动机**：`unsubscribe_session` 只 abort 事件 forwarder，不清 `artifacts.reverse_rpc_callback`。客户端显式退订后，槽位仍指向这条已不再监听该会话的连接；引擎下一次工具审批经它发出 `approval.ask`，得到的是通道错误或永不到达的应答，用户侧表现为"审批要了但没人能答"。另一侧，连接 teardown **不能**清槽位——approval 域 ADR-008 用"槽位有值 = 曾被附着过（等重连）"区分"从未附着（快速失败）"，清掉会把问答通道的抗断连能力退回快速失败。两种终止形态语义不同：显式退订是客户端声明"我不再听这个会话"，断连是"连接坏了但可能回来"。§2.3 原本把"unsubscribe 不清槽位"登记为 digest 降级路径依赖的代码事实，该事实此前未裁决，本次固化为契约。
+- **决策**：`session.unsubscribe` 在 abort forwarder 的同时清空槽位，但**只清本次订阅自己装上的那个**（订阅时把 callback 记进连接侧订阅表，清理前 `Arc::ptr_eq` 比对）。last-subscriber-wins 下槽位可能已被另一个活连接覆盖，此时不动它——否则退订者会顺手剥掉剩余观看者的审批通道。
+- **否决的替代**：(a) unsubscribe 无条件置空——多端场景下一个端退订会让另一个端失去审批通道；(b) 保持现状（不清槽位）——显式退订后审批仍打到死连接，维持待修的缺陷；(c) teardown 与 unsubscribe 统一清槽位——直接违反 ADR-008 的 never-attached vs attached-then-broken 约束。
+- **影响面**：`rust/crates/mirri-server/src/ws_rpc.rs`（订阅表携带 callback、`unsubscribe_session` 清理、cursor 重订阅替换路径）；§2.3 的 digest 降级路径不再继承回答能力（digest 落地 W2 时需按此口径设计切换）；`tests/server_group.rs` 新增 `should_clear_reverse_rpc_callback_when_client_unsubscribes`。
+
 ## 6. 与既有契约的边界
 
 | 契约 | 本域动作 |
@@ -154,5 +162,5 @@ web 客户端维护"每会话消费模式"表：
 | 对话渲染 ADR-003（事件双轨） | 不改 durable/volatile 划分；分级是投递面第三维 |
 | 会话管理 SDR-013/ADR-009（work_changed 全局扇出） | 引擎层既有实现是起点；WS 层全局通道（§2.2）是其在连接面的接线，口径不变 |
 | 会话管理 SDR-014（使用口径） | 消费该裁决；lastUsedAt 产生点与之对齐（§3.3.1） |
-| 反向 RPC（last-subscriber-wins） | 不改语义；digest 订阅跳过挂接（防抢答）；降级路径依赖 slot 残留保持回答能力——连接 teardown 不清槽位有 approval 域 ADR-008 锚定，`session.unsubscribe` 的槽位语义未裁决，W2 落地时固化为契约 |
+| 反向 RPC（last-subscriber-wins） | 不改语义；digest 订阅跳过挂接（防抢答）；显式 unsubscribe 清本连接自己装的槽位（`Arc::ptr_eq` 只清自己的），连接 teardown 仍不清槽位（ADR-008 锚定）——降级路径不再依赖槽位残留，digest 落地（W2）时需按此口径设计切换 |
 | MRU 4 订阅上限（前端止血补丁） | 退役（W3），由分级模型取代 |

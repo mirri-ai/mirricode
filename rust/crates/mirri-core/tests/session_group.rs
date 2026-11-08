@@ -17211,6 +17211,261 @@ async fn should_append_the_never_bypass_contract_when_reply_rejects_or_cancels_a
     }
 }
 
+/// Poll the approval gate until one request is pending, then resolve it with
+/// `decision`. Returns whether a request was found (and resolved).
+async fn resolve_next_pending_approval(
+    gate: Arc<mirri_core::ApprovalGate>,
+    decision: mirri_core::ApprovalDecision,
+) -> bool {
+    for _ in 0..400 {
+        if let Some((request_id, _snapshot)) = gate.list_pending().into_iter().next() {
+            return gate.resolve(request_id, decision);
+        }
+        // hygiene-allow: poll-step — bounded poll for a pending approval
+        // registration (400 × 5ms = 2s ceiling); the gate has no
+        // notification channel to await on.
+        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+    }
+    false
+}
+
+/// Build the authorize context for a plain `Bash` call on the manual chain
+/// (FallbackAskPolicy → `Ask`).
+fn bash_authorize_ctx<'a>(
+    args: &'a serde_json::Value,
+    display: &'a ToolInputDisplay,
+    cancel: &'a CancelToken,
+) -> AuthorizeToolContext<'a> {
+    AuthorizeToolContext {
+        turn_id: "1".to_string(),
+        step: 1,
+        tool_call_id: "call-bash".to_string(),
+        tool_name: "Bash".to_string(),
+        tool_readonly: false,
+        args,
+        approval_rule: "Bash",
+        display,
+        cancel: cancel.clone(),
+    }
+}
+
+/// Given a HEADLESS turn that has a gate but no reverse-RPC channel, when an
+/// ask is raised, then the headless auto-approve stands — a headless run has
+/// no user surface, so parking the ask on the gate would hang it forever.
+#[tokio::test]
+async fn should_auto_approve_instead_of_parking_when_the_run_is_headless() {
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+    let mut pm = PermissionManager::new(PermissionMode::Manual, vec![]);
+    pm.set_headless(true);
+    let pm = Arc::new(pm);
+    let approval_gate = Arc::new(mirri_core::ApprovalGate::new(false));
+    let kernel = Arc::new(mirri_core::InteractionKernel::new(
+        Arc::clone(&approval_gate),
+        Arc::new(mirri_core::QuestionGate::new()),
+    ));
+    let hooks = make_hooks_with_permission_callback_and_kernel(
+        memory,
+        Some(pm),
+        None,
+        Some(kernel),
+    );
+    let cancel = CancelToken::new();
+    let args = serde_json::json!({ "command": "ls" });
+    let display = ToolInputDisplay::Generic {
+        summary: "test".to_string(),
+    };
+
+    let result = hooks
+        .authorize_tool_execution(bash_authorize_ctx(&args, &display, &cancel))
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(result, AuthorizeToolResult::Approved { .. }),
+        "a headless ask auto-approves, got {result:?}"
+    );
+    assert!(
+        approval_gate.list_pending().is_empty(),
+        "a headless run must never park an ask on the gate"
+    );
+}
+
+/// Given an interactive turn whose reverse-RPC channel is absent but whose
+/// session has an interaction kernel, when a tool call asks for approval, then
+/// the ask parks on the approval gate and awaits the user's decision — it does
+/// NOT fail with "no approval mechanism available". A transiently disconnected
+/// client is not an absent user.
+#[tokio::test]
+async fn should_park_an_ask_on_the_approval_gate_when_an_interactive_turn_has_no_reverse_rpc() {
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+    let pm = Arc::new(PermissionManager::new(PermissionMode::Manual, vec![]));
+    let approval_gate = Arc::new(mirri_core::ApprovalGate::new(false));
+    let kernel = Arc::new(mirri_core::InteractionKernel::new(
+        Arc::clone(&approval_gate),
+        Arc::new(mirri_core::QuestionGate::new()),
+    ));
+    let hooks = make_hooks_with_permission_callback_and_kernel(
+        memory,
+        Some(pm),
+        None, // no reverse-RPC channel — the gate is the only surface
+        Some(kernel),
+    );
+    let cancel = CancelToken::new();
+    let args = serde_json::json!({ "command": "ls" });
+    let display = ToolInputDisplay::Generic {
+        summary: "test".to_string(),
+    };
+
+    let approver = tokio::spawn(resolve_next_pending_approval(
+        Arc::clone(&approval_gate),
+        mirri_core::ApprovalDecision::Approved,
+    ));
+
+    let result = hooks
+        .authorize_tool_execution(bash_authorize_ctx(&args, &display, &cancel))
+        .await
+        .unwrap();
+
+    assert!(
+        approver.await.expect("approver joins"),
+        "the ask must register on the approval gate"
+    );
+    assert!(
+        matches!(result, AuthorizeToolResult::Approved { .. }),
+        "an approved gate decision must approve the call, got {result:?}"
+    );
+}
+
+/// Given an interactive turn with no reverse-RPC channel whose gate decision
+/// rejects with feedback, when the ask resolves, then the model-visible block
+/// reason is that feedback — not the "no approval mechanism available" refusal.
+#[tokio::test]
+async fn should_block_with_the_gate_feedback_when_an_interactive_ask_is_denied() {
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+    let pm = Arc::new(PermissionManager::new(PermissionMode::Manual, vec![]));
+    let approval_gate = Arc::new(mirri_core::ApprovalGate::new(false));
+    let kernel = Arc::new(mirri_core::InteractionKernel::new(
+        Arc::clone(&approval_gate),
+        Arc::new(mirri_core::QuestionGate::new()),
+    ));
+    let hooks = make_hooks_with_permission_callback_and_kernel(
+        memory,
+        Some(pm),
+        None,
+        Some(kernel),
+    );
+    let cancel = CancelToken::new();
+    let args = serde_json::json!({ "command": "ls" });
+    let display = ToolInputDisplay::Generic {
+        summary: "test".to_string(),
+    };
+
+    let approver = tokio::spawn(resolve_next_pending_approval(
+        Arc::clone(&approval_gate),
+        mirri_core::ApprovalDecision::Denied("run it yourself".to_string()),
+    ));
+
+    let result = hooks
+        .authorize_tool_execution(bash_authorize_ctx(&args, &display, &cancel))
+        .await
+        .unwrap();
+
+    assert!(approver.await.expect("approver joins"));
+    match result {
+        AuthorizeToolResult::Blocked { reason } => {
+            assert_eq!(reason, "run it yourself", "the user's feedback is the reason");
+        }
+        other => panic!("expected Blocked, got {other:?}"),
+    }
+}
+
+/// Given a plan-mode session whose ExitPlanMode review is answered "approved"
+/// on the session's approval gate, when the authorize hook's verdict rides
+/// into the tool, then plan mode actually ends — the end-to-end seam the
+/// interactive plan-review flow uses.
+#[tokio::test]
+async fn should_exit_plan_mode_when_the_gate_approves_its_review() {
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+    let plan = Arc::new(mirri_core::PlanManager::new());
+    plan.enter("Step 1: map the migration\nStep 2: verify".to_string())
+        .expect("plan mode enters");
+    let pm = Arc::new(PermissionManager::with_services(
+        PermissionMode::Manual,
+        vec![],
+        PermissionServices {
+            plan: Some(Arc::clone(&plan)),
+            ..PermissionServices::default()
+        },
+    ));
+    let approval_gate = Arc::new(mirri_core::ApprovalGate::new(false));
+    let kernel = Arc::new(mirri_core::InteractionKernel::new(
+        Arc::clone(&approval_gate),
+        Arc::new(mirri_core::QuestionGate::new()),
+    ));
+    let hooks =
+        make_hooks_with_permission_callback_and_kernel(memory, Some(pm), None, Some(kernel));
+    let tool = mirri_core::tools::ExitPlanModeTool::new(Arc::clone(&plan));
+    let mirri_core::ToolExecution::Runnable {
+        plan: execution_plan,
+        execute,
+    } = tool
+        .resolve_execution(serde_json::json!({}))
+        .expect("ExitPlanMode resolves")
+    else {
+        panic!("expected a runnable execution");
+    };
+
+    let cancel = CancelToken::new();
+    let args = serde_json::json!({});
+    let display = execution_plan.display.clone();
+    let auth_ctx = AuthorizeToolContext {
+        turn_id: "1".to_string(),
+        step: 1,
+        tool_call_id: "call-exit-plan".to_string(),
+        tool_name: "ExitPlanMode".to_string(),
+        tool_readonly: true,
+        args: &args,
+        approval_rule: "ExitPlanMode",
+        display: &display,
+        cancel: cancel.clone(),
+    };
+
+    let approver = tokio::spawn(resolve_next_pending_approval(
+        Arc::clone(&approval_gate),
+        mirri_core::ApprovalDecision::Approved,
+    ));
+
+    // When the review is answered on the gate
+    let authorized = hooks.authorize_tool_execution(auth_ctx).await.unwrap();
+    assert!(approver.await.expect("approver joins"));
+    let AuthorizeToolResult::Approved { metadata } = authorized else {
+        panic!("an approved plan review authorizes the call, got {authorized:?}");
+    };
+    assert!(
+        metadata.is_some(),
+        "the plan-review verdict must ride into the tool"
+    );
+    assert!(plan.is_active(), "the tool has not run yet");
+
+    // Then the tool consumes the verdict and leaves plan mode
+    let result = execute(mirri_core::ExecutableToolContext {
+        approval_metadata: metadata,
+        wait_registry: None,
+        turn_id: "1".to_string(),
+        tool_call_id: "call-exit-plan".to_string(),
+        cancel,
+        progress: mirri_core::ToolProgressHandle::default(),
+        turn_origin: Default::default(),
+    })
+    .await;
+
+    assert!(!result.is_error, "result: {result:?}");
+    assert!(
+        !plan.is_active(),
+        "an approved review must leave plan mode"
+    );
+}
+
 /// A custom `LoopHooks` implementation that returns a `Synthetic` result from
 /// `authorize_tool_execution` for a specific tool name. This is used to test
 /// the `AuthorizeToolResult::Synthetic` path, which the `PermissionManager`

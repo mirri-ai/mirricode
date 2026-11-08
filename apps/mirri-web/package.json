@@ -35,6 +35,8 @@
     "@mirri-ai/e2e-harness": "workspace:^",
     "@mirri-ai/protocol": "workspace:^",
     "@vitejs/plugin-vue": "^5.2.4",
+    "@vue/test-utils": "^2.5.1",
+    "jsdom": "^31.0.0",
     "pino": "^9.5.0",
     "typescript": "6.0.2",
     "unplugin-icons": "^23.0.0",
