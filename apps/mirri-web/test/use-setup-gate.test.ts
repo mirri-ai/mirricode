@@ -20,9 +20,13 @@ type SetupGateClient = Parameters<typeof useSetupGate>[0]['client'];
 
 function createClient() {
   const authReady = ref(false);
+  const authFailed = ref(false);
+  const serverAuthRequired = ref(false);
   const initialized = ref(true);
   return {
     authReady,
+    authFailed,
+    serverAuthRequired,
     initialized,
     checkAuth: vi.fn(async () => undefined),
     load: vi.fn(async () => undefined),
@@ -102,5 +106,41 @@ describe('useSetupGate — gate-lift hydration', () => {
     createGate(client);
     await flush();
     expect(client.load).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('useSetupGate — connectivity-failure gate', () => {
+  it('should not show the setup gate when the auth probe failed transiently', async () => {
+    // A failed /auth probe is a connectivity failure, NOT "no model configured"
+    // — rendering the setup guide over it told the user to configure a model
+    // that was already configured.
+    const client = createClient();
+    client.authFailed.value = true;
+    const gate = createGate(client);
+    await flush();
+    expect(gate.showSetupGate.value).toBe(false);
+  });
+
+  it('should not show the setup gate while the server demands its bearer token', async () => {
+    // The ServerAuthDialog owns recovery for a rejected credential; the setup
+    // guide must not cover it.
+    const client = createClient();
+    client.serverAuthRequired.value = true;
+    const gate = createGate(client);
+    await flush();
+    expect(gate.showSetupGate.value).toBe(false);
+  });
+
+  it('should show the setup gate again once the connectivity failure clears and readiness stays false', async () => {
+    const client = createClient();
+    client.authFailed.value = true;
+    const gate = createGate(client);
+    await flush();
+    expect(gate.showSetupGate.value).toBe(false);
+    // The daemon comes back but reports ready:false — now the guide is the
+    // right surface.
+    client.authFailed.value = false;
+    await flush();
+    expect(gate.showSetupGate.value).toBe(true);
   });
 });

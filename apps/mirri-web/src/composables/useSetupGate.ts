@@ -23,7 +23,18 @@ const SETUP_POLL_INTERVAL_MS = 3000;
 
 export function useSetupGate({ client, authLogoRef }: UseSetupGateOptions) {
   const authReady = computed(() => client.authReady.value);
-  const showSetupGate = computed(() => client.initialized.value && !authReady.value);
+  // The setup guide is the "no model configured" surface ONLY. A failed auth
+  // probe (`authFailed`) is a connectivity failure — readiness is unknown, not
+  // false — and a rejected credential (`serverAuthRequired`) belongs to the
+  // ServerAuthDialog. Both must keep this gate closed so a transient outage
+  // never renders "configure your model" over an already-configured daemon.
+  const showSetupGate = computed(
+    () =>
+      client.initialized.value &&
+      !authReady.value &&
+      !client.authFailed.value &&
+      !client.serverAuthRequired.value,
+  );
   const SETUP_PATH = '/setup';
   const setupReturnPath = ref<string | null>(null);
   let authLogoBlinkTimer: ReturnType<typeof setTimeout> | null = null;

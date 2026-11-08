@@ -115,6 +115,7 @@ function createState(): ExtendedState {
     inFlightBySession: {},
     unreadBySession: {},
     authReady: true,
+    authFailed: false,
     defaultModel: null,
     workspaces: [],
     activeWorkspaceId: null,
@@ -173,6 +174,7 @@ function createDeps(): UseWorkspaceStateDeps {
     resetFastMoon: vi.fn(),
     initialized: ref(true),
     connectIssue: ref(null),
+    authFailed: ref(false),
     selectedDiffPath: ref(null),
     fileDiffLines: ref([]),
     fileDiffLoading: ref(false),
@@ -1393,8 +1395,15 @@ describe('useWorkspaceState — first-load auth gate', () => {
   function createLoadDeps(
     initialized: Ref<boolean>,
     connectIssue: Ref<string | null>,
+    authFailed: Ref<boolean> = ref(false),
   ): UseWorkspaceStateDeps {
-    return { ...createDeps(), modelProvider: { loadModels: vi.fn().mockResolvedValue(undefined) }, initialized, connectIssue };
+    return {
+      ...createDeps(),
+      modelProvider: { loadModels: vi.fn().mockResolvedValue(undefined) },
+      initialized,
+      connectIssue,
+      authFailed,
+    };
   }
   it('keeps the splash up and retries /auth when the first check fails transiently', async () => {
     vi.useFakeTimers();
@@ -1421,6 +1430,63 @@ describe('useWorkspaceState — first-load auth gate', () => {
       expect(state.authReady).toBe(true);
       expect(connectIssue.value).toBeNull();
     } finally { vi.useRealTimers(); }
+  });
+  it('should mark authFailed when /auth keeps failing transiently and the boot order skips the gate', async () => {
+    // The production repro: a /meta outage (or bypass engine) falls through
+    // to the legacy boot order where the first load skips the /auth gate, and
+    // a transient /auth failure then lands AFTER initialized flips true —
+    // without authFailed the setup gate would render "configure your model"
+    // over a pure connectivity failure.
+    vi.useFakeTimers();
+    try {
+      const initialized = ref(false);
+      const authFailed = ref(false);
+      const state = createState();
+      state.authReady = false;
+      apiMock.getMeta.mockRejectedValue(new Error('connection refused'));
+      apiMock.getAuth.mockRejectedValue(new Error('connection refused'));
+      const ws = useWorkspaceState(state, createLoadDeps(initialized, ref(null), authFailed));
+      const pending = ws.load();
+      // The load path must surface the failed check instead of exiting the
+      // retry loop with "ready:false" semantics.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(authFailed.value).toBe(true);
+      await pending;
+      expect(authFailed.value).toBe(true);
+      expect(state.authReady).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('should clear authFailed once /auth answers again after a transient outage', async () => {
+    const initialized = ref(false);
+    const authFailed = ref(false);
+    const state = createState();
+    state.authReady = false;
+    apiMock.getMeta.mockRejectedValue(new Error('connection refused'));
+    apiMock.getAuth
+      .mockRejectedValueOnce(new Error('connection refused'))
+      .mockResolvedValue({ ready: true, defaultModel: 'mirri-code' });
+    const ws = useWorkspaceState(state, createLoadDeps(initialized, ref(null), authFailed));
+    await ws.load();
+    expect(authFailed.value).toBe(true);
+    // The gate's poll (checkAuth) recovers the readiness verdict.
+    const outcome = await ws.checkAuth();
+    expect(outcome).toBe('proceed');
+    expect(authFailed.value).toBe(false);
+    expect(state.authReady).toBe(true);
+  });
+  it('should not mark authFailed when /auth rejects the server credential', async () => {
+    // 401 is the ServerAuthDialog's domain — the setup gate must not render
+    // "configure your model" over a missing/invalid bearer token.
+    const initialized = ref(false);
+    const authFailed = ref(false);
+    const state = createState();
+    state.authReady = false;
+    apiMock.getAuth.mockRejectedValue(new DaemonApiError({ code: 40101, msg: 'Unauthorized', requestId: 'req_1' }));
+    const ws = useWorkspaceState(state, createLoadDeps(initialized, ref(null), authFailed));
+    await ws.load();
+    expect(authFailed.value).toBe(false);
   });
   it('initializes normally (into the setup gate) when /auth answers ready:false', async () => {
     const initialized = ref(false);

@@ -1520,6 +1520,33 @@ async fn should_return_401_when_requesting_auth_summary_without_token() {
 }
 
 #[tokio::test]
+async fn should_count_rejected_credentials_on_the_auth_summary() {
+    // Given a server that requires a Bearer token, hit by two requests with
+    // no credential
+    let server = TestServer::start_with_auth(TEST_AUTH_TOKEN).await;
+    let client = client();
+    let (status, _) = get(&client, &format!("{}/api/v1/auth", server.base_url())).await;
+    assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
+    let (status, _) = get(&client, &format!("{}/api/v1/config", server.base_url())).await;
+    assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED);
+
+    // When the auth summary is read with a valid credential
+    let response = client
+        .get(format!("{}/api/v1/auth", server.base_url()))
+        .bearer_auth(TEST_AUTH_TOKEN)
+        .send()
+        .await
+        .expect("GET request");
+    let body: Value = response.json().await.expect("JSON body");
+
+    // Then the summary carries the per-process rejection count so a client
+    // showing "cannot connect" can tell a rejected credential from an
+    // unreachable daemon — without the operator digging through logs
+    assert_eq!(body["code"], 0);
+    assert_eq!(body["data"]["recent_auth_failures"], 2);
+}
+
+#[tokio::test]
 async fn should_report_ready_when_a_default_model_and_custom_provider_are_configured() {
     // Given an auth-enabled server with a custom provider and a default
     // model alias

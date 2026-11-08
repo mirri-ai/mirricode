@@ -68,8 +68,30 @@ pub async fn require_auth(
         }
         _ => {
             let request_id = request_id_from(request.headers());
+            record_auth_failure(&state, request.uri().path());
             unauthorized_response(&request_id)
         }
+    }
+}
+
+/// Record a rejected bearer credential: bump the per-process failure counter
+/// and log it (first + every 10th rejection, so a client with a stale token
+/// retrying in a loop cannot flood the log).
+///
+/// The server used to answer 401 in complete silence — with the Desktop
+/// spawning `mirri web --log-level error`, a credential problem left no trace
+/// anywhere and "the web UI shows the welcome page" was undebuggable. The
+/// counter is surfaced as `recent_auth_failures` on `GET /api/v1/auth`.
+pub(crate) fn record_auth_failure(state: &ServerState, path: &str) {
+    use std::sync::atomic::Ordering;
+    let total = state.auth_failures.fetch_add(1, Ordering::Relaxed) + 1;
+    if total == 1 || total.is_multiple_of(10) {
+        tracing::warn!(
+            path,
+            total,
+            "rejected request: missing or invalid bearer credential \
+             (the web UI's server-token dialog covers this)"
+        );
     }
 }
 

@@ -29,6 +29,7 @@ const { mockedApp } = vi.hoisted(() => ({
 import {
   ensureServerTokenPrivate,
   killStaleDaemon,
+  resolveServerLogLevel,
   startMirriServer,
 } from './daemon';
 import { mirriHome, readDesktopState, writeDesktopState } from './state';
@@ -42,6 +43,7 @@ let tmpHome: string;
 beforeEach(() => {
   tmpHome = mkdtempSync(join(tmpdir(), 'mirri-desktop-test-'));
   process.env['MIRRICODE_HOME'] = tmpHome;
+  delete process.env['MIRRICODE_DESKTOP_LOG_LEVEL'];
   mockedApp.isPackaged = false;
   mockedApp.getAppPath.mockReturnValue(join(tmpHome, 'apps', 'mirri-desktop'));
   vi.mocked(cp.spawn).mockReset();
@@ -50,6 +52,7 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(tmpHome, { recursive: true, force: true });
   delete process.env['MIRRICODE_HOME'];
+  delete process.env['MIRRICODE_DESKTOP_LOG_LEVEL'];
   vi.restoreAllMocks();
 });
 
@@ -65,6 +68,44 @@ describe('startMirriServer()', () => {
     expect(state).toBeDefined();
     expect(state!.pid).toBe(88888);
     expect(state!.port).toBe(58827);
+  });
+
+  it('should spawn the server with the quiet log-level default when no override is set', () => {
+    vi.mocked(cp.spawn).mockReturnValue(fakeSpawnChild());
+    startMirriServer('/fake/mirri-binary', undefined);
+    const [, args] = vi.mocked(cp.spawn).mock.calls[0] as unknown as [string, string[]];
+    expect(args[args.indexOf('--log-level') + 1]).toBe('error');
+  });
+
+  it('should pass MIRRICODE_DESKTOP_LOG_LEVEL through to the spawned server', () => {
+    process.env['MIRRICODE_DESKTOP_LOG_LEVEL'] = 'info';
+    vi.mocked(cp.spawn).mockReturnValue(fakeSpawnChild());
+    startMirriServer('/fake/mirri-binary', undefined);
+    const [, args] = vi.mocked(cp.spawn).mock.calls[0] as unknown as [string, string[]];
+    expect(args[args.indexOf('--log-level') + 1]).toBe('info');
+  });
+
+  function fakeSpawnChild(pid = 4242): cp.ChildProcess {
+    return {
+      pid,
+      stdout: { pipe: vi.fn() },
+      stderr: { pipe: vi.fn() },
+      unref: vi.fn(),
+    } as unknown as cp.ChildProcess;
+  }
+});
+
+describe('resolveServerLogLevel()', () => {
+  it('should fall back to the quiet error level when the override is unset', () => {
+    expect(resolveServerLogLevel({})).toBe('error');
+  });
+
+  it('should fall back to the quiet error level when the override is blank', () => {
+    expect(resolveServerLogLevel({ MIRRICODE_DESKTOP_LOG_LEVEL: '   ' })).toBe('error');
+  });
+
+  it('should pass a non-blank override through trimmed', () => {
+    expect(resolveServerLogLevel({ MIRRICODE_DESKTOP_LOG_LEVEL: ' trace ' })).toBe('trace');
   });
 });
 
