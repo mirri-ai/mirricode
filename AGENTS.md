@@ -111,23 +111,6 @@ The CI pipeline has checks that are NOT covered by the local `build.sh` quality 
 - npm publishing is retired (`@mirri-ai/mirri-code`, `@mirri-ai/mirri-node` are frozen at their last published versions; the `latest.json` version endpoint is frozen — never point it at the anchor). Do not add `publish` scripts or npm-publish workflows.
 - Any user-perceivable change (rust core, desktop, web, CLI) gets a changeset against the anchor: `minor` for features, `patch` for fixes.
 
-## Code Exploration
-
-The project is indexed to a code knowledge graph (codebase-memory-mcp). Prefer the `mcp__codebase_memory_mcp__*` tools over raw grep/find when exploring code structure:
-
-| Scenario | Tool | Why |
-|----------|------|-----|
-| Understand how a feature works | `search_graph` + `get_code_snippet` | Returns symbol-level relationships, not just text matches |
-| Find callers / callees of a function | `trace_path` | Full call-chain traversal in one call |
-| Understand project architecture | `get_architecture` | Packages, entry points, hotspots, clusters |
-| Analyze impact of a change | `trace_path` + `query_graph` | Blast radius with dependency depth |
-| Find related code by semantics | `search_graph(semantic_query=[...])` | Bridges vocabulary (finds "publish" when you search "send") |
-| Complex multi-hop queries | `query_graph` | Cypher-like graph queries |
-
-**Still use Grep/Glob/Read** for: exact string/variable search, file path lookup, reading specific file contents, and pre-edit line-level pinpointing.
-
-**Workflow**: explore with `get_architecture` first, locate with `search_graph`, trace with `trace_path`, then drill into source with `get_code_snippet` or `Read`.
-
 ## Workflow Requirements
 
 - Internal product requirement/design documents live under `docs/specs/` and follow its governance (`docs/specs/AGENTS.md`). In short: spec documents hold the requirement/design itself only — no progress or implementation status; current-state notes and pain points go in the domain's `{domain}-context.md`; status/progress tracking goes in the domain's `{domain}-ROADMAP.md` (or directory-level `ROADMAP.md`) and plan files, never mixed into specs; requirement docs are written in non-technical product language (PM-readable), with technical shapes (interface names, signatures, mechanisms) belonging in `{domain}-architecture.md`; requirement definitions must pass the R1–R9 definition review checklist in `docs/specs/AGENTS.md`; requirement/design changes must be written back into the spec itself as decision records (SDR for requirements, ADR for design), not just in a roadmap or commit message.
