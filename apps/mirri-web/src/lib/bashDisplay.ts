@@ -15,9 +15,15 @@
 // So the prefix is collapsed:
 //   - path === the session workspace  → a workspace badge (folder + dir name);
 //     the command reads from its first real token.
+//   - <workspace>/.worktrees/<name>   → a worktree badge (branch glyph + the
+//     checkout name) — the conventional in-repo worktree directory.
+//   - any other directory inside the workspace → a subdir badge showing the
+//     workspace-relative path.
 //   - any other absolute/`~` directory → `cd …/a_folder/ &&`, last segment kept.
 //   - anything else (relative paths, a mid-command `cd`, subshells) → untouched,
 //     because compressing those would misreport where the command runs.
+//   - a trailing `# comment` is stripped from the collapsed text only (the
+//     expanded body / copy path keep it verbatim).
 //
 // Judgement is deliberately strict: a non-matching directory is never shown as
 // the workspace badge. Showing one path segment too many is a cosmetic cost;
@@ -25,10 +31,15 @@
 
 /** The `cd` prefix split off a Bash command, for row rendering. */
 export interface BashPrefix {
-  /** `workspace`: the path is the session's working directory (badge).
-   *  `other`: a different directory (compressed `cd …/dir/ &&` text). */
-  kind: 'workspace' | 'other';
-  /** Directory name for the row, e.g. `mirricode`. */
+  /** `workspace`: exactly the session's working directory (badge).
+   *  `worktree`: `<root>/.worktrees/<name>` — an isolated checkout inside the
+   *    workspace (community convention, not a git standard); the label is the
+   *    checkout name, usually the branch.
+   *  `subdir`: another directory inside the workspace; the label is the path
+   *    relative to the workspace root.
+   *  `other`: a directory outside the workspace (compressed `…/dir`). */
+  kind: 'workspace' | 'worktree' | 'subdir' | 'other';
+  /** Directory name / relative path for the row, e.g. `mirricode`. */
   label: string;
   /** The directory exactly as the model wrote it, quotes stripped. */
   path: string;
@@ -49,13 +60,17 @@ export const BASH_SUMMARY_MAX = 160;
     its subcommand live there and carry the most meaning. */
 const HEAD_SHARE = 0.6;
 
-// `cd [|pushd] <path>` optionally followed by `&& | || | ;` and the rest of the
-// command. `[^"]` / `[^']` covers quoted paths with spaces; the bare branch
-// stops at shell metacharacters so `cd /a && b` cannot swallow the separator.
-// Anchored end-to-end: a `cd` that is not the whole head (a subshell, a
-// mid-command `cd`) is not matched at all, which is the intent.
+// `cd [|pushd] <path>` optionally followed by `&& | || | ; | newline` and the
+// rest of the command. `[^"]` / `[^']` covers quoted paths with spaces; the
+// bare branch stops at shell metacharacters so `cd /a && b` cannot swallow the
+// separator. A bare newline is a command separator in every shell we run
+// (Unix `sh -c` and Windows Git Bash `bash -c` both treat it as `;`), so
+// `\r?\n` is accepted too — CRLF from Windows-authored command strings
+// normalizes the same way. Anchored end-to-end: a `cd` that is not the whole
+// head (a subshell, a mid-command `cd`) is not matched at all, which is the
+// intent.
 const CD_PREFIX =
-  /^(?:cd|pushd)\s+(?:"([^"]*)"|'([^']*)'|([^\s&;|<>()]+))(?:\s*(?:&&|\|\||;)\s*([\s\S]*))?$/;
+  /^(?:cd|pushd)\s+(?:"([^"]*)"|'([^']*)'|([^\s&;|<>()]+))(?:\s*(?:&&|\|\||;|\r?\n)\s*([\s\S]*))?$/;
 
 /** Trim, collapse internal whitespace (a multi-line command must stay on one
     row), and clip to `max` by keeping BOTH ends.
@@ -67,6 +82,45 @@ export function clipBashSummary(text: string, max: number = BASH_SUMMARY_MAX): s
   const head = Math.ceil((max - 1) * HEAD_SHARE);
   const tail = max - 1 - head;
   return `${s.slice(0, head)}…${s.slice(s.length - tail)}`;
+}
+
+/** Strip a trailing shell `# comment` from a command, for the collapsed row.
+    Display-only: the expanded body / copy path keep the original text.
+    Conservative by design:
+    - `#` only counts as a comment start at the start of the string or after
+      space/tab (so `foo#bar` survives) and outside quotes (so `"#42"` survives);
+    - only stripped when nothing but the comment follows to the end of the
+      string — a `#` with real commands on later lines is left alone, because
+      cutting to the end of the string would eat them;
+    - a command that is nothing but a comment is kept whole (the comment is
+      the only content there is). */
+function stripTrailingComment(text: string): string {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i]!;
+    if (inSingle) {
+      if (c === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      if (c === '\\') i += 1;
+      else if (c === '"') inDouble = false;
+      continue;
+    }
+    if (c === '\\') {
+      i += 1;
+      continue;
+    }
+    if (c === "'") inSingle = true;
+    else if (c === '"') inDouble = true;
+    else if (c === '#' && (i === 0 || text[i - 1] === ' ' || text[i - 1] === '\t')) {
+      if (text.slice(i).includes('\n')) break;
+      const stripped = text.slice(0, i).trimEnd();
+      return stripped === '' ? text : stripped;
+    }
+  }
+  return text;
 }
 
 /** Strip trailing slashes so `/a/b/` and `/a/b` compare equal. `.` stays `.`
@@ -106,6 +160,36 @@ function isWorkspace(path: string, workspaceRoot: string | undefined): boolean {
   return false;
 }
 
+/** Classify a collapsible `cd` target against the session workspace.
+    Strict by design: only provable matches get a specific badge — an
+    in-workspace path becomes a `subdir` (shown relative to the root), the
+    conventional `<root>/.worktrees/<name>` checkout becomes a `worktree`,
+    everything else stays `other` with only its last segment. */
+function classifyPrefix(path: string, workspaceRoot: string | undefined): BashPrefix {
+  const p = normalizePath(path);
+  if (isWorkspace(path, workspaceRoot)) {
+    const root = workspaceRoot ? normalizePath(workspaceRoot) : '';
+    return { kind: 'workspace', label: lastSegment(root || p), path };
+  }
+  const root = workspaceRoot ? normalizePath(workspaceRoot) : '';
+  if (root && root.startsWith('/') && p.startsWith(`${root}/`)) {
+    const rel = p.slice(root.length + 1);
+    // Drop empty/`.` segments so `//` and `/./` collapse; a `..` segment can
+    // climb out of the workspace, so the path is NOT provably inside it —
+    // degrade to `other` rather than mislabel an outside directory (strict
+    // proof: showing the wrong directory is a correctness bug).
+    const segments = rel.split('/').filter((s) => s !== '' && s !== '.');
+    if (segments.includes('..')) return { kind: 'other', label: lastSegment(p), path };
+    const clean = segments.join('/');
+    if (clean === '') return { kind: 'workspace', label: lastSegment(root), path };
+    if (/^\.worktrees\/[^/]+$/.test(clean)) {
+      return { kind: 'worktree', label: clean.slice('.worktrees/'.length), path };
+    }
+    return { kind: 'subdir', label: clean, path };
+  }
+  return { kind: 'other', label: lastSegment(p), path };
+}
+
 /**
  * Split a Bash command into `{ prefix, text }` for the collapsed row.
  *
@@ -120,23 +204,15 @@ export function summarizeBashCommand(
   const raw = (command ?? '').trim();
   if (options.full) return { text: raw };
 
-  const m = CD_PREFIX.exec(raw);
-  if (!m) return { text: clipBashSummary(raw, options.max) };
+  const stripped = stripTrailingComment(raw);
+  const m = CD_PREFIX.exec(stripped);
+  if (!m) return { text: clipBashSummary(stripped, options.max) };
 
   const path = (m[1] ?? m[2] ?? m[3] ?? '').trim();
-  if (!isCollapsible(path)) return { text: clipBashSummary(raw, options.max) };
+  if (!isCollapsible(path)) return { text: clipBashSummary(stripped, options.max) };
 
   const rest = (m[4] ?? '').trim();
-  const root = workspaceRoot ? normalizePath(workspaceRoot) : '';
-  const prefix: BashPrefix = isWorkspace(path, workspaceRoot)
-    ? {
-        kind: 'workspace',
-        // The badge names the directory the session lives in; fall back to the
-        // cd path itself when the workspace root is unknown.
-        label: lastSegment(root || normalizePath(path)),
-        path,
-      }
-    : { kind: 'other', label: lastSegment(normalizePath(path)), path };
+  const prefix = classifyPrefix(path, workspaceRoot);
 
   return { prefix, text: clipBashSummary(rest, options.max) };
 }
@@ -145,7 +221,15 @@ export function summarizeBashCommand(
     single-line digests built by `toolSummary`). The workspace badge form is
     only used by the tool row itself. */
 export function bashPrefixText(prefix: BashPrefix): string {
-  return prefix.kind === 'workspace' ? `${prefix.label}/ && ` : `…/${prefix.label}/ && `;
+  switch (prefix.kind) {
+    case 'workspace':
+      return `${prefix.label}/ && `;
+    case 'worktree':
+    case 'subdir':
+      return `${prefix.label} && `;
+    case 'other':
+      return `…/${prefix.label}/ && `;
+  }
 }
 
 /** Parse a tool `arg` into the Bash command it carries. `arg` is normally the

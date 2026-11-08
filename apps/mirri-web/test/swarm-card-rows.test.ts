@@ -310,9 +310,11 @@ describe('buildMemberTimeline — collapsed-row lightweight timeline (ADR-012 �
     const view = buildMemberTimeline([s], undefined);
     const summary = view.elements[0]?.summary ?? '';
     // Then it stays a single line — the data layer guarantees the
-    // one-line invariant, not the component's CSS.
+    // one-line invariant, not the component's CSS. The leading `cd` now
+    // folds into a directory prefix (newline is a command separator), so
+    // the digest leads with the compressed directory + the real command.
     expect(summary).not.toContain('\n');
-    expect(summary).toContain('cd /tmp echo SECRET_TOKEN=example exit 1');
+    expect(summary).toContain('…/tmp/ && echo SECRET_TOKEN=example exit 1');
   });
 
   // toolSummary resolves a couple of labels through the global i18n instance,

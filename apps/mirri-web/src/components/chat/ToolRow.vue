@@ -54,15 +54,33 @@ const pinScroll = inject<(el: HTMLElement, ms?: number) => void>('pinScroll', ()
 const bhEl = ref<HTMLElement | null>(null);
 
 const folderGlyph = computed(() => iconSvg('folder', 'sm'));
+const branchGlyph = computed(() => iconSvg('git-branch', 'sm'));
+/** Workspace/worktree/subdir all read as "a directory"; only the worktree
+    badge swaps in the branch glyph so an isolated checkout is distinguishable
+    from the plain workspace badge at a glance. */
+const prefixGlyph = computed(() =>
+  props.prefix?.kind === 'worktree' ? branchGlyph.value : folderGlyph.value,
+);
 
-/** A workspace badge names the directory; any other directory is compressed to
-    `…/dir` so it can never be mistaken for the workspace. The `&&` that joined
-    the `cd` to the command renders outside the badge — the badge answers "in
-    which directory", not "how the command was stitched together". */
+/** A workspace badge names the directory (with a trailing `/`); a worktree
+    badge shows the checkout name; a subdir badge shows the workspace-relative
+    path (dashed chrome, no `…/` — the path is already complete); any other
+    directory is compressed to `…/dir` so it can never be mistaken for the
+    workspace. The `&&` that joined the `cd` to the command renders outside
+    the badge — the badge answers "in which directory", not "how the command
+    was stitched together". */
 const displayPrefix = computed(() => {
   const p = props.prefix;
   if (!p) return '';
-  return p.kind === 'workspace' ? `${p.label}/` : `…/${p.label}/`;
+  switch (p.kind) {
+    case 'workspace':
+      return `${p.label}/`;
+    case 'worktree':
+    case 'subdir':
+      return p.label;
+    case 'other':
+      return `…/${p.label}/`;
+  }
 });
 
 /** The badge's accessible name. The visible text is just the directory, so the
@@ -71,9 +89,15 @@ const displayPrefix = computed(() => {
 const prefixAria = computed(() => {
   const p = props.prefix;
   if (!p) return '';
-  return p.kind === 'workspace'
-    ? `${t('tools.workspacePrefixHint')}: ${p.path}`
-    : `${t('tools.otherDirPrefixHint')}: ${p.path}`;
+  const key =
+    p.kind === 'workspace'
+      ? 'tools.workspacePrefixHint'
+      : p.kind === 'worktree'
+        ? 'tools.worktreePrefixHint'
+        : p.kind === 'subdir'
+          ? 'tools.subdirPrefixHint'
+          : 'tools.otherDirPrefixHint';
+  return `${t(key)}: ${p.path}`;
 });
 
 function onHeadClick(): void {
@@ -112,7 +136,7 @@ function onHeadClick(): void {
             :class="prefix.kind"
             :aria-label="prefixAria"
           >
-            <span class="ws-ic" v-html="folderGlyph" aria-hidden="true" />
+            <span class="ws-ic" v-html="prefixGlyph" aria-hidden="true" />
             <span class="ws-nm">{{ displayPrefix }}</span>
           </span>
           <span v-if="prefix" class="ws-join" aria-hidden="true">&amp;&amp;</span>
@@ -235,6 +259,17 @@ function onHeadClick(): void {
   line-height: 18px;
 }
 .ws-badge.other {
+  color: var(--color-text-muted);
+  border-style: dashed;
+}
+/* Worktree badge: same solid chrome as the workspace badge (it IS a checkout
+   of this workspace) but the branch glyph carries the distinction. */
+.ws-badge.worktree {
+  color: var(--color-text-muted);
+}
+/* Subdir badge: dashed like `other` — inside the workspace, but not the
+   root itself. No `…/` prefix: the relative path is already complete. */
+.ws-badge.subdir {
   color: var(--color-text-muted);
   border-style: dashed;
 }
