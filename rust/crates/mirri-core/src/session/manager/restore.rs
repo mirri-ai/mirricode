@@ -132,6 +132,18 @@ impl SessionManager {
         }
         if !wire_log_path.exists() {
             // zero-io-allow: baseline Path IO, see F-T13-2
+            // The body is gone with no compressed shape to restore it from:
+            // when the row records a PRIOR conversation, the persisted
+            // metadata outlived its body (the user deleted the session
+            // directory outside the engine). Such a row can never be opened
+            // again — every listing re-offers it and every click fails — so
+            // it is reclaimed here, at the single point where "wire log not
+            // found" is established (ADR-006: the row is the metadata source
+            // of truth, and a source of truth may not keep claiming a body
+            // that cannot exist). A never-conversed row is the legal
+            // "row present, body absent" state (ADR-006 decision b) and is
+            // kept.
+            self.discard_row_without_body(session_id).await;
             return Err(SessionError::ResumeFailed(format!(
                 "wire log not found: {}",
                 wire_log_path.display()
