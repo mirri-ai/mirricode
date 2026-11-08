@@ -36011,8 +36011,14 @@ async fn should_emit_goal_updated_when_the_model_calls_the_goal_tools() {
         args: json!({"objective": "Ship the feature", "completion_criterion": "Tests pass"}),
     }]);
     // The in-turn side title call — fires after the first step lands
-    // (SDR-016) and consumes one scripted reply.
-    mock.push_text("goal lifecycle");
+    // (SDR-016). Its reply goes to the RESERVED queue, not the shared one:
+    // the side call races the main loop's next step for `chat()`, and a
+    // shared-queue reply would be popped by whichever arrives first. When
+    // the side call won that race it stole the SetGoalBudget reply, the
+    // budget tool never ran, and the assertion below failed with
+    // `snapshot.budget.turns == null` — blaming a missing budget change on
+    // a pop order nothing enforces.
+    mock.push_title("goal lifecycle");
     mock.push_tool_use(vec![LlmToolCall {
         id: "call_2".to_string(),
         name: "SetGoalBudget".to_string(),

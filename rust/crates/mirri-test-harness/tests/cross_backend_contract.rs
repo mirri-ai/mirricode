@@ -193,12 +193,15 @@ fn should_ignore_element_order_and_repetition_when_normalizing_arrays() {
 // Backend boots
 // ===========================================================================
 
-/// The process-wide fake `$HOME`. `mirri-server`'s `session.export` resolves
-/// its export root from `$HOME` at call time, so the server's session
-/// persistence root is placed under this directory — export then writes only
-/// inside throwaway test directories. The one-time init sets the same value
-/// for every test under the workspace env lock, so concurrent readers always
-/// observe the identical shared path (16-test-execution-strategy.md §4.2).
+/// The process-wide fake `$HOME`, still needed for AMBIENT resolution that has
+/// no injection seam: user-level skill discovery reads `$HOME/.agents/skills`,
+/// so every test must observe the same (empty) directory regardless of
+/// scheduling order (16-test-execution-strategy.md §4.2).
+///
+/// Session persistence no longer rides on this: each server backend boots
+/// with its own injected home, so a dozen parallel backends do not converge
+/// on one `session-index.db` (which used to surface as "database is locked"
+/// from a `session.create`).
 fn shared_home() -> PathBuf {
     static HOME: OnceLock<PathBuf> = OnceLock::new();
     HOME.get_or_init(|| {
@@ -241,6 +244,9 @@ struct ServerBackend {
     /// value `config.get` serves, used to derive its expected lock.
     initial_config: mirri_core::ServerConfig,
     _workspace: TempDir,
+    /// This backend's own home. Held so the tempdir outlives the backend; a
+    /// cold-restore backend shares the live one through an `Arc`.
+    _home: Arc<TempDir>,
 }
 
 /// Boot an engine-backed server backend at a fresh workspace tempdir; when
@@ -250,7 +256,8 @@ struct ServerBackend {
 async fn boot_server(skill: Option<&str>) -> ServerBackend {
     let workspace = tempfile::tempdir().expect("create the server workspace tempdir");
     let root = workspace.path().to_path_buf();
-    boot_server_at(&root, skill, workspace).await
+    let home = Arc::new(tempfile::tempdir().expect("create the server home tempdir"));
+    boot_server_at(&root, skill, workspace, home).await
 }
 
 /// Boot an engine-backed server backend at an explicit workspace root.
@@ -270,8 +277,22 @@ async fn boot_server_at(
     workspace_root: &Path,
     skill: Option<&str>,
     keepalive: TempDir,
+    home: Arc<TempDir>,
 ) -> ServerBackend {
-    let home = shared_home();
+    // Each backend owns its own home. Sharing one home across the whole
+    // binary was a needless coupling: `session.export` resolves its root from
+    // the *injected* `with_home_dir`, not the ambient `$HOME`, so nothing
+    // here needs a process-wide value. What sharing DID do was put a dozen
+    // parallel backends on one `session-index.db`, which surfaced as
+    // "database is locked" from a `session.create` — a fixture artefact, not
+    // a product condition (the shipped layout is one process per home).
+    //
+    // The cold-restore invariant is unaffected: a session's bucket key
+    // derives from the WORKSPACE root (`with_persistence_dir` ->
+    // `encode_work_dir_key(workspace.cwd())`), and `sessions_dir` merely
+    // prefixes that bucket. Two backends at the same root therefore still
+    // resolve each other's sessions even with different homes.
+    let home_path = home.path().to_path_buf();
     if let Some(skill) = skill {
         seed_skill(workspace_root, skill);
     }
@@ -280,15 +301,15 @@ async fn boot_server_at(
         workspace_root.to_path_buf(),
         WorkspaceScopeConfig::default(),
     ));
-    // The home-level metadata index, wired the way production wires it
-    // (ADR-006's "唯一事实源"): every runtime's manager writes its rows
-    // through this one SQLite file, so a COLD RESTART of the backend reads
-    // them back. Without it the fixture gets `with_persistence_dir`'s
-    // in-process `InMemoryMetadataStore`, whose rows die with the process —
-    // the restored backend then has no row for the session and falls back
-    // to `state.json`, which pnpm-era sessions no longer write.
+    // The backend-local metadata index, wired the way production wires it
+    // (ADR-006's "唯一事实源") — but under THIS backend's home, so concurrent
+    // backends never contend for one file. Without a store at all the fixture
+    // gets `with_persistence_dir`'s in-process `InMemoryMetadataStore`, whose
+    // rows die with the process — the restored backend then has no row for
+    // the session and falls back to `state.json`, which pnpm-era sessions no
+    // longer write.
     let metadata_store = match mirri_session_index::SessionIndex::open_with_check(
-        &home.join(".mirri-code").join("session-index.db"),
+        &home_path.join(".mirri-code").join("session-index.db"),
     )
     .expect("open the test session index")
     {
@@ -300,7 +321,7 @@ async fn boot_server_at(
     let manager = Arc::new(
         SessionManager::with_persistence_dir(
             workspace_scope,
-            home.join(".mirri-code").join("sessions"),
+            home_path.join(".mirri-code").join("sessions"),
             std::sync::Arc::new(mirri_os::LocalFs::new()),
         )
         .with_metadata_store(metadata_store),
@@ -316,11 +337,10 @@ async fn boot_server_at(
         })
         .unwrap();
     // The same-shaped config.toml as the embedded boot (anthropic provider
-    // + contract-model alias), placed OUTSIDE the shared test home —
-    // `config.set` mutates the file and `shared_home()` is shared across
-    // the whole test binary, so it lives in this backend's own keepalive
-    // tempdir instead (never in the possibly-shared workspace root). The
-    // in-memory snapshot is the constructed config itself (not a disk
+    // + contract-model alias), placed in this backend's own keepalive
+    // tempdir — `config.set` mutates the file, and each backend now owns its
+    // home, so the file never lands in the possibly-shared workspace root.
+    // The in-memory snapshot is the constructed config itself (not a disk
     // reload), mirroring the embedded boot so both sides' `config.get`
     // wires carry the same fields.
     let config_path = keepalive.path().join("config.toml");
@@ -371,6 +391,15 @@ async fn boot_server_at(
             Arc::new(RwLock::new(config.clone())),
             Some(config_path.clone()),
         )
+        // The engine's injected home must be the MIRRI home (`.mirri-code`),
+        // not its parent: `session.export` resolves session directories as
+        // `<home>/v3_sessions`, `<home>/.mirri/v3_sessions`, `<home>/sessions`,
+        // while this fixture's manager writes under
+        // `<home>/.mirri-code/sessions` — so the export root has to be the
+        // same `.mirri-code` directory for the two to agree. (The previous
+        // shared `$HOME` worked only because the ambient resolution happened
+        // to land on `$HOME/.mirri-code`, the same directory.)
+        .with_home_dir(Some(home_path.join(".mirri-code")))
         // The models.dev upstream stays disabled so the contract suite
         // never touches the network; the home keeps resolving through the
         // shared test `$HOME` (the ambient-home semantics session.export
@@ -394,6 +423,7 @@ async fn boot_server_at(
         config_path,
         initial_config: config,
         _workspace: keepalive,
+        _home: home,
     }
 }
 
@@ -2567,7 +2597,14 @@ async fn should_yield_an_identical_snapshot_when_a_session_is_restored_from_disk
     // and stays alive for the whole test through the live backend's struct.
     let shared_workspace = tempfile::tempdir().expect("create the shared workspace tempdir");
     let workspace_root = shared_workspace.path().to_path_buf();
-    let live = boot_server_at(&workspace_root, None, shared_workspace).await;
+    let shared_home = Arc::new(tempfile::tempdir().expect("create the shared backend home"));
+    let live = boot_server_at(
+        &workspace_root,
+        None,
+        shared_workspace,
+        Arc::clone(&shared_home),
+    )
+    .await;
 
     let created = call_server(
         &live,
@@ -2634,6 +2671,7 @@ async fn should_yield_an_identical_snapshot_when_a_session_is_restored_from_disk
         &workspace_root,
         None,
         tempfile::tempdir().expect("create the restored backend keepalive tempdir"),
+        Arc::clone(&shared_home),
     )
     .await;
     call_server(
@@ -2740,7 +2778,14 @@ async fn should_keep_skill_activation_origin_payload_when_session_is_restored_fr
     // is awaited on the live read face so the close never races the turn)
     let shared_workspace = tempfile::tempdir().expect("create the shared workspace tempdir");
     let workspace_root = shared_workspace.path().to_path_buf();
-    let live = boot_server_at(&workspace_root, Some("contract-skill"), shared_workspace).await;
+    let shared_home = Arc::new(tempfile::tempdir().expect("create the shared backend home"));
+    let live = boot_server_at(
+        &workspace_root,
+        Some("contract-skill"),
+        shared_workspace,
+        Arc::clone(&shared_home),
+    )
+    .await;
 
     let created = call_server(
         &live,
@@ -2802,6 +2847,7 @@ async fn should_keep_skill_activation_origin_payload_when_session_is_restored_fr
         &workspace_root,
         Some("contract-skill"),
         tempfile::tempdir().expect("create the restored backend keepalive tempdir"),
+        Arc::clone(&shared_home),
     )
     .await;
     call_server(
@@ -2887,7 +2933,14 @@ async fn should_keep_with_skills_when_session_is_restored_from_disk() {
     let shared_workspace = tempfile::tempdir().expect("create the shared workspace tempdir");
     let workspace_root = shared_workspace.path().to_path_buf();
 
-    let live = boot_server_at(&workspace_root, Some("contract-skill"), shared_workspace).await;
+    let shared_home = Arc::new(tempfile::tempdir().expect("create the shared backend home"));
+    let live = boot_server_at(
+        &workspace_root,
+        Some("contract-skill"),
+        shared_workspace,
+        Arc::clone(&shared_home),
+    )
+    .await;
 
     let created = call_server(
         &live,
@@ -2977,6 +3030,7 @@ async fn should_keep_with_skills_when_session_is_restored_from_disk() {
         &workspace_root,
         Some("contract-skill"),
         tempfile::tempdir().expect("create the restored backend keepalive tempdir"),
+        Arc::clone(&shared_home),
     )
     .await;
     call_server(
