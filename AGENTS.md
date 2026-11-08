@@ -94,15 +94,7 @@ The CI pipeline has checks that are NOT covered by the local `build.sh` quality 
 
 - **PR title check**: PR titles must follow Conventional Commit style. The `pr-title-checker` workflow validates this on every PR.
 
-- **Test scope**: The root `pnpm test` runs the maintained TypeScript suites — `apps/mirri-web` and `apps/mirri-desktop`. The default run sets `MIRRICODE_E2E_SKIP_RUST=1`: the web e2e suites that drive a real engine binary would otherwise run `cargo build -p mirri-cli` and blow the hook timeout. Run `pnpm test:e2e` (after building `rust/target/debug/mirri`) to exercise them.
-
-- **Rust workspace test/clippy runtime** (measured 2026-10-10, dev workstation, warm incremental build cache): `cargo test --manifest-path rust/Cargo.toml --workspace` takes ~7 minutes wall-clock (~6m44s, mostly compilation; the test bodies themselves finish in seconds), and a follow-up `cargo clippy --workspace --all-targets -- -D warnings` adds ~45 s. A cold cache (`cargo clean`, CI, or many changed crates) is significantly longer. Always run these as background tasks with a timeout of at least 20 minutes; foreground shell calls cap at 300 s and will be killed mid-build. CI runs the same suite and clippy in the `rust-test` job (`.github/workflows/ci.yml`), so a red rust test blocks a PR.
-
-### 测试超时纪律（2026-11-03 确立：盲目给超长测试加超时后沉淀）
-
-- 正常测试应该在 5-6 分钟内完成，10 分钟封顶。超过这个时间，先怀疑：测试 case 写得有问题，或者实现里有 bug（死循环、等待不会到来的事件等）——而不是测试"本来就需要这么久"。
-- 以怀疑的态度排查，禁止无脑加大超时时间。加超时只是掩盖问题。
-- 标准做法：把测试输出重定向到 `.tmp/` 下的临时文件，每隔 1-2 分钟检查一次输出，定位卡在哪里——是某个测试特别耗时需要优化，还是实施本身有 bug。定位到具体卡点后再决策。
+- **Test scope**: the root `pnpm test` runs the maintained TypeScript suites (`apps/mirri-web`, `apps/mirri-desktop`) with `MIRRICODE_E2E_SKIP_RUST=1`; use `pnpm test:e2e` (after `cargo build -p mirri-cli`) for the suites that drive a real engine binary. Running, writing, or debugging rust tests — the execution ladder, the iron rules, the red-run judgement criterion, and the proxy/stale-binary traps that fail suites for unrelated reasons — is covered by the `testing-guide` skill (`.agents/skills/testing-guide/SKILL.md`).
 
 ## Release Pipeline (desktop-first)
 
