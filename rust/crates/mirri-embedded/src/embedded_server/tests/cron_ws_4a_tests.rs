@@ -10,6 +10,16 @@ use serde_json::json;
 
 use super::*;
 
+/// A `created_at` stamp for seeded cron fixtures: "now", so the fixture can
+/// never age past the staleness threshold. A hardcoded calendar date would
+/// turn these tests into a time bomb — `task_is_stale_under` retires a
+/// recurring task once `now - created_at >= STALE_THRESHOLD` (7 days), and
+/// a stale task is dropped by the next `check_due` (the retain in the fire
+/// path), so a literal date works only until that date plus a week.
+fn recent_created_at() -> String {
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.9fZ").to_string()
+}
+
 /// A home-rooted test server: `for_workspace_root` assembles the full
 /// registry (the default workspace's runtime carries the cron manager —
 /// a home-rooted bucket exists), with a fast cron tick.
@@ -601,13 +611,14 @@ fn seed_legacy_cron_document(home: &std::path::Path, workspace_id: &str) {
             "tasks": [{
                 "id": "cron-legacy-1", "cron": "0 9 * * 1-5", "prompt": "legacy",
                 "session_id": "", "recurring": true, "timezone": "Asia/Tokyo",
-                "created_at": "2026-11-01T00:00:00.000000000Z", "last_fired": null,
+                "created_at": "CREATED_AT_PLACEHOLDER", "last_fired": null,
                 "origin": "user", "scope": "workspace", "workspaceId": "PLACEHOLDER_WS",
                 "permission_mode": "manual", "paused": false, "title": "Legacy task"
             }],
             "runs": {}, "proposals": []
         }"#
-        .replace("PLACEHOLDER_WS", workspace_id),
+        .replace("PLACEHOLDER_WS", workspace_id)
+        .replace("CREATED_AT_PLACEHOLDER", &recent_created_at()),
     )
     .expect("seed the legacy tasks.json");
 }
@@ -789,13 +800,14 @@ fn seed_workspace_local_cron_document(workspace_root: &std::path::Path, workspac
             "tasks": [{
                 "id": "cron-acp-legacy-1", "cron": "0 9 * * 1-5", "prompt": "acp legacy",
                 "session_id": "", "recurring": true, "timezone": "Asia/Tokyo",
-                "created_at": "2026-11-01T00:00:00.000000000Z", "last_fired": null,
+                "created_at": "CREATED_AT_PLACEHOLDER", "last_fired": null,
                 "origin": "user", "scope": "workspace", "workspaceId": "PLACEHOLDER_WS",
                 "permission_mode": "manual", "paused": false, "title": "ACP legacy task"
             }],
             "runs": {}, "proposals": []
         }"#
-        .replace("PLACEHOLDER_WS", workspace_id),
+        .replace("PLACEHOLDER_WS", workspace_id)
+        .replace("CREATED_AT_PLACEHOLDER", &recent_created_at()),
     )
     .expect("seed the workspace-local tasks.json");
 }
@@ -985,8 +997,8 @@ async fn should_list_a_task_whose_workspace_runtime_was_never_built() {
             id: other_id.clone(),
             root: other_root.path().to_path_buf(),
             name: Some("never built".to_string()),
-            created_at: "2026-11-03T00:00:00Z".to_string(),
-            last_opened_at: "2026-11-03T00:00:00Z".to_string(),
+            created_at: recent_created_at(),
+            last_opened_at: recent_created_at(),
         });
     assert!(
         server.workspace_registry().built_runtime(&other_id).is_none(),
@@ -996,11 +1008,12 @@ async fn should_list_a_task_whose_workspace_runtime_was_never_built() {
     // the same envelope the manager's persistence layer emits (the
     // WorkspaceBody `{"task": ..., "runs": [...]}`), with the full field
     // set the legacy-import task carries.
+    let created_at = recent_created_at();
     let body = json!({
         "task": {
             "id": "cron-unbuilt-1", "cron": "0 9 * * 1-5", "prompt": "unbuilt watch",
             "session_id": "", "recurring": true, "timezone": "Asia/Tokyo",
-            "created_at": "2026-11-01T00:00:00.000000000Z", "last_fired": null,
+            "created_at": created_at, "last_fired": null,
             "origin": "user", "scope": "workspace", "workspaceId": other_id,
             "permission_mode": "manual", "paused": false, "title": "Unbuilt task"
         },
@@ -1014,7 +1027,7 @@ async fn should_list_a_task_whose_workspace_runtime_was_never_built() {
             workspace_id: other_id.clone(),
             next_fire_at: None,
             paused: false,
-            created_at: "2026-11-01T00:00:00.000000000Z".to_string(),
+            created_at,
             body: body.to_string(),
         })
         .expect("seed the never-built workspace's row");
@@ -1052,8 +1065,8 @@ async fn cron_add_into_a_never_built_workspace_builds_it_on_demand() {
             id: other_id.clone(),
             root: other_root.path().to_path_buf(),
             name: Some("unbuilt target".to_string()),
-            created_at: "2026-11-03T00:00:00Z".to_string(),
-            last_opened_at: "2026-11-03T00:00:00Z".to_string(),
+            created_at: recent_created_at(),
+            last_opened_at: recent_created_at(),
         });
     assert!(server.workspace_registry().built_runtime(&other_id).is_none());
 
