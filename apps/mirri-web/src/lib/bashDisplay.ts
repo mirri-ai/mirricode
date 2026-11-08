@@ -73,6 +73,45 @@ export function clipBashSummary(text: string, max: number = BASH_SUMMARY_MAX): s
   return `${s.slice(0, head)}…${s.slice(s.length - tail)}`;
 }
 
+/** Strip a trailing shell `# comment` from a command, for the collapsed row.
+    Display-only: the expanded body / copy path keep the original text.
+    Conservative by design:
+    - `#` only counts as a comment start at the start of the string or after
+      space/tab (so `foo#bar` survives) and outside quotes (so `"#42"` survives);
+    - only stripped when nothing but the comment follows to the end of the
+      string — a `#` with real commands on later lines is left alone, because
+      cutting to the end of the string would eat them;
+    - a command that is nothing but a comment is kept whole (the comment is
+      the only content there is). */
+function stripTrailingComment(text: string): string {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i]!;
+    if (inSingle) {
+      if (c === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      if (c === '\\') i += 1;
+      else if (c === '"') inDouble = false;
+      continue;
+    }
+    if (c === '\\') {
+      i += 1;
+      continue;
+    }
+    if (c === "'") inSingle = true;
+    else if (c === '"') inDouble = true;
+    else if (c === '#' && (i === 0 || text[i - 1] === ' ' || text[i - 1] === '\t')) {
+      if (text.slice(i).includes('\n')) break;
+      const stripped = text.slice(0, i).trimEnd();
+      return stripped === '' ? text : stripped;
+    }
+  }
+  return text;
+}
+
 /** Strip trailing slashes so `/a/b/` and `/a/b` compare equal. `.` stays `.`
     ("here"), the empty string stays empty. */
 function normalizePath(p: string): string {
@@ -124,8 +163,9 @@ export function summarizeBashCommand(
   const raw = (command ?? '').trim();
   if (options.full) return { text: raw };
 
-  const m = CD_PREFIX.exec(raw);
-  if (!m) return { text: clipBashSummary(raw, options.max) };
+  const stripped = stripTrailingComment(raw);
+  const m = CD_PREFIX.exec(stripped);
+  if (!m) return { text: clipBashSummary(stripped, options.max) };
 
   const path = (m[1] ?? m[2] ?? m[3] ?? '').trim();
   if (!isCollapsible(path)) return { text: clipBashSummary(raw, options.max) };

@@ -132,6 +132,48 @@ describe('summarizeBashCommand', () => {
     expect(d.prefix).toEqual({ kind: 'other', label: 'build-output', path: '/tmp/build-output' });
     expect(d.text).toBe('make all');
   });
+
+  it('should drop a trailing comment from the collapsed command', () => {
+    // Given a command carrying a model-authored trailing comment
+    // When the collapsed row summary is built
+    // Then only the executable part leads the row
+    const d = summarizeBashCommand('git diff src/useWorkspaceState.ts # 看 git diff', WS);
+    expect(d.text).toBe('git diff src/useWorkspaceState.ts');
+  });
+
+  it('should drop a trailing comment after a folded cd prefix', () => {
+    const d = summarizeBashCommand(`cd ${WS} && git status # 看状态`, WS);
+    expect(d.prefix?.kind).toBe('workspace');
+    expect(d.text).toBe('git status');
+  });
+
+  it('should keep a # that sits inside quotes', () => {
+    const d = summarizeBashCommand('echo "issue #42"', WS);
+    expect(d.text).toBe('echo "issue #42"');
+  });
+
+  it('should keep a # attached to a word because it is not a comment', () => {
+    const d = summarizeBashCommand('grep foo#bar src', WS);
+    expect(d.text).toBe('grep foo#bar src');
+  });
+
+  it('should not lose commands that follow a commented line', () => {
+    // Given a multi-line command whose first line ends in a comment
+    // When the summary is built
+    // Then nothing after the comment line is stripped away
+    const d = summarizeBashCommand('git diff # 看\nls -la', WS);
+    expect(d.text.endsWith('ls -la')).toBe(true);
+  });
+
+  it('should keep a command that is nothing but a comment', () => {
+    const d = summarizeBashCommand('# 只是备注', WS);
+    expect(d.text).toBe('# 只是备注');
+  });
+
+  it('should keep the trailing comment verbatim in full mode', () => {
+    const cmd = 'git status # 看';
+    expect(summarizeBashCommand(cmd, WS, { full: true }).text).toBe(cmd);
+  });
 });
 
 describe('clipBashSummary', () => {
