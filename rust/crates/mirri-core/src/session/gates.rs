@@ -130,16 +130,39 @@ impl ResolvedRing {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApprovalDecision {
     /// The tool call may proceed (one-off — nothing is memorized).
-    Approved,
+    ///
+    /// `label` is the plan-review selected option the client picked (the
+    /// `selected_label` of the `approval.decide` / `interaction.respond`
+    /// wire, mirrored from the reverse-RPC reply's `selectedLabel`). It
+    /// rides the decision so the gate channel loses nothing the parked
+    /// `approval.ask` reply carries (issue #206) — `None` for an ordinary
+    /// approval and for an approver that never names a variant.
+    Approved { label: Option<String> },
     /// The tool call may proceed AND the decision is memorized as a
     /// session-scoped approval rule (the gate-channel counterpart of the
     /// reverse-RPC reply `{ "decision": "approved", "scope": "session" }`).
-    ApprovedForSession,
+    /// `label` carries the same selected-option semantics as
+    /// [`ApprovalDecision::Approved { label: None }`].
+    ApprovedForSession { label: Option<String> },
     /// The tool call must not proceed; `reason` explains why.
     Denied(String),
     /// No decision arrived in time (session closed via drain, or no
     /// responder posted one before the requester gave up).
     Timeout,
+}
+
+impl ApprovalDecision {
+    /// The selected-option label this decision carries (plan reviews), if
+    /// any — the asker's fold reads it from either approved variant.
+    pub fn selected_label(&self) -> Option<&str> {
+        match self {
+            ApprovalDecision::Approved { label }
+            | ApprovalDecision::ApprovedForSession { label } => {
+                label.as_deref().filter(|value| !value.trim().is_empty())
+            }
+            ApprovalDecision::Denied(_) | ApprovalDecision::Timeout => None,
+        }
+    }
 }
 
 /// The payload snapshot of one pending approval request — everything
@@ -222,7 +245,7 @@ impl std::fmt::Debug for PendingApproval {
 /// Gate for tool-approval requests that need a human or override decision.
 ///
 /// With `auto_approve` enabled (headless mode) every request resolves to
-/// [`ApprovalDecision::Approved`] immediately without registering a pending
+/// [`ApprovalDecision::Approved { label: None }`] immediately without registering a pending
 /// entry or publishing events. Otherwise a request registers a pending
 /// `oneshot` channel, publishes [`SessionEvent::ToolApprovalRequested`]
 /// (when an event bus is attached), and awaits the decision posted by
@@ -272,7 +295,7 @@ impl ApprovalGate {
     /// Called by the engine when a tool needs approval. Returns a future
     /// that resolves when the decision is made (or times out on drain).
     ///
-    /// In auto-approve mode this returns [`ApprovalDecision::Approved`]
+    /// In auto-approve mode this returns [`ApprovalDecision::Approved { label: None }`]
     /// immediately. Otherwise the request is registered, a
     /// [`SessionEvent::ToolApprovalRequested`] event is published, and the
     /// future awaits [`ApprovalGate::resolve`].
@@ -295,7 +318,7 @@ impl ApprovalGate {
     ) -> ApprovalDecision {
         if self.auto_approve {
             tracing::debug!(tool_name, "tool call auto-approved (headless mode)");
-            return ApprovalDecision::Approved;
+            return ApprovalDecision::Approved { label: None };
         }
 
         // Fail fast if the gate has been drained (session closed).
@@ -413,7 +436,8 @@ impl ApprovalGate {
                 self.resolved.record(request_id);
                 let approved = matches!(
                     decision,
-                    ApprovalDecision::Approved | ApprovalDecision::ApprovedForSession
+                    ApprovalDecision::Approved { .. }
+                        | ApprovalDecision::ApprovedForSession { .. }
                 );
                 if sender.send(decision.clone()).is_ok() {
                     if let Some(bus) = &self.event_bus {
@@ -1012,7 +1036,7 @@ mod tests {
             approval_rule: None,
             grant_dir: None,
         });
-        assert!(gate.resolve(resolved_id, ApprovalDecision::Approved));
+        assert!(gate.resolve(resolved_id, ApprovalDecision::Approved { label: None }));
 
         // When the ring is queried
         // Then the resolved id is recently resolved, the pending one and an
@@ -1042,7 +1066,7 @@ mod tests {
         assert!(gate.withdraw(request_id));
 
         // When the decision arrives late through the other channel
-        let resolved = gate.resolve(request_id, ApprovalDecision::Approved);
+        let resolved = gate.resolve(request_id, ApprovalDecision::Approved { label: None });
 
         // Then the gate reports the request as already gone
         assert!(!resolved);
@@ -1181,11 +1205,11 @@ mod tests {
         });
 
         // When the decision arrives with session scope
-        assert!(gate.resolve(request_id, ApprovalDecision::ApprovedForSession));
+        assert!(gate.resolve(request_id, ApprovalDecision::ApprovedForSession { label: None }));
 
         // Then the awaiting side receives the session-scoped variant
         let decision = receiver.await.expect("the receiver resolves");
-        assert!(matches!(decision, ApprovalDecision::ApprovedForSession));
+        assert!(matches!(decision, ApprovalDecision::ApprovedForSession { label: None }));
         assert!(gate.is_recently_resolved(request_id));
     }
 }

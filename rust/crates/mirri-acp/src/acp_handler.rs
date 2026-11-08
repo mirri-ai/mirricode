@@ -2106,6 +2106,7 @@ impl AcpHandler {
                                          permission request to"
                                         .to_string()
                                 })?;
+                            let plan_review_ask = params.clone();
                             let params = approval_ask_to_request_permission(&session_id, &params);
                             let (reply_tx, reply_rx) = oneshot::channel();
                             // Register the ask (F-P5b-4): if the session's
@@ -2136,7 +2137,10 @@ impl AcpHandler {
                             if requests.send(request).is_ok() {
                                 let reply = tokio::select! {
                                     reply = reply_rx => {
-                                        approval_reply_from_client_result(reply)
+                                        approval_reply_from_client_result(
+                                            reply,
+                                            Some(&plan_review_ask),
+                                        )
                                     }
                                     // The prompt was cancelled: answer as
                                     // the v1 client that MUST respond to
@@ -2624,9 +2628,6 @@ fn map_engine_error(error: EngineError) -> (i64, String) {
 /// approval (the `CANONICAL_OPTIONS` of the TS `approval.ts` — order is
 /// load-bearing: allow-once is the primary action, allow-always the
 /// secondary, reject the terminal one).
-///
-/// The `plan_review` expansion of the TS mapper is not reproduced here: the
-/// rust engine's approval asks do not carry plan-review display blocks yet.
 fn canonical_permission_options() -> Value {
     json!([
         {"optionId": "approve_once", "name": "Approve once", "kind": "allow_once"},
@@ -2639,6 +2640,52 @@ fn canonical_permission_options() -> Value {
     ])
 }
 
+/// The `plan_review` display block of an `approval.ask` payload, when the
+/// ask is a plan review — the `display` union's `plan_review` variant
+/// (internally tagged `kind`), carrying `plan` / `path`? / `options`.
+fn plan_review_display(ask: &Value) -> Option<&Value> {
+    let display = ask.get("display")?;
+    (display.get("kind").and_then(Value::as_str) == Some("plan_review")).then_some(display)
+}
+
+/// The plan-review permission options (spec approval-architecture §150's
+/// `plan_opt_<i>` / `plan_approve` / `plan_revise` / `plan_reject_and_exit`
+/// namespace; TS `approvalRequestToPermissionOptions` parity): one
+/// `allow_once` per offered approach — or a single `plan_approve` fallback
+/// when the plan carries fewer than two options — plus the two `reject_once`
+/// exits `Revise` and `Reject and Exit`. Order is load-bearing: approaches
+/// first, then the two rejection-side exits (ACP's rejection-side ordering
+/// is Revise → Reject and Exit).
+fn plan_review_permission_options(display: &Value) -> Value {
+    let options = display.get("options").and_then(Value::as_array);
+    let approve_options: Vec<Value> = match options {
+        Some(options) if options.len() >= 2 => options
+            .iter()
+            .enumerate()
+            .map(|(index, option)| {
+                json!({
+                    "optionId": format!("plan_opt_{index}"),
+                    "name": option.get("label").and_then(Value::as_str).unwrap_or_default(),
+                    "kind": "allow_once",
+                })
+            })
+            .collect(),
+        _ => vec![json!({
+            "optionId": "plan_approve",
+            "name": "Approve",
+            "kind": "allow_once",
+        })],
+    };
+    let mut all = approve_options;
+    all.push(json!({"optionId": "plan_revise", "name": "Revise", "kind": "reject_once"}));
+    all.push(json!({
+        "optionId": "plan_reject_and_exit",
+        "name": "Reject and Exit",
+        "kind": "reject_once",
+    }));
+    Value::Array(all)
+}
+
 /// Translate an engine `approval.ask` payload (`{tool_name, tool_call_id,
 /// action, display, reason, request_id?}`) into the ACP
 /// `session/request_permission` request params (the official
@@ -2648,8 +2695,10 @@ fn canonical_permission_options() -> Value {
 /// engine's own tool call id (the same id the `tool_call` updates carry, so
 /// the client correlates the prompt with the rendered tool card), the title
 /// is the tool name, and the content carries the human-readable action
-/// summary. The display block is not mapped — the rust engine's display
-/// variants carry no diff/plan body (the only kinds the TS mapper renders).
+/// summary. A plan-review ask (a `display` carrying `kind: "plan_review"`,
+/// the rust engine's `ToolInputDisplay::PlanReview` variant) expands its
+/// options through the spec's plan-review namespace; every other ask gets
+/// the canonical three.
 fn approval_ask_to_request_permission(session_id: &str, ask: &Value) -> Value {
     let tool_name = ask
         .get("tool_name")
@@ -2663,6 +2712,10 @@ fn approval_ask_to_request_permission(session_id: &str, ask: &Value) -> Value {
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or("execute the tool");
+    let options = match plan_review_display(ask) {
+        Some(display) => plan_review_permission_options(display),
+        None => canonical_permission_options(),
+    };
     json!({
         "sessionId": session_id,
         "toolCall": {
@@ -2673,13 +2726,13 @@ fn approval_ask_to_request_permission(session_id: &str, ask: &Value) -> Value {
                 "content": {"type": "text", "text": format!("Requesting approval to {action}")},
             }],
         },
-        "options": canonical_permission_options(),
+        "options": options,
     })
 }
 
 /// Translate the client's `RequestPermissionResponse` (the reply to
 /// `session/request_permission`) into the engine's approval response shape
-/// (`{decision, scope?, feedback?}`).
+/// (`{decision, scope?, feedback?, selectedLabel?}`).
 ///
 /// Decision mapping (TS `permissionResponseToApprovalResponse`):
 /// - a `cancelled` outcome → `decision: "cancelled"`;
@@ -2688,13 +2741,31 @@ fn approval_ask_to_request_permission(session_id: &str, ask: &Value) -> Value {
 ///   `approved` with `scope: "session"`, so the engine installs a
 ///   session-runtime allow rule for subsequent calls of the same pattern;
 /// - `reject`, any unknown optionId, or a malformed reply → `rejected`
-///   (rejecting is strictly safer than approving).
+///   (rejecting is strictly safer than approving);
+/// - a plan-review optionId (`plan_approve` / `plan_opt_<i>` /
+///   `plan_revise` / `plan_reject_and_exit`) maps through the
+///   plan-review vocabulary (TS `mapPlanReviewOptionId`): `plan_approve`
+///   approves the plan as submitted, `plan_opt_<i>` approves naming the
+///   picked approach, `plan_revise` / `plan_reject_and_exit` reject with
+///   their label as `selectedLabel`. The response needs the original ask
+///   to resolve a `plan_opt_<i>` index back to its label — callers pass it
+///   via [`permission_response_to_approval_for`]; this bare form keeps the
+///   non-plan mapping verbatim.
 fn permission_response_to_approval(response: &Value) -> Value {
+    permission_response_to_approval_for(response, None)
+}
+
+/// [`permission_response_to_approval`] with the originating ask available,
+/// so a `plan_opt_<i>` selection resolves back to its approach label.
+fn permission_response_to_approval_for(response: &Value, ask: Option<&Value>) -> Value {
     let outcome = &response["outcome"];
     if outcome.get("outcome").and_then(Value::as_str) == Some("cancelled") {
         return json!({"decision": "cancelled"});
     }
     let option_id = outcome.get("optionId").and_then(Value::as_str);
+    if let Some(display) = ask.and_then(plan_review_display) {
+        return map_plan_review_option_id(display, option_id);
+    }
     match option_id {
         // Legacy 'approve' / 'approve_for_session' ids come from custom
         // ACP clients built against the pre-v1 Python SDK (TS parity).
@@ -2703,6 +2774,39 @@ fn permission_response_to_approval(response: &Value) -> Value {
             json!({"decision": "approved", "scope": "session"})
         }
         _ => json!({"decision": "rejected"}),
+    }
+}
+
+/// Map one plan-review `optionId` onto the engine's approval response (TS
+/// `mapPlanReviewOptionId`): the discriminator and its `selectedLabel`
+/// drive the plan-review fold downstream.
+fn map_plan_review_option_id(display: &Value, option_id: Option<&str>) -> Value {
+    match option_id {
+        // Approve the plan exactly as submitted — no variant picked.
+        Some("plan_approve") => json!({"decision": "approved"}),
+        // Revise: plan mode stays active; the label names the verdict.
+        Some("plan_revise") => {
+            json!({"decision": "rejected", "selectedLabel": "Revise"})
+        }
+        // Reject and Exit: the tool runs only to leave plan mode.
+        Some("plan_reject_and_exit") => {
+            json!({"decision": "rejected", "selectedLabel": "Reject and Exit"})
+        }
+        // A numbered approach: approve naming the chosen variant.
+        Some(id) => {
+            if let Some(index) = id.strip_prefix("plan_opt_").and_then(|tail| tail.parse::<usize>().ok())
+                && let Some(label) = display
+                    .get("options")
+                    .and_then(Value::as_array)
+                    .and_then(|options| options.get(index))
+                    .and_then(|option| option.get("label"))
+                    .and_then(Value::as_str)
+            {
+                return json!({"decision": "approved", "selectedLabel": label});
+            }
+            json!({"decision": "rejected"})
+        }
+        None => json!({"decision": "rejected"}),
     }
 }
 
@@ -2737,14 +2841,17 @@ fn rejected_fallback(reason: &str) -> Value {
 
 /// Fold the client's (or the transport's) answer to a bridged approval ask
 /// into the engine's approval response: a delivered reply is mapped through
-/// [`permission_response_to_approval`], every delivery failure — a failed
-/// request, a timeout, a disconnect (the reply channel dropped) — resolves
-/// to the rejected fallback. The ask never hangs.
+/// [`permission_response_to_approval_for`] (the ask rides along so a
+/// `plan_opt_<i>` selection resolves back to its approach label), every
+/// delivery failure — a failed request, a timeout, a disconnect (the reply
+/// channel dropped) — resolves to the rejected fallback. The ask never
+/// hangs.
 fn approval_reply_from_client_result(
     reply: Result<Result<Value, String>, oneshot::error::RecvError>,
+    ask: Option<&Value>,
 ) -> Value {
     match reply {
-        Ok(Ok(response)) => permission_response_to_approval(&response),
+        Ok(Ok(response)) => permission_response_to_approval_for(&response, ask),
         Ok(Err(reason)) => rejected_fallback(&reason),
         Err(_) => rejected_fallback("client disconnected before responding"),
     }
@@ -4853,6 +4960,125 @@ mod tests {
         );
     }
 
+    /// Given an engine `approval.ask` carrying a `plan_review` display with
+    /// ≥2 offered approaches, when it is translated into the
+    /// request-permission params, then the spec's plan-review namespace
+    /// expands (spec approval-architecture §150 / TS
+    /// `approvalRequestToPermissionOptions`): one `allow_once` per approach
+    /// plus the two rejection-side exits `Revise` and `Reject and Exit`.
+    #[test]
+    fn should_expand_the_plan_review_option_namespace_for_a_plan_review_ask() {
+        let ask = json!({
+            "tool_name": "ExitPlanMode",
+            "tool_call_id": "call_plan",
+            "action": "execute ExitPlanMode",
+            "display": {
+                "kind": "plan_review",
+                "plan": "# Plan\n\n1. Read the code",
+                "options": [
+                    {"label": "Approach A", "description": "Use caching"},
+                    {"label": "Approach B", "description": "Rewrite"},
+                ],
+            },
+            "reason": "plan-review",
+        });
+
+        let params = approval_ask_to_request_permission("session-1", &ask);
+
+        assert_eq!(
+            params["options"],
+            json!([
+                {"optionId": "plan_opt_0", "name": "Approach A", "kind": "allow_once"},
+                {"optionId": "plan_opt_1", "name": "Approach B", "kind": "allow_once"},
+                {"optionId": "plan_revise", "name": "Revise", "kind": "reject_once"},
+                {"optionId": "plan_reject_and_exit", "name": "Reject and Exit", "kind": "reject_once"},
+            ]),
+            "the plan-review ask expands the spec's option namespace (approaches + exits)"
+        );
+    }
+
+    /// Given a plan-review ask carrying fewer than two options, when the
+    /// permission options are built, then a single `plan_approve` fallback
+    /// (approve the plan as submitted) replaces the approach list — the
+    /// "approve the plan as-is" action is never dropped (issue #205).
+    #[test]
+    fn should_fall_back_to_plan_approve_when_the_plan_review_carries_fewer_than_two_options() {
+        let ask = json!({
+            "tool_name": "ExitPlanMode",
+            "tool_call_id": "call_plan",
+            "action": "execute ExitPlanMode",
+            "display": {"kind": "plan_review", "plan": "# Plan"},
+            "reason": "plan-review",
+        });
+
+        let params = approval_ask_to_request_permission("session-1", &ask);
+
+        assert_eq!(
+            params["options"],
+            json!([
+                {"optionId": "plan_approve", "name": "Approve", "kind": "allow_once"},
+                {"optionId": "plan_revise", "name": "Revise", "kind": "reject_once"},
+                {"optionId": "plan_reject_and_exit", "name": "Reject and Exit", "kind": "reject_once"},
+            ]),
+            "a plan with no offered approaches falls back to a single plan_approve"
+        );
+    }
+
+    /// Given the plan-review optionIds, when the client's response is mapped
+    /// back, then each one resolves through the plan-review vocabulary —
+    /// `plan_approve` approves the plan as submitted, `plan_opt_<i>` approves
+    /// naming the picked approach, `plan_revise` / `plan_reject_and_exit`
+    /// reject with their label as `selectedLabel`, and an unknown index
+    /// rejects (never approves).
+    #[test]
+    fn should_map_plan_review_option_ids_to_their_approval_decisions() {
+        let ask = json!({
+            "tool_name": "ExitPlanMode",
+            "tool_call_id": "call_plan",
+            "action": "execute ExitPlanMode",
+            "display": {
+                "kind": "plan_review",
+                "plan": "# Plan",
+                "options": [
+                    {"label": "Approach A", "description": "Use caching"},
+                    {"label": "Approach B", "description": "Rewrite"},
+                ],
+            },
+            "reason": "plan-review",
+        });
+        let selected =
+            |option_id: &str| json!({"outcome": {"outcome": "selected", "optionId": option_id}});
+
+        assert_eq!(
+            permission_response_to_approval_for(&selected("plan_approve"), Some(&ask)),
+            json!({"decision": "approved"}),
+            "plan_approve approves the plan as submitted (no variant)"
+        );
+        assert_eq!(
+            permission_response_to_approval_for(&selected("plan_opt_1"), Some(&ask)),
+            json!({"decision": "approved", "selectedLabel": "Approach B"}),
+            "a numbered approach approves naming the picked variant"
+        );
+        assert_eq!(
+            permission_response_to_approval_for(&selected("plan_revise"), Some(&ask)),
+            json!({"decision": "rejected", "selectedLabel": "Revise"})
+        );
+        assert_eq!(
+            permission_response_to_approval_for(&selected("plan_reject_and_exit"), Some(&ask)),
+            json!({"decision": "rejected", "selectedLabel": "Reject and Exit"})
+        );
+        assert_eq!(
+            permission_response_to_approval_for(&selected("plan_opt_9"), Some(&ask)),
+            json!({"decision": "rejected"}),
+            "an out-of-range approach index rejects (never approves)"
+        );
+        assert_eq!(
+            permission_response_to_approval_for(&selected("plan_opt_bogus"), Some(&ask)),
+            json!({"decision": "rejected"}),
+            "an unparseable approach index rejects (never approves)"
+        );
+    }
+
     /// Given an engine model catalog with several aliases — one carrying a
     /// `displayName`, one without — when the model select options are
     /// built, then they are sorted by alias key, the `displayName` surfaces
@@ -4912,9 +5138,12 @@ mod tests {
     /// an error, never a hang.
     #[tokio::test]
     async fn should_fall_back_to_rejected_when_the_client_reply_fails() {
-        let reply = approval_reply_from_client_result(Ok(Err(
-            "session/request_permission request timed out after 60000ms".to_string(),
-        )));
+        let reply = approval_reply_from_client_result(
+            Ok(Err(
+                "session/request_permission request timed out after 60000ms".to_string(),
+            )),
+            None,
+        );
         assert_eq!(reply["decision"], json!("rejected"));
         assert!(
             reply["feedback"]
@@ -4925,7 +5154,7 @@ mod tests {
 
         let (dropped_tx, dropped_rx) = oneshot::channel();
         drop(dropped_tx);
-        let reply = approval_reply_from_client_result(dropped_rx.await);
+        let reply = approval_reply_from_client_result(dropped_rx.await, None);
         assert_eq!(
             reply["decision"],
             json!("rejected"),
@@ -4933,9 +5162,12 @@ mod tests {
         );
 
         // And a delivered reply still maps through the option mapper.
-        let reply = approval_reply_from_client_result(Ok(Ok(
-            json!({"outcome": {"outcome": "selected", "optionId": "approve_once"}}),
-        )));
+        let reply = approval_reply_from_client_result(
+            Ok(Ok(
+                json!({"outcome": {"outcome": "selected", "optionId": "approve_once"}}),
+            )),
+            None,
+        );
         assert_eq!(reply["decision"], json!("approved"));
     }
 

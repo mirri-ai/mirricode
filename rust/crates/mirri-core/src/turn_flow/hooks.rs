@@ -345,20 +345,20 @@ fn interpret_approval_response(
                 if let Some(sink) = sink {
                     sink.apply_grant(dir, false);
                 }
-                crate::session::gates::ApprovalDecision::Approved
+                crate::session::gates::ApprovalDecision::Approved { label: None }
             }
             Some("persist") => {
                 if let Some(sink) = sink {
                     sink.apply_grant(dir, true);
                 }
-                crate::session::gates::ApprovalDecision::Approved
+                crate::session::gates::ApprovalDecision::Approved { label: None }
             }
             // `once` or an absent scope: a one-off approval — no state
             // change, matching the pre-D3 mapping.
-            _ => crate::session::gates::ApprovalDecision::Approved,
+            _ => crate::session::gates::ApprovalDecision::Approved { label: None },
         }
     } else {
-        crate::session::gates::ApprovalDecision::Approved
+        crate::session::gates::ApprovalDecision::Approved { label: None }
     }
 }
 
@@ -1652,15 +1652,26 @@ impl LoopHooks for TurnFlowHooks {
                         }
                         let resolved = tokio::select! {
                             decision = &mut receiver => {
-                                match decision.unwrap_or(
+                                let decision = decision.unwrap_or(
                                     crate::session::gates::ApprovalDecision::Timeout,
-                                ) {
-                                    crate::session::gates::ApprovalDecision::Approved => {
+                                );
+                                // The gate channel carries the selected-option
+                                // label on an approved decision (issue #206) —
+                                // the same fact the parked `approval.ask` reply
+                                // brings as `selectedLabel`. It rides the fold
+                                // below so ExitPlanMode sees the chosen variant
+                                // whichever channel answered.
+                                let gate_label =
+                                    decision.selected_label().map(str::to_string);
+                                let outcome = match decision {
+                                    crate::session::gates::ApprovalDecision::Approved { .. } => {
                                         approved_reason =
                                             Some("gate approved".to_string());
                                         PermissionResultOutcome::Approved
                                     }
-                                    crate::session::gates::ApprovalDecision::ApprovedForSession => {
+                                    crate::session::gates::ApprovalDecision::ApprovedForSession {
+                                        ..
+                                    } => {
                                         approved_reason =
                                             Some("gate approved (session scope)".to_string());
                                         PermissionResultOutcome::Approved
@@ -1673,27 +1684,32 @@ impl LoopHooks for TurnFlowHooks {
                                             error: "cancelled by user".to_string(),
                                         }
                                     }
-                                }
+                                };
+                                (outcome, gate_label)
                             }
                             _ = ctx_cancel.cancelled() => {
                                 kernel.approval_gate().withdraw(request_id);
-                                PermissionResultOutcome::Error {
-                                    error: "cancelled by user".to_string(),
-                                }
+                                (
+                                    PermissionResultOutcome::Error {
+                                        error: "cancelled by user".to_string(),
+                                    },
+                                    None,
+                                )
                             }
                         };
+                        let (resolved, gate_label) = resolved;
                         ask_guard.mark_settled();
                         activity.on_approval_resolved(&tool_call_id);
                         if let Some(hook) = &approval_wait_hook {
                             hook(false);
                         }
-                        // The gate decision carries no selected-option label
-                        // (its `Denied` slot holds the reason text, which the
-                        // fold reads as the label — "Reject and Exit" still
-                        // resolves). The plan-review verdict rides into the
-                        // tool from here.
+                        // The gate's selected-option label feeds the
+                        // plan-review fold (the `Denied` slot holds the reason
+                        // text, which the fold reads as the label — "Reject
+                        // and Exit" still resolves). The plan-review verdict
+                        // rides into the tool from here.
                         let (resolved, metadata) =
-                            fold_plan_review_outcome(resolved, None, is_plan_review);
+                            fold_plan_review_outcome(resolved, gate_label.as_deref(), is_plan_review);
                         plan_review_metadata = metadata;
                         resolved
                     } else if let Some(ref callback) = reverse_rpc {
@@ -2110,25 +2126,52 @@ impl LoopHooks for TurnFlowHooks {
                                 },
                                 None,
                             ),
-                            AskChannel::Gate(crate::session::gates::ApprovalDecision::Approved) => {
+                            AskChannel::Gate(
+                                decision
+                                @
+                                (crate::session::gates::ApprovalDecision::Approved { .. }
+                                | crate::session::gates::ApprovalDecision::ApprovedForSession { .. }),
+                            ) => {
+                                // The gate channel carries the selected-option
+                                // label on an approved decision (issue #206) —
+                                // record it like the reverse-RPC reply does so
+                                // the fold below sees the chosen variant.
+                                plan_review_label =
+                                    decision.selected_label().map(str::to_string);
+                                let mut record_result = serde_json::Map::new();
+                                record_result
+                                    .insert("decision".to_string(), json!("approved"));
+                                if matches!(
+                                    decision,
+                                    crate::session::gates::ApprovalDecision::ApprovedForSession {
+                                        ..
+                                    }
+                                ) {
+                                    record_result
+                                        .insert("scope".to_string(), json!("session"));
+                                }
+                                if let Some(label) = &plan_review_label {
+                                    record_result
+                                        .insert("selectedLabel".to_string(), json!(label.clone()));
+                                }
                                 (
                                     {
-                                        approved_reason = Some("gate approved".to_string());
+                                        let reason = if matches!(
+                                            decision,
+                                            crate::session::gates::ApprovalDecision::ApprovedForSession {
+                                                ..
+                                            }
+                                        ) {
+                                            "gate approved (session scope)"
+                                        } else {
+                                            "gate approved"
+                                        };
+                                        approved_reason = Some(reason.to_string());
                                         PermissionResultOutcome::Approved
                                     },
-                                    Some(json!({ "decision": "approved" })),
+                                    Some(serde_json::Value::Object(record_result)),
                                 )
                             }
-                            AskChannel::Gate(
-                                crate::session::gates::ApprovalDecision::ApprovedForSession,
-                            ) => (
-                                {
-                                    approved_reason =
-                                        Some("gate approved (session scope)".to_string());
-                                    PermissionResultOutcome::Approved
-                                },
-                                Some(json!({ "decision": "approved", "scope": "session" })),
-                            ),
                             AskChannel::Gate(crate::session::gates::ApprovalDecision::Denied(
                                 feedback,
                             )) => (
@@ -3165,7 +3208,7 @@ mod tests {
                 match found {
                     Ok(id) => {
                         let _ =
-                            gate.resolve(id, crate::session::gates::ApprovalDecision::Approved);
+                            gate.resolve(id, crate::session::gates::ApprovalDecision::Approved { label: None });
                         1usize
                     }
                     Err(_) => 0,
@@ -3416,7 +3459,7 @@ mod tests {
             );
             // The user approves.
             let (id, _) = approval_gate.list_pending().remove(0);
-            assert!(approval_gate.resolve(id, crate::session::gates::ApprovalDecision::Approved));
+            assert!(approval_gate.resolve(id, crate::session::gates::ApprovalDecision::Approved { label: None }));
         };
         let (outcome, ()) = tokio::join!(hooks.authorize_tool_execution(ctx), drive);
         let outcome = outcome.expect("authorize");
@@ -3985,7 +4028,7 @@ mod tests {
         assert_eq!(calls, vec![(dir.to_path_buf(), false)]);
         assert!(matches!(
             decision,
-            crate::session::gates::ApprovalDecision::Approved
+            crate::session::gates::ApprovalDecision::Approved { label: None }
         ));
     }
 
@@ -4006,7 +4049,7 @@ mod tests {
         assert_eq!(calls, vec![(dir.to_path_buf(), true)]);
         assert!(matches!(
             decision,
-            crate::session::gates::ApprovalDecision::Approved
+            crate::session::gates::ApprovalDecision::Approved { label: None }
         ));
     }
 
@@ -4031,7 +4074,7 @@ mod tests {
             assert!(calls.is_empty(), "no scope must mean a one-off approval");
             assert!(matches!(
                 decision,
-                crate::session::gates::ApprovalDecision::Approved
+                crate::session::gates::ApprovalDecision::Approved { label: None }
             ));
         }
     }
@@ -4074,7 +4117,7 @@ mod tests {
         assert!(calls.is_empty(), "a nongrant ask must never touch the sink");
         assert!(matches!(
             decision,
-            crate::session::gates::ApprovalDecision::Approved
+            crate::session::gates::ApprovalDecision::Approved { label: None }
         ));
     }
 

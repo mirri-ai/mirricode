@@ -250,7 +250,7 @@ async fn should_route_approval_decisions_to_a_non_default_workspace_session() {
     assert_eq!(decided, json!({ "ok": true }));
     assert!(matches!(
         asker.await.expect("ask task joins"),
-        ApprovalDecision::Approved
+        ApprovalDecision::Approved { label: None }
     ));
 }
 

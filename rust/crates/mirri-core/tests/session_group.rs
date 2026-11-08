@@ -6862,7 +6862,7 @@ async fn should_approve_immediately_when_gate_in_auto_approve_mode() {
     let decision = gate.request("bash", "rm -rf /tmp/x").await;
 
     // Then the request is approved immediately without registering anything
-    assert_eq!(decision, ApprovalDecision::Approved);
+    assert_eq!(decision, ApprovalDecision::Approved { label: None });
     assert_eq!(gate.pending_count(), 0);
 }
 
@@ -6899,11 +6899,11 @@ async fn should_block_until_resolved_with_approved_when_request_made() {
 
     // Then the request is pending until resolved
     assert_eq!(gate.pending_count(), 1);
-    assert!(gate.resolve(request_id, ApprovalDecision::Approved));
+    assert!(gate.resolve(request_id, ApprovalDecision::Approved { label: None }));
     assert_eq!(gate.pending_count(), 0);
 
     // And the requester receives the approved decision
-    assert_eq!(handle.await.unwrap(), ApprovalDecision::Approved);
+    assert_eq!(handle.await.unwrap(), ApprovalDecision::Approved { label: None });
 }
 
 #[tokio::test]
@@ -6944,7 +6944,7 @@ async fn should_return_false_when_resolving_unknown_request_id() {
     let gate = ApprovalGate::new(false);
 
     // When resolving a request id that was never registered
-    let resolved = gate.resolve(Uuid::new_v4(), ApprovalDecision::Approved);
+    let resolved = gate.resolve(Uuid::new_v4(), ApprovalDecision::Approved { label: None });
 
     // Then resolution reports failure
     assert!(!resolved);
@@ -6970,13 +6970,13 @@ async fn should_return_false_on_second_resolve_when_same_request_resolved_twice(
     };
 
     // When resolving the same request twice
-    let first = gate.resolve(request_id, ApprovalDecision::Approved);
-    let second = gate.resolve(request_id, ApprovalDecision::Approved);
+    let first = gate.resolve(request_id, ApprovalDecision::Approved { label: None });
+    let second = gate.resolve(request_id, ApprovalDecision::Approved { label: None });
 
     // Then only the first resolution succeeds
     assert!(first);
     assert!(!second);
-    assert_eq!(handle.await.unwrap(), ApprovalDecision::Approved);
+    assert_eq!(handle.await.unwrap(), ApprovalDecision::Approved { label: None });
 }
 
 #[tokio::test]
@@ -7028,8 +7028,8 @@ async fn should_publish_events_with_matching_ids_when_request_and_resolve_throug
         }
         other => panic!("expected ToolApprovalRequested, got {other:?}"),
     };
-    assert!(gate.resolve(request_id, ApprovalDecision::Approved));
-    assert_eq!(handle.await.unwrap(), ApprovalDecision::Approved);
+    assert!(gate.resolve(request_id, ApprovalDecision::Approved { label: None }));
+    assert_eq!(handle.await.unwrap(), ApprovalDecision::Approved { label: None });
 
     // Then a ToolApprovalResolved event is published for the same request
     match recv_matching(&mut receiver, "ToolApprovalResolved", |e| {
@@ -7814,9 +7814,9 @@ async fn should_not_affect_other_gate_when_approval_resolved_for_one_session() {
     assert!(
         first_artifacts
             .approval_gate
-            .resolve(request_id, ApprovalDecision::Approved)
+            .resolve(request_id, ApprovalDecision::Approved { label: None })
     );
-    assert_eq!(handle.await.unwrap(), ApprovalDecision::Approved);
+    assert_eq!(handle.await.unwrap(), ApprovalDecision::Approved { label: None });
 
     // Then the second session's gate never saw the request: it stayed empty,
     // and resolving the same request id against it reports failure
@@ -7824,7 +7824,7 @@ async fn should_not_affect_other_gate_when_approval_resolved_for_one_session() {
     assert!(
         !second_artifacts
             .approval_gate
-            .resolve(request_id, ApprovalDecision::Approved),
+            .resolve(request_id, ApprovalDecision::Approved { label: None }),
         "a request id from another session must not resolve on this gate"
     );
 }
@@ -17318,7 +17318,7 @@ async fn should_park_an_ask_on_the_approval_gate_when_an_interactive_turn_has_no
 
     let approver = tokio::spawn(resolve_next_pending_approval(
         Arc::clone(&approval_gate),
-        mirri_core::ApprovalDecision::Approved,
+        mirri_core::ApprovalDecision::Approved { label: None },
     ));
 
     let result = hooks
@@ -17432,7 +17432,7 @@ async fn should_exit_plan_mode_when_the_gate_approves_its_review() {
 
     let approver = tokio::spawn(resolve_next_pending_approval(
         Arc::clone(&approval_gate),
-        mirri_core::ApprovalDecision::Approved,
+        mirri_core::ApprovalDecision::Approved { label: None },
     ));
 
     // When the review is answered on the gate
@@ -17463,6 +17463,100 @@ async fn should_exit_plan_mode_when_the_gate_approves_its_review() {
     assert!(
         !plan.is_active(),
         "an approved review must leave plan mode"
+    );
+}
+
+/// Given a plan-mode session whose ExitPlanMode review is approved on the
+/// gate with a selected-approach label (the `approval.decide` /
+/// `interaction.respond` channel, issue #206), when the verdict rides into
+/// the tool, then the label survives the gate channel and names the chosen
+/// approach in the tool result — exactly like the parked `approval.ask`
+/// reply's `selectedLabel` does.
+#[tokio::test]
+async fn should_carry_the_selected_approach_when_the_gate_approves_with_a_label() {
+    let memory = Arc::new(Mutex::new(ContextMemory::new()));
+    let plan = Arc::new(mirri_core::PlanManager::new());
+    plan.enter("Step 1: map the migration\nStep 2: verify".to_string())
+        .expect("plan mode enters");
+    let pm = Arc::new(PermissionManager::with_services(
+        PermissionMode::Manual,
+        vec![],
+        PermissionServices {
+            plan: Some(Arc::clone(&plan)),
+            ..PermissionServices::default()
+        },
+    ));
+    let approval_gate = Arc::new(mirri_core::ApprovalGate::new(false));
+    let kernel = Arc::new(mirri_core::InteractionKernel::new(
+        Arc::clone(&approval_gate),
+        Arc::new(mirri_core::QuestionGate::new()),
+    ));
+    let hooks =
+        make_hooks_with_permission_callback_and_kernel(memory, Some(pm), None, Some(kernel));
+    let tool = mirri_core::tools::ExitPlanModeTool::new(Arc::clone(&plan));
+    let mirri_core::ToolExecution::Runnable {
+        plan: execution_plan,
+        execute,
+    } = tool
+        .resolve_execution(serde_json::json!({
+            "options": [
+                {"label": "Approach A", "description": "Use caching"},
+                {"label": "Approach B", "description": "Rewrite"},
+            ]
+        }))
+        .expect("ExitPlanMode resolves")
+    else {
+        panic!("expected a runnable execution");
+    };
+
+    let cancel = CancelToken::new();
+    let args = serde_json::json!({});
+    let display = execution_plan.display.clone();
+    let auth_ctx = AuthorizeToolContext {
+        turn_id: "1".to_string(),
+        step: 1,
+        tool_call_id: "call-exit-plan-label".to_string(),
+        tool_name: "ExitPlanMode".to_string(),
+        tool_readonly: true,
+        args: &args,
+        approval_rule: "ExitPlanMode",
+        display: &display,
+        cancel: cancel.clone(),
+    };
+
+    // The gate decision names the approach the user picked.
+    let approver = tokio::spawn(resolve_next_pending_approval(
+        Arc::clone(&approval_gate),
+        mirri_core::ApprovalDecision::Approved {
+            label: Some("Approach A".to_string()),
+        },
+    ));
+
+    let authorized = hooks.authorize_tool_execution(auth_ctx).await.unwrap();
+    assert!(approver.await.expect("approver joins"));
+    let AuthorizeToolResult::Approved { metadata } = authorized else {
+        panic!("an approved plan review authorizes the call, got {authorized:?}");
+    };
+
+    let result = execute(mirri_core::ExecutableToolContext {
+        approval_metadata: metadata,
+        wait_registry: None,
+        turn_id: "1".to_string(),
+        tool_call_id: "call-exit-plan-label".to_string(),
+        cancel,
+        progress: mirri_core::ToolProgressHandle::default(),
+        turn_origin: Default::default(),
+    })
+    .await;
+
+    assert!(!result.is_error, "result: {result:?}");
+    let output_text = match &result.output {
+        ToolOutput::Text(text) => text.clone(),
+        ToolOutput::Parts(_) => serde_json::to_string(&result.output).unwrap_or_default(),
+    };
+    assert!(
+        output_text.contains("Selected approach: Approach A"),
+        "the gate channel must carry the selected label into the tool result, got {output_text:?}"
     );
 }
 

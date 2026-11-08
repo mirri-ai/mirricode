@@ -967,6 +967,12 @@ struct ResolveApprovalParams {
     /// additionally writes the workspace local.toml.
     #[serde(default)]
     scope: Option<String>,
+    /// The plan-review selected option the client picked (the klient
+    /// `ApprovalResponse.selectedLabel`, snake_case `selected_label`
+    /// tolerated). Rides the approved decision so the gate channel
+    /// preserves what the parked `approval.ask` reply carries (issue #206).
+    #[serde(default, rename = "selectedLabel", alias = "selected_label")]
+    selected_label: Option<String>,
 }
 
 #[async_trait]
@@ -997,6 +1003,9 @@ impl RpcHandler for ResolveApprovalHandler {
             .routing
             .session_artifacts(&params.session_id)
             .ok_or_else(|| RpcError::NotFound(params.session_id.clone()))?;
+        let selected_label = params
+            .selected_label
+            .filter(|label| !label.trim().is_empty());
         let decision = if params.approved {
             let pending = artifacts.approval_gate.snapshot(request_id);
             if let Some(dir) = pending.as_ref().and_then(|s| s.grant_dir.clone())
@@ -1006,11 +1015,17 @@ impl RpcHandler for ResolveApprovalHandler {
                 if let Some(sink) = serve_session_grant_sink(&session) {
                     sink.apply_grant(&dir, scope == "persist");
                 }
-                mirri_core::ApprovalDecision::Approved
+                mirri_core::ApprovalDecision::Approved {
+                    label: selected_label,
+                }
             } else if params.scope.as_deref() == Some("session") {
-                mirri_core::ApprovalDecision::ApprovedForSession
+                mirri_core::ApprovalDecision::ApprovedForSession {
+                    label: selected_label,
+                }
             } else {
-                mirri_core::ApprovalDecision::Approved
+                mirri_core::ApprovalDecision::Approved {
+                    label: selected_label,
+                }
             }
         } else {
             mirri_core::ApprovalDecision::Denied(
@@ -6770,7 +6785,7 @@ mod tests {
         assert_eq!(value, json!({ "ok": true }));
         assert!(matches!(
             asker.await.expect("ask task joins"),
-            mirri_core::ApprovalDecision::Approved
+            mirri_core::ApprovalDecision::Approved { label: None }
         ));
     }
 
@@ -6808,7 +6823,7 @@ mod tests {
         assert_eq!(value, json!({ "ok": true }));
         assert!(matches!(
             asker.await.expect("ask task joins"),
-            mirri_core::ApprovalDecision::ApprovedForSession
+            mirri_core::ApprovalDecision::ApprovedForSession { label: None }
         ));
     }
 

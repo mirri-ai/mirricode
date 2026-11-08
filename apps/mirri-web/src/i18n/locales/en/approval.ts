@@ -20,6 +20,8 @@ export default {
   searchScope: 'scope: {scope}',
   feedbackPlaceholder: 'Explain why you are rejecting… (Enter to submit, Esc to cancel)',
   feedbackHint: 'Enter to submit · Esc to cancel',
+  feedbackSubmit: 'Submit',
+  feedbackCancel: 'Cancel',
   approve: 'Approve',
   approveSession: 'Approve for session',
   reject: 'Reject',

@@ -398,7 +398,7 @@ async fn should_approve_when_resolved_via_harness() {
     // Then the awaiting gate observes the approved decision
     let decision = approval_task.await.expect("approval task completes");
     assert!(
-        matches!(decision, mirri_core::ApprovalDecision::Approved),
+        matches!(decision, mirri_core::ApprovalDecision::Approved { label: None }),
         "expected Approved, got {decision:?}"
     );
 }

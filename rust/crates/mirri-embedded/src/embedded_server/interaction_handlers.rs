@@ -87,6 +87,13 @@ impl EmbeddedServer {
             /// is a one-off decision).
             #[serde(default)]
             scope: Option<String>,
+            /// The plan-review selected option the client picked (the klient
+            /// `ApprovalResponse.selectedLabel`, snake_case `selected_label`
+            /// tolerated for the `interaction.respond` spelling). Rides the
+            /// approved decision so the gate channel preserves what the parked
+            /// `approval.ask` reply carries (issue #206).
+            #[serde(default, rename = "selectedLabel", alias = "selected_label")]
+            selected_label: Option<String>,
         }
         let params: DecideParams = serde_json::from_value(normalize_params(params))
             .map_err(|e| invalid_params(e.to_string()))?;
@@ -105,6 +112,9 @@ impl EmbeddedServer {
         // memorizing the tool-name pattern would over-approve every later
         // call of the same tool). Non-grant asks keep the pre-D3 mapping.
         let session = self.resolve_session(&params.session_id).await.ok();
+        let selected_label = params
+            .selected_label
+            .filter(|label| !label.trim().is_empty());
 
         let decision = if params.approved {
             let pending = artifacts.approval_gate.snapshot(request_id);
@@ -115,11 +125,17 @@ impl EmbeddedServer {
                 if let Some(sink) = session.as_ref().and_then(|s| session_grant_sink(s)) {
                     sink.apply_grant(&dir, scope == "persist");
                 }
-                ApprovalDecision::Approved
+                ApprovalDecision::Approved {
+                    label: selected_label,
+                }
             } else if params.scope.as_deref() == Some("session") {
-                ApprovalDecision::ApprovedForSession
+                ApprovalDecision::ApprovedForSession {
+                    label: selected_label,
+                }
             } else {
-                ApprovalDecision::Approved
+                ApprovalDecision::Approved {
+                    label: selected_label,
+                }
             }
         } else {
             ApprovalDecision::Denied(
