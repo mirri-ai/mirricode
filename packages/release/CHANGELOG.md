@@ -1,5 +1,39 @@
 # Changelog
 
+## 3.2.0
+
+### Minor Changes
+
+- [#216](https://github.com/mirri-ai/mirricode/pull/216) [`9692473`](https://github.com/mirri-ai/mirricode/commit/96924733ad1ca034df87d89a96d855cc78ff2ab0) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Give chatty reasoning models a per-model prompt that you can read and edit. A built-in rule now materializes one Markdown file per model under `~/.mirri-code/model_prompts/`, covering models such as `mimo-v2.6-pro` and `mimo-v2.6-flash` so they go straight to action instead of narrating their reasoning. The file is appended to the system prompt of every new conversation that uses that model, is shared by all providers reaching the same model, and is never overwritten once it exists — your edits survive product updates. Clear a file to give that model no extra prompt. Set `disable_model_prompts = true` in `config.toml` to stop injecting any of them.
+
+  web: The model editor now shows and edits a model's prompt, and states that edits apply to all providers using that model and take effect in new conversations.
+
+### Patch Changes
+
+- [#214](https://github.com/mirri-ai/mirricode/pull/214) [`1765512`](https://github.com/mirri-ai/mirricode/commit/1765512fd806293f878fa84d4326c661ecc51b8e) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Update the desktop app to Electron 45.2.3, the latest release of the Electron 45 line.
+
+- [#213](https://github.com/mirri-ai/mirricode/pull/213) [`64f36b4`](https://github.com/mirri-ai/mirricode/commit/64f36b4852ffef435fa3df44345e93ed5e84318b) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix a forked session re-reading the entire conversation on its first message, which made the first reply after forking take far longer than a normal turn. Forked sessions now continue under the source session's conversation attribution, so the already-read history is billed and processed as already read.
+
+- [#208](https://github.com/mirri-ai/mirricode/pull/208) [`535ce1d`](https://github.com/mirri-ai/mirricode/commit/535ce1d5dc4dc192ef23a598067e702ffd0cc2a0) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix plan-mode approval so exiting plan mode waits for the user's decision instead of auto-exiting. Approve, revise, or reject-and-exit now work as intended on the web plan-review card, and an approval request in an interactive turn now shows on the approval surface even when the reverse-RPC channel is briefly unavailable.
+
+- [#210](https://github.com/mirri-ai/mirricode/pull/210) [`fc2f09c`](https://github.com/mirri-ai/mirricode/commit/fc2f09ca0ba28d22a56fb5cc604dd6f4a1380c9e) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix plan-review approval so the plan can be approved as-is even when alternative approaches are offered, and so the chosen approach label survives every approval channel.
+
+  The web plan-review card now keeps an explicit "Approve plan" button next to the offered approaches (previously the approaches replaced it, leaving no way to approve the plan text as submitted), and the Revise feedback box gains visible Submit / Cancel buttons for touch users. When an approval is resolved through the `approval.decide` / `interaction.respond` channel — for example after a reconnect, where the parked `approval.ask` reply is gone — the selected approach label now rides the decision instead of being lost, so `ExitPlanMode` reports "Selected approach: <label>" exactly like the reverse-RPC reply path. The ACP surface also gains the spec's plan-review option namespace (`plan_approve` / `plan_opt_<i>` / `plan_revise` / `plan_reject_and_exit`) instead of the generic three options.
+
+- [#215](https://github.com/mirri-ai/mirricode/pull/215) [`c3b8cfe`](https://github.com/mirri-ai/mirricode/commit/c3b8cfe45c9b32ad745fad2ff7cdd2d2b0018feb) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix sessions that stayed in the sidebar after their files were deleted outside the app — opening such a session now also removes it from the list, instead of failing on every click and coming back on the next reload. Sessions that were created but never used, archived sessions with a compressed history, and sessions still open in the app are left untouched.
+
+- [#209](https://github.com/mirri-ai/mirricode/pull/209) [`a29a037`](https://github.com/mirri-ai/mirricode/commit/a29a03719dfddbd7c31d8fbae473961949994618) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Log every rejected server credential (the server used to answer 401 silently) and report the running rejection count on the auth summary. The Desktop-spawned server's console log level is now configurable via `MIRRICODE_DESKTOP_LOG_LEVEL` (default `error`); the file log under `~/.mirri-code/logs/` always keeps `info`.
+
+- [#203](https://github.com/mirri-ai/mirricode/pull/203) [`78ea273`](https://github.com/mirri-ai/mirricode/commit/78ea27399d8e782de859ae5016066d281fd73aaa) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Turning thinking off in the new-session composer now survives the first message. The draft level was never sent when the session was created, so the engine applied the model's declared default and thinking came back on — most visibly on reasoning models such as MiMo.
+
+  The pick also survives a restart now. It was never written to the session's journal, so the agent rebuilt on resume had no record of it and reverted to the model's default. Both the create-time record and any later pick from the thinking control are now persisted and re-applied.
+
+  The session's recorded level also folds back into the composer correctly. The engine reported `"none"` for both "the user turned thinking off" and "no level was ever set", leaving clients unable to tell the two apart. `session.status` answers `null` for the unset case, so an explicit off is preserved instead of being read as a missing preference.
+
+- [#209](https://github.com/mirri-ai/mirricode/pull/209) [`a29a037`](https://github.com/mirri-ai/mirricode/commit/a29a03719dfddbd7c31d8fbae473961949994618) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Stop showing the model-setup welcome page when the server cannot be reached — a transient connection failure now keeps the connecting splash up with the reason instead of telling you to configure a model you already configured.
+
+- [#211](https://github.com/mirri-ai/mirricode/pull/211) [`ff4f341`](https://github.com/mirri-ai/mirricode/commit/ff4f3416a4611200bd09df6c1ebf086de412be16) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Make bash tool-call rows easier to scan: a `cd` separated by a newline folds like one joined with `&&`, trailing `# comments` drop out of the collapsed summary (the expanded card still shows the full command), and directories inside the workspace render as a relative-path badge — with `.worktrees/<name>` checkouts badged by their worktree name.
+
 ## 3.1.1
 
 ### Patch Changes
