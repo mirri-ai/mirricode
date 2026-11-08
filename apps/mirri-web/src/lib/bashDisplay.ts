@@ -49,13 +49,17 @@ export const BASH_SUMMARY_MAX = 160;
     its subcommand live there and carry the most meaning. */
 const HEAD_SHARE = 0.6;
 
-// `cd [|pushd] <path>` optionally followed by `&& | || | ;` and the rest of the
-// command. `[^"]` / `[^']` covers quoted paths with spaces; the bare branch
-// stops at shell metacharacters so `cd /a && b` cannot swallow the separator.
-// Anchored end-to-end: a `cd` that is not the whole head (a subshell, a
-// mid-command `cd`) is not matched at all, which is the intent.
+// `cd [|pushd] <path>` optionally followed by `&& | || | ; | newline` and the
+// rest of the command. `[^"]` / `[^']` covers quoted paths with spaces; the
+// bare branch stops at shell metacharacters so `cd /a && b` cannot swallow the
+// separator. A bare newline is a command separator in every shell we run
+// (Unix `sh -c` and Windows Git Bash `bash -c` both treat it as `;`), so
+// `\r?\n` is accepted too — CRLF from Windows-authored command strings
+// normalizes the same way. Anchored end-to-end: a `cd` that is not the whole
+// head (a subshell, a mid-command `cd`) is not matched at all, which is the
+// intent.
 const CD_PREFIX =
-  /^(?:cd|pushd)\s+(?:"([^"]*)"|'([^']*)'|([^\s&;|<>()]+))(?:\s*(?:&&|\|\||;)\s*([\s\S]*))?$/;
+  /^(?:cd|pushd)\s+(?:"([^"]*)"|'([^']*)'|([^\s&;|<>()]+))(?:\s*(?:&&|\|\||;|\r?\n)\s*([\s\S]*))?$/;
 
 /** Trim, collapse internal whitespace (a multi-line command must stay on one
     row), and clip to `max` by keeping BOTH ends.

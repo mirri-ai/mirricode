@@ -108,6 +108,30 @@ describe('summarizeBashCommand', () => {
     const d = summarizeBashCommand('pnpm test\n  --reporter verbose', WS);
     expect(d.text).toBe('pnpm test --reporter verbose');
   });
+
+  it('should treat a newline after the cd path as a command separator', () => {
+    // Given a multi-line command where cd is separated from the next command by a bare newline
+    // When the row summary is built
+    // Then the cd folds into a badge and the following command leads the row
+    const d = summarizeBashCommand(`cd ${WS}\ngit diff --stat`, WS);
+    expect(d.prefix).toEqual({ kind: 'workspace', label: 'proj', path: WS });
+    expect(d.text).toBe('git diff --stat');
+  });
+
+  it('should treat a CRLF after the cd path as a command separator', () => {
+    // Given a Windows-style CRLF line ending after the cd path
+    // When the row summary is built
+    // Then it folds the same way as a bare LF
+    const d = summarizeBashCommand(`cd ${WS}\r\ngit status`, WS);
+    expect(d.prefix?.kind).toBe('workspace');
+    expect(d.text).toBe('git status');
+  });
+
+  it('should fold a cd to another directory when separated by a newline', () => {
+    const d = summarizeBashCommand('cd /tmp/build-output\nmake all', WS);
+    expect(d.prefix).toEqual({ kind: 'other', label: 'build-output', path: '/tmp/build-output' });
+    expect(d.text).toBe('make all');
+  });
 });
 
 describe('clipBashSummary', () => {
