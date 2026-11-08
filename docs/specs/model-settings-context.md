@@ -1,6 +1,6 @@
 # Model 设置页现状盘点（Context）
 
-> 快照日期：2026-09-08（评审后更新：display name 根因修订；感知面 curated 机制与 provider 删除级联已复核）；2026-09-18 增补：models.dev → 别名能力字段推导链路侦察（§6）；2026-10-28 增补：批量删除 / 过滤保持 / 导入时模型选择三需求侦察（§7）；2026-11-07 增补：思考开关表达力侦察（§8） ·
+> 快照日期：2026-09-08（评审后更新：display name 根因修订；感知面 curated 机制与 provider 删除级联已复核）；2026-09-18 增补：models.dev → 别名能力字段推导链路侦察（§6）；2026-10-28 增补：批量删除 / 过滤保持 / 导入时模型选择三需求侦察（§7）；2026-11-07 增补：思考开关表达力侦察（§8）；2026-11-08 增补：模型专属提示词与路径安全化侦察（§9） ·
 > 本文是 provider/model 配置域的**现状参考**（代码事实、两侧差异矩阵、侦察产出），随现状变化更新，不含目标与裁决。
 > 目标定义见 [model-settings-page-requirements.md](model-settings-page-requirements.md)（下称「需求文档」）；技术架构见 [model-settings-architecture.md](model-settings-architecture.md)（下称「架构文档」）；契约基准为 TS v2 server（`packages/kap-server`）。
 
@@ -176,3 +176,45 @@ rust 侧已有能力承接面（缺口 1 的修复不需要 schema 改动）：`
 ### 8.7 用户实际配置的现状
 
 `mirri config-show` 输出的三个 provider 全部为 `type = "openai"`（`xiaomi-token-plan-cn` / `deepseek` / `kimi-code-plan-cn`），两个 MiMo 别名未声明 `support_efforts`/`default_effort`。因此当前状态下：MiMo 的"关闭"无效、档位无法选择、`[thinking] enabled = false` 从未生效。`kimi-code-plan-cn` 指向 K3（`kimi-k3`）而标 `type="openai"` —— 恰好是 K3 唯一接受的 wire，若为统一而改标 `type="kimi"` 会立刻破坏该 provider。
+
+## 9. 模型级提示词与"模型名 → 文件路径"的现状侦察（2026-11-08）
+
+设计裁决见需求文档 D-M13 / 架构文档 C9 / ADR-008。以下是本次侦察核实的代码事实。
+
+### 9.1 系统提示词的装配与生命周期
+
+| 事实 | 证据 |
+|---|---|
+| 系统提示词在 **agent 创建时装配一次**，成为 `AgentScopeConfig.system_prompt` 的一段静态文本 | `rust/crates/mirri-core/src/scope/session_scope.rs:1712-1822`（两条分支：无自定义提示词走基座模板——分支内含 SYSTEM.md 覆盖子情形，见本表第 4 行；有自定义提示词走后缀追加） |
+| 模板分支的槽位替换分两趟：创建期固定变量（`render_fixed_part`）与工作区派生变量（`apply_workspace_part`） | `rust/crates/mirri-core/src/scope/system_prompt.rs:88`、`:235` |
+| 基座模板是编译进二进制的 `system_prompt.md`，含 `{{role_additional}}`、`{{skills_section}}`、`{{plugin_sections}}`、`{{additional_dirs_section}}` 等槽位 | `rust/crates/mirri-core/src/scope/system_prompt.rs:38`；槽位清单见 `system_prompt.md` |
+| `SYSTEM.md` 覆盖走"组合根读文件 → seed 进 `SessionScopeConfig.base_prompt_override` → 引擎零 IO 消费"的通道 | 读取 `rust/crates/mirri-embedded/src/embedded_server/mod.rs:2591`；seed `session_handlers.rs:232`；消费 `scope/session_scope.rs:1745` |
+| 自定义提示词分支的 `base_system_prompt` 在**追加后缀之前**捕获，压缩后的刷新从它重建（追加在后缀之后的文本会被刷新丢失） | 捕获 `scope/session_scope.rs:1703`、`:1839`；刷新 `:1856-1891` |
+| `refresh_agent_system_prompt` 只重建 AGENTS.md 与目录树两段后缀，不重跑模板槽位 | `rust/crates/mirri-core/src/scope/session_scope.rs:1864-1889` |
+| 会话状态对外投递的 `systemPrompt` 直接取 agent 配置的当前值 | `rust/crates/mirri-embedded/src/embedded_server/session_handlers.rs:1217` |
+
+**对本设计的直接约束**（详见架构 C9.5）：三条提示词路径的刷新语义不同，不能一刀切"末尾追加"——自定义提示词分支必须把内容并入被捕获的 base（否则压缩刷新即丢失），模板/覆盖分支的 base 为 `None` 可确实追加在末尾；读取时机必须与装配时机一致（会话创建与恢复）。
+
+### 9.2 应用数据目录的解析链
+
+`home_root()` 的三级回落：注入的 `home_dir` → 环境变量 `MIRRICODE_HOME` → `$HOME/.mirri-code` → 相对 `.mirri-code`。证据：`rust/crates/mirri-embedded/src/embedded_server/mod.rs:2545-2557`。`SYSTEM.md` 与将来的 `model_prompts/` 同在这个目录下（`mod.rs:2592` 的 `self.home_root().join("SYSTEM.md")` 是同一父目录的直接先例）。
+
+### 9.3 模型进入配置的三个写入口
+
+| 入口 | 证据 |
+|---|---|
+| 供应商目录导入 | `rust/crates/mirri-embedded/src/embedded_server/provider_handlers.rs:304`（`dispatch_import_provider_catalog`），别名记录由 `models_dev_import::models_dev_alias_record` 推导（导入写入路径 `:422`；`:859` 属 `catalog_model_entries`，是 browse 预览行构造，**不写配置**） |
+| 手动新增供应商 / 新增模型 | 走 `config.set` 分节写；模型别名结构 `ModelAlias` 见 `rust/crates/mirri-core/src/config/mod.rs:228-260` |
+| 配置直写面 | `provider.set`（`provider_handlers.rs:1021`）、`model.set`（`model_handlers.rs:65`）、`config.set` / `config.replaceSections`（`config_handlers.rs:79-110`，可直写任意顶层节）——**逐 RPC 挂钩必然漏掉直写路径**，这是架构 C9.4 把接缝定在配置提交管线的原因 |
+| 目录模型名来源 | `rust/crates/mirri-embedded/src/embedded_server/models_dev_import.rs`（`models_dev_alias_record`）与内置快照 `rust/crates/mirri-embedded/data/models-dev-snapshot.json` |
+
+**本次侦察的关键事实**：内置 models.dev 快照中**不含** `mimo` 系模型（`grep -ic mimo rust/crates/mirri-embedded/data/models-dev-snapshot.json` = 0）。但该文件头自述它是 bootstrap 快照、**运行时刷新会用完整在线目录替换**；导入用的是刷新后的内存目录，未加载目录时 import 直接返回 not-found、从不隐式拉网。因此准确表述是：**内置快照不含 mimo；在线完整目录是否含 mimo 本次未核实**。无论结论如何，生成接缝都必须同时覆盖导入与手动新增两条路径（防御性覆盖），否则首批规则可能永远无法命中。（只记事实，不含裁决。）
+
+### 9.4 已有的"名称 → 文件名"安全化实现（两套，互不通用）
+
+| 实现 | 规则 | 消费者 |
+|---|---|---|
+| `safe_file_stem` | 非 `[a-zA-Z0-9._-]` 折叠为单个 `_`，去首尾 `_`，截 80，空则 `tool-result` | 工具结果落盘文件名（`rust/crates/mirri-core/src/tool_result_truncation.rs:167-199`） |
+| `sanitize` + `truncate_with_hash` | 非 `[A-Za-z0-9_-]` 逐字符换 `_`；超长时截断并附 8 位 FNV-1a 指纹 | MCP 工具名（`rust/crates/mirri-mcp/src/naming.rs:67`、`:84`、`:107`） |
+
+两者服务于不同域（文件 stem / 标识符），均未处理 Windows 保留设备名与大小写不敏感碰撞。C9.3 是第三套、面向模型名 → 路径场景的独立规则；不复用前两者的理由是其语义目标不同（见 ADR-008 的路径安全化决策），**但新规则引入后，模型域内不得再出现第二套**。

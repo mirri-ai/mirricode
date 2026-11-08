@@ -1700,6 +1700,29 @@ impl SessionScope {
         // TS custom-profile semantics. The captured `base_prompt` keeps
         // the caller's value so the refresh path's "no captured base"
         // skip semantics stay unchanged.
+        // D-M13 / C9.5: resolve the model-specific prompt ONCE, before the
+        // base is captured. Two placements follow and they are deliberately
+        // different:
+        //
+        // - Caller-supplied (custom) prompt: the body joins the caller's text
+        //   HERE, so the value captured as `base_prompt` already contains it.
+        //   `refresh_agent_system_prompt` rebuilds from that capture after a
+        //   compaction, so joining later (with the workspace suffixes) would
+        //   be silently dropped on the first refresh.
+        // - Template channels: the body is appended at the END of the
+        //   assembled prompt (the base capture for those is `None`, so they
+        //   are never refreshed and the last position is durable).
+        let model_prompt_body: Option<String> = self
+            .config
+            .model_prompts
+            .body_for(&config.model_id)
+            .map(str::to_string);
+        if config.system_prompt.is_some() {
+            config.system_prompt = Some(crate::model_prompt::append_model_prompt(
+                config.system_prompt.take().unwrap_or_default(),
+                model_prompt_body.as_deref(),
+            ));
+        }
         let base_prompt = config.system_prompt.clone();
         let agents_md = crate::agents_md::load_agents_md_for_trust(
             self.workspace_root.as_deref(),
@@ -1787,8 +1810,22 @@ impl SessionScope {
                     &plugin_sections,
                     &additional_dirs,
                 ));
+                // D-M13 / C9.5: the model-specific prompt rides the END of
+                // this path's result. The base here is `None`-captured (this
+                // branch never re-runs on refresh), so appending last is
+                // durable — see the pre-match block for why the custom path
+                // joins its base instead.
+                if model_prompt_body.is_some() {
+                    config.system_prompt = Some(crate::model_prompt::append_model_prompt(
+                        config.system_prompt.take().unwrap_or_default(),
+                        model_prompt_body.as_deref(),
+                    ));
+                }
             }
             Some(_) => {
+                // The caller-supplied prompt already carries the model body
+                // (joined before the base capture above), so this branch adds
+                // only the workspace suffixes.
                 // Inject AGENTS.md context into the custom base prompt.
                 // The base prompt (pre-suffix) is captured above so a later
                 // refresh can rebuild the full prompt from current
@@ -2987,6 +3024,133 @@ mod tests {
             .expect("the assembled prompt is set");
         assert!(prompt.starts_with("BASE_PROMPT_MARKER"));
         assert!(prompt.contains("CUSTOM_BASE_MD_MARKER"));
+    }
+
+    /// Given a session whose model prompt table carries a body, when an agent
+    /// is created on the template channel, then the body is appended AFTER the
+    /// assembled prompt (D-M13.4 / C9.5) — this path's base is `None`-captured,
+    /// so the last position survives (it never re-runs on refresh).
+    #[tokio::test]
+    async fn should_append_the_model_prompt_after_the_template_when_the_table_has_a_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "MODEL_PROMPT_AGENTS_MARKER").unwrap();
+        let mut by_raw = std::collections::BTreeMap::new();
+        by_raw.insert("mimo-v2.6-pro".to_string(), "MODEL_PROMPT_BODY".to_string());
+        let mut ids = std::collections::BTreeMap::new();
+        ids.insert("mimo-test".to_string(), "mimo-v2.6-pro".to_string());
+        let mut session = make_session(SessionScopeConfig {
+            model_prompts: crate::model_prompt::ModelPromptTable::new(by_raw, ids),
+            ..SessionScopeConfig::default()
+        });
+        session_override_workspace_root(&mut session, tmp.path().to_path_buf());
+
+        let agent = session
+            .create_agent(
+                AgentId::new("agent-1"),
+                AgentScopeConfig {
+                    model_id: "mimo-test".to_string(),
+                    ..AgentScopeConfig::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let prompt = agent
+            .config()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .system_prompt
+            .clone()
+            .expect("the assembled prompt is set");
+        assert!(prompt.contains("MODEL_PROMPT_AGENTS_MARKER"));
+        assert!(prompt.trim_end().ends_with("MODEL_PROMPT_BODY"));
+    }
+
+    /// Given the same table and an agent on a model with no entry, when the
+    /// agent is created, then the prompt carries no model section — the
+    /// feature-absent path stays byte-identical (D-M13.4).
+    #[tokio::test]
+    async fn should_leave_the_prompt_untouched_when_the_agents_model_has_no_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut by_raw = std::collections::BTreeMap::new();
+        by_raw.insert("mimo-v2.6-pro".to_string(), "MODEL_PROMPT_BODY".to_string());
+        let mut ids = std::collections::BTreeMap::new();
+        ids.insert("mimo-test".to_string(), "mimo-v2.6-pro".to_string());
+        let mut session = make_session(SessionScopeConfig {
+            model_prompts: crate::model_prompt::ModelPromptTable::new(by_raw, ids),
+            ..SessionScopeConfig::default()
+        });
+        session_override_workspace_root(&mut session, tmp.path().to_path_buf());
+
+        let agent = session
+            .create_agent(
+                AgentId::new("agent-1"),
+                AgentScopeConfig {
+                    model_id: "other-model".to_string(),
+                    ..AgentScopeConfig::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let prompt = agent
+            .config()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .system_prompt
+            .clone()
+            .expect("the assembled prompt is set");
+        assert!(!prompt.contains("MODEL_PROMPT_BODY"));
+    }
+
+    /// Given a caller-supplied custom prompt, when an agent is created with a
+    /// model body present, then the body joins the BASE (before the AGENTS.md
+    /// suffix) and therefore survives a compaction-time refresh — appending it
+    /// last would be dropped by `refresh_agent_system_prompt`.
+    #[tokio::test]
+    async fn should_keep_the_model_prompt_across_a_refresh_when_a_custom_prompt_is_used() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "CUSTOM_AGENTS_MARKER").unwrap();
+        let mut by_raw = std::collections::BTreeMap::new();
+        by_raw.insert("mimo-v2.6-pro".to_string(), "MODEL_PROMPT_BODY".to_string());
+        let mut ids = std::collections::BTreeMap::new();
+        ids.insert("mimo-test".to_string(), "mimo-v2.6-pro".to_string());
+        let mut session = make_session(SessionScopeConfig {
+            model_prompts: crate::model_prompt::ModelPromptTable::new(by_raw, ids),
+            ..SessionScopeConfig::default()
+        });
+        session_override_workspace_root(&mut session, tmp.path().to_path_buf());
+
+        let agent = session
+            .create_agent(
+                AgentId::new("agent-1"),
+                AgentScopeConfig {
+                    model_id: "mimo-test".to_string(),
+                    system_prompt: Some("CUSTOM_BASE_MARKER".to_string()),
+                    ..AgentScopeConfig::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        // When the workspace-refresh path rebuilds the prompt (the post-
+        // compaction path)
+        assert!(session.refresh_agent_system_prompt(agent.id()).await);
+
+        let prompt = agent
+            .config()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .system_prompt
+            .clone()
+            .expect("the assembled prompt is set");
+        // Then the model body is still there, ahead of the workspace suffix
+        assert!(prompt.contains("MODEL_PROMPT_BODY"));
+        assert!(prompt.contains("CUSTOM_BASE_MARKER"));
+        assert!(prompt.contains("CUSTOM_AGENTS_MARKER"));
+        let body_at = prompt.find("MODEL_PROMPT_BODY").unwrap();
+        let agents_at = prompt.find("CUSTOM_AGENTS_MARKER").unwrap();
+        assert!(body_at < agents_at, "the body must join the captured base");
     }
 
     /// Given a session carrying a base-prompt override (the SYSTEM.md

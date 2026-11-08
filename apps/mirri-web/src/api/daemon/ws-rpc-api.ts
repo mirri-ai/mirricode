@@ -67,6 +67,7 @@ import type {
   AppMessageRole,
   AppModel,
   AppModelAlias,
+  AppModelPrompt,
   AppPromptItem,
   AppProvider,
   AppProviderWireType,
@@ -3206,6 +3207,27 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     // patches pass through untouched.
     const { disabledAgents: _retired, ...wirePatch } = patch as Partial<AppConfig>;
     return this.client.call<AppConfig>('config.set', wirePatch);
+  }
+
+  // -------------------------------------------------------------------------
+  // Model-specific prompt (D-M13 / architecture C9.7)
+  // -------------------------------------------------------------------------
+
+  async getModelPrompt(model: string): Promise<AppModelPrompt> {
+    // `model.getPrompt(model)` — the key is a raw model name (M2): the file
+    // belongs to the model, so every provider reaching it shares one file.
+    // `hasFile: false` is the create-from-empty state.
+    return this.client.call<AppModelPrompt>('model.getPrompt', { model });
+  }
+
+  async setModelPrompt(model: string, content: string): Promise<{ model: string; path: string }> {
+    // `model.setPrompt(model, content)` — the path is derived server-side
+    // from the model name, so content can never address another location.
+    // The edit applies to sessions created or resumed afterwards (D-M13.5).
+    return this.client.call<{ model: string; path: string }>('model.setPrompt', {
+      model,
+      content,
+    });
   }
 
   // -------------------------------------------------------------------------

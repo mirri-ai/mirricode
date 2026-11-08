@@ -82,6 +82,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `extra_agent_dirs` | `array<string>` | — | Extra agent profile search directories for custom agent discovery |
 | `disabled_agents` | `array<string>` | — | Deprecated — no longer controls agent enablement; kept parsed only so old config files keep loading (a non-empty value logs a deprecation warning at startup). Disable agents with `enabled: false` in the agent profile file → [Enabling and Disabling Agents](../customization/agents.md#enabling-and-disabling-agents) |
 | `telemetry` | `boolean` | `true` | Whether anonymous telemetry is enabled; disabled only when explicitly set to `false` |
+| `disable_model_prompts` | `boolean` | `false` | Set to `true` to stop injecting any model's dedicated prompt into the system prompt. Existing prompt files stay on disk — this switch stops injection only, not generation or editing → [Model-specific prompts](#model-specific-prompts) |
 | `providers` | `table` | `{}` | API provider table → [`providers`](#providers) |
 | `models` | `table` | — | Model alias table → [`models`](#models) |
 | `thinking` | `table` | — | Default parameters for Thinking mode → [`thinking`](#thinking) |
@@ -163,6 +164,56 @@ max_context_size = 1047576
 Provider-model refreshes (startup, every 6 hours, or manual "Refresh All") only **append** new models discovered in the catalog. Existing model aliases are never modified or deleted — your configuration is your own. Models you delete are remembered on a per-provider denylist (`removed_model_ids`) so a refresh cannot silently re-add them.
 
 You can also switch models temporarily without touching the config file — by setting `MIRRICODE_MODEL_*` environment variables, the CLI synthesizes a temporary provider in memory that does not persist after restart. See [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-mirricode-model).
+
+## Model-specific prompts
+
+Some models are noticeably verbose in a particular way — long reasoning, slow to act. The product ships a corrective prompt for such models and materializes it as a plain Markdown file **you can open and edit**, rather than a black box inside the program.
+
+### Location and naming
+
+```
+~/.mirri-code/model_prompts/<model-name>.md
+```
+
+One file per **raw model name** (not per alias). When several providers reach the same model they share this one file — a model's traits belong to the model, not to the way it is reached.
+
+A file looks like this:
+
+```markdown
+---
+model: "mimo-v2.6-pro"
+---
+<prompt body>
+```
+
+The `model:` field declares which model the file belongs to and is the file's only identity; the file name is for humans. If two files declare the same model, the lexicographically first name wins and a diagnostic is logged.
+
+### When a file is created
+
+- When a model enters your configuration and matches a built-in rule — importing a provider, adding a provider, adding a model, or renaming a model's model id all count;
+- or when a new session assembles its prompt and finds a model that matches a rule but has no file yet (the backstop for models configured before the rule existed).
+
+The built-in rules currently cover `mimo-v2.6-*` (such as `mimo-v2.6-pro` and `mimo-v2.6-flash`), keeping reasoning within what the task needs, moving straight to the next action, and planning at most three tool actions per round.
+
+### Three guarantees
+
+1. **An existing file is never overwritten**, whether or not you edited it. Product updates to the built-in wording only affect models added afterwards — your tuning is never silently changed.
+2. **An empty body means "this model needs no extra prompt"**. It is not refilled.
+3. **Injection happens when a session is created**. Switching models mid-session does not change the running session's system prompt; new sessions (and resumed ones) use the latest content.
+
+### Writing your own prompt for a model
+
+Any model's file can be viewed and edited in settings (Models → a model → Model-specific prompt); models that match no rule can be created there too. Leave the body empty to give the model no extra prompt.
+
+A body over 16 KiB is **not injected at all** (not truncated — half a directive is more dangerous than none), and the assembly diagnostic names the file and the excess.
+
+### Turning it off
+
+```toml
+disable_model_prompts = true
+```
+
+This turns off **injection**: existing prompt files stay on disk, new models still get files, and the editor remains available. After turning it back on, sessions created or resumed from then on inject whatever the files currently contain.
 
 ## `loop_control`
 

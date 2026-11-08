@@ -1491,3 +1491,48 @@ describe('toAppAgentProfile (agent.*Profile wire row → app shape)', () => {
     });
   });
 });
+
+describe('model prompt RPCs (D-M13 / C9.7)', () => {
+  function apiWithCall(): { api: WsRpcApi; call: ReturnType<typeof vi.fn<RpcCall>> } {
+    const api = new WsRpcApi('ws://test.local/api/v1/rpc', 'http://test.local', undefined);
+    const call = vi.fn<RpcCall>();
+    (api as unknown as { client: { call: RpcCall } }).client = { call };
+    return { api, call };
+  }
+
+  it('should send the raw model name when reading a model prompt', async () => {
+    // Given a transport answering the getPrompt shape
+    const { api, call } = apiWithCall();
+    call.mockResolvedValue({
+      model: 'mimo-v2.6-pro',
+      content: null,
+      path: null,
+      hasFile: false,
+      builtinRule: true,
+    });
+    // When the prompt of a model is read
+    const got = await api.getModelPrompt('mimo-v2.6-pro');
+    // Then the raw model name rides the wire (aliases are not accepted here)
+    expect(call).toHaveBeenCalledWith('model.getPrompt', { model: 'mimo-v2.6-pro' });
+    // And the empty state is reported as such
+    expect(got.hasFile).toBe(false);
+    expect(got.builtinRule).toBe(true);
+  });
+
+  it('should send the model name and content when saving a model prompt', async () => {
+    // Given a transport that accepts the write
+    const { api, call } = apiWithCall();
+    call.mockResolvedValue({
+      model: 'mimo-v2.6-pro',
+      path: '/home/.mirri-code/model_prompts/mimo-v2.6-pro.md',
+    });
+    // When a body is saved
+    const got = await api.setModelPrompt('mimo-v2.6-pro', 'Be brief.\n');
+    // Then both fields ride the wire and the path comes back from the server
+    expect(call).toHaveBeenCalledWith('model.setPrompt', {
+      model: 'mimo-v2.6-pro',
+      content: 'Be brief.\n',
+    });
+    expect(got.path).toContain('model_prompts');
+  });
+});

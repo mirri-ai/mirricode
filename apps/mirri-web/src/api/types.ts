@@ -1458,6 +1458,19 @@ export interface AppModelAlias {
   betaApi?: boolean;
 }
 
+export interface AppModelPrompt {
+  /** The raw model name the file belongs to (glossary M2 — never an alias). */
+  model: string;
+  /** The full file text (frontmatter included), or null when no file exists. */
+  content: string | null;
+  /** Absolute path of the file, or null when it does not exist yet. */
+  path: string | null;
+  /** False is the create-from-empty state the edit surface offers to fill. */
+  hasFile: boolean;
+  /** Whether a builtin rule covers this model (the starting-text hint). */
+  builtinRule: boolean;
+}
+
 export interface AppConfig {
   providers: Record<string, AppConfigProvider>;
   defaultProvider?: string;
@@ -2111,6 +2124,28 @@ export interface MirriWebApi {
   // Config — REAL endpoints
   getConfig(): Promise<AppConfig>;
   setConfig(patch: Omit<Partial<AppConfig>, 'models' | 'providers' | 'disabledAgents'> & { models?: Record<string, Partial<AppModelAlias>>; providers?: Record<string, Partial<AppConfigProvider>> }): Promise<AppConfig>;
+
+  /**
+   * Model-specific prompt (D-M13 / architecture C9.7). The key is a **raw
+   * model name** — every provider reaching the same model shares one file, so
+   * an alias is deliberately not accepted here.
+   *
+   * `hasFile: false` is the create-from-empty state; `builtinRule` says
+   * whether the product would seed this model (the starting-text hint).
+   *
+   * Optional on purpose: only the rust transport implements it. Callers gate
+   * the edit entry on its presence rather than rendering a control that
+   * errors when clicked (R5).
+   */
+  getModelPrompt?(model: string): Promise<AppModelPrompt>;
+  /**
+   * Write one model's prompt file. Content without frontmatter is wrapped
+   * with an owner header server-side. Applies to sessions created or resumed
+   * afterwards — an existing session keeps the content it was created with
+   * (D-M13.5), so the UI must say so rather than let "saved but unchanged"
+   * look like a defect.
+   */
+  setModelPrompt?(model: string, content: string): Promise<{ model: string; path: string }>;
 
   // Provider credentials — the credential-store face (provider-credential
   // spec §5.3): list carries no plaintext, set is write-only, remove /

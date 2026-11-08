@@ -189,11 +189,33 @@ impl EmbeddedServer {
             .map_err(engine_error)?;
         mutate(&mut config)?;
         config.save_raw_to(&config_path).map_err(engine_error)?;
+        // D-M13 / C9.4: materialize a prompt file for every model the write
+        // introduced. Hung here — the single config write pipeline — rather
+        // than on the individual RPCs, because `config.set` can write the
+        // `models` section directly and a per-RPC hook would miss it. Failures
+        // are logged and swallowed: prompt materialization must never fail the
+        // write that triggered it.
+        self.materialize_model_prompts_for(&config);
         let reloaded =
             ServerConfig::load(&config_path, &mirri_os::LocalSyncFs).map_err(engine_error)?;
         *self.config.write().unwrap_or_else(|e| e.into_inner()) = reloaded;
         self.resync_skill_catalogs_if_changed(&before);
         Ok(())
+    }
+
+    /// Materialize prompt files for the models in `config` (D-M13.1).
+    ///
+    /// Idempotent and one-way: `ensure_prompt_file` writes only when the
+    /// target is absent, so a re-save never rewrites a user's tuning.
+    fn materialize_model_prompts_for(&self, config: &ServerConfig) {
+        let (raw_names, _) = super::model_prompts::model_prompt_index(config);
+        if raw_names.is_empty() {
+            return;
+        }
+        let home = self.home_root();
+        for name in raw_names {
+            super::model_prompts::ensure_prompt_file(&home, &name);
+        }
     }
 
     /// Replace/clear top-level sections in the raw document and persist.

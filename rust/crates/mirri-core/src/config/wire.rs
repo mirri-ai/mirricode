@@ -182,6 +182,9 @@ impl ServerConfig {
         if let Some(v) = self.telemetry {
             wire.insert("telemetry".into(), Value::Bool(v));
         }
+        if let Some(v) = self.disable_model_prompts {
+            wire.insert("disableModelPrompts".into(), Value::Bool(v));
+        }
         if let Some(raw) = &self.raw {
             wire.insert("raw".into(), toml_to_json(raw));
         }
@@ -517,6 +520,7 @@ pub(crate) const KNOWN_CONFIG_TOP_LEVEL_KEYS: &[&str] = &[
     "model_catalog",
     "retention",
     "telemetry",
+    "disable_model_prompts",
 ];
 
 /// Recursively remove `null` values from a JSON value.
@@ -790,7 +794,6 @@ fn models_to_wire(models: &HashMap<String, ModelAlias>) -> Value {
     }
     Value::Object(map)
 }
-
 
 /// Serialize one [`PermissionRule`] into the klient wire row shape:
 /// lowercase `decision`, kebab-case `scope`, `pattern`, and `reason`

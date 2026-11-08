@@ -526,6 +526,20 @@ mcpShadowed: 'Overrides',
     fieldDefaultEffort: 'Default effort',
     fieldReasoningKey: 'Reasoning key',
     fieldThinkingOff: 'How thinking is turned off',
+    sectionModelPrompt: 'Model-specific prompt',
+    fieldModelPrompt: 'Prompt',
+    fieldModelPromptHint:
+      'Appended to the system prompt of every session that uses this model. Leave the body empty to give this model no extra prompt.',
+    modelPromptPlaceholder: 'Instructions for this model…',
+    modelPromptSharedNote:
+      'This prompt belongs to the model {model} itself, not to this provider — every provider that uses the same model shares this file, so an edit here affects all of them.',
+    modelPromptEmpty: 'This model has no prompt file yet. Write one to give it an extra prompt.',
+    modelPromptEmptyWithRule:
+      'No prompt file exists yet. A built-in rule covers this model, so one is written automatically the next time it is added or a session starts.',
+    modelPromptExists: 'has prompt',
+    modelPromptSave: 'Save prompt',
+    modelPromptTakesEffect:
+      'New sessions start using it; the current session keeps the prompt it started with.',
     thinkingOff: {
       auto: 'Auto (inferred from the endpoint)',
       thinkingType: 'Thinking object (thinking.type)',

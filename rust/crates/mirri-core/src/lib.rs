@@ -93,6 +93,7 @@ pub mod media_placeholder;
 pub mod message;
 pub mod message_pipeline;
 pub mod model_catalog;
+pub mod model_prompt;
 pub mod origin;
 pub mod orphan_sweep;
 pub mod panic_capture;

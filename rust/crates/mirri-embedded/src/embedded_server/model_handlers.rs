@@ -59,6 +59,68 @@ impl EmbeddedServer {
             .unwrap_or(Value::Null))
     }
 
+    /// `model.getPrompt(model)` — the model-specific prompt file for a raw
+    /// model name (D-M13.7 / architecture C9.7).
+    ///
+    /// `model` is a **raw model name** (M2 in the glossary), not an alias: the
+    /// file belongs to the model, so every provider reaching the same model
+    /// shares it. Returns `{model, content, path, hasFile, builtinRule}` —
+    /// `hasFile: false` is the UI's create-from-empty state (a model that has
+    /// no file yet, whether or not a builtin rule covers it).
+    pub(super) async fn dispatch_model_get_prompt(
+        &self,
+        params: Value,
+    ) -> Result<Value, EngineError> {
+        let model = prompt_model_arg(&params)?;
+        let home = self.home_root();
+        let existing = super::model_prompts::read_prompt_file(&home, &model)
+            .map_err(|reason| invalid_params(reason.as_str()))?;
+        Ok(match existing {
+            Some(file) => json!({
+                "model": file.model,
+                "content": file.raw,
+                "path": file.path.display().to_string(),
+                "hasFile": true,
+                "builtinRule": file.from_builtin_rule,
+            }),
+            None => json!({
+                "model": model,
+                "content": Value::Null,
+                "path": Value::Null,
+                "hasFile": false,
+                "builtinRule": mirri_core::model_prompt::builtin_prompt_for(&model).is_some(),
+            }),
+        })
+    }
+
+    /// `model.setPrompt(model, content)` — write one model's prompt file
+    /// (D-M13.7 / architecture C9.7).
+    ///
+    /// The path is always derived server-side from the model name, so the
+    /// protocol cannot address a location outside `model_prompts/`. Content
+    /// without frontmatter is wrapped with an owner header; a complete
+    /// document is written verbatim. Existing sessions are untouched by
+    /// design (D-M13.5) — the edit applies to sessions created or resumed
+    /// afterwards, which the UI states.
+    pub(super) async fn dispatch_model_set_prompt(
+        &self,
+        params: Value,
+    ) -> Result<Value, EngineError> {
+        let model = prompt_model_arg(&params)?;
+        let content = params
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid_params("model.setPrompt requires 'content' as a string"))?;
+        let home = self.home_root();
+        let path = super::model_prompts::write_prompt_file(&home, &model, content)
+            .map_err(|reason| invalid_params(reason.as_str()))?;
+        Ok(json!({
+            "model": model,
+            "path": path.display().to_string(),
+            "hasFile": true,
+        }))
+    }
+
     /// `model.set(id, config)` — replace the modelService record for one
     /// alias (a full-record replace, matching the TS service), then persist
     /// and reload. noResult on the wire.
@@ -1173,4 +1235,19 @@ fn normalize_wire_protocol(raw: &str) -> Option<&'static str> {
         "google-genai" | "google_genai" | "google" => Some("google-genai"),
         _ => None,
     }
+}
+
+/// The `model` argument for the prompt RPCs: a raw model name (glossary M2),
+/// accepted under either spelling the wire uses.
+fn prompt_model_arg(params: &Value) -> Result<String, EngineError> {
+    let model = params
+        .get("model")
+        .or_else(|| params.get("modelId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .ok_or_else(|| {
+            invalid_params("a raw model name is required ('model'); aliases are not accepted here")
+        })?;
+    Ok(model.to_string())
 }

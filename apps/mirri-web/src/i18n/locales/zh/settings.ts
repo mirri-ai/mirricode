@@ -523,6 +523,19 @@ mcpShadowed: '覆盖生效',
     fieldDefaultEffort: '默认思考等级',
     fieldReasoningKey: 'Reasoning key',
     fieldThinkingOff: '思考关闭方式',
+    sectionModelPrompt: '模型专属提示词',
+    fieldModelPrompt: '提示词',
+    fieldModelPromptHint:
+      '会追加到使用该模型的每个会话的系统提示词里。正文留空表示这个模型不需要额外提示词。',
+    modelPromptPlaceholder: '针对这个模型的指令…',
+    modelPromptSharedNote:
+      '这份提示词属于模型 {model} 本身，不属于当前供应商——所有使用同一模型的供应商共用这一份，因此这里的改动会影响它们全部。',
+    modelPromptEmpty: '这个模型还没有提示词文件。写一份即可为它加上额外提示词。',
+    modelPromptEmptyWithRule:
+      '目前还没有提示词文件。已有内置规则覆盖这个模型，下次添加该模型或开启新会话时会自动生成。',
+    modelPromptExists: '已有提示词',
+    modelPromptSave: '保存提示词',
+    modelPromptTakesEffect: '新会话开始生效；当前会话沿用开头时的提示词。',
     thinkingOff: {
       auto: '自动（按端点推断）',
       thinkingType: '思考对象开关（thinking.type）',

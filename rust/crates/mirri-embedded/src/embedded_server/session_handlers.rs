@@ -243,6 +243,45 @@ impl EmbeddedServer {
         }
     }
 
+    /// Seed the model-specific prompt table (D-M13 / architecture C9.5) — the
+    /// same zero-IO data channel as `SYSTEM.md`: the composition root reads
+    /// `model_prompts/` (and lazily materializes any file a builtin rule
+    /// covers but that does not exist yet), then hands the engine plain data.
+    ///
+    /// Seeded per session, so a prompt edit applies to sessions created or
+    /// resumed after it — matching D-M13.5's session-creation snapshot
+    /// semantics. The master switch short-circuits the whole seed: files stay
+    /// on disk, nothing is injected.
+    pub(super) fn seed_model_prompts(
+        &self,
+        config: mirri_core::SessionScopeConfig,
+    ) -> mirri_core::SessionScopeConfig {
+        let disabled = self
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .disable_model_prompts
+            .unwrap_or(false);
+        if disabled {
+            return config;
+        }
+        let home = self.home_root();
+        // The raw model names the configured aliases reach — the set the
+        // builtin-rule backstop materializes for.
+        let (raw_names, id_to_raw) = {
+            let snapshot = self.config.read().unwrap_or_else(|e| e.into_inner());
+            super::model_prompts::model_prompt_index(&snapshot)
+        };
+        let by_raw = super::model_prompts::seed_prompt_table(&home, &raw_names);
+        if by_raw.is_empty() {
+            return config;
+        }
+        mirri_core::SessionScopeConfig {
+            model_prompts: mirri_core::model_prompt::ModelPromptTable::new(by_raw, id_to_raw),
+            ..config
+        }
+    }
+
     /// Publish a session event on the addressed session's event bus, when
     /// the session has artifacts. Fire-and-forget: event delivery never
     /// fails the RPC that produced it.
@@ -419,6 +458,9 @@ impl EmbeddedServer {
         // boot) so a settings-page write applies to sessions created after
         // it without an engine restart.
         let scope_config = self.seed_base_prompt_override(scope_config);
+        // D-M13 — seed the model-specific prompt table (the same zero-IO data
+        // channel): the engine appends each agent's model body at assembly.
+        let scope_config = self.seed_model_prompts(scope_config);
         // SDR-004 b: the config default seeds the session's initial
         // posture when the create request carries no explicit mode.
         let seed_permission_mode = scope_config.permission_mode;
@@ -1372,6 +1414,9 @@ impl EmbeddedServer {
         // would (a settings write between the create and the resume
         // applies to the resumed agents).
         let scope_config = self.seed_base_prompt_override(scope_config);
+        // D-M13 — seed the model-specific prompt table like the create path,
+        // so a resumed session's re-created agents append the same bodies.
+        let scope_config = self.seed_model_prompts(scope_config);
         let session = owner_manager
             .resume_session_with_scope(
                 &SessionId::new(&params.session_id),

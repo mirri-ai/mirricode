@@ -25550,10 +25550,12 @@ fn should_keep_wire_names_unique_when_the_route_table_is_indexed() {
     // A13待确认 aggregation, retired with the pending zone — ADR-022)
     // + the two session pin routes (session.pin / session.unpin, the
     // session pinning management face)
-    // = 218.
+    // + the two model prompt routes (model.getPrompt / model.setPrompt,
+    // D-M13 per-model prompt files)
+    // = 220.
     assert_eq!(
         routes::all_routes().count(),
-        218,
+        220,
         "flattened route count drifted from the migrated arm total"
     );
 }
@@ -25801,8 +25803,8 @@ fn should_match_the_authoritative_registry_exactly_when_every_domain_has_migrate
     );
     assert_eq!(
         routed.len(),
-        218,
-        "the route table and the registry must both count 218 methods"
+        220,
+        "the route table and the registry must both count 220 methods"
     );
 }
 
@@ -47267,4 +47269,105 @@ max_context_size = 128000
     // Then both connection fields ride the row
     assert_eq!(row["thinking_off"], "thinking_type");
     assert_eq!(row["custom_headers"]["X-Route"], "a");
+}
+// ---------------------------------------------------------------------------
+// model.getPrompt / model.setPrompt (D-M13 / C9.7)
+// ---------------------------------------------------------------------------
+
+/// Given a model with no prompt file, When `model.getPrompt` is called, Then
+/// it answers the create-from-empty state (`hasFile: false`) and reports
+/// whether a builtin rule covers the name — the UI's starting-text hint.
+#[tokio::test]
+async fn should_answer_the_empty_state_when_a_model_has_no_prompt_file() {
+    // Given a home-rooted server with an empty model_prompts directory
+    let (server, _tmp) = test_server_with_home();
+    // When the prompt of a covered model is read
+    let got = server
+        .call_method("model.getPrompt", json!({ "model": "mimo-v2.6-pro" }))
+        .await
+        .unwrap();
+    // Then it is the empty state, with the builtin coverage reported
+    assert_eq!(got["hasFile"], false, "no file yet: {got:?}");
+    assert_eq!(got["builtinRule"], true, "a rule covers it: {got:?}");
+    assert!(got["content"].is_null());
+}
+
+/// Given a saved prompt, When it is read back, Then the content round-trips
+/// and the path lands under `model_prompts/` — the RPC accepts only a model
+/// name, so no client can address another location.
+#[tokio::test]
+async fn should_round_trip_a_prompt_through_the_set_and_get_rpcs() {
+    // Given a home-rooted server
+    let (server, tmp) = test_server_with_home();
+    // When a body is saved (no frontmatter — the server wraps it)
+    server
+        .call_method(
+            "model.setPrompt",
+            json!({ "model": "mimo-v2.6-pro", "content": "Be very brief.\n" }),
+        )
+        .await
+        .unwrap();
+    // Then the file lives under model_prompts/ with its owner recorded
+    let path = tmp.path().join("model_prompts").join("mimo-v2.6-pro.md");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("model: \"mimo-v2.6-pro\""), "{text}");
+    assert!(text.contains("Be very brief."));
+    // And reading it back returns the raw document
+    let got = server
+        .call_method("model.getPrompt", json!({ "model": "mimo-v2.6-pro" }))
+        .await
+        .unwrap();
+    assert_eq!(got["hasFile"], true);
+    assert_eq!(got["content"], text);
+}
+
+/// Given the master switch is on, When a session's prompt table is seeded,
+/// Then nothing is injected — and the file stays on disk (the switch governs
+/// injection, not materialization; D-M13.6).
+#[tokio::test]
+async fn should_seed_no_model_prompts_when_the_master_switch_is_on() {
+    // Given a config.toml that turns injection off, in a home carrying a body
+    let (server, tmp, _config_path) =
+        test_server_with_config_toml_and_home("disable_model_prompts = true\n");
+    let dir = tmp.path().join("model_prompts");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("mimo-v2.6-pro.md"),
+        "---\nmodel: \"mimo-v2.6-pro\"\n---\nBe brief.\n",
+    )
+    .unwrap();
+    // When the seed runs
+    let seeded = server.seed_model_prompts(mirri_core::SessionScopeConfig::default());
+    // Then nothing is injected, and the file survives untouched
+    assert!(seeded.model_prompts.is_empty());
+    assert!(dir.join("mimo-v2.6-pro.md").exists());
+}
+
+/// Given the switch is off (the default), When a configured alias reaches a
+/// model whose prompt file exists, Then the seed table answers that model's
+/// body for both id forms (the alias key and the `provider/model` composite),
+/// so an agent resolves it whichever form its `model_id` takes.
+#[tokio::test]
+async fn should_seed_the_model_body_for_both_model_id_forms_when_enabled() {
+    // Given an alias reaching a model that has a prompt file
+    let (server, tmp, config_path) = test_server_with_config_toml_and_home(
+        "default_model = \"mimo\"\n\n[providers.mimo]\ntype = \"openai\"\n\n\
+         [models.mimo]\nprovider = \"mimo\"\nmodel = \"mimo-v2.6-pro\"\nmax_context_size = 1000\n",
+    );
+    let dir = tmp.path().join("model_prompts");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("mimo-v2.6-pro.md"),
+        "---\nmodel: \"mimo-v2.6-pro\"\n---\nBe brief.\n",
+    )
+    .unwrap();
+    let _ = config_path;
+    // When the seed runs
+    let seeded = server.seed_model_prompts(mirri_core::SessionScopeConfig::default());
+    // Then the alias key and the composite both resolve to the same body
+    assert_eq!(seeded.model_prompts.body_for("mimo"), Some("Be brief.\n"));
+    assert_eq!(
+        seeded.model_prompts.body_for("mimo/mimo-v2.6-pro"),
+        Some("Be brief.\n")
+    );
 }
