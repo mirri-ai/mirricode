@@ -1,6 +1,6 @@
 ---
 name: testing-guide
-description: Use before running, writing, or debugging tests in this repo — the local execution ladder (which command to run for which change), the test iron rules (T0–T3/R layering, the eight isolation contracts, R-layer attribution), how to judge a red full-workspace run without mislabelling it environmental, the local-tier to CI-job map, and the traps that make suites fail for reasons unrelated to the code. Load it when a full-suite run goes red, before writing a new test, when touching the RPC registry or its pinned surface counts, or when a loopback mock server returns an unexpected 502.
+description: Use before running, writing, or debugging tests in this repo — the local execution ladder (which command to run for which change), the test iron rules (T0–T3/R layering, the eight isolation contracts, R-layer attribution), how to judge a red full-workspace run without mislabelling it environmental (including the case where failures scatter across different tests), the difference between R-layer classification and contention isolation, the local-tier to CI-job map, and the traps that make suites fail for reasons unrelated to the code. Load it when a full-suite run goes red, before writing a new test, when touching the RPC registry or its pinned surface counts, or when a loopback mock server returns an unexpected 502.
 ---
 
 # Testing Guide
@@ -108,7 +108,7 @@ Two signals in test code must be attributed to the R layer, enforced by test-hyg
 - **R-layer suite (CI definition)**: the `#[ignore]` set **minus** `e2e_real_llm` (needs real LLM credentials, run manually) **minus** the G-30 placeholder stubs (`should_handle_create_rpc_independently` / `should_handle_plugins_rpc_independently`, deliberate panic TODOs excluded by test name).
 - **Local entry**: `pnpm gate:real` = `cargo test -- --ignored` minus the two stubs (libtest `--skip`). `gate:real` does not exclude `e2e_real_llm` by name — it skips itself without credentials; if `OPENAI_API_KEY` is exported locally, `gate:real` will hit the real LLM (cost / hang risk — `unset OPENAI_API_KEY` first). Local R runs never use nextest: on macOS the per-exec tax measured 14×–80×+ ("80×+" is a lower bound from ">18 min unfinished", not a ceiling).
 - **CI selection**: `rust-real-env` (non-blocking) plus nightly (required) run `cargo nextest run --workspace --locked --run-ignored only --no-fail-fast -E 'not (binary(e2e_real_llm) or test(should_handle_create_rpc_independently) or test(should_handle_plugins_rpc_independently))' --profile real`. `--no-fail-fast` carries weight: one red must list every failing test, since that list is the attribution input. Profile lives in `rust/.config/nextest.toml` (retries 1, slow-timeout 2m×3, `test-threads = 2`).
-- **Concurrency exception**: `test-threads = 2` is **deliberately hardcoded** — the R layer is sensitive to real subprocess and port contention and does not follow nproc. This is the explicit exception to the D-layer policy of "do not hardcode concurrency; derive from nproc or measurements" (design §6; that section's `max-threads` is a typo — the real nextest key is `test-threads`; do not "fix" the config to match it).
+- **Concurrency exception**: `test-threads = 2` is **deliberately hardcoded** — the R layer is sensitive to real subprocess and port contention and does not follow nproc. This is the explicit exception to the D-layer policy of "do not hardcode concurrency; derive from nproc or measurements" (design §6; that section's `max-threads` is a typo — the real nextest key is `test-threads`; do not "fix" the config to match it). Treat the number as an empirical setting, not a proof — when a case still flakes at 2 threads, name the contention mechanism (§4 step 4) rather than lowering the count.
 - **Runner adoption**: nextest is R-layer only. D-layer adoption must clear an A/B threshold (≤1.1×, `.github/workflows/rust-nextest-ab.yml`).
 - **`#[ignore]` style**: R-layer tests use bare `#[ignore]` plus an adjacent comment `// R-layer: <reason> (design §3)`. Precedents (all in this shape): `mirri-acp/tests/conformance.rs`'s `should_not_spawn_the_real_homes_mcp_servers_when_the_conformance_child_creates_a_session` (pgrep-absent sampling), `mirri-embedded/src/embedded_server/tests.rs`'s `should_not_connect_plugin_mcp_servers_when_installed_until_reload` (plugin-absent sampling), `mirri-embedded/src/skill_watcher.rs`'s `should_mount_the_watcher_within_a_fixed_time_budget` (mount probe). `b1_print_mode_tests.rs`'s drain budget test was once on this list and has migrated to D-layer paused-clock (batch 5 dropped its `#[ignore]`). `e2e_real_llm.rs` uses bare `#[ignore]` plus a module header explaining why. `#[ignore = "reason"]` is accepted too, though not required.
 - **Known constraint**: `#[ignore]` currently has two meanings (R layer vs TODO stub). A new TODO stub must choose one: join the R-layer exclusion list by the same naming convention, or implement it before landing (never leave a stub that can never run).
@@ -153,6 +153,42 @@ Only when the failures share no feature, and the set is unstable, is "environmen
 ### Why step 2 and 3 both matter
 
 Skipping step 2 hides "I ran three suites at once". Skipping step 3 turns a fixable proxy or stale-binary misconfiguration into unfalsifiable noise. A single test passing in isolation proves only that it does not depend on its neighbours — it says nothing about what made it fail in the full run.
+
+### Step 4 — when the failures scatter across different tests
+
+A different pattern: each round goes red, but **a different test each time**, and none of them reproduces locally (even repeated 10×, even under deliberate CPU oversubscription). Do not read that as "four broken tests". Read it as **one suite-level condition surfacing wherever it happens to land**, and work it as such:
+
+1. **Confirm the scatter.** Collect the failing test names from several rounds (PR runs and recent `main` runs alike — a scatter that also hits `main` is not your PR's doing):
+
+   ```bash
+   gh run list --branch main --workflow CI --limit 20 --json databaseId,conclusion,displayTitle
+   gh run view <run-id> --log-failed 2>&1 | grep -E "FAILED$|panicked at"
+   ```
+
+   No repeats across rounds → a shared condition, not per-test defects.
+
+2. **Find what the scattered tests have in common**, not what is unique to each. The usual candidates: real wall-clock waits with tight deadlines, a mock or global shared between in-process servers, background tickers/sweepers that outlive the test's own scope, and real sockets that assume they win a port race.
+
+3. **Check whether the test asserts the precondition it depends on.** A test that waits five seconds for a task to settle and then drops the result is asserting nothing — the test proceeds either way. When the leftover work then perturbs a shared counter, the failure message blames a product bug ("no duplicate") instead of the unsettled premise. This is the single most common reason a suite-level condition turns into a misleading red.
+
+4. **Reproduce by contention, not by repetition.** Repetition on an idle machine proves nothing. Either oversubscribe the CPU, or run the whole module (not the single test) — a suite-level condition often only appears with its neighbours alive.
+
+5. **Classify only after 1–4.** Then choose per test, with the trade-off stated below.
+
+### R layer is a classification, not an isolation bucket
+
+These are two different reasons a test runs outside the default pool, and they require different evidence:
+
+| | Meaning | Evidence needed | Cost of getting it wrong |
+|---|---|---|---|
+| **R layer (classification)** | The test's **outcome legitimately depends on the real environment** — a real wall-clock window, a real subprocess, an external service. Deterministic isolation is not available at reasonable cost. | The assertion genuinely references real time / a real external condition | Correctly placed; runs in `rust-real-env` and nightly |
+| **Isolation (execution strategy)** | The test is deterministic **in principle**, but is sensitive to parallelism or resource contention; running it in the main pool is unstable. | A mechanism explains the contention (shared mock, port race, global ticker) | Skipping the analysis hides a real defect |
+
+The two are not exclusive, and the second is a legitimate strategy — R-layer cases **are** genuinely parallelism- and resource-sensitive, which is exactly why the R profile pins concurrency instead of following nproc. Today that pin is a single simple correspondence (`test-threads = 2` in `rust/.config/nextest.toml`), and it is stable for most of the suite. Treat that number as **an empirical setting, not a proof**: when a case still flakes at 2 threads, the contention mechanism is stronger than the pin, and the answer is to name the mechanism (step 2 above) — either fix it, or isolate the case further — not to lower the thread count again.
+
+What this section exists to prevent: reaching for a layer move as the *first* response to a red suite. Moving a test into the R pool has a concrete consequence — `rust-real-env` is `continue-on-error: true` on pull requests, so a test that moves there **stops blocking PRs**. That is acceptable for a test whose outcome is genuinely environment-dependent. It is not acceptable as a way to quiet a test whose premise was simply never asserted, because the underlying defect stays and now only surfaces on nightly.
+
+Rule of thumb: if you cannot name the mechanism in one sentence, you are not ready to classify — you are postponing.
 
 ## 5. Local tier to CI job
 
