@@ -39215,7 +39215,17 @@ async fn should_apply_a_session_dir_grant_when_decide_approves_an_outside_read_w
 /// user, when the agent retries the same path, then the read asks again —
 /// the denial changed no sandbox state (no additional dir, no memorized
 /// tool pattern), so a retry hits the same gate.
+///
+/// R layer (execution dimension): the ask-registration wait is a fixed
+/// wall window (`poll_until_pending`, 30s) whose outcome depends on runner
+/// load — under full-suite parallelism on a small CI runner the ask can
+/// miss the window with no regression present. A judgment that binds on
+/// window width must not ride in the deterministic gate (design 2026-11-06
+/// §3): this runs in the `rust-real-env` suite (low concurrency,
+/// non-blocking on PRs, must-pass nightly) until the wait is reworked to
+/// event-driven.
 #[tokio::test]
+#[ignore = "R layer: wall-window ask wait is runner-load sensitive (judgment binds window width)"]
 async fn should_ask_again_when_an_outside_read_is_retried_after_the_user_rejected_it() {
     let (_tmp, _root) = git_project_workspace();
     let outside = tempfile::tempdir().expect("outside tempdir must be creatable");
