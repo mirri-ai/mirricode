@@ -2913,9 +2913,25 @@ async fn should_re_park_a_pending_subagent_notification_steer_on_resume() {
         .expect("close");
     drop(server_a);
     drop(release_child_a);
-    let _ = tokio::time::timeout(Duration::from_secs(5), child_task)
-        .await
-        .map(|result| result.map_err(|_| ()));
+    // The turn must actually SETTLE before server B resumes: the mock is
+    // shared across both servers, so a turn still running here would keep
+    // calling it and surface later as a phantom duplicate delivery
+    // (`chat_call_count` 3 -> 4). The old form discarded the timeout result
+    // entirely, so that leftover read as a product bug instead of an
+    // unmet precondition. The 60s bound only has to catch a hang, not to
+    // enforce speed — a healthy settle is sub-second, and a slow runner
+    // must not turn into a red here.
+    match tokio::time::timeout(Duration::from_secs(60), child_task).await {
+        Ok(Ok(_completion)) => {}
+        Ok(Err(join_error)) => {
+            panic!("the child turn panicked after the session closed: {join_error}")
+        }
+        Err(_) => panic!(
+            "the child turn never settled after the session closed (60s). Until it \
+             does, it keeps calling the mock shared with server B, and the delivery \
+             count below would blame a duplicate that never happened"
+        ),
+    }
 
     // When server B resumes the session over the same tempdir
     let server_b = build_server();
