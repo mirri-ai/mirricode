@@ -128,6 +128,42 @@ export function thinkingLevelForModelSwitch(
  * saying. Only an always-thinking model needs the note: a model that cannot
  * think at all already renders its own "not supported" state.
  */
+/**
+ * Translate the daemon's thinking-effort wire spelling into the UI level.
+ *
+ * The two vocabularies name the off state differently: the wire (the engine's
+ * `ThinkingEffort`) spells it `none`, the UI spells it `off`. Folding the wire
+ * value in verbatim made an explicitly disabled session read as "no declared
+ * level", so the composer fell back to the model default and turned thinking
+ * back on right after the user had turned it off.
+ *
+ * An empty spelling means "no preference recorded" — the caller keeps whatever
+ * it had. Any other value (a canonical effort or a model-declared one such as
+ * `max`) passes through unchanged.
+ */
+/**
+ * Translate a UI thinking level into the daemon's wire spelling.
+ *
+ * The inverse of [`thinkingLevelFromDaemon`]: the UI calls the off state
+ * `off`, the engine's `ThinkingEffort` calls it `none`. Sending `off` verbatim
+ * is rejected by the engine's deserializer, so the call that creates a session
+ * would fail rather than honour the pick.
+ */
+export function thinkingToDaemon(level: ThinkingLevel): string {
+  if (level === 'off') return 'none';
+  if (level === 'on') return 'medium';
+  return level;
+}
+
+export function thinkingLevelFromDaemon(raw: string | undefined): ThinkingLevel | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === '') return undefined;
+  if (trimmed === 'none' || trimmed === 'off') return 'off';
+  if (trimmed === 'on') return 'on';
+  return trimmed;
+}
+
 export function thinkingCopyKey(model: ModelThinkingInfo | undefined): string | null {
   if (modelThinkingAvailability(model) === 'always-on') {
     return 'composer.thinkingAlwaysOn';

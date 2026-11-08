@@ -44,8 +44,8 @@ use uuid::Uuid;
 
 use mirri_core::{
     AgentId, AgentLifecycle, AgentScope, ContentPart, Role, ServerConfig, SessionArtifacts,
-    SessionId, SessionInfo, SessionManager, SessionScope, max_context_tokens_for,
-    validate_workspace_path,
+    SessionId, SessionInfo, SessionManager, SessionScope, ThinkingEffort,
+    max_context_tokens_for, validate_workspace_path,
 };
 #[cfg(test)]
 use mirri_proto::WireOp;
@@ -1765,17 +1765,54 @@ impl StatusSessionHandler {
     }
 }
 
+/// Project the engine's effort onto the `session.status` wire, preserving the
+/// difference between "explicitly off" and "never set" (see
+/// [`SessionStatusResult`] for the full table).
+///
+/// `agent.getEffectiveThinkingLevel` deliberately keeps answering `"none"` for
+/// *both* states — its ACP contract is a non-null string — so the distinction
+/// lives here, in the richer status snapshot, rather than in the engine enum.
+fn thinking_effort_for_status(effort: Option<&ThinkingEffort>) -> Option<String> {
+    // `None` = no preference recorded. It must not be spelled `"none"`: a
+    // client cannot then tell it apart from a deliberate off, and would
+    // either lose the user's choice or disable a session that never chose.
+    let effort = effort?;
+    Some(
+        serde_json::to_value(effort)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            // An unserializable custom tier is still an explicit request, and
+            // `"none"` is the one spelling that would assert the opposite, so
+            // fall back to the canonical middle tier instead.
+            .unwrap_or_else(|| "medium".to_string()),
+    )
+}
+
 /// `session.status` result: the run-state snapshot. `model`/`permission`
-/// are `null` when the session has no agent yet; `thinkingEffort` is the
-/// first agent's configured effort (the rust spellings `none`/`low`/
-/// `medium`/`high` plus any model-declared effort string carried verbatim
-/// (e.g. `max`, `xhigh`) — `"none"` when unset); `swarmMode` is the session-level
-/// swarm flag; `collaborationMode` is the session-level collaboration-mode
-/// flag (the `collaboration.enter` / `collaboration.exit` mode gate);
-/// `contextTokens` is the first agent's estimated context size
+/// are `null` when the session has no agent yet; `swarmMode` is the
+/// session-level swarm flag; `collaborationMode` is the session-level
+/// collaboration-mode flag (the `collaboration.enter` / `collaboration.exit`
+/// mode gate); `contextTokens` is the first agent's estimated context size
 /// (provider-reported base + pending-message estimate); `maxContextTokens`
 /// is the model's context window resolved from the server config's model
 /// catalog (0 = unknown model / no window configured).
+///
+/// `thinkingEffort` distinguishes "the user turned thinking off" from "the
+/// session never recorded a level":
+///
+/// | engine state | wire value |
+/// | --- | --- |
+/// | `Some(ThinkingEffort::None)` — explicitly disabled | `"none"` |
+/// | `Some(Low/Medium/High)` — canonical tier | that spelling |
+/// | `Some(Custom(s))` — model-declared tier | `s` verbatim |
+/// | `None` — never set, or no agent yet | `null` |
+///
+/// Collapsing the last two onto `"none"` (the historical behaviour, still
+/// the contract of `agent.getEffectiveThinkingLevel`) is ambiguous for a
+/// reader that has to decide whether to preserve a user's choice: it cannot
+/// tell "off" from "unset", so a client folding the value back into its
+/// controls either loses the off selection or silently disables thinking for
+/// sessions that never chose. `null` is the "no preference recorded" signal.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionStatusResult {
@@ -1785,7 +1822,9 @@ struct SessionStatusResult {
     model: Option<String>,
     permission: Option<Value>,
     plan_mode: bool,
-    thinking_effort: String,
+    /// `None` = no level recorded (see the struct docs for the full table);
+    /// `Some("none")` = explicitly disabled.
+    thinking_effort: Option<String>,
     swarm_mode: bool,
     collaboration_mode: bool,
     context_tokens: u64,
@@ -1833,23 +1872,16 @@ impl RpcHandler for StatusSessionHandler {
         let permission = first_agent
             .as_ref()
             .and_then(|agent| serde_json::to_value(agent.permission_manager().mode()).ok());
-        // The thinking effort in the `agent.getEffectiveThinkingLevel` wire
-        // spelling (`None` → `"none"`).
-        let thinking_effort = first_agent
-            .as_ref()
-            .map(|agent| {
-                let config = agent.config();
-                let config = config.read().unwrap_or_else(|e| e.into_inner());
-                match config.thinking_effort.clone() {
-                    Some(effort) => serde_json::to_value(effort)
-                        .unwrap_or_else(|_| json!("none"))
-                        .as_str()
-                        .unwrap_or("none")
-                        .to_string(),
-                    None => "none".to_string(),
-                }
-            })
-            .unwrap_or_else(|| "none".to_string());
+        // The thinking effort, keeping "explicitly off" and "never set"
+        // distinguishable — the two states a client must not conflate when it
+        // folds this value back into its own controls (see the struct docs).
+        // `agent.getEffectiveThinkingLevel` keeps answering `"none"` for both,
+        // because the ACP contract there is a non-null string.
+        let thinking_effort = first_agent.as_ref().and_then(|agent| {
+            let config = agent.config();
+            let config = config.read().unwrap_or_else(|e| e.into_inner());
+            thinking_effort_for_status(config.thinking_effort.as_ref())
+        });
         let context_tokens = first_agent
             .as_ref()
             .map(|agent| {
@@ -7750,6 +7782,55 @@ mod tests {
 
         // Then the snapshot reports the session as busy
         assert_eq!(value["session"]["busy"], json!(true));
+    }
+
+    #[test]
+    fn should_report_null_when_no_thinking_level_was_ever_recorded() {
+        // Given a session whose agent never recorded an effort
+        // When the status snapshot projects it
+        let wire = thinking_effort_for_status(None);
+
+        // Then the wire says nothing -- NOT "none", which would claim the user
+        // had deliberately turned thinking off (see SessionStatusResult).
+        assert_eq!(wire, None);
+    }
+
+    #[test]
+    fn should_report_the_none_spelling_when_thinking_was_explicitly_disabled() {
+        // Given an agent the user explicitly switched off
+        // When the status snapshot projects it
+        let wire = thinking_effort_for_status(Some(&ThinkingEffort::None));
+
+        // Then the wire carries the engine's off spelling, which a client maps
+        // onto its own "off" level
+        assert_eq!(wire.as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn should_report_canonical_and_verbatim_efforts_unchanged() {
+        // Given canonical tiers and a model-declared one
+        // When the status snapshot projects each
+        // Then every spelling comes back verbatim -- only `None` is special
+        assert_eq!(
+            thinking_effort_for_status(Some(&ThinkingEffort::High)).as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            thinking_effort_for_status(Some(&ThinkingEffort::Custom("max".to_string()))).as_deref(),
+            Some("max")
+        );
+    }
+
+    #[test]
+    fn should_keep_the_two_off_states_distinguishable() {
+        // Given the two states a folding client must never conflate
+        // When both are projected
+        // Then "never set" is absent while "explicitly off" is "none"
+        assert_ne!(
+            thinking_effort_for_status(None),
+            thinking_effort_for_status(Some(&ThinkingEffort::None)),
+            "unset and explicitly-off must not collapse onto the same wire value"
+        );
     }
 
     #[tokio::test]

@@ -16,6 +16,8 @@ import {
   modelThinkingAvailability,
   segmentsFor,
   thinkingLevelForModelSwitch,
+  thinkingLevelFromDaemon,
+  thinkingToDaemon,
 } from './modelThinking';
 import type { ModelThinkingInfo } from './modelThinking';
 
@@ -597,5 +599,33 @@ describe('useModelProviderState thinking on model selection', () => {
   it('should not export a global config encoder once the global section is retired', async () => {
     const mod = await import('./modelThinking');
     expect('thinkingLevelToConfig' in mod).toBe(false);
+  });
+
+  describe('daemon thinking spelling', () => {
+    it('should map the daemon off spelling to the UI off level', () => {
+      expect(thinkingLevelFromDaemon('none')).toBe('off');
+    });
+
+    it('should map the UI off level to the daemon off spelling', () => {
+      expect(thinkingToDaemon('off')).toBe('none');
+    });
+
+    it('should pass a declared effort through both directions unchanged', () => {
+      expect(thinkingLevelFromDaemon('high')).toBe('high');
+      expect(thinkingToDaemon('high')).toBe('high');
+      expect(thinkingLevelFromDaemon('max')).toBe('max');
+      expect(thinkingToDaemon('max')).toBe('max');
+    });
+
+    it('should treat an empty daemon spelling as no preference', () => {
+      expect(thinkingLevelFromDaemon('')).toBeUndefined();
+      expect(thinkingLevelFromDaemon(undefined)).toBeUndefined();
+    });
+
+    it('should round-trip every UI level through the daemon spelling', () => {
+      for (const level of ['off', 'low', 'high', 'max'] as const) {
+        expect(thinkingLevelFromDaemon(thinkingToDaemon(level))).toBe(level);
+      }
+    });
   });
 });

@@ -37,6 +37,18 @@ fn model_record_op() -> WireOp {
     }
 }
 
+/// The same model record, but with the user's thinking pick attached — the
+/// shape a create-time record now writes.
+fn model_record_op_with_effort(effort: &str) -> WireOp {
+    WireOp::ConfigUpdate {
+        model_alias: Some("test-resume-model".to_string()),
+        profile_name: None,
+        thinking_effort: Some(serde_json::json!(effort)),
+        system_prompt: None,
+        disallowed_tools: None,
+    }
+}
+
 #[tokio::test]
 async fn should_write_sessions_under_v3_root_when_manager_creates() {
     // Given a SessionManager::new(workspace) over a throwaway workspace —
@@ -4951,4 +4963,102 @@ async fn should_clear_the_trio_when_unpinned() {
     assert!(!row.pinned);
     assert!(row.pinned_at.is_none());
     assert!(row.pin_color.is_none());
+}
+
+#[tokio::test]
+async fn should_keep_an_explicit_thinking_off_when_the_session_is_resumed() {
+    // Given a session whose journal records an explicit off
+    let (manager, _tmp) = make_manager();
+    let session_id = SessionId::new("resume-thinking-off");
+    let session_dir = manager.persistence().session_dir(&session_id);
+    tokio::fs::create_dir_all(&session_dir).await.unwrap();
+    let mut log = JsonlAppendLog::create(&session_dir.join("wire.jsonl"))
+        .await
+        .unwrap();
+    log.append(&WireOp::Metadata {
+        protocol_version: None,
+        created_at: None,
+    })
+    .await
+    .unwrap();
+    log.append(&model_record_op_with_effort("none"))
+        .await
+        .unwrap();
+    drop(log);
+    manager
+        .persistence()
+        .save_state(&session_id, &SessionMetadata::default())
+        .await
+        .unwrap();
+
+    // When the session is resumed from that log
+    let session = manager.resume_session(&session_id).await.unwrap();
+    let agent = session
+        .get_agent(&AgentId::new(MAIN_AGENT_ID))
+        .await
+        .expect("the main agent is back");
+
+    // Then the rebuilt agent still carries the off, rather than falling back
+    // to the model's declared default.
+    let config = agent.config();
+    let config = config.read().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(
+        config.thinking_effort,
+        Some(crate::profile::ThinkingEffort::None),
+        "a resumed session must keep the explicitly disabled effort"
+    );
+}
+
+#[tokio::test]
+async fn should_keep_the_restored_effort_when_a_later_model_switch_is_recorded() {
+    // Given a session that recorded an off and then a model switch
+    let (manager, _tmp) = make_manager();
+    let session_id = SessionId::new("resume-effort-then-switch");
+    let session_dir = manager.persistence().session_dir(&session_id);
+    tokio::fs::create_dir_all(&session_dir).await.unwrap();
+    let mut log = JsonlAppendLog::create(&session_dir.join("wire.jsonl"))
+        .await
+        .unwrap();
+    log.append(&WireOp::Metadata {
+        protocol_version: None,
+        created_at: None,
+    })
+    .await
+    .unwrap();
+    log.append(&model_record_op_with_effort("none"))
+        .await
+        .unwrap();
+    // A model-only record: no effort field, so the fold must not clear it.
+    log.append(&WireOp::ConfigUpdate {
+        model_alias: Some("other-model".to_string()),
+        profile_name: None,
+        thinking_effort: None,
+        system_prompt: None,
+        disallowed_tools: None,
+    })
+    .await
+    .unwrap();
+    drop(log);
+    manager
+        .persistence()
+        .save_state(&session_id, &SessionMetadata::default())
+        .await
+        .unwrap();
+
+    // When resumed
+    let session = manager.resume_session(&session_id).await.unwrap();
+    let agent = session
+        .get_agent(&AgentId::new(MAIN_AGENT_ID))
+        .await
+        .expect("the main agent is back");
+
+    // Then the model switched but the effort survived — an unrelated
+    // `config.update` must not silently reset the user's pick
+    let config = agent.config();
+    let config = config.read().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(config.model_id, "other-model");
+    assert_eq!(
+        config.thinking_effort,
+        Some(crate::profile::ThinkingEffort::None)
+    );
 }

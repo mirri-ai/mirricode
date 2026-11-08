@@ -1540,6 +1540,10 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       workspaceId: workspaceIdForCreate,
       cwd: cwdForCreate,
       model: draftPick,
+      // Seed the engine with the level the composer was showing. Omitting it
+      // let the engine apply the model's declared default, so a draft the user
+      // had set to off came back on for the first prompt.
+      thinking: draftThinking,
     });
     modelProvider.draftModel.value = null; // applied — the next draft starts from the default
     // The create echo may return model as '' (same daemon quirk as /profile);

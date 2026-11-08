@@ -1283,12 +1283,40 @@ fn build_agent_config_from_state(
             ))
         })?;
 
+    // Re-apply the recorded thinking effort so a resumed session keeps the
+    // user's pick. Without it the agent re-created from `base` (which carries
+    // no effort) fell back to the model's declared default, so an explicit
+    // off lasted only until the process restarted.
+    //
+    // Absent stays absent: a session that never recorded a level must keep
+    // inheriting the base config rather than have one invented for it. The
+    // recorded spelling is the engine's own (`none` = explicitly off).
+    let thinking_effort = state.thinking_effort.as_deref().and_then(parse_effort);
+
     Ok(AgentScopeConfig {
         permission_mode,
         initial_usage,
         model_id,
+        thinking_effort,
         ..base
     })
+}
+
+/// Parse a recorded effort spelling into the engine enum. `none` (the explicit
+/// off) and the canonical tiers map to their variants; anything else is a
+/// model-declared tier carried verbatim. An unparsable value yields `None` so
+/// the caller keeps inheriting the base config instead of failing the resume
+/// over one stale field.
+fn parse_effort(raw: &str) -> Option<crate::ThinkingEffort> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    serde_json::from_value::<crate::ThinkingEffort>(serde_json::Value::String(
+        trimmed.to_string(),
+    ))
+    .ok()
+    .or(Some(crate::ThinkingEffort::Custom(trimmed.to_string())))
 }
 
 /// Restore session-scoped state (goal + budget, plan mode, session

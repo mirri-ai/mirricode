@@ -90,6 +90,20 @@ pub struct AgentState {
     /// default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The effective thinking-effort spelling recorded on the agent's own
+    /// journal (`config.update`), when one was ever set. A resume re-applies
+    /// it so a restored session keeps the user's pick instead of falling back
+    /// to the model's declared default.
+    ///
+    /// `Some("none")` is the explicit off; absent means no level was ever
+    /// recorded. Both are preserved verbatim — the fold must not invent a
+    /// level for a session that never chose one.
+    #[serde(
+        rename = "thinkingEffort",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub thinking_effort: Option<String>,
     /// The subagent identity registry folded from `subagent.registered`
     /// ops (B4 T8, D-55) — restart replay rebuilds the children metadata
     /// from this registry, then lazily rehydrates each child's agent from
@@ -139,6 +153,7 @@ impl AgentState {
             tools: ToolsState::default(),
             profile_name: None,
             model: None,
+            thinking_effort: None,
             request_header: None,
             steer_pending: Vec::new(),
             interruption_pending: Vec::new(),

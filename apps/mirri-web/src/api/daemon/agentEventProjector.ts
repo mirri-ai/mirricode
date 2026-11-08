@@ -45,6 +45,7 @@ import type { UsageBuckets } from '../../lib/usageStats';
 import { toAppMessageContent } from './mappers';
 import type { WireMessageContent } from './wire';
 import { isTerminalStatus } from '../../lib/taskStatus';
+import { thinkingLevelFromDaemon } from '../../lib/modelThinking';
 
 // Re-export for existing importers (Task 5/6 consumers import TurnUsage from
 // the projector); the canonical declaration lives in api/types.ts.
@@ -1648,10 +1649,13 @@ export function createAgentProjector(): AgentProjector {
           collaborationMode:
             p?.collaborationMode === true ? true : p?.collaborationMode === false ? false : undefined,
           // The session's own thinking level, so per-session state stays in sync
-          // across clients (same treatment as plan/swarm above).
+          // across clients (same treatment as plan/swarm above). Translated,
+          // not copied: the daemon spells "off" as `none`, and folding that
+          // verbatim made the composer read the session as having no declared
+          // level and fall back to the model default.
           thinking:
-            typeof p?.thinkingEffort === 'string' && p.thinkingEffort.length > 0
-              ? p.thinkingEffort
+            typeof p?.thinkingEffort === 'string'
+              ? thinkingLevelFromDaemon(p.thinkingEffort)
               : undefined,
         });
         break;
