@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Test-hygiene gate for the rust workspace (plans/16 Task 3, design §4.5 #7).
 //
-// Enforces the test iron rules (rust/AGENTS.md 测试铁律) mechanically:
+// Enforces the test iron rules (.agents/skills/testing-guide §3) mechanically:
 //   (a) every top-level `tests/*.rs` integration-test binary must carry a
 //       `// layer: T<n>` header tag within its first 20 lines;
 //   (b) test code (whole `tests/` files + `#[cfg(test)]` module bodies in
@@ -845,11 +845,11 @@ for (const v of fresh) {
   const b = baseline[key(v)];
   const legacyNote =
     b && v.type === 'sleep' && !SLEEP_COVER_RE.test(b.reason ?? '')
-      ? `\n  -> zero-tolerance: this entry's baseline reason is \`${b.reason ?? '(none)'}\` — sleep coverage only accepts ${String(SLEEP_COVER_RE)}; migrate the wait (wait_for helper / delete / R-layer attribution) per rust/AGENTS.md 测试铁律`
+      ? `\n  -> zero-tolerance: this entry's baseline reason is \`${b.reason ?? '(none)'}\` — sleep coverage only accepts ${String(SLEEP_COVER_RE)}; migrate the wait (wait_for helper / delete / R-layer attribution) per .agents/skills/testing-guide §3.3`
       : '';
   console.error(
     `test-hygiene violation: ${v.file}:${v.line} [${v.type}] ${v.text}${legacyNote}\n` +
-      `  -> fix per rust/AGENTS.md 测试铁律 (env: mirri-test-support::env::lock() / Command::env; sleep: wait_for helper; layer: // layer: T<n> tag), or add:  // hygiene-allow: <reason>`,
+      `  -> fix per .agents/skills/testing-guide §3 (env: mirri-test-support::env::lock() / Command::env; sleep: wait_for helper; layer: // layer: T<n> tag), or add:  // hygiene-allow: <reason>`,
   );
 }
 

@@ -93,9 +93,9 @@
 - **原则**：合并只做「文件→模块」的机械搬运（原文件以 `mod 文件名 {}` 包裹进组二进制，import 不整理），任何逻辑改动走独立批（防止纯移动批夹带行为变化）。
 - **static 状态前置扫描**：合并进同一二进制前，必须确认各文件无跨文件依赖的 static 可变状态；有依赖的文件保持独立二进制或最后处理。
 
-### 4.5 测试落地标准（写入 `rust/AGENTS.md` 的硬规则）
+### 4.5 测试落地标准（写入 `testing-guide` skill 的硬规则，`rust/AGENTS.md` 留摘要）
 
-> 该节内容将逐字落入 `rust/AGENTS.md`「测试铁律」章节（新增），违反 = 返工。
+> 该节内容逐字落入 `.agents/skills/testing-guide/SKILL.md` §3（2026-11-08 起：程序性细节移出 `AGENTS.md` 以缩小常驻上下文，`rust/AGENTS.md` 只留违反即返工的摘要与指针），违反 = 返工。
 
 1. 新测试必须声明层级（`// layer: T<n>` 模块头标签），按 §4.1 判定。T3 必须 `#[ignore]`。
 2. 新测试必须满足 §4.2 全部八条隔离契约，方可进入评审。
@@ -140,7 +140,7 @@
 1. **速度**：热缓存口径下 `cargo test --workspace --locked` 单次总耗时 ≤ 7:00（含增量编译）；验收流程 = 消缓存后跑一次（不计入）+ 连续两次全绿且均 ≤7:00。
 2. **并行安全**：全 workspace 环境变量互斥锁收敛到唯一 `mirri-test-support::env::lock()`（workspace 内其他静态 env 锁定义清零）；无裸 `set_var` 无锁调用残留（扫描命令零命中）。
 3. **稳定**：连续两次全量全绿；对曾持锁/裸 set_var 的测试目标以 5× 重复运行或随机顺序（`-Z unstable-options --randomize`）作附加验证无红。
-4. **标准落地**：`rust/AGENTS.md` 增补「测试铁律」章节；`docs/specs/glossary.md` 不新增跨域术语（T0–T3 为本域内命名，已与 TUI 分层显式消歧）。
+4. **标准落地**：测试落地标准写入 `.agents/skills/testing-guide/SKILL.md` §3（`rust/AGENTS.md` 保留摘要 + 指针）；`docs/specs/glossary.md` 不新增跨域术语（T0–T3 为本域内命名，已与 TUI 分层显式消歧）。
 5. **可维护**：每 crate `tests/` 二进制数 ≤3；全 workspace 集成测试二进制总数 ≤30。
 6. **不冗余**：合并后无同一行为被两个二进制重复覆盖（人工审查 + reviewer 校验）。
 
