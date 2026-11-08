@@ -211,16 +211,17 @@ pub(crate) fn merge_fork_custom(
 }
 
 /// Resolve the fork chain's cache root id (the provider prompt-cache key
-/// lineage): the source's persisted root wins when it has one (a nested
-/// fork must keep hitting the cache shard the chain root warmed), else
-/// the source itself is the root of the new chain — its own id.
+/// attribution): the source's root wins when it has one — which it now
+/// always does, minted at the source's own create — so a nested fork
+/// keeps hitting the shard the chain root actually warmed. The source-id
+/// fallback only covers a legacy in-memory source predating the field;
+/// it is the same "source is its own root" semantics, and it still points
+/// at a shard the source's requests would have used.
 ///
-/// Pure and lossless: no IO. `None` for the source's root (a fresh or
-/// legacy source predating the field) falls back to the source id — that
-/// fallback is the "source is its own root" semantics. Whether to call
-/// this at all when the source's state cannot be READ is the caller's
-/// decision (the fork machinery leaves the cache root unset in that case
-/// instead of minting a possibly-wrong id).
+/// Pure and lossless: no IO. Whether to call this at all when the
+/// source's state cannot be READ is the caller's decision (the fork
+/// machinery leaves the cache root unset in that case instead of minting
+/// a possibly-wrong id).
 pub(crate) fn resolve_fork_cache_root(source_cache_root: Option<&str>, source_id: &str) -> String {
     source_cache_root
         .filter(|root| !root.is_empty())

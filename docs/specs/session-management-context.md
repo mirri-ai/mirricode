@@ -65,11 +65,13 @@
 - reducer fold 的 `ContextUndo` 臂（`mirri-proto/src/reducer.rs:225-242`）：按**消息条数**截断（`count` = 从尾部移除的消息数，时间线同截），仅由 TS 写入日志与测试夹具行使（`mirri-core/tests/compaction_tests.rs:4084`、`mirri-proto` proptest/reducer_tests）。**口径分裂事实**：同一条 `context.undo` 记录，v1 写的是锚点数、rust fold 读的是消息条数——跨引擎重放同一日志的截断位置不一致（该口径的收敛方向由架构 ADR-006 裁定，见 [session-management-architecture.md](session-management-architecture.md)）。
 - 编号交互（压缩域 ADR-007）：撤销产生的编号消耗间隙经 apply 记录区间括号校正——**仅对 wire 记录形态的撤销有效**；rust live 撤销不落盘，故其编号消耗在重放侧不可见；切点落入头部精华区/保留尾区之内时该区段欠校正（压缩域文档化残差，compaction-context §1.2 与 reducer 文档）。
 
-### 1.7 分叉的缓存计费现状（2026-10-09 增补，SDR-010 修订裁决/ADR-007 的现状依据——现状即目标行为）
+### 1.7 分叉的缓存计费现状（2026-10-09 增补，2026-11-08 重写——SDR-018/ADR-011 的现状依据）
 
 - TS v2：模型请求配线的 `cacheKey` = **当前会话 id**（`agent/profile/profileService.ts:549` `cacheKey: this.sessionContext.sessionId`；经 kosong 分发到各服务方——OpenAI 系 `prompt_cache_key`（`openai-responses.ts:1096`、`openai-legacy.ts:668`）、Kimi `prompt_cache_key`（`kimi.contrib.ts:187`）、Anthropic 系 `metadata.user_id`（`anthropic.ts:895`））。fork 换新会话 id → `cacheKey` 跟着换 → 分叉会话首请求对按 key 路由缓存的服务方是全新对话。**v1 同构**（`packages/agent-core/src/rpc/core-impl.ts:1171` `promptCacheKey: sessionId`）。
-- Rust：模型请求配线无 cache key 通路（`mirri-core/src/{llm,profile}.rs` 无相关字段）——缓存归属的引擎侧支持完全缺失。
 - 两代 TS 引擎的 `cacheKey` 都没有"分叉继承"概念：fork 后新 id 即新缓存身份。服务方侧的实际影响因提供方而异（按前缀匹配的缓存不换 key 也命中；按 key 路由的换 key 即 miss）。
+- Rust（2026-11-08 更新）：配线通路已全环打通——会话元数据承载 `cache_root_id`，fork 管道按 `resolve_fork_cache_root`（`mirri-core/src/session/fork_pipeline.rs:224`，源的根优先、否则源自身）解析，`message_handlers.rs` 的发送与引导两条路径把标识注入回合流（`set_cache_root_id`），provider 层在 OpenAI 系请求体插入顶层 `prompt_cache_key`（`mirri-embedded/src/providers/openai.rs:170`）。会话创建（`manager/mod.rs` 的 `create_session_inner_ex`）与 resume（`manager/restore.rs`）在标识缺失时补填为自身 id。
+- 该字段不在数据库行的列里（`manager/mod.rs` 的同段注释）：行只承载展示与生命周期事实，血缘类字段（`cache_root_id` / `custom`）随会话元数据走。因此 resume 只能靠补填，`forkedFrom` 在行路径上同样丢失。
+- 曾观测到的实测形态（2026-11-08，Xiaomi mimo 端点）：源会话最后一步 `cacheReadTokens=513408 / inputTokens=274`（命中），分叉会话首请求 `cacheReadTokens=0 / inputTokens=519485`（全量未命中，`durationMs=80264`），第二步即恢复 `cacheReadTokens=519424`。同批观测中所有不带该字段的普通新会话首请求均命中 20480 的共享前缀，带该字段的分叉是 0——指向"按 key 路由进了一个从未被写入的分片"。
 
 ### 1.8 会话运行状态三引擎现状（2026-10-13 增补，US4.4/SDR-013 的现状依据——刷新丢"运行中"标记的缺口本体）
 
@@ -97,7 +99,7 @@
 | 网页交互 | 置顶动作 + 拖拽（原生） | 无 |
 | TS 对齐 | 契约共享、实现跟进 | 无实现（按 SDR-003 进 TS 排期） |
 | fork 完整性（E5） | 独立会话 + 「Fork of 原标题」命名（SDR-012）+ 带已完成对话/重置运行中（SDR-007）+ 失败回滚 + 全量成员复制（SDR-011） | **Rust 管道已落地**（2026-10-09 F1-F6：turnId 锚点截取 + 过滤表（cron/forked/goal 生命周期重置）+ 全量成员 journal/blobs/agents manifest 复制 + `Fork of 源标题` 命名 + forkedFrom 血缘 + 原子落位零残留 + 锚点校验护栏（ADR-F4 修订版）——V1-V8 验收全钉，见 rust-core-design ROADMAP 1.9）；TS v2 复制全量 wire（含未收尾回合，无原子截断、无分叉点参数、无忙碌护栏）+ **双跑式克隆定时任务**（SDR-007 要求改为不带）+ `Fork: <源名>` 命名（SDR-012 定为「Fork of」——v2 待小改，随 1.3 退役线）；**TS 侧 fork 契约无 turnId**（klient/v2/node-sdk schema 均未收——消费端对齐项）；**父子关系（createChild 的 v2 parent linkage）未建模**（rust createChild 复用 fork 管道、`Child:` 命名，无 forkedFrom）；目标重置/挂起交互不带/上报重投递/附件共享不清理均未实现 |
-| 分叉的缓存计费（US5.5） | 归属标识随新会话身份（SDR-010 修订裁决）+ 请求前缀稳定（截取管道保证）；首命中不做保证 | v2 `cacheKey` = 当前会话 id（`profileService.ts:549`）、v1 同构（`core-impl.ts:1171`）——已符合修订裁决（无对齐变更）；Rust 无 cache key 配线通路（待补） |
+| 分叉的缓存计费（US5.5） | 归属标识 = 分叉链根（SDR-018）+ 请求前缀稳定（截取管道保证）；根会话自身也携带标识 | v2 `cacheKey` = 当前会话 id（`profileService.ts:549`）、v1 同构（`core-impl.ts:1171`）——**无分叉继承**，与 SDR-018 有偏；Rust 全环已打通（`cache_root_id` → `prompt_cache_key`），见 §1.7 |
 | fork 界面入口与落点（US5.1 界面条款） | 双端入口 + 落点跳转新会话 + 溯源可见 | 入口与落点已上线（§1.5a：TUI `/fork`、web 双菜单、fork 后跳转）；**血缘可见缺失**（forkedFrom 界面未消费） |
 | 分叉点选择 UX（US5.4 界面条款） | 回合终点入口（web 悬停/聚焦）+ 分叉点选择器（TUI）+ 忙碌/失败诚实反馈 | 全部未实现（新需求；TUI 选择器可复用 undo-selector 模式，§1.5a） |
 | btw 分支（E5） | 会话内旁路分支：工具禁用、追问复用、随会话持久化 | wire `btw.start` 已登记；rust 会话内有 btw fork 概念（会话级 agent），旁路语义与持久化待核 |

@@ -944,6 +944,19 @@ impl SessionManager {
             metadata.work_dir = Some(self.workspace.cwd().to_string_lossy().into_owned());
         }
 
+        // Mint the session's prompt-cache attribution: a session with no
+        // chain root of its own is its OWN root. Every provider request
+        // then carries this id as the cache key, so the shard a later
+        // fork inherits (`resolve_fork_cache_root`) is the shard the
+        // source actually warmed. Calling the fork pipeline with a source
+        // that never wrote the key would leave the fork querying a shard
+        // nobody wrote — a full-prefix miss on its first request.
+        // Caller-supplied values win (the fork path mints the chain root
+        // before this create lands).
+        if metadata.cache_root_id.is_none() {
+            metadata.cache_root_id = Some(session_id.as_str().to_string());
+        }
+
         // The session's background tasks persist under `<session_dir>/tasks/`
         // (per-task JSON + append-only output logs), mirroring the TS
         // kernel's session-level task layout.
@@ -1208,16 +1221,18 @@ impl SessionManager {
         if new_metadata.forked_from.is_none() {
             new_metadata.forked_from = Some(source_session_id.as_str().to_string());
         }
-        // Cache-key lineage: the fork routes its provider prompt-cache key at
-        // the fork chain's ROOT — a nested fork must keep hitting the same
-        // cache shard the original session warmed. The source's LIVE scope
-        // metadata is the carrier (the fork pipeline requires a live source,
-        // so the scope is always available; ADR-006: the lineage carriers
-        // `cache_root_id` / `custom` are not row columns — the row write
-        // path does not persist them). Caller-supplied values are never
-        // overwritten here: the embedded layer may have derived lineage
-        // already. A source without a cache root of its own is itself the
-        // root.
+        // Cache-key attribution: the fork routes its provider prompt-cache
+        // key at the fork chain's ROOT — a nested fork keeps hitting the
+        // cache shard the original session warmed, which the original
+        // session really did warm (a root session mints its own id at
+        // create and sends it on every request). The source's LIVE scope
+        // metadata is the carrier (the fork pipeline requires a live
+        // source, so the scope is always available; ADR-006: the lineage
+        // carriers `cache_root_id` / `custom` are not row columns). A
+        // source without a cache root (a legacy in-memory state) is
+        // itself the root — the same shard its own requests used.
+        // Caller-supplied values are never overwritten here: the embedded
+        // layer may have derived lineage already.
         let source_metadata = source_session.metadata().await;
         if new_metadata.cache_root_id.is_none() {
             new_metadata.cache_root_id = Some(

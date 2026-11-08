@@ -1411,11 +1411,14 @@ impl EmbeddedServer {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_goal_usage_accounting(agent.goal());
-        // Fork-chain cache routing (fork-cache-key): the session's persisted
-        // `cacheRootId` (the fork chain root, minted at fork time) rides every
-        // turn's provider request as the prompt-cache key. `None` (fresh or
-        // legacy sessions) omits the provider's cache-routing field — the
-        // flow defaults to absent and the re-set is idempotent.
+        // Fork-chain cache routing (fork-cache-key): the session's
+        // `cacheRootId` (minted at create as the session's own id, and
+        // carried through forks at the chain root) rides every turn's
+        // provider request as the prompt-cache key. Every session carries
+        // one, so the shard a fork inherits is the shard its source
+        // actually warmed; only a legacy in-memory session built before
+        // the field lands `None`, which omits the provider's
+        // cache-routing field. The re-set is idempotent.
         let session_metadata = session.metadata().await;
         flow_handle
             .lock()
@@ -2714,7 +2717,8 @@ impl EmbeddedServer {
         // Fork-chain cache routing (fork-cache-key): the same session
         // `cacheRootId` injection the message.send path applies — a
         // steer-launched turn must route its provider prompt-cache key at
-        // the same fork-chain root.
+        // the same fork-chain root (the session's own id for a root
+        // session, the chain root for a fork).
         let session_metadata = session.metadata().await;
         flow_handle
             .lock()

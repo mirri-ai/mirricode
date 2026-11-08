@@ -80,6 +80,8 @@ To explore a new direction without disrupting the current conversation, use `/fo
 
 The two resulting sessions are completely independent and do not affect each other. You can switch back to the original at any time from the session sidebar. A saved `/goal` is not copied to the fork. Start a new goal there if you want autonomous goal work.
 
+The fork starts from the full conversation up to the point you forked at, and the model provider treats that history as already read — so the first message in a fork does not pay to re-process the whole conversation.
+
 ## Exporting a session
 
 Use `mirri export` to package a session as a ZIP file — useful for sharing, archiving, or filing a bug report:
