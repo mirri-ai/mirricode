@@ -17,6 +17,81 @@ rust 引擎还在开发中，很多功能可能还不成熟甚至是错误的。
 - 新增门禁时：加进 `scripts/gate.mjs` 的 STAGES（按耗时插入合适位置），不要另开入口。
 - **KNOWN_FAILURES 是债务不是许可证**：清单里的失败必须带 owner 注记与 TODO(remove) 条款，债务清偿后立即删除条目。
 
+## 本地测试执行阶梯（改了什么就跑什么）
+
+`pnpm gate` **不编译、不跑测试**（只跑 5 个静态守卫，~3s）；下一个能跑测试的档直接是 `gate:full` 的 8 分钟全量。所以日常迭代的主路径是**直接对单个 crate / 单个 test target 跑 cargo**，不要在两极之间二选一。
+
+| 意图 | 命令 | 成本 |
+|---|---|---|
+| 每次编辑后 | `pnpm gate` | ~3s，不编译不测试 |
+| 改了 rust 生产代码（跨 crate 面） | `pnpm gate:rust` | 分钟级（含 clippy） |
+| **日常迭代主路径：改了某个 crate** | `cargo test -p <crate> --lib` | 秒级~分钟级 |
+| **改动了 `tests/` 下的文件** | `cargo test -p <crate> --test <bin>` | 同上 |
+| 单个测试定位 | `cargo test -p <crate> --lib <子串>` | 最快 |
+| 批次收尾 / 提 PR 前 | `pnpm gate:full` | ~8min（热缓存） |
+| 动了 R 层（`#[ignore]`） | `pnpm gate:real` | 1-2min |
+| 改依赖 / 新增 crate | `cargo deny --manifest-path rust/Cargo.toml check` | 分钟级（**不在任何 gate 档里**；需先 `cargo install cargo-deny`） |
+| 动了平台相关代码 | `cargo xwin check --target x86_64-pc-windows-msvc` | 分钟级（**不在任何 gate 档里**；需先 `cargo install cargo-xwin`） |
+
+### 测试分类如何映射到执行（关键：不要解析注释标签）
+
+`// layer: T<n>` 是**评审合规元数据**，只被 `check-test-hygiene.mjs` 校验「文件头 20 行内存在」，**没有任何 runner 消费它**。不要为了"按分类挑测试"去写解析注释标签的脚本——那条路维护成本高且必然漂移。
+
+真正被 cargo 消费的分类轴是 **test target 本身**，映射是现成且零维护的：
+
+| 层（AGENTS 分层表） | 物理位置 | 执行命令 |
+|---|---|---|
+| T0 单元测试 | `src/` 内 `#[cfg(test)]` | `cargo test -p <crate> --lib` |
+| T1/T2 集成测试 | `tests/*.rs` | `cargo test -p <crate> --test <文件名>` |
+| T3/R 真实环境 | `#[ignore]` gated（同上两个位置） | `pnpm gate:real` 或 `-- --ignored` |
+
+当前 `tests/` 目标清单（失效时以 `ls rust/crates/<crate>/tests/*.rs` 为准）：
+
+```
+mirri-acp: conformance desktop_share_e2e e2e_mock
+mirri-cli: cli_tests
+mirri-collaboration: collaboration_tests
+mirri-core: session_group terminal_misc_group tools_scope_group
+mirri-embedded: e2e_real_llm   ← 仅此一个；主力测试在 src/ 的 #[cfg(test)]（用 --lib）
+mirri-kosong: providers_group
+mirri-mcp: mcp_group
+mirri-os: all_group
+mirri-persistence: persistence_group
+mirri-plugin-host: plugin_group
+mirri-proto: proto_group
+mirri-remote: remote_adapter_tests
+mirri-server: server_group
+mirri-test-harness: cross_backend_contract harness_tests mock_llm_tests
+```
+
+### 全量红了怎么判（这轮踩过的坑）
+
+全量 workspace 里某条测试红，**先隔离单跑再定性**，不要直接当回归：
+
+```bash
+cargo test -p <crate> --lib <该测试名子串>   # 单跑
+```
+
+- 单跑绿 → 机器负载 / 跨测试干扰 / 环境（比如本机的 `fseventsd` 暴走会拖慢并放大竞态）。按环境问题记录，**不要写进报告当全绿**。
+- 单跑红 → 真回归，按正常流程修。
+
+判据：本仓 CI 的 `rust-test` job 是权威全量；本地全量的作用是**早期发现**，不是最终证据。
+
+### 本地档位 ↔ CI job 对照（推 PR 前自查哪一档漏了）
+
+| CI job（`.github/workflows/ci.yml`） | 本地等价 | 是否在 gate 档里 |
+|---|---|---|
+| `rust-test`（全量 `cargo test --workspace`） | `pnpm gate:full` | ✅ |
+| `rust-clippy`（位于 `gate:rust`） | `pnpm gate:rust` | ✅ |
+| `rust-zero-io-gate` | `pnpm gate`（`rust-zero-io` 阶段） | ✅ |
+| `rust-test-hygiene-gate` | `pnpm gate`（`rust-test-hygiene` 阶段） | ✅ |
+| `rust-real-env`（非阻塞）/ `nightly-rust-real-env`（必过） | `pnpm gate:real` | ✅（opt-in 档） |
+| `rust-deny` | `cargo deny --manifest-path rust/Cargo.toml check` | ❌ **需手动** |
+| `rust-agent-md-parity` | `cargo test -p mirri-core --test tools_scope_group agent_md_cross_engine_` 与 `agent_list_cross_engine_` | ❌ 需手动（改 `AGENTS.md` 模板/工具清单时） |
+| Windows 交叉编译 | `cargo xwin check --target x86_64-pc-windows-msvc` | ❌ 需手动 |
+
+后三行是已知缺口：改依赖、改 `AGENTS.md` 工具模板、动平台相关代码时必须手动补跑，否则 PR 才会红。它们不进 `pnpm gate` 的理由是本地要额外装 `cargo-deny` / `cargo-xwin`（非 Rust 默认工具链），不适合作默认门禁；未安装时按 CI 为准。
+
 ## 架构契约（违反即返工）
 
 1. **契约事实源链**：RPC 方法面的唯一事实源是 `crates/mirri-proto/src/rpc/registry.rs` 注册表，经 `authoritative-methods.tsv` ⇄ EMB 路由表 ⇄ NAPI ⇄ contract-e2e fixture 五环节联动。任何方法面变更必须全链同步，缺一环就是漂移。
@@ -72,7 +147,6 @@ rust 引擎还在开发中，很多功能可能还不成熟甚至是错误的。
 - 需要环境变量语义 → 注入式优先；确需 `set_var` → `mirri-test-support::env::lock()` + 最小集合 + 不跨 await。
 - 存量测试不满足隔离契约的，按 ROADMAP 分批迁移，不阻塞新贡献（baseline 白名单：`rust/scripts/test-hygiene-baseline.json`）。**sleep 规则零容忍 + 覆盖判定 allow-list 化（批 6a/6b 起）**：baseline 的 sleep 条目**只有 reason 匹配 `^(poll-step|negative-wait|real-|D:)` 才算已覆盖**——其余（无 reason、`legacy:`、`Legacy:` 大写变体、随口写的 prose）一律不覆盖。`--write-baseline` 重锚时，**新条目（该 file+type 组内无对应旧条目）一律写不覆盖的 reason**，所以重锚不能把新裸 sleep 洗白：写完后下一次 gate 仍然红，直到有人给它一个真实 reason。
   - **已知机制边界（不要误以为绝对）**：sleep 的"守护上下文"判定扫命中行之前 15 行的原文找 `wait_for` 标记——同一测试里 15 行内只要出现过 `wait_for`，其后的裸 sleep 就被视为在轮询循环内；行内 `// hygiene-allow: <任意 prose>` 也被接受（规则 R 的 `real-` 分支之外不做 reason 校验）。收窄这个窗口能挡住更多存量盲区（审计就靠它找到了 4 处），但需要同步重排 150+ 条基线条目，属独立批次。
-- **主门禁**：`node rust/scripts/check-test-hygiene.mjs`（挂 `pnpm gate:rust-test-hygiene`，与 zero-io 守卫同级别）——扫 test cfg 内裸 `std::env::set_var`/`remove_var`、裸 `thread::sleep`、`tests/` 文件缺 `// layer:` 标签、规则 R 的 real-env 信号（见下条）；行内 `// hygiene-allow: <reason>` 豁免（规则 R 的 `real-` 窗口分支除外）。clippy `disallowed-methods` 因全局作用域无法限定 test cfg（会误伤生产合法 `set_var`），仅作为 ROADMAP 增量项（SDR-016.3）。
 - **主门禁**：`node rust/scripts/check-test-hygiene.mjs`（挂 `pnpm gate:rust-test-hygiene`，与 zero-io 守卫同级别）——扫 test cfg 内裸 `std::env::set_var`/`remove_var`、裸 `thread::sleep`、`tests/` 文件缺 `// layer:` 标签、规则 R 的 real-env 信号（见下条）；行内 `// hygiene-allow: <reason>` 豁免（规则 R 的 `real-` 窗口分支除外）。clippy `disallowed-methods` 因全局作用域无法限定 test cfg（会误伤生产合法 `set_var`），仅作为 ROADMAP 增量项（SDR-016.3）。
 - **规则 R（real-env 归因棘轮）**：测试代码里有两类信号，必须归因到 R 层，由 test-hygiene 机械执行：
   - **裸真实子进程 spawn**（`std::process::Command` / `tokio::process::Command` / `Command::new`）：所在行必须在 `#[ignore]` 的测试 fn 内，或带行级 `// hygiene-allow: <reason>`。helper fn 挂不了 `#[ignore]`，所以它的 spawn 行**默认保持可见**——只能靠行级 `// hygiene-allow` 豁免；caller 测试上的 `#[ignore]` **不为 helper 的 spawn 背书**。
