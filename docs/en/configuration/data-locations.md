@@ -77,7 +77,9 @@ Each top-level file under the data root serves a specific purpose; most are mana
 
 ## Session data
 
-Session data is stored per engine: the TS engine (currently the default) writes under `sessions/`, while the Rust engine (enabled with `MIRRICODE_RUST_ENGINE=1`) writes under `v3_sessions/` — the two directories never read each other's sessions. The internal layout is the same: each session's data is stored under `<workDirKey>/<sessionId>/`. There are two indexes: `session_index.jsonl` is the TS engine's v1-compatible listing (one record per line, each containing `sessionId`, `sessionDir`, and `workDir`); the TS v2 engine reads its own SQLite read model at `cache/session-index.db`, and the Rust engine reads `session-index.db`. Both are reloadable caches of the same on-disk sessions, so removing them only degrades the listing to a direct disk scan. `workDirKey` is a bucket name derived from the working directory path, in the format `wd_<slug>_<first-12-chars-of-sha256>`.
+Session data is stored per engine: the TS engine (currently the default) writes under `sessions/`, while the Rust engine (enabled with `MIRRICODE_RUST_ENGINE=1`) writes under `v3_sessions/` — the two directories never read each other's sessions. The internal layout is the same: each session's data is stored under `<workDirKey>/<sessionId>/`. There are two indexes: `session_index.jsonl` is the TS engine's v1-compatible listing (one record per line, each containing `sessionId`, `sessionDir`, and `workDir`); the TS v2 engine reads its own SQLite read model at `cache/session-index.db`, and the Rust engine reads `session-index.db`. The TS engine's two indexes are reloadable caches of the same on-disk sessions, so removing them only degrades the listing to a direct disk scan; the Rust engine's `session-index.db` also stores each session's title, tags, archive and pin state, so deleting it loses that information — do not clear it as if it were a cache. `workDirKey` is a bucket name derived from the working directory path, in the format `wd_<slug>_<first-12-chars-of-sha256>`.
+
+If you delete a session directory (or the whole `v3_sessions/`) outside the app, the session list may still show stale entries for them; the next time you open such a session, the leftover entry is cleaned up automatically. To clear the list right away, delete `v3_sessions/` and `session-index.db` together.
 
 Inside each session directory:
 
@@ -115,7 +117,7 @@ Deleting the data root directory (`~/.mirri-code/` or the path set by `MIRRICODE
 | --- | --- |
 | Reset configuration | Delete `~/.mirri-code/config.toml` |
 | Reset terminal UI preferences | Delete `~/.mirri-code/tui.toml` |
-| Clear all sessions | Delete `~/.mirri-code/sessions/`, `~/.mirri-code/v3_sessions/`, and `session_index.jsonl` |
+| Clear all sessions | Delete `~/.mirri-code/sessions/` and `~/.mirri-code/v3_sessions/`, plus the index files `session_index.jsonl` and `session-index.db` |
 | Clear diagnostic logs | Delete `~/.mirri-code/logs/` |
 | Clear input history | Delete `~/.mirri-code/user-history/` |
 | Reset update state | Delete `~/.mirri-code/updates/latest.json` |

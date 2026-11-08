@@ -2,4 +2,4 @@
 "@mirri-ai/release": patch
 ---
 
-core: Reclaim the session-index row when opening a listed session whose persisted body is gone. Deleting the sessions directory (or one session's folder) outside the engine used to leave rows that every listing re-offered and every click failed on; the open path (`session.resume` / `session.restore`) now drops those rows, while never-conversed rows (the legal "row present, body absent" state), compressed bodies, and live sessions are kept untouched.
+Fix sessions that stayed in the sidebar after their files were deleted outside the app — opening such a session now also removes it from the list, instead of failing on every click and coming back on the next reload. Sessions that were created but never used, archived sessions with a compressed history, and sessions still open in the app are left untouched.
