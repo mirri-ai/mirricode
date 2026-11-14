@@ -37,7 +37,6 @@
   ],
   "exclude": [
     "node_modules",
-    "apps/mirri-desktop-lite",
     "dist",
     "coverage",
     "**/*.disabled/**",

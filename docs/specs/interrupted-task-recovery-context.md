@@ -56,7 +56,6 @@
 | 徽标 i18n：en `aborted='Stopped'` / `stalled='Stalled'`；zh `aborted='已中断'` / `stalled='已停滞'`（注意：zh 侧「已中断」词汇已被用户取消/失败占用，本域新增语义需另取名，见需求文档术语表） | `apps/mirri-web/src/i18n/locales/en/workspace.ts:69-76`；`apps/mirri-web/src/i18n/locales/zh/workspace.ts:67-74` |
 | 冷启动进入空白新建任务草稿页，历史仅在后台填侧边栏；无「上次会话」记忆（仅 URL 深链例外） | `apps/mirri-web/src/composables/client/useWorkspaceState.ts:1130-1153` |
 | 桌面壳每次启动都加载根 URL，只持久化窗口尺寸；`desktop-state.json` 只记 `{pid, port, startedAt}` 供陈旧守护进程清理，非 UI 状态 | `apps/mirri-desktop/src/main/window/create.ts:57-82`；`apps/mirri-desktop/src/main/server/state.ts:12, 43, 61` |
-| desktop-lite：独立端口 55828 + 独立状态目录，但**复用同一 rust 引擎二进制与同一 `~/.mirri-code/v3_sessions`**（无自有会话存储） | `apps/mirri-desktop-lite/src/bun/daemon.ts:10-13, 286-290` |
 
 ## 3. 服务生命周期现状（退出时发生什么）
 

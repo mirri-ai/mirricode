@@ -18,7 +18,6 @@ All other workspace packages are private internal packages and are not targeted 
 
 - `@mirri-ai/e2e-harness`
 - `@mirri-ai/mirri-desktop`
-- `@mirri-ai/mirri-desktop-lite`
 - `@mirri-ai/mirri-web`
 - `@mirri-ai/protocol`
 - `@mirri-ai/server-e2e`

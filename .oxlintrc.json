@@ -140,7 +140,6 @@
     "coverage/",
     "node_modules/",
     "apps/*/scripts/",
-    "apps/mirri-desktop-lite/",
     "docs/smoke-archive/",
     "*.generated.ts"
   ]

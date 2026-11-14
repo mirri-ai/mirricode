@@ -1,9 +1,6 @@
 packages:
   - packages/*
   - apps/*
-  # mirri-desktop-lite is managed by its own Hutch toolchain (hutch.lock +
-  # hutch-managed node_modules); pnpm must not take it over (ADR-007).
-  - '!apps/mirri-desktop-lite' 
   - docs
 
 catalog:
@@ -13,10 +10,10 @@ catalog:
 # package.json is ignored (with a warning), so an override kept there is
 # silently dropped the next time the lockfile is regenerated. These pins moved
 # here from that dead field. Selectors whose package the TypeScript retirement
-# removed from the tree (the old server's protobufjs/qs/body-parser chain, and
-# the desktop-lite app's vite 8) were dropped rather than carried as text that
-# matches nothing; `vite@^8.0.0` in particular matched vitest's peer range and
-# pulled a second vite major into the tree.
+# removed from the tree (the old server's protobufjs/qs/body-parser chain) were
+# dropped rather than carried as text that matches nothing; `vite@^8.0.0` in
+# particular matched vitest's peer range and pulled a second vite major into the
+# tree.
 overrides:
   "ssh2@1.17.0>cpu-features": "-"
   "ssh2@1.17.0>nan": "-"

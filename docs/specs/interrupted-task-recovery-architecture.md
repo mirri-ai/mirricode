@@ -1,7 +1,7 @@
 # 中断任务恢复（interrupted-task-recovery）架构文档
 
 > 本文档描述中断任务恢复域的实现机制、接口形状与数据流；动机保持抽象（不含代码事实），现状依据见 [interrupted-task-recovery-context.md](interrupted-task-recovery-context.md)。需求见 [interrupted-task-recovery-requirements.md](interrupted-task-recovery-requirements.md)（下称「需求文档」，裁决编号 D-M* 沿用其 §8）。
-> 运行目标为 Rust core + web（desktop 外壳行为一致；desktop-lite 复用同一引擎）。
+> 运行目标为 Rust core + web（desktop 外壳行为一致）。
 
 ## 0. 架构总览
 
@@ -201,7 +201,7 @@ recovery.dismiss_all() -> noResult           // 全部忽略（C.4）
 | F.2 静默完整性 | §4（无中断零呈现——recovery.list 空 → 不渲染） |
 | F.3 低开销 | §1（两个事件各一次写）/ §3 惰性过期 |
 | F.4 原子性与容错 | §1.2 损坏容错 |
-| F.5 界面一致 | §0（desktop 外壳复用 web；desktop-lite 复用引擎，context §2.2） |
+| F.5 界面一致 | §0（desktop 外壳复用 web） |
 | D-M1 哨兵唯一依据 | §1（无心跳） |
 | D-M2 直读 vs 反推 | §1.2 分支 |
 | D-M3 新成因词汇 | §2.1 |
