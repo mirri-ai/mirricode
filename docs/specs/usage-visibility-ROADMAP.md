@@ -25,7 +25,7 @@
 - **BTW 侧聊口径**：BTW sidechat 的用量当前计入父会话的会话级统计（会话用量状态与 web 统计条同口径）；处理时需补一份 SDR-002 决策记录明确归属（终审 M-2）。
 - **回合/步计数呈现**：「N turns · M steps」式回合与步计数尚未在任何呈现面露出（终审 M-1）。
 - **推理子集行**：供应商单独上报推理 token 时才渲染（US2.2 条件行）；当前接入族均不单独上报，首个有上报的供应商接入时激活。
-- **终端呈现面**：TS CLI/TUI 壳已于 2026-10-28 退役（见 `ts-v1-engine-retirement-requirements.md`）；终端呈现面重建时，会话统计条须遵循 ADR-004 的组序与门槛，回合胶囊的终端等价物（回合摘要行/斜杠命令）按 write-tui 的布局约束重建。
+- **终端呈现面**：TS CLI/TUI 壳已于 2026-10-28 退役（见 `ts-v1-engine-retirement-requirements.md`）；终端呈现面重建时，会话统计条须遵循 ADR-004 的组序与门槛，回合胶囊的终端等价物（回合摘要行/斜杠命令）按 `docs/specs/tui/` 交互套件设计（交互与呈现规范见 `tui/interaction-requirements.md` 与 `tui-architecture.md`）。
 - **用量更新事件粒度**：web 统计条与回合面板的刷新节流策略（避免流式 delta 触发全量重渲染，DSH 的 settled-node 模式可参照）。
 - ~~**冷启动后命中率与刷新续算（SDR-004）**~~：`UsageState.first_call` 持久化 → resume 回填 → wire `firstCall` 暴露（SessionView / agent status）→ web 投影器 seedUsage 修刷新回归 → 统计条双指标组、会话级两位小数。状态：已收口（2026-10-07）。
 

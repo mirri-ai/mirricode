@@ -1,7 +1,9 @@
 # Mirri Web
 
-A browser client for Mirri Code — a peer to the TUI (`apps/mirri-code`) that talks
-to a local **server** over REST + WebSocket. Vue 3 + Vite + TypeScript.
+A browser client for Mirri Code — the peer of the desktop shells. Vue 3 + Vite +
+TypeScript, talking to the local **rust engine** over REST + WebSocket. (The
+terminal client this README used to name as its peer, `apps/mirri-code`, was
+retired on 2026-10-28; see `docs/specs/ts-v1-engine-retirement-requirements.md`.)
 
 ---
 
@@ -58,8 +60,10 @@ server (REST + WS)
 - **Adapter** (`src/api/`): wire types are snake_case; `AppX` types are camelCase.
   `config.ts` builds `/api/v1` URLs.
 - **Event projector** (`agentEventProjector.ts`): the server streams **raw
-  agent-core events** (no `event.` prefix). `classifyFrame` routes raw vs
-  protocol (`event.*`) frames; the projector converts them to `AppEvent`s.
+  engine events** (no `event.` prefix; the "agent-core" in the sketch above is
+  the historical TypeScript engine name, kept as a label for that event family).
+  `classifyFrame` routes raw vs protocol (`event.*`) frames; the projector
+  converts them to `AppEvent`s.
 - **i18n** (`src/i18n/`): vue-i18n, en/zh, per-namespace flat camelCase keys.
   Detect order: `localStorage('mirri-locale')` → `navigator.language` → `en`.
 ---
@@ -86,25 +90,24 @@ The server's wire protocol has a few things that will bite you if forgotten:
 
 ## Release & deployment
 
-Mirri Web is **not published as a standalone package**. It ships as the built-in
-web UI of the `mirri` CLI (`apps/mirri-code`).
+Mirri Web is **not published as a standalone package**. It is embedded into the
+rust `mirri` binary as the built-in web UI.
 
 ### Current release flow
 
-1. **Develop** — `pnpm dev:web` (or `pnpm -C apps/mirri-web run dev`).
+1. **Develop** — `pnpm dev:web` (or `pnpm -C apps/mirri-web run dev`), against
+   the rust engine.
 2. **Build** — `pnpm -C apps/mirri-web run build` produces `apps/mirri-web/dist`.
-3. **Bundle into CLI** — `pnpm -C apps/mirri-code run build` runs
-   `scripts/copy-web-assets.mjs`, which copies `apps/mirri-web/dist` into
-   `apps/mirri-code/dist-web`.
-4. **Publish** — the root `.github/workflows/release.yml` publishes
-   `@mirri-ai/mirri-code` to npm; `dist-web` is listed in the package `files`
-   array, so the built web assets travel with the CLI package.
-5. **Serve** — `mirri server run` / `mirri web` serves `dist-web` from the
-   installed package.
-
-The web UI does not display its own package version or build commit. It is
-bundled into the CLI package and follows the published `@mirri-ai/mirri-code`
-release.
+3. **Stage** — `node rust/scripts/stage-web.mjs` copies `apps/mirri-web/dist`
+   into `rust/crates/mirri-server/web-dist`. `cargo build -p mirri-cli` with its
+   default `embedded-web` feature embeds that directory via rust-embed. The release
+   packaging (`rust/scripts/release-package.mjs`) runs the staging step itself, so
+   the `full` variant always carries the SPA; the `lite` variant
+   (`--no-default-features`) embeds nothing.
+4. **Ship** — the release workflow uploads the resulting binaries as
+   `mirri-code-<target>.zip` to the GitHub Release. There is no npm publish step
+   (retired), and no separate web package version: the UI follows the product
+   version in `packages/release`.
 
 ### Suggested improvements
 

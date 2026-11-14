@@ -4,12 +4,11 @@
 <!--
   Hardened-runtime entitlements for the signed darwin `mirri` binaries.
 
-  This is a copy of apps/mirri-code/scripts/native/entitlements.plist, which
-  the retired Node SEA pipeline still reads. It is duplicated on purpose: the
-  rust pipeline must not depend on a frozen TypeScript package, and the SEA
-  scripts stay in the tree for reference (release-architecture.md ADR-004).
-  The SEA scripts are no longer invoked, so they will not drift; if these
-  entitlements ever change, change both.
+  The relaxed entitlements (JIT / unsigned executable memory / library
+  validation / DYLD env vars) are kept because the packaged artifact must keep
+  working when it execs a host. There is no second copy to keep in sync: the
+  TypeScript SEA pipeline that used to own the original has been retired and
+  removed, so this file is the only source.
 -->
 <plist version="1.0">
 <dict>

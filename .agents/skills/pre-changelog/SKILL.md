@@ -1,6 +1,6 @@
 ---
 name: pre-changelog
-description: Use before merging a mirri-code release PR to preview the user-facing CLI changelog in Chinese. Reads the changelog that changesets pre-generated in the release PR, then reuses sync-changelog's strip / classify / translate logic to render a Chinese preview. Writes no files.
+description: Use before merging a mirri-code release PR to preview the user-facing changelog in Chinese. Reads the changelog that changesets pre-generated in the release PR, then reuses sync-changelog's strip / classify / translate logic to render a Chinese preview. Writes no files.
 ---
 
 # Pre-Changelog
@@ -20,18 +20,18 @@ gh pr list --state open --search "ci: release packages in:title" \
 
 Pick the one with `headRefName: changeset-release/main`; record `number`, `url` as `<RELEASE>`. If none is open, nothing to preview — stop.
 
-### 2. Read the pre-generated CLI changelog block
+### 2. Read the pre-generated release changelog block
 
-changesets already pre-generates `apps/mirri-code/CHANGELOG.md` inside the release PR. Extract the new version block from the diff:
+changesets already pre-generates `packages/release/CHANGELOG.md` inside the release PR — that file is the version anchor for the product, and it is the only user-facing changelog source since the TypeScript CLI was retired (2026-10-28). Extract the new version block from the diff:
 
 ```bash
 gh api repos/mirri-ai/mirricode/pulls/<RELEASE>/files \
-  --jq '.[] | select(.filename=="apps/mirri-code/CHANGELOG.md") | .patch'
+  --jq '.[] | select(.filename=="packages/release/CHANGELOG.md") | .patch'
 ```
 
 Take the added lines (`+`) from the top `## <version>` down to (but not including) the next `## `. That is the version block to preview.
 
-If the CLI changelog is not in the diff (for example an SDK-only release), stop and tell the user — there is no user-facing CLI changelog to preview.
+If the release changelog is not in the diff (for example an SDK-only release), stop and tell the user — there is no user-facing changelog to preview.
 
 ### 3. Render the Chinese preview (reuse `sync-changelog`)
 
