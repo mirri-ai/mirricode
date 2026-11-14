@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.2.1
+
+### Patch Changes
+
+- [#220](https://github.com/mirri-ai/mirricode/pull/220) [`d5d8990`](https://github.com/mirri-ai/mirricode/commit/d5d8990e47237d3006a7cc5f91dd72bc6155ac02) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Update the bundled SQLite (via rusqlite) to a version containing the fix for CVE-2026-119375, a WAL-parsing vulnerability in SQLite 3.53.2 and earlier.
+
+- [#220](https://github.com/mirri-ai/mirricode/pull/220) [`d5d8990`](https://github.com/mirri-ai/mirricode/commit/d5d8990e47237d3006a7cc5f91dd72bc6155ac02) Thanks [@mirri-ai](https://github.com/mirri-ai)! - Fix oversized file reads misleading the agent: results now stay within the 50,000-byte context budget at the source (wide lines no longer get the whole output replaced by a 2000-character preview), multibyte text gets the full budget instead of roughly a third, and truncation notices now state which line range was actually delivered and point at paging with `line_offset` instead of chaining into loops.
+
+- [#220](https://github.com/mirri-ai/mirricode/pull/220) [`d5d8990`](https://github.com/mirri-ai/mirricode/commit/d5d8990e47237d3006a7cc5f91dd72bc6155ac02) Thanks [@mirri-ai](https://github.com/mirri-ai)! - web: Fix the thinking-effort picker being replaced by a plain "always thinks" note for models that cannot turn thinking off but do declare effort levels, such as GLM 5.3. The effort levels (low/high/max) are selectable again, with the "cannot be turned off" explanation shown as a tooltip on the picker.
+
 ## 3.2.0
 
 ### Minor Changes
