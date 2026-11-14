@@ -12,7 +12,7 @@ futures = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tokio-tungstenite = "0.26"
+tokio-tungstenite = "0.29"
 tracing = { workspace = true }
 uuid = { workspace = true }
 
