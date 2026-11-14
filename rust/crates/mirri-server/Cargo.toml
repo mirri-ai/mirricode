@@ -30,7 +30,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
-tokio-tungstenite = "0.26"
+tokio-tungstenite = "0.29"
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 base64 = "0.22"
 getrandom = "0.3"

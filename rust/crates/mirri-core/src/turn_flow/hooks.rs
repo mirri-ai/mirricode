@@ -2397,7 +2397,7 @@ impl LoopHooks for TurnFlowHooks {
         // which doesn't need an async context, and ctx.result is borrowed
         // so it can't be moved into a 'static async block.
 
-        // Apply tool result truncation FIRST: if the output exceeds MAX_CHARS,
+        // Apply tool result truncation FIRST: if the output exceeds MAX_BYTES,
         // persist the full text to disk and replace the model-visible output
         // with a bounded preview. This must happen before dedup so that:
         // (a) the dedup cache stores the truncated preview, not the full output,

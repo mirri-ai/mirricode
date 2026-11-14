@@ -17,7 +17,7 @@ File tools handle reading, writing, and searching the local filesystem — the f
 | `Glob` | Auto-allow | Find files by glob pattern |
 | `ReadMediaFile` | Auto-allow | Read an image or video file |
 
-**`Read`** accepts a file path (`path`) plus optional `line_offset` (starting line number; negative values count from the end) and `n_lines` (maximum number of lines to read). Returns at most 1000 lines or 100 KB per call; content beyond that limit is accompanied by a truncation notice. If the file is an image or video, the tool suggests using `ReadMediaFile` instead.
+**`Read`** accepts a file path (`path`) plus optional `line_offset` (starting line number; negative values count from the end) and `n_lines` (maximum number of lines to read). Returns at most 1000 lines or 100 KB per call, and the rendered output stays within a 50,000-byte budget; content beyond those limits is accompanied by a truncation notice that tells you which lines were delivered and suggests paging with `line_offset` from the start. If the file is an image or video, the tool suggests using `ReadMediaFile` instead.
 
 **`Write`** accepts `path`, `content`, and an optional `mode` (`overwrite` or `append`; defaults to overwrite). Missing parent directories are created automatically; `append` mode appends content to the end of the file without automatically adding a newline.
 

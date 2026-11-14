@@ -59,16 +59,16 @@ impl ToolArgsValidator {
 /// Attempts to produce AJV-style messages for common cases (required property,
 /// additional property) and falls back to the error's `Display` implementation.
 fn format_validation_error(err: &jsonschema::ValidationError) -> String {
-    let schema_path = err.schema_path.as_str();
+    let schema_path = err.schema_path().as_str();
 
     // "must have required property 'X'"
     if schema_path.ends_with("/required") {
         // jsonschema points `instance_path` at the missing property for
         // required-keyword errors; fall back to `instance` (a string) for
         // validators that report it differently.
-        let missing = err.instance_path.as_str().trim_start_matches('/');
+        let missing = err.instance_path().as_str().trim_start_matches('/');
         let missing = if missing.is_empty() {
-            err.instance.as_str().unwrap_or("value")
+            err.instance().as_str().unwrap_or("value")
         } else {
             missing
         };
@@ -80,7 +80,7 @@ fn format_validation_error(err: &jsonschema::ValidationError) -> String {
         // jsonschema carries the offending keys in the error `kind`
         // (`instance` is the whole object, not a single key).
         if let jsonschema::error::ValidationErrorKind::AdditionalProperties { unexpected } =
-            &err.kind
+            &err.kind()
         {
             let extra = unexpected.first().map(String::as_str).unwrap_or("value");
             return format!("must NOT have additional property '{extra}'");
@@ -98,9 +98,9 @@ fn format_validation_error_with_known(
     known: &[String],
 ) -> String {
     // "must NOT have additional property 'X'. Known arguments: a, b, c."
-    if err.schema_path.as_str().ends_with("/additionalProperties")
+    if err.schema_path().as_str().ends_with("/additionalProperties")
         && let jsonschema::error::ValidationErrorKind::AdditionalProperties { unexpected } =
-            &err.kind
+            &err.kind()
     {
         let extra = unexpected.first().map(String::as_str).unwrap_or("value");
         return if known.is_empty() {

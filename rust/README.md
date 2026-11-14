@@ -162,13 +162,17 @@ api_key = "${ANTHROPIC_API_KEY}"
 - **全量压缩（FullCompaction）** — LLM 生成摘要替换历史消息
 - **微量压缩（MicroCompaction）** — 轻量裁剪，不调用 LLM，用于上下文溢出时的快速缓解
 
-## 与 TypeScript 引擎的关系
+## 与 TypeScript 面的关系
 
-Rust 引擎是 TS 引擎的对等替代，不是简化版。当前的策略是：
+Rust 是**唯一**的引擎实现。TypeScript 引擎链（v1、v2、TS CLI/TUI 壳、SDK、NAPI 桥）已于 2026-10-28 全量退役并从仓库移除（`docs/specs/ts-v1-engine-retirement-requirements.md`）。
 
-1. 两套引擎并行运行，客户端通过 adapter 层对接
-2. Rust 引擎通过 E2E 测试验证功能等价性
-3. TS 引擎在 Rust 引擎充分验证后才会退役
+退役后仓库的 TypeScript 面只剩三类，都不含 agent 引擎实现：
+
+| 类别 | 内容 |
+|---|---|
+| 前端 | `apps/mirri-web`（浏览器 UI）、`apps/mirri-desktop` / `apps/mirri-desktop-lite`（桌面壳，均 spawn rust `mirri` 二进制） |
+| 契约与工具支撑包 | `packages/protocol`（wire schema 纯函数）、`packages/release`（版本锚） |
+| 测试基础设施 | `packages/e2e-harness`（fake provider server）、`packages/server-e2e`（黑盒 wire 客户端） |
 
 ## 开发指南
 
@@ -187,7 +191,7 @@ Rust 引擎是 TS 引擎的对等替代，不是简化版。当前的策略是�
 
 1. **注册表** — 在 `mirri-proto/src/rpc/registry.rs` 加一行（`both` / `emb` / `srv`，视可用性），并在同目录 `authoritative-methods.tsv` 加对应行（13 列；TSV 奇偶测试会拦漂移）。数字 pin 测试会要求同步更新计数。
 2. **embedded 路由** — 在 `mirri-embedded/src/embedded_server/routes/<domain>.rs` 加一个 `Route`（handlers 返回 typed serde 响应 struct，不手拼 `json!`）。
-3. **TS 契约**（+1 处）— 在 `packages/node-sdk/test/fixtures/rust-engine-methods.ts` 加 fixture 行，必要时在 `rust-engine-contract-e2e.test.ts` 的 `KLIENT_RESPONSE_SCHEMAS` 加 zod schema。
+3. **契约夹具** — 在 `mirri-proto` 的 contract-e2e fixture 中同步方法面；NAPI 面（`mirri-node/src/napi_exports.rs`）需要暴露给宿主时同步。TypeScript 侧只有 web 客户端 `apps/mirri-web/src/api/daemon/ws-rpc-api.ts` 可能引用，按需同步。
 
 serve wire 不需要任何传输代码：注册表把方法标记为 `both`（或 `srv`）后，mirri-server 的 engine fall-through 自动把它派发到背后的引擎。`core.echo` 即零传输代码的示范。
 

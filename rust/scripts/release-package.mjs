@@ -47,9 +47,7 @@ import { pipeline } from 'node:stream/promises';
 
 const rustDir = resolve(import.meta.dirname, '..');
 const repoDir = resolve(rustDir, '..');
-// The rust pipeline owns its own artifact directory. It used to write into
-// `apps/mirri-code/dist-native/`, but that app is a frozen TypeScript package
-// and nothing in this pipeline reads from it.
+// The rust pipeline owns its own artifact directory, under `rust/`.
 const artifactsDir = resolve(rustDir, 'dist-native/artifacts');
 // Hardened-runtime entitlements for the darwin binaries. The rust binaries
 // don't JIT-compile JS and don't dlopen third-party .node modules, but they DO

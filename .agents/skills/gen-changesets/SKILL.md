@@ -40,9 +40,11 @@ Judge at the product level. The shipped product is the rust engine binary, the d
 | Internal refactor, module split, dependency cleanup, IO plumbing, renamed internal types | none |
 | Test-only, docs-only, CI-only, build-tooling-only | none |
 | Changes under `plugins/` | none — each plugin carries its own version in `mirri.plugin.json` / `plugins/marketplace.json` and ships via the marketplace CDN |
-| New feature implemented in the frozen TypeScript core (`packages/*`, `apps/mirri-code`) | none — this is out of policy; engine features belong in `rust/crates/` |
+| New engine/core feature | `minor` — engine behavior lands in `rust/crates/`, never in TypeScript |
 
-The TypeScript core is frozen. A change under `packages/*` or `apps/mirri-code` gets a changeset only when it still reaches a user — for example a wire-contract fix that changes what the web UI or an SDK consumer sees. Refactors and internal fixes there do not get one.
+The TypeScript engine chain (v1, v2, the TS CLI/TUI shell, the SDK and the NAPI bridge) was fully retired on 2026-10-28 — those packages no longer exist in the tree, so there is nothing there to version. What remains on the TypeScript side is the web front end, the desktop shells, and the support packages (`packages/protocol`, `packages/e2e-harness`, `packages/server-e2e`, `packages/release`). A change to any of those gets a changeset only when it reaches a user — for example a wire-contract fix that changes what the web UI sees. Refactors and internal fixes there do not get one.
+
+See `docs/specs/ts-v1-engine-retirement-requirements.md` for the retirement scope and the retained/deleted inventory.
 
 ## Bump Levels
 

@@ -18,6 +18,7 @@ Before designing ANY change that touches engine/core behavior, answer FIRST: "wh
 - Keep changes focused. Do not slip in unrelated refactors along the way.
 - When committing, do not add any co-author attribution, and do not reveal the identity of the agent in commit messages, PR descriptions, or any explanatory text.
 - **Local quality checks go through the unified gate entrypoint** `pnpm gate` (`node scripts/gate.mjs`): fast-fail, lightest-first, tests always last. `pnpm gate` (~3s, no compile) → `pnpm gate:rust` (+clippy) → `pnpm gate:full` (everything incl. full test suites). Do not hand-assemble gate commands — the ordering, known-failure ledger, and stage set are owned by `scripts/gate.mjs` (see `rust/AGENTS.md` 统一质量门禁入口 section).
+- **Investigate code before grep**: this repo has a CodeGraph index (`.codegraph/`, gitignored). Use `codegraph explore` / `callers` / `impact` for structural questions — it links Rust, TypeScript and Vue, including trait→impl dispatch. Markdown under `docs/specs/` is **not** indexed. The instrument table, the worktree trap (a `.worktrees/` query silently answers from the main checkout), the domain-local SDR/ADR numbering, and the multi-projection contract chains that have no graph edges are covered by the `codebase-investigation` skill (`.agents/skills/codebase-investigation/SKILL.md`).
 
 ## Project Map
 

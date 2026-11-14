@@ -18,7 +18,7 @@ async-trait = "0.1"
 uuid = { workspace = true }
 thiserror = { workspace = true }
 futures = { workspace = true }
-tokio-tungstenite = "0.26"
+tokio-tungstenite = "0.29"
 
 [dev-dependencies]
 mirri-test-support = { path = "../mirri-test-support" }

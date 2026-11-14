@@ -19136,7 +19136,7 @@ async fn should_skip_hook_additional_context_when_undoing() {
 // Tool result truncation
 // ---------------------------------------------------------------------------
 
-/// A tool that returns a large string output exceeding MAX_CHARS.
+/// A tool that returns a large string output exceeding MAX_BYTES.
 struct BigOutputTool;
 
 impl Tool for BigOutputTool {
@@ -19171,7 +19171,7 @@ impl Tool for BigOutputTool {
             execute: Box::new(|_ctx| {
                 Box::pin(async move {
                     ToolResult::success(
-                        "x".repeat(mirri_core::tool_result_truncation::MAX_CHARS + 1),
+                        "x".repeat(mirri_core::tool_result_truncation::MAX_BYTES + 1),
                     )
                 })
             }),
@@ -19238,7 +19238,7 @@ async fn should_truncate_oversized_tool_result_when_truncator_is_configured() {
     );
     let tool_text = tool_results[0].message.text_content();
     assert!(
-        tool_text.contains("Tool output exceeded 50000 characters"),
+        tool_text.contains("Tool output exceeded 50000 bytes"),
         "tool result should be truncated, got: {} chars",
         tool_text.len()
     );
@@ -19247,8 +19247,8 @@ async fn should_truncate_oversized_tool_result_when_truncator_is_configured() {
         "truncated result should contain output_path"
     );
     assert!(
-        tool_text.len() < mirri_core::tool_result_truncation::MAX_CHARS,
-        "truncated result should be smaller than MAX_CHARS"
+        tool_text.len() < mirri_core::tool_result_truncation::MAX_BYTES,
+        "truncated result should be smaller than MAX_BYTES"
     );
 }
 
@@ -19302,7 +19302,7 @@ async fn should_not_truncate_tool_result_when_no_truncator_configured() {
     let tool_text = tool_results[0].message.text_content();
     assert_eq!(
         tool_text.len(),
-        mirri_core::tool_result_truncation::MAX_CHARS + 1,
+        mirri_core::tool_result_truncation::MAX_BYTES + 1,
         "tool result should be full size when no truncator is configured"
     );
 }
@@ -19313,7 +19313,7 @@ async fn should_preserve_truncation_when_tool_call_is_duplicated_by_dedup() {
     let temp_dir = tempfile::tempdir().unwrap();
     let truncator = mirri_core::tool_result_truncation::ToolResultTruncator::new(temp_dir.path());
 
-    let big_output = "x".repeat(mirri_core::tool_result_truncation::MAX_CHARS + 1);
+    let big_output = "x".repeat(mirri_core::tool_result_truncation::MAX_BYTES + 1);
     let llm = MockLlm::new(vec![
         // First step: call BigOutput
         MockResponse::tool_use(vec![make_tool_call(
@@ -19377,7 +19377,7 @@ async fn should_preserve_truncation_when_tool_call_is_duplicated_by_dedup() {
     for (i, msg) in tool_results.iter().enumerate() {
         let text = msg.message.text_content();
         assert!(
-            text.len() < mirri_core::tool_result_truncation::MAX_CHARS,
+            text.len() < mirri_core::tool_result_truncation::MAX_BYTES,
             "tool result #{i} should be truncated (len={}), not full size ({})",
             text.len(),
             big_output.len()

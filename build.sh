@@ -102,7 +102,9 @@ if [ "$SKIP_TESTS" -ne 1 ]; then
   # --locked`); CI enforces it in the `rust-deny` job. A missing local tool
   # must not block a build, but the skip is surfaced in the final summary.
   if cargo deny --version >/dev/null 2>&1; then
-    (cd rust && cargo deny check --all-features)
+    # cargo-deny >= 0.16 has no --all-features flag (feature flags were
+    # removed from `check`); plain `check` matches the CI action invocation.
+    (cd rust && cargo deny check)
   else
     echo "⚠ cargo-deny not installed — skipping RustSec/license/source gate"
     echo "  install with: cargo install cargo-deny --locked"

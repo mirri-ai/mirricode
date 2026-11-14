@@ -16,20 +16,14 @@ Current publishable packages:
 
 All other workspace packages are private internal packages and are not targeted by release changesets:
 
-- `@mirri-ai/acp-adapter`
-- `@mirri-ai/agent-core`
-- `@mirri-ai/kaos`
-- `@mirri-ai/kimi-telemetry`
+- `@mirri-ai/e2e-harness`
+- `@mirri-ai/mirri-desktop`
+- `@mirri-ai/mirri-desktop-lite`
 - `@mirri-ai/mirri-web`
-- `@mirri-ai/kosong`
 - `@mirri-ai/protocol`
 - `@mirri-ai/server-e2e`
-- `@mirri-ai/vis`
-- `@mirri-ai/vis-server`
-- `@mirri-ai/vis-web`
-- `@mirri-ai/mirri-code` (npm publishing retired)
-- `@mirri-ai/mirri-node` (npm publishing retired)
-- `@mirri-ai/mirri-code-sdk` (npm publishing retired — package is private, not published)
+
+The TypeScript engine chain that used to live here — `@mirri-ai/agent-core`, `agent-core-v2`, `kaos`, `kimi-telemetry`, `kosong`, `mirri-code`, `mirri-node`, `mirri-code-sdk`, `acp-adapter`, `acp-server`, `kap-server`, `klient`, `minidb`, `transcript`, `tree-sitter-bash`, `pi-tui`, plus the `vis` packages — was retired on 2026-10-28 and removed from the tree. A few of those names still have a historical published version on npm, but nothing in this repository produces them anymore. See `docs/specs/ts-v1-engine-retirement-requirements.md`.
 
 Version impact from product components must be judged at the product level. Any user-perceivable change — rust core, desktop, web, or CLI — gets a changeset against the anchor: `minor` for features, `patch` for fixes. Do not bump component versions by hand; the sync script derives them from the anchor.
 
@@ -97,7 +91,7 @@ Once the release PR is merged into `main`, the same workflow detects the anchor 
 - Changeset files must be committed to the repository — release PRs are only triggered after they're merged.
 - Release PRs require human review and merge; they will not publish automatically.
 - Do not add changesets for private internal packages; only select `@mirri-ai/release`.
-- Do not bump `apps/mirri-code`, `apps/mirri-desktop`, or rust workspace versions by hand — run `node rust/scripts/sync-version.mjs` (with `--check` in CI) to sync them from the anchor.
+- Do not bump `apps/mirri-desktop` or rust workspace versions by hand — run `node rust/scripts/sync-version.mjs` (with `--check` in CI) to sync them from the anchor.
 
 ## References
 

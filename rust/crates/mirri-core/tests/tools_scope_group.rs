@@ -514,6 +514,269 @@ async fn should_return_synthetic_error_when_editing_ambiguous_string_without_rep
 }
 
 // ===========================================================================
+// Read → model-context truncation, end to end
+//
+// Tasks 1-4 of the truncation fix are each covered by layered unit tests
+// (the truncator alone, `read_file_range` alone). The user-visible defect —
+// the model receiving a "you got everything" note above a 2000-character
+// preview, or believing a wide file was delivered whole — only exists when
+// the two layers compose. These tests run the registered Read tool and then
+// the real `ToolResultTruncator` over its result, exactly as the turn flow
+// wires them (see `turn_flow/hooks.rs`).
+// ===========================================================================
+
+/// Built-in tools over a workspace rooted at `root`, plus a truncator whose
+/// persisted output lands under `state` (kept outside the workspace so the
+/// fixture file and the persisted copy never mix).
+fn tool_manager_in_workspace(
+    root: &std::path::Path,
+    state: &std::path::Path,
+) -> (
+    Arc<parking_lot::RwLock<ToolManager>>,
+    mirri_core::tool_result_truncation::ToolResultTruncator,
+) {
+    let mut services = fresh_services();
+    services.workspace_paths = Some(Arc::new(WorkspacePaths::new(root.to_path_buf())));
+    let tools = Arc::new(parking_lot::RwLock::new(ToolManager::new()));
+    register_builtin_tools(&mut tools.write(), &services);
+    (
+        tools,
+        mirri_core::tool_result_truncation::ToolResultTruncator::new(state),
+    )
+}
+
+/// A file of 1000 lines, each padded to 1995 content characters: the shape
+/// that made Read emit ~2 MB before the byte budget reached the source (1000
+/// lines x 2000-char line cap).
+fn write_wide_file(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let content = (1..=1000)
+        .map(|n| format!("{n:04} {}\n", "y".repeat(1995)))
+        .collect::<String>();
+    let path = dir.join(name);
+    std::fs::write(&path, content).unwrap();
+    path
+}
+
+/// The 1-based line numbers of the delivered output's rendered lines
+/// (`{line_no}\t{content}`).
+fn delivered_line_numbers(text: &str) -> Vec<usize> {
+    text.lines()
+        .filter_map(|line| line.split('\t').next()?.parse().ok())
+        .collect()
+}
+
+/// Given a workspace holding a 1000-line x ~2 MB file
+/// When the registered Read tool reads it from line 1 and the result passes
+/// through the model-context truncator
+/// Then the final output is within the shared byte budget without ever being
+/// replaced by a preview — the model receives real numbered file content, and
+/// the surviving note describes the range actually delivered
+#[tokio::test]
+async fn should_deliver_real_content_within_budget_when_a_wide_file_is_read_end_to_end() {
+    // Given: a workspace root and a state dir, a wide fixture in the workspace
+    let workspace = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let path = write_wide_file(workspace.path(), "wide.txt");
+    let (tools, truncator) = tool_manager_in_workspace(workspace.path(), state.path());
+    let mut validators = ValidatorCache::new();
+
+    // When: Read runs through preflight → prepare → execute, then the real
+    // truncator sees its result the way the turn flow does
+    let read_result = call_tool(
+        &tools,
+        "Read",
+        serde_json::json!({ "path": path.to_string_lossy(), "line_offset": 1, "n_lines": 1000 }),
+        &mut validators,
+    )
+    .await;
+    assert!(!read_result.is_error, "read failed: {}", output_text(&read_result));
+    let read_text = output_text(&read_result);
+    let (read_first, read_last) = {
+        let numbers = delivered_line_numbers(&read_text);
+        (
+            *numbers.first().expect("delivered lines"),
+            *numbers.last().expect("delivered lines"),
+        )
+    };
+
+    let final_result = truncator.truncate_for_model("Read", "call-1", read_result);
+    let final_text = output_text(&final_result);
+
+    // Then: the output stayed in budget at the source, so the downstream
+    // preview replacement never fired. (`truncated` is Read's own "the visible
+    // window is incomplete" flag and is true either way — the discriminator
+    // for "was the output replaced" is the preview itself.)
+    assert!(
+        !final_text.contains("Tool output exceeded"),
+        "the model must receive file content, not a preview, got:\n{}",
+        &final_text[..final_text.len().min(400)]
+    );
+    assert!(
+        final_text.len() <= mirri_core::tool_result_truncation::MAX_BYTES,
+        "final output was {} bytes, over the {} byte budget",
+        final_text.len(),
+        mirri_core::tool_result_truncation::MAX_BYTES
+    );
+    // And it is real numbered content starting at line 1
+    assert!(
+        final_text.starts_with("1\t0001"),
+        "output must be the numbered file content, got: {}",
+        &final_text[..60.min(final_text.len())]
+    );
+
+    // And the note that survives speaks for exactly that window: the same
+    // range the delivered lines cover, and paging guidance from line 1
+    assert_eq!(
+        final_text, read_text,
+        "a result that fits the budget must reach the model unmodified"
+    );
+    let note = final_result
+        .note
+        .as_deref()
+        .expect("a budget-capped read must carry a truncation note");
+    assert!(
+        read_first == 1,
+        "a forward read must start at line 1, got {read_first}"
+    );
+    assert!(
+        read_last < 1000,
+        "the fixture must force the budget to stop before line 1000, got {read_last}"
+    );
+    assert!(
+        note.contains(&format!("showing lines {read_first}-{read_last} of 1000")),
+        "the note must name the delivered window {read_first}-{read_last}, got: {note}"
+    );
+    assert!(
+        note.contains("re-read from 'line_offset': 1 to page through the file"),
+        "the note must point at paging from line 1, got: {note}"
+    );
+}
+
+/// Given the same wide file
+/// When Read is asked for the whole file as a tail (`line_offset: -1000`)
+/// and the result passes through the truncator
+/// Then the final output is within budget without being replaced by a
+/// preview, still ends at the file's last line, and the note states the
+/// delivered suffix plus the paging-from-line-1 guidance
+#[tokio::test]
+async fn should_keep_the_eof_anchor_when_a_wide_file_is_tail_read_end_to_end() {
+    // Given: a workspace holding the wide fixture
+    let workspace = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let path = write_wide_file(workspace.path(), "wide-tail.txt");
+    let (tools, truncator) = tool_manager_in_workspace(workspace.path(), state.path());
+    let mut validators = ValidatorCache::new();
+
+    // When: a negative line_offset read runs and the result goes through the
+    // real truncator
+    let tail_args = serde_json::json!({ "path": path.to_string_lossy(), "line_offset": -1000 });
+    let read_result = call_tool(&tools, "Read", tail_args, &mut validators).await;
+    assert!(
+        !read_result.is_error,
+        "tail read failed: {}",
+        output_text(&read_result)
+    );
+    let read_text = output_text(&read_result);
+    let final_result = truncator.truncate_for_model("Read", "call-tail", read_result);
+    let final_text = output_text(&final_result);
+
+    // Then: no preview replacement — the source budget trimmed the head
+    // (`truncated` is Read's "window incomplete" flag, true in both cases;
+    // the preview marker is what says the output was replaced.)
+    assert!(
+        !final_text.contains("Tool output exceeded"),
+        "the model must receive the tail content, not a preview, got:\n{}",
+        &final_text[..final_text.len().min(400)]
+    );
+    assert!(
+        final_text.len() <= mirri_core::tool_result_truncation::MAX_BYTES,
+        "final output was {} bytes, over the {} byte budget",
+        final_text.len(),
+        mirri_core::tool_result_truncation::MAX_BYTES
+    );
+    // And the window still ends at EOF
+    assert_eq!(
+        final_text, read_text,
+        "a result that fits the budget must reach the model unmodified"
+    );
+    let numbers = delivered_line_numbers(&final_text);
+    let first = *numbers.first().expect("delivered lines");
+    let last = *numbers.last().expect("delivered lines");
+    assert_eq!(last, 1000, "a tail read must end at the file's last line");
+    assert!(
+        first > 1,
+        "the fixture must force the budget to trim the head, got start {first}"
+    );
+
+    // And the note names that suffix and points at paging from line 1
+    let note = final_result.note.as_deref().expect("truncation note");
+    assert!(
+        note.contains(&format!("showing lines {first}-{last} of 1000")),
+        "the note must name the delivered suffix {first}-{last}, got: {note}"
+    );
+    assert!(
+        note.contains("re-read from 'line_offset': 1 to page through the file"),
+        "the note must point at paging from line 1, got: {note}"
+    );
+}
+
+/// Given a non-Read-shaped producer (what Bash can do) emitting 60,000 bytes
+/// with a note attached
+/// When the result passes through the truncator — the same finalize hook the
+/// turn flow runs for every tool
+/// Then the preview replaces the output and no contradictory note survives:
+/// `note` is cleared, and the original note is preserved inside the preview
+#[test]
+fn should_clear_the_note_when_an_over_budget_non_read_result_is_replaced_by_a_preview() {
+    // Given: an over-budget text result with a producer note
+    let state = tempfile::tempdir().unwrap();
+    let truncator = mirri_core::tool_result_truncation::ToolResultTruncator::new(state.path());
+    let original_note = "Bash output cut at 60000 bytes.";
+    let result = ToolResult {
+        output: ToolOutput::Text("x".repeat(60_000)),
+        is_error: false,
+        note: Some(original_note.to_string()),
+        stop_turn: false,
+        truncated: false,
+        injection: None,
+    };
+
+    // When: the truncator prepares it for the model
+    let final_result = truncator.truncate_for_model("Bash", "call-bash", result);
+    let final_text = output_text(&final_result);
+
+    // Then: the preview replaced the output and is itself within budget
+    assert!(final_result.truncated, "60,000 bytes must be paged down");
+    assert!(
+        final_text.contains("Tool output exceeded 50000 bytes"),
+        "the preview must announce the replacement, got:\n{}",
+        &final_text[..final_text.len().min(400)]
+    );
+    assert!(
+        final_text.len() <= mirri_core::tool_result_truncation::MAX_BYTES,
+        "the preview was {} bytes, over the budget",
+        final_text.len()
+    );
+    // And exactly one account of what was delivered survives — the preview
+    assert!(
+        final_result.note.is_none(),
+        "the producer's note must not survive beside the preview, got: {:?}",
+        final_result.note
+    );
+    assert!(
+        final_text.contains(&format!("note_before_truncation: {original_note}")),
+        "the original note's facts must survive inside the preview, got:\n{}",
+        &final_text[..final_text.len().min(400)]
+    );
+    // And it is not sitting in the preview's trailing `[preview]` excerpt.
+    let preview_section = final_text.split("[preview]\n").nth(1).unwrap_or("");
+    assert!(
+        preview_section.chars().count() <= mirri_core::tool_result_truncation::PREVIEW_CHARS,
+        "the preview section must stay bounded"
+    );
+}
+
+// ===========================================================================
 // Glob + Grep
 // ===========================================================================
 

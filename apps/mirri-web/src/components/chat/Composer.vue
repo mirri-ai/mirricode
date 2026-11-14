@@ -1124,6 +1124,14 @@ const thinkingReadonly = computed(
 );
 /** The note explaining why the off segment is missing (D-M11.4). */
 const thinkingNoteKey = computed(() => thinkingCopyKey(currentModel.value));
+/**
+ * Tooltip on the effort segments for an always-on effort model: the
+ * "cannot be turned off" explanation rides along instead of replacing the
+ * control (D-M11.4 — GLM 5.3-style models keep their low/high/max picker).
+ */
+const thinkingSegmentsTitle = computed(() =>
+  modelThinkingAvailability(currentModel.value) === 'always-on' ? t('composer.thinkingAlwaysOn') : '',
+);
 // Footer-style suffix: effort models show the concrete level; boolean models
 // keep the plain "thinking" tag; off shows nothing.
 const thinkingSuffix = computed(() => {
@@ -1589,7 +1597,9 @@ function selectModel(modelId: string): void {
           <div v-if="providerModels.length > 0" class="md-divider" />
 
           <!-- Thinking level — segmented control. Effort models show every
-               declared level; boolean models show On/Off; unsupported shows a note. -->
+               declared level (an always-on model shows its efforts without an
+               Off segment, with the always-on note as the title tooltip);
+               boolean models show On/Off; unsupported shows a note. -->
           <div class="md-thinking" :class="{ 'is-readonly': thinkingReadonly }">
             <span class="md-name">{{ t('status.thinkingLabel') }}</span>
             <span
@@ -1604,6 +1614,7 @@ function selectModel(modelId: string): void {
               class="effort-segments"
               role="group"
               :aria-label="t('status.thinkingLabel')"
+              v-bind:title="thinkingSegmentsTitle"
             >
               <button
                 v-for="seg in thinkingSegments"

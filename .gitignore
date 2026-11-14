@@ -12,11 +12,22 @@ coverage/
 .claude
 .conductor
 .mirri-stash-dir
+# `.agents/skills/` is project-level agent config and IS tracked (skills ship
+# with the repo). The negation is required because a common global gitignore
+# ignores `**/.agents`. Note the two-step form: git will not descend into an
+# ignored parent directory, so `!.agents/skills/` alone has no effect — the
+# parent must be un-ignored first.
+!.agents/
+!.agents/skills/
 plugins/cdn/
 .worktrees/
 .mirri-code/local.toml
 .mirri-sandbox/
 .sync-*
+# CodeGraph index (machine-local, ~145 MB). Its own .codegraph/.gitignore
+# already hides the contents; this line keeps the directory itself out of
+# `git status` in every worktree.
+.codegraph/
 
 Dockerfile
 docker-compose.yml

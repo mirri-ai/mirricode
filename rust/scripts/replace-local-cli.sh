@@ -2,10 +2,6 @@
 # Builds the rust `mirri` binary from this checkout and installs it over the
 # one on PATH, so a local build can be tested without the release pipeline.
 #
-# This replaced `replace_cli.sh` + `apps/mirri-code/scripts/replace_on_mac.sh`,
-# which built the retired TypeScript (Node SEA) CLI and installed *that* over
-# the rust binary.
-#
 # Usage:
 #   ./rust/scripts/replace-local-cli.sh              # build, then install
 #   ./rust/scripts/replace-local-cli.sh --skip-build # install the last build

@@ -164,8 +164,14 @@ export function thinkingLevelFromDaemon(raw: string | undefined): ThinkingLevel 
   return trimmed;
 }
 
+/**
+ * The i18n key explaining a hidden off control, or `null` when nothing needs
+ * saying. An always-thinking model that declares efforts still renders its
+ * effort segments — the "cannot be turned off" note only replaces the control
+ * when there are no segments to render (boolean always-on).
+ */
 export function thinkingCopyKey(model: ModelThinkingInfo | undefined): string | null {
-  if (modelThinkingAvailability(model) === 'always-on') {
+  if (modelThinkingAvailability(model) === 'always-on' && effortsOf(model).length === 0) {
     return 'composer.thinkingAlwaysOn';
   }
   return null;
