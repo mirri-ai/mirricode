@@ -248,6 +248,8 @@ export default {
   scheduledTaskHistoryFactHint: 'Only real runs are listed here; the timeline shows predictions.',
   scheduledTaskHistoryTitle: 'Run history',
   scheduledTaskRunOpen: 'Open run',
+  scheduledTaskRunOpenDegradedTitle: 'The run opened, but the engine could not confirm it',
+  scheduledTaskRunOpenDegradedMessage: 'The execution session was opened anyway. If anything looks stale, re-run the task.',
   scheduledTaskRunSucceeded: 'Succeeded',
   scheduledTaskRunFailed: 'Failed',
   scheduledTaskRunRunning: 'Running',

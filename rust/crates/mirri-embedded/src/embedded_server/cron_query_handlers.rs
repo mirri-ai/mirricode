@@ -1,7 +1,8 @@
 //! The cron query + run-record RPC faces: `cron.preview` (the theoretical
 //! moments), `cron.runs.list` (the run records a panel consumes), and
-//! `cron.run.open` (the explicit-open path that materializes an unopened
-//! execution session — ADR-008's lazy-index admission).
+//! `cron.run.open` (a compatibility entry that used to materialize an
+//! unopened run session — run sessions are ordinary sessions now, so it is
+//! an idempotent no-op).
 
 use std::sync::Arc;
 
@@ -160,12 +161,14 @@ impl EmbeddedServer {
         Ok(json!({ "runs": runs }))
     }
 
-    /// `cron.run.open` — the explicit-open path (B.2/C.4, ADR-008): the
-    /// user opening a run record from the task face materializes the
-    /// execution session (write `state.json`, open `wire.jsonl`, flush
-    /// the deferred buffer) — the ONLY admission into the session index.
-    /// Unknown/already-materialized sessions answer with the current
-    /// state (idempotent).
+    /// `cron.run.open` — the legacy open entry (B.2/C.4). A run's execution
+    /// session is an ordinary, eagerly persisted session, so there is never
+    /// anything left to materialize: the call answers
+    /// `{ materialized: false }` and changes nothing.
+    ///
+    /// It is kept as a compatibility face for clients that still call it to
+    /// reach a run's transcript — the transcript is already there in the
+    /// session list, so opening simply means "resume/select that session".
     pub(super) async fn dispatch_open_cron_run(&self, params: Value) -> Result<Value, EngineError> {
         #[derive(Debug, Deserialize)]
         struct OpenRunParams {
@@ -180,9 +183,10 @@ impl EmbeddedServer {
         let Some(runtime) = self.registry.built_runtime(&workspace_id) else {
             return Err(not_found(format!("workspace not found: {workspace_id}")));
         };
-        // Materialize (idempotent — an already-materialized session is a
-        // no-op `false`): the explicit user action IS the lazy-index
-        // admission ADR-008 names.
+        // Nothing to materialize: the run session is eagerly persisted at
+        // creation (row + wire log), so `materialize_session` answers the
+        // idempotent `false`. Kept as the compatibility entry so an older
+        // client's open call still succeeds.
         let manager = Arc::clone(&runtime.manager);
         let materialized = manager
             .materialize_session(&mirri_core::SessionId::new(&params.session_id))

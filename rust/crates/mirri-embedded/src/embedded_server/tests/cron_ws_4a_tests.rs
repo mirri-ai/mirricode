@@ -150,7 +150,7 @@ async fn should_reject_max_fires_on_a_one_shot_workspace_task() {
 /// Given a workspace task whose schedule is due and EVERY session of the
 /// workspace closed, when the scheduler ticks, then the task fires on the
 /// workspace arm through the 4b RunSpawner — the RunRecord opens Running
-/// (the lazy execution session exists), and without an LLM the run ends
+/// (the execution session exists), and without an LLM the run ends
 /// Failed (the honest no-provider verdict), the budget consumed by the
 /// real terminal state (V11: the workspace face survives the sessions'
 /// death; 4b replaced 4a's skip placeholder).

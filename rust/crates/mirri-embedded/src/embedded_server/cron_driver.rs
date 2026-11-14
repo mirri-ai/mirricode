@@ -73,7 +73,7 @@ pub(crate) type UsageModelKeyHandleMap =
 
 /// The executor face a workspace cron fire is handed to (stage-2 T5 /
 /// batch 4b): the **RunSpawner** — the real execution pipeline (the §8
-/// steps: concurrency posture, the lazy execution session, the posture-
+/// steps: concurrency posture, the execution session, the posture-
 /// mapped injection, the terminal RunRecord). Batch 4a shipped a skip-
 /// recording placeholder here; this trait remains the scheduler's seam
 /// (the spawner needs no `&EmbeddedServer` at trait level — the embedded
@@ -201,80 +201,9 @@ pub(super) async fn schedule_workspace_cron_pass(
             fire.scheduled_at,
         );
     }
-    // 4b (D-M5 b / §8.2 / ADR-012)    // 4b (D-M5 b / §8.2 / ADR-012): the unopened execution sessions whose
-    // runs ended more than 7 days ago drop from the workspace's LIVE
-    // session map — the RunRecord keeps the summary (the summary stays
-    // queryable through `cron.runs.list`; only the process-lifetime
-    // session object goes). A 7-day-old unopened lazy session never
-    // materialized — nothing is on disk to clean (the discard is the
-    // memory drop).
-    sweep_unopened_execution_sessions(&registry, _cron).await;
-}
-
-/// The D-M5 b-layer sweep: close (drop from the live map) every workspace
-/// session that (1) an execution run referenced, (2) never materialized
-/// (no wire log — the unopened lazy shape), and (3) whose referencing run
-/// reached its terminal state more than
-/// [`UNOPENED_RUN_SESSION_TTL`](super::cron_run_spawner::UNOPENED_RUN_SESSION_TTL)
-/// ago. The run record itself is retained (the audit trail); only the
-/// in-memory session object is reclaimed.
-async fn sweep_unopened_execution_sessions(
-    registry: &Arc<WorkspaceRegistry>,
-    cron: &Arc<mirri_core::cron::WorkspaceCronManager>,
-) {
-    let horizon = chrono::Utc::now() - super::cron_run_spawner::UNOPENED_RUN_SESSION_TTL;
-    // The sessions to drop: referenced by a terminal run older than the
-    // horizon, still live, still unmaterialized.
-    let mut drop_ids: Vec<String> = Vec::new();
-    for task in cron.list() {
-        for run in cron.runs(&task.id) {
-            let Some(ended_at) = run.ended_at else {
-                continue;
-            };
-            if ended_at > horizon {
-                continue;
-            }
-            if let Some(session_ref) = &run.session_ref
-                && !drop_ids.contains(session_ref)
-            {
-                drop_ids.push(session_ref.clone());
-            }
-        }
-    }
-    if drop_ids.is_empty() {
-        return;
-    }
-    let Some(runtime) = registry.built_runtime(cron.workspace_id()) else {
-        return;
-    };
-    for session_id in drop_ids {
-        let sid = mirri_core::SessionId::new(&session_id);
-        let Some(session) = runtime.manager.get_session(&sid).await else {
-            continue;
-        };
-        // Only the never-materialized drop: an opened (materialized)
-        // session is a real session — the a-layer retention domain owns
-        // it, never this sweep.
-        if session.wire_log_installed().await {
-            continue;
-        }
-        let _ = runtime
-            .manager
-            .close_session(
-                &sid,
-                mirri_core::CloseReason::Error(
-                    "unopened execution session past the 7-day retention".to_string(),
-                ),
-            )
-            .await;
-        // The session no longer exists: drop its routing entry too (the
-        // spawner noted it active so a parked approval could route to it).
-        registry.forget_active(&session_id);
-        tracing::debug!(
-            session_id,
-            "dropped an unopened execution session past the 7-day retention"
-        );
-    }
+    // No run-session cleanup here: a run's execution session is an ordinary
+    // session, so its lifetime belongs to the session-retention domain — a
+    // cron pass must never drop a session the user can see.
 }
 
 impl EmbeddedServer {
@@ -609,6 +538,7 @@ impl EmbeddedServer {
             usage_model_key_handles: Arc::clone(&usage_model_key_handles),
             llm_factory: llm_factory.clone(),
             in_flight_turns: Arc::clone(&in_flight_turns),
+            settle_index: settle_index.clone(),
             flag_registry: Arc::clone(&flag_registry),
             goal_chain_states: Arc::clone(&goal_chain_states),
             goal_chain_resources: goal_chain_resources.clone(),
@@ -1205,14 +1135,12 @@ fn fire_reject_asks_for(
         .is_some_and(|task| task.permission_mode.is_none())
 }
 
-/// The shared injection body over an already-resolved session Arc —
-/// the workspace run spawner's face (D.2 m4 review fix): the execution
-/// session is created LAZY (SDR-004) and by design never enters the
-/// server's routing tables (ADR-008 — only the explicit-open path admits
-/// it), so the spawner CANNOT go through `resolve_session_via` (which
-/// answers `Injected` for an unroutable session, the "redelivery is
-/// pointless" arm — silently skipping the turn, the 4b defect: a run
-/// recorded Succeeded without its turn ever executing).
+/// The shared injection body over an already-held session Arc — the
+/// workspace run spawner's face: the run's execution session is created by
+/// the opener, which keeps the authoritative Arc, so the injection takes it
+/// directly instead of re-resolving (a resolve would also work — the
+/// session is routable — but passing the Arc keeps the fire's target
+/// explicit and avoids a lookup whose result is already in hand).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn inject_cron_prompt_into_session(
     registry: &Arc<WorkspaceRegistry>,
@@ -1329,12 +1257,10 @@ pub(crate) async fn inject_cron_prompt_into_session(
         .await;
 
     // Announce the turn bracket on the session bus (the same
-    // `turn-<uuid>` convention the message-send dispatch uses).
-    // ADR-008 (D.2 m4): the spawner's lazy execution session is NOT in
-    // the routing tables, so `resolve_artifacts_via` misses — fall back
-    // to the session's OWN freshly-minted artifacts (the bus has no
-    // external subscribers by design; the run's transcript opens on the
-    // explicit-open path).
+    // `turn-<uuid>` convention the message-send dispatch uses). The
+    // session's own artifacts are the fallback for an engine with no
+    // artifact entry yet (a freshly created run session before any relay
+    // registered it): the turn still needs a bus to publish on.
     let artifacts = match resolve_artifacts_via(registry, session_id) {
         Ok(artifacts) => artifacts,
         Err(_) => session.adopt_reverse_rpc_slot(),

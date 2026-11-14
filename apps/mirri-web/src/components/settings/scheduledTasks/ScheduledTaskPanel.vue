@@ -45,6 +45,12 @@ const props = defineProps<{
   models?: AppModel[];
 }>();
 
+const emit = defineEmits<{
+  /** Open one run's execution session in the app — SettingsView bubbles it to
+   *  App, which dismisses this overlay and selects the session. */
+  openRun: [sessionId: string];
+}>();
+
 const { t } = useI18n();
 const api = getMirriWebApi();
 const client = useMirriWebClient();
@@ -424,6 +430,7 @@ function taskWorkspace(task: AppCronTask): string {
         @save="onSave"
         @toggle-pause="onTogglePause"
         @delete="onDelete"
+        @open-run="emit('openRun', $event)"
       />
       <!-- The selected task vanished (deleted elsewhere / filtered out). -->
       <EmptyState v-else :title="t('settings.scheduledTaskFilterEmpty')" />

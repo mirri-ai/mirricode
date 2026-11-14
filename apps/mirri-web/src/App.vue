@@ -46,6 +46,7 @@ import { useFilePreview, type DetailTarget } from './composables/useFilePreview'
 import { useDetailPanel } from './composables/useDetailPanel';
 import { useIsMobile } from './composables/useIsMobile';
 import { isMacosDesktop } from './lib/desktopFlag';
+import { openCronRunSession } from './lib/cronManagement';
 import { interruptionCountsByWorkspace } from './lib/sessionRowRecovery';
 import { draftStorageKey, safeSetString } from './lib/storage';
 import { openDialogCount } from './composables/dialogStack';
@@ -148,6 +149,20 @@ async function detachToolCall(toolCallId: string): Promise<void> {
   } catch (e) {
     client.pushOperationFailure('detachTask', e);
   }
+}
+/** The scheduled-task history's 打开 entry: the run's execution session opens
+ *  the way any sidebar session does — the settings overlay goes away and the
+ *  session is selected (a failure surfaces as a toast in the app view, never
+ *  as a click that does nothing). */
+async function openScheduledRun(sessionId: string): Promise<void> {
+  await openCronRunSession(
+    { closeSettings, openSession: (id) => client.openSessionById(id) },
+    sessionId,
+  );
+}
+function closeSettings(): void {
+  showSettings.value = false;
+  gateSettingsOpen.value = false;
 }
 // Live swarm member roster for the inline AgentSwarm tool card. Sourced from the
 // AppTask store so the card shows each subagent's live phase; on refresh the
@@ -1431,6 +1446,7 @@ function openPr(url: string): void {
         @disable-agent="handleDisableAgent($event)"
         @reset-agent="handleResetAgent"
         @refresh-agent="handleRefreshAgentProfiles"
+        @open-run="openScheduledRun"
         @close="showSettings = false"
         @vue:mounted="loadAgentProfiles"
       />
@@ -1611,6 +1627,7 @@ function openPr(url: string): void {
       @disable-agent="handleDisableAgent($event)"
       @reset-agent="handleResetAgent"
       @refresh-agent="handleRefreshAgentProfiles"
+      @open-run="openScheduledRun"
       @close="gateSettingsOpen = false"
       @vue:mounted="loadAgentProfiles"
     />

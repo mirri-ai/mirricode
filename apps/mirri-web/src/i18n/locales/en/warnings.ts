@@ -48,6 +48,8 @@ export default {
   externalOpenInAppMessage: 'This browser session has no native launch channel. Use the desktop app for this feature.',
   sessionSnapshotMessage: 'Web could not load the current session. Check that Mirri daemon is still running, or refresh the page.',
   sessionSnapshotTitle: 'Cannot load current session',
+  sessionOpenFailedTitle: 'Cannot open this session',
+  sessionOpenFailedMessage: 'The session could not be loaded — it may have been deleted, or Mirri daemon is not responding. Refresh the page and try again.',
   showDetails: 'Show details',
   copyDetails: 'Copy diagnostics',
   copied: 'Copied',

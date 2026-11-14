@@ -1584,8 +1584,8 @@ impl LoopHooks for TurnFlowHooks {
                         //
                         // - ADR-021 / A4: a workspace run (nobody watches its
                         //   chat) parks on the gate; a live reverse-RPC client
-                        //   is not required (the lazy execution session has no
-                        //   subscriber until the user opens it).
+                        //   is not required (nobody is watching the run's
+                        //   session while it executes unattended).
                         // - An INTERACTIVE turn whose reverse-RPC channel is
                         //   absent still has a user in front of a surface
                         //   (`approval.listPending` / `approval.decide` /

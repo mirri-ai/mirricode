@@ -67,40 +67,40 @@ fn ws_cron(server: &EmbeddedServer) -> Arc<mirri_core::cron::WorkspaceCronManage
         .clone()
 }
 
-/// Every session id `session.list` returns, in BOTH views (plain and
-/// `excludeEmpty`) — the list answers an `{items, ...}` envelope, so the
-/// ids are read from `items` (reading the envelope as a bare array would
+/// One `session.list` row under `params` — `None` when that view does not
+/// list the session. The list answers an `{items, ...}` envelope, so the
+/// rows are read from `items` (reading the envelope as a bare array would
 /// compare two empty lists and prove nothing).
-async fn listed_session_ids(server: &EmbeddedServer) -> Vec<String> {
-    let mut ids = Vec::new();
-    for params in [json!({}), json!({ "excludeEmpty": true })] {
-        let response = server
-            .call_method("session.list", params)
-            .await
-            .expect("session.list");
-        let rows = response["items"]
-            .as_array()
-            .expect("session.list answers an items envelope");
-        ids.extend(
-            rows.iter()
-                .filter_map(|row| row["id"].as_str().map(str::to_string)),
-        );
-    }
-    ids.sort();
-    ids
+async fn listed_session_row(
+    server: &EmbeddedServer,
+    params: serde_json::Value,
+    session_id: &str,
+) -> Option<serde_json::Value> {
+    let response = server
+        .call_method("session.list", params)
+        .await
+        .expect("session.list");
+    response["items"]
+        .as_array()
+        .expect("session.list answers an items envelope")
+        .iter()
+        .find(|row| row["id"] == json!(session_id))
+        .cloned()
 }
 
 /// Given a fired workspace task with a scripted LLM, when the run's turn
 /// settles, then the RunRecord carries the terminal state, duration, and
-/// session reference, and the session list does NOT grow (the lazy
-/// execution session never enters the index — V12).
+/// session reference, AND the execution session is an ORDINARY session:
+/// `session.list` shows it in both views (the default `excludeEmpty` one
+/// included) with a title and the task prompt as `lastPrompt`, and its
+/// wire log is on disk. (This reverses the old lazy/hidden execution
+/// session, which stayed out of every listing.)
 #[tokio::test]
-async fn should_record_the_terminal_run_and_keep_the_session_list_flat() {
+async fn should_list_the_run_session_with_its_title_and_last_prompt_when_the_run_settles() {
     let mock = Arc::new(ScriptedLlm::new());
     mock.push_text("patrol done, nothing to report");
     let (server, tmp, _home) = ws4b_server(Arc::clone(&mock));
     let workspace_id = default_workspace_id(&server);
-    let sessions_before = listed_session_ids(&server).await;
     let added = server
         .call_method(
             "cron.add",
@@ -142,18 +142,149 @@ async fn should_record_the_terminal_run_and_keep_the_session_list_flat() {
         .unwrap_or_else(|| panic!("the run reached a terminal state: {runs:?}"));
     // V12: the terminal record carries duration + session_ref.
     assert!(terminal.duration_ms.is_some(), "duration recorded");
-    assert!(terminal.session_ref.is_some(), "session ref recorded");
+    let session_ref = terminal
+        .session_ref
+        .clone()
+        .expect("the terminal record names its execution session");
     // (Batch 4 review #6 removed a tautological disjunction here: after
     // settle the record is terminal, so `any(Running)` was false and
     // `!runs.is_empty()` was already proven by `terminal` above — the
     // assert could never fail and claimed durable-first without checking
     // it.)
-    // V12's flat-list half: the execution session never entered the index.
-    let sessions_after = listed_session_ids(&server).await;
+    // The execution session is an ORDINARY session now: both listing
+    // views show it — the default one included — and the row carries a
+    // title plus the task prompt as its preview.
+    for params in [json!({}), json!({ "excludeEmpty": true })] {
+        let row = listed_session_row(&server, params.clone(), &session_ref)
+            .await
+            .unwrap_or_else(|| {
+                panic!("the execution session is listed under {params}: {session_ref}")
+            });
+        let title = row["title"].as_str().unwrap_or_default();
+        assert!(
+            !title.trim().is_empty(),
+            "the listed execution session carries a title: {row}"
+        );
+        let last_prompt = row["lastPrompt"].as_str().unwrap_or_default();
+        assert_eq!(
+            last_prompt, "patrol the workspace",
+            "the listed execution session carries the task prompt as its preview: {row}"
+        );
+    }
+    // And its body is on disk (eager create: the wire log opens at
+    // creation, so the turn's ops are durable rather than buffered).
+    let runtime = server
+        .workspace_registry()
+        .built_runtime(&workspace_id)
+        .expect("the default runtime is built");
+    let wire_log = runtime
+        .manager
+        .persistence()
+        .wire_log_path(&mirri_core::SessionId::new(&session_ref));
+    assert!(
+        wire_log.is_file(),
+        "the execution session's wire log is on disk: {}",
+        wire_log.display()
+    );
+    let _ = tmp;
+}
+
+/// Given a workspace task that already ran, when the server restarts over
+/// the same home, then the run's execution session is still an ordinary
+/// listed session — the row (title + `lastPrompt`) and the wire log
+/// survived the restart, so the run's transcript is re-openable.
+#[tokio::test]
+async fn should_keep_the_run_session_listed_when_the_server_restarts() {
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("nightly patrol done");
+    let (server, tmp, home) = ws4b_server(Arc::clone(&mock));
+    let workspace_id = default_workspace_id(&server);
+    let added = server
+        .call_method(
+            "cron.add",
+            json!({
+                "workspaceId": &workspace_id,
+                "cron": "*/5 * * * *",
+                "prompt": "patrol the workspace",
+                "recurring": true,
+                "title": "Nightly patrol",
+            }),
+        )
+        .await
+        .expect("workspace cron.add");
+    let task_id = added["taskId"].as_str().unwrap().to_string();
+    let cron = ws_cron(&server);
+    cron.set_next_fire_at(
+        &task_id,
+        Some(chrono::Utc::now() - chrono::Duration::seconds(5)),
+    );
+    let fires = drive_cron_pass_capture(&server).await;
+    assert_eq!(fires.len(), 1, "the due task fires exactly once: {fires:?}");
+    let fire = fires[0].clone();
+    server
+        .workspace_run_spawner()
+        .spawn_and_settle(
+            workspace_id.clone(),
+            task_id.clone(),
+            fire.trigger,
+            fire.scheduled_at,
+            None,
+        )
+        .await;
+    let session_ref = cron
+        .runs(&task_id)
+        .iter()
+        .find(|run| run.status == mirri_core::cron::RunStatus::Succeeded)
+        .and_then(|run| run.session_ref.clone())
+        .unwrap_or_else(|| panic!("the run finished Succeeded: {:?}", cron.runs(&task_id)));
+    // Drop the first server's live state: a fresh server over the SAME
+    // home (the session bucket + index db are on disk) is the restart.
+    drop(server);
+    let mut restarted = EmbeddedServer::for_workspace_root(
+        WorkspaceId::new("test-ws-4b"),
+        tmp.path().to_path_buf(),
+        Some(home.path().to_path_buf()),
+        Vec::new(),
+    );
+    restarted.llm_factory = Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock))));
+    {
+        let mut config = restarted.config.write().unwrap_or_else(|e| e.into_inner());
+        config.default_model = Some(super::TEST_DEFAULT_MODEL.to_string());
+    }
+    // Disarm the restarted scheduler too: nothing here needs a tick.
+    restarted
+        .cron_scheduler_spawned
+        .swap(true, std::sync::atomic::Ordering::SeqCst);
+    let row = listed_session_row(&restarted, json!({ "excludeEmpty": true }), &session_ref)
+        .await
+        .unwrap_or_else(|| {
+            panic!("the run's session survives the restart in the default listing: {session_ref}")
+        });
+    let title = row["title"].as_str().unwrap_or_default();
+    assert!(
+        title.starts_with("Nightly patrol"),
+        "the persisted row keeps the run session's title: {row}"
+    );
     assert_eq!(
-        sessions_after, sessions_before,
-        "the lazy execution session does not enter the session list \
-         (neither the plain nor the excludeEmpty view)"
+        row["lastPrompt"].as_str().unwrap_or_default(),
+        "patrol the workspace",
+        "the persisted row keeps the run's prompt as its preview: {row}"
+    );
+    // The transcript is still on disk (the wire log is the restart's
+    // replay source).
+    let restarted_runtime = restarted
+        .workspace_registry()
+        .built_runtime(&default_workspace_id(&restarted))
+        .expect("the restarted runtime is built");
+    let wire_log = restarted_runtime
+        .manager
+        .persistence()
+        .wire_log_path(&mirri_core::SessionId::new(&session_ref));
+    let body = std::fs::read_to_string(&wire_log)
+        .unwrap_or_else(|e| panic!("the wire log survives the restart: {} ({e})", wire_log.display()));
+    assert!(
+        body.contains("turn.prompt"),
+        "the restarted session still carries the run's turn: {body}"
     );
     let _ = tmp;
 }
@@ -250,11 +381,14 @@ async fn should_skip_the_next_fire_while_the_previous_run_is_running() {
     let _ = tmp;
 }
 
-/// Given a finished run's lazy execution session, when the user opens it
-/// through `cron.run.open`, then the session materializes (state.json +
-/// wire.jsonl) — the ONLY index admission (V13's explicit-open path).
+/// Given a finished run's execution session — already an ordinary,
+/// persisted session — when the user opens it through `cron.run.open`,
+/// then the legacy compatibility entry reports a no-op (nothing to
+/// materialize: the wire log opened at creation) and the session stays
+/// listed. (The explicit open used to be the ONLY index admission; it is
+/// now just an idempotent compatibility face.)
 #[tokio::test]
-async fn should_materialize_the_execution_session_on_explicit_open() {
+async fn should_report_a_no_op_when_the_run_session_is_opened_through_the_legacy_entry() {
     let mock = Arc::new(ScriptedLlm::new());
     mock.push_text("all good");
     let (server, tmp, _home) = ws4b_server(Arc::clone(&mock));
@@ -298,9 +432,15 @@ async fn should_materialize_the_execution_session_on_explicit_open() {
         .find(|run| run.status == mirri_core::cron::RunStatus::Succeeded)
         .and_then(|terminal| terminal.session_ref.clone())
         .unwrap_or_else(|| panic!("the terminal run carries the execution session's ref: {runs:?}"));
-    // Before the open: no session directory (the lazy shape).
-    // (The materialization check is the manager's own idempotent face.)
-    // The explicit open (V13): materialize.
+    // The session is already persisted and listed before the call.
+    assert!(
+        listed_session_row(&server, json!({ "excludeEmpty": true }), &session_ref)
+            .await
+            .is_some(),
+        "the run session is listed before the legacy open"
+    );
+    // The legacy open is a compatibility no-op: the wire log already
+    // exists, so there is nothing to materialize.
     let opened = server
         .call_method(
             "cron.run.open",
@@ -308,8 +448,11 @@ async fn should_materialize_the_execution_session_on_explicit_open() {
         )
         .await
         .expect("cron.run.open");
-    assert_eq!(opened["materialized"], true, "the first open materializes");
-    // Idempotent: a second open reports false (already materialized).
+    assert_eq!(
+        opened["materialized"], false,
+        "the legacy open reports a no-op on an already-persisted session"
+    );
+    // Idempotent, and the session is still listed afterwards.
     let again = server
         .call_method(
             "cron.run.open",
@@ -317,7 +460,13 @@ async fn should_materialize_the_execution_session_on_explicit_open() {
         )
         .await
         .expect("cron.run.open again");
-    assert_eq!(again["materialized"], false, "the second open is a no-op");
+    assert_eq!(again["materialized"], false, "the repeated open stays a no-op");
+    assert!(
+        listed_session_row(&server, json!({ "excludeEmpty": true }), &session_ref)
+            .await
+            .is_some(),
+        "the run session is still listed after the legacy open"
+    );
     let _ = tmp;
 }
 
@@ -636,14 +785,17 @@ async fn should_terminate_in_flight_runs_when_the_workspace_is_deleted() {
     let _ = tmp;
 }
 
-/// Given an execution session whose run ended 8 days ago and was never
-/// opened, when the scheduler's workspace pass sweeps, then the live
-/// session is dropped (the in-memory discard) while the run record keeps
-/// its data (D-M5 b / V21 — the lazy session never materialized, nothing
-/// on disk to clean).
+/// Given a fired workspace task whose run already ended, when the
+/// scheduler's workspace pass runs (repeatedly), then the run's execution
+/// session is NOT dropped — it is an ordinary session whose lifetime
+/// belongs to the session-retention domain, not to the cron scheduler.
+/// (The old 7-day sweep of never-opened execution sessions is gone: there
+/// is no such thing as an unopened run session any more.)
 #[tokio::test]
-async fn should_drop_an_unopened_execution_session_after_seven_days() {
-    let (server, tmp, _home) = ws4b_server(Arc::new(ScriptedLlm::new()));
+async fn should_keep_the_run_session_when_the_scheduler_pass_runs() {
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("old run done");
+    let (server, tmp, _home) = ws4b_server(Arc::clone(&mock));
     let workspace_id = default_workspace_id(&server);
     let added = server
         .call_method(
@@ -659,39 +811,56 @@ async fn should_drop_an_unopened_execution_session_after_seven_days() {
         .expect("workspace cron.add");
     let task_id = added["taskId"].as_str().unwrap().to_string();
     let cron = ws_cron(&server);
-    // A terminal run record referencing a lazy execution session that
-    // ended 8 days ago (past the 7-day retention).
-    cron.record_run(
+    cron.set_next_fire_at(
         &task_id,
-        mirri_core::cron::RunRecord {
-            run_id: "run-old".to_string(),
-            status: mirri_core::cron::RunStatus::Succeeded,
-            started_at: chrono::Utc::now() - chrono::Duration::days(9),
-            ended_at: Some(chrono::Utc::now() - chrono::Duration::days(8)),
-            duration_ms: Some(100),
-            usage: None,
-            // The session id is arbitrary — the sweep only checks the
-            // session's liveness and materialization; an unknown id is a
-            // no-op (already gone).
-            session_ref: Some("session-old-unopened".to_string()),
-            skip_reason: None,
-            asked_ops: Vec::new(),
-            trigger: None,
-            scheduled_at: None,
-        },
-    )
-    .await;
-    // Two workspace passes: the first may have been in flight when the run
-    // record landed (its sweep would have read the store before the write),
-    // the second is guaranteed to observe it. The record's survival is then
-    // a fact about a completed sweep, not about 200 ms of silence.
+        Some(chrono::Utc::now() - chrono::Duration::seconds(5)),
+    );
+    let fires = drive_cron_pass_capture(&server).await;
+    assert_eq!(fires.len(), 1, "the due task fires exactly once: {fires:?}");
+    let fire = fires[0].clone();
+    server
+        .workspace_run_spawner()
+        .spawn_and_settle(
+            workspace_id.clone(),
+            task_id.clone(),
+            fire.trigger,
+            fire.scheduled_at,
+            None,
+        )
+        .await;
+    let session_ref = cron
+        .runs(&task_id)
+        .iter()
+        .find(|run| run.status == mirri_core::cron::RunStatus::Succeeded)
+        .and_then(|run| run.session_ref.clone())
+        .unwrap_or_else(|| panic!("the run finished Succeeded: {:?}", cron.runs(&task_id)));
+    // Two scheduler passes: the sweep the old design ran here is exactly
+    // what must no longer touch a run session.
     drive_cron_pass(&server).await;
     drive_cron_pass(&server).await;
-    // The run record survives (the audit trail).
-    let runs = cron.runs(&task_id);
+    let runtime = server
+        .workspace_registry()
+        .built_runtime(&workspace_id)
+        .expect("the default runtime is built");
     assert!(
-        runs.iter().any(|run| run.run_id == "run-old"),
-        "the run record survives the sweep: {runs:?}"
+        runtime
+            .manager
+            .get_session(&mirri_core::SessionId::new(&session_ref))
+            .await
+            .is_some(),
+        "the run session stays live across the scheduler's passes"
+    );
+    assert!(
+        listed_session_row(&server, json!({ "excludeEmpty": true }), &session_ref)
+            .await
+            .is_some(),
+        "the run session stays listed across the scheduler's passes"
+    );
+    // The run record survives too (the audit trail).
+    assert!(
+        cron.runs(&task_id).iter().any(|run| run.status == mirri_core::cron::RunStatus::Succeeded),
+        "the run record survives: {:?}",
+        cron.runs(&task_id)
     );
     let _ = tmp;
 }
@@ -1436,13 +1605,16 @@ async fn should_refuse_the_run_when_the_task_workdir_escapes_the_workspace_root(
 // `skip_reason`.
 
 
-/// Given a fired cron task, When the run's execution session is created
-/// (and even after the run terminates), Then NO metadata row exists —
-/// and When the user explicitly opens the run, Then the row materializes
-/// (ADR-008 / ADR-006 Task 13: execution sessions are row-exempt until
-/// the explicit open).
+/// Given a fired cron task, when the run's turn settles, then the
+/// execution session HAS a metadata row — written at creation and refreshed
+/// at settle — carrying the run's title, the `cron-task:<id>` tag and the
+/// task prompt as its `last_prompt`, so the default listing shows it.
+///
+/// (This reverses the old row-exempt design, where the row only landed on
+/// the explicit `cron.run.open`. An execution session is an ordinary
+/// persisted session now.)
 #[tokio::test]
-async fn should_not_create_rows_for_cron_execution_sessions_until_explicitly_opened() {
+async fn should_write_the_row_for_a_cron_execution_session_when_the_run_settles() {
     let mock = Arc::new(ScriptedLlm::new());
     mock.push_text("patrol done");
     let (server, tmp, _home) = ws4b_server(Arc::clone(&mock));
@@ -1467,7 +1639,7 @@ async fn should_not_create_rows_for_cron_execution_sessions_until_explicitly_ope
     );
 
     // Batch 4: one captured fire, settled inline — the execution session
-    // exists (still row-less) when the settle returns.
+    // and its durable row are facts when the settle returns.
     let fires = drive_cron_pass_capture(&server).await;
     assert_eq!(fires.len(), 1, "the due task fires exactly once: {fires:?}");
     let fire = fires[0].clone();
@@ -1488,27 +1660,26 @@ async fn should_not_create_rows_for_cron_execution_sessions_until_explicitly_ope
         .and_then(|terminal| terminal.session_ref.clone())
         .unwrap_or_else(|| panic!("the run carried the execution session ref: {runs:?}"));
 
-    // Then NO row exists for the execution session — not during the run,
-    // not after its terminal state.
+    // The row exists — with the run's title, its tag and its prompt.
     let index = server
         .session_index()
         .expect("the index is open (home injected)");
+    let row = index
+        .get_session(&session_id)
+        .unwrap_or_else(|| panic!("the execution session owns a metadata row: {session_id}"));
     assert!(
-        index.get_session(&session_id).is_none(),
-        "the execution session writes no row before the explicit open"
+        row.title.as_deref().is_some_and(|title| !title.trim().is_empty()),
+        "the row carries the run session's title: {row:?}"
     );
-
-    // And When the user explicitly opens the run, the row materializes.
-    server
-        .call_method("cron.run.open", json!({ "sessionId": session_id }))
-        .await
-        .expect("cron.run.open");
-    mirri_test_support::wait_for::wait_for_async(
-        Duration::from_secs(5),
-        Duration::from_millis(10),
-        || index.get_session(&session_id).is_some().then_some(()),
-    )
-    .await
-    .expect("the explicit open materializes the index row");
+    assert!(
+        row.tags.iter().any(|tag| tag == &format!("cron-task:{task_id}")),
+        "the row keeps the cron-task tag: {:?}",
+        row.tags
+    );
+    assert_eq!(
+        row.last_prompt.as_deref(),
+        Some("row exempt patrol"),
+        "the row carries the task prompt as the session's preview"
+    );
     let _ = tmp;
 }

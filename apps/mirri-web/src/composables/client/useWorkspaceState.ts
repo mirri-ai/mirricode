@@ -3436,10 +3436,14 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
   }
 
-  /** Handle a `mirricode://session/<id>` deep link from the desktop shell:
-   *  make sure the session is in the sidebar (fetching it when it lives
-   *  outside the loaded pages), then select it — mirroring the URL-deep-link
-   *  resolution in `loadSessions`. */
+  /** Handle a `mirricode://session/<id>` deep link or an in-app request to
+   *  open a session that may live outside the loaded pages (a scheduled run's
+   *  execution session): make sure the session is in the sidebar (fetching it
+   *  when it lives outside the loaded pages), then select it — mirroring the
+   *  URL-deep-link resolution in `loadSessions`.
+   *
+   *  A session that cannot be resolved must SAY so: silently doing nothing
+   *  reads as "the click did nothing". */
   async function openSessionFromDeepLink(sessionId: string): Promise<void> {
     try {
       const available =
@@ -3447,7 +3451,16 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         (await fetchSessionIntoList(sessionId));
       if (available) {
         await selectSession(sessionId, { urlMode: 'replace' });
+        return;
       }
+      // `fetchSessionIntoList` folds every failure into `false` (the daemon
+      // does not know the id, or the request itself failed) — the copy stays
+      // honest about both.
+      pushOperationFailure('openSession', new Error(`session ${sessionId} is not available`), {
+        sessionId,
+        title: i18n.global.t('warnings.sessionOpenFailedTitle'),
+        message: i18n.global.t('warnings.sessionOpenFailedMessage'),
+      });
     } catch (error) {
       pushOperationFailure('deepLink', error, { sessionId });
     }

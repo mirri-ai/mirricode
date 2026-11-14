@@ -7,23 +7,25 @@
 //!    skip (`RunStatus::Skipped`, "上次运行中" — the fire budget is NOT
 //!    consumed, the 4a M1 fix preserved); the queue posture merges into
 //!    the single backlogged slot.
-//! 2. **Execution session** (B.1): `create_session_lazy` — the SDR-004
-//!    lazy shape IS the unattended execution form: no `wire.jsonl`, no
-//!    event relay (ADR-006: the metadata ROW does land at creation — its
-//!    empty `last_prompt` keeps the session out of default listings). The
-//!    session materializes only on the explicit-open path
-//!    (`cron.run.open`) — this spawner NEVER calls `note_turn_settled`
-//!    (which would force-persist through the metadata write-through + the
-//!    index upsert).
+//! 2. **Execution session** (B.1): an ORDINARY session —
+//!    [`mirri_core::SessionManager::create_session_with_root`] with the
+//!    task's workdir as its sandbox root. The metadata row (title, tags,
+//!    and the run's prompt as `last_prompt`) and the `wire.jsonl` both land
+//!    at creation, so the run is a normal conversation: it shows up in the
+//!    session list from its first moment, its transcript is durable, and it
+//!    survives a restart like any other session. The run's turn settles
+//!    through the usual index write-through (`note_turn_settled`), exactly
+//!    like an interactive turn.
 //! 3. **Injection** (the `inject_cron_prompt` pipeline family): the fire's
 //!    prompt runs as an engine turn with `PromptOrigin::CronJob` and the
 //!    posture-mapped `TurnOriginContext::Cron`.
 //! 4. **Finale** (C.2/D-M6): the turn's settle records the RunRecord
 //!    terminal state + duration + the last-assistant-message truncation as
 //!    the run's summary (D-M6's downgraded shape — zero extra LLM calls).
-//! 5. **Lazy cleanup** (D-M5 b): the TTL sweep (7 days past the terminal
-//!    state) drops never-opened execution sessions; the RunRecord keeps
-//!    the summary.
+//! 5. **Retention**: none here. A run session is an ordinary session; its
+//!    lifetime belongs to the session-retention domain, never to this
+//!    spawner (there is no run-specific sweep that could drop a session the
+//!    user can see).
 //!
 //! Fire-and-forget by design (R1): the executor records `Running` and
 //! returns; the turn runs on its own spawned task.
@@ -63,11 +65,6 @@ use crate::workspace_registry::WorkspaceRegistry;
 /// notification.
 pub const RUN_SUMMARY_MAX_CHARS: usize = 500;
 
-/// How long an unopened execution session outlives its run's terminal
-/// state before the sweep drops it (D-M5 b: 7 days — the same magnitude
-/// the session-retention reasoning uses).
-pub const UNOPENED_RUN_SESSION_TTL: chrono::Duration = chrono::Duration::days(7);
-
 /// The spawner's captured dependencies — the same Arc-cloning stance the
 /// scheduler loop itself uses (no `&EmbeddedServer` crosses a spawn).
 #[derive(Clone)]
@@ -80,10 +77,11 @@ pub(crate) struct WorkspaceRunSpawner {
     pub(crate) usage_model_key_handles: UsageModelKeyHandleMap,
     pub(crate) llm_factory: Option<Arc<dyn LlmFactory>>,
     pub(crate) in_flight_turns: super::InFlightTurnsMap,
-    // NOTE (ADR-008): no settle-index handle travels with the spawner —
-    // a run turn NEVER settles into the session index (the spawner calls
-    // `inject_cron_prompt` with `index: None`); the explicit-open path
-    // (`cron.run.open`) is the only admission.
+    /// The turn-settle write-through (ADR-009): a run turn is an ordinary
+    /// turn, so its settle refreshes the session row + the index exactly
+    /// like an interactive turn. Travels as a field Arc because the spawned
+    /// settle task holds no `&EmbeddedServer`.
+    pub(crate) settle_index: Option<Arc<mirri_session_index::SessionIndex>>,
     pub(crate) flag_registry: Arc<mirri_core::FlagRegistry>,
     pub(crate) goal_chain_states: GoalChainStateMap,
     pub(crate) goal_chain_resources: ChainResources,
@@ -125,6 +123,7 @@ impl EmbeddedServer {
             usage_model_key_handles: Arc::clone(&self.usage_model_key_handles),
             llm_factory: self.llm_factory.clone(),
             in_flight_turns: Arc::clone(&self.in_flight_turns),
+            settle_index: self.session_index(),
             flag_registry: Arc::clone(self.flag_registry()),
             goal_chain_states: Arc::clone(&self.goal_chain_states),
             goal_chain_resources: self.goal_chain_resources(),
@@ -237,8 +236,8 @@ impl WorkspaceRunSpawner {
     }
 
     /// The opener prefix of the §8 pipeline (batch 4's seam split): the
-    /// concurrency posture, the workdir refusal, the lazy execution
-    /// session create, and the session-ref stamp — everything UP TO the
+    /// concurrency posture, the workdir refusal, the execution session
+    /// create, and the session-ref stamp — everything UP TO the
     /// turn — awaited on the caller's task. `None` means the prefix
     /// already recorded the run's terminal verdict (skip / refusal /
     /// create failure) or the fire was parked in the Queue slot; the
@@ -308,8 +307,10 @@ impl WorkspaceRunSpawner {
             }
         };
 
-        // 2. The execution session (B.1): the SDR-004 lazy shape. Created
-        // in the task's OWN workspace; never relayed, never indexed.
+        // 2. The execution session (B.1): an ORDINARY session, created in
+        // the task's OWN workspace and persisted at creation (metadata row +
+        // wire log) — the run is a normal conversation the user can list,
+        // open and read, and it survives a restart.
         // ADR-019 / VU14 (review Major 3): the task's workdir must
         // ACTUALLY constrain the run — the tools' cwd comes from the
         // session's workspace sandbox, not `SessionMetadata.work_dir`
@@ -371,7 +372,12 @@ impl WorkspaceRunSpawner {
             tags: std::collections::HashSet::from([format!("cron-task:{}", task.id)]),
             archived: false,
             work_dir: workdir,
-            last_prompt: None,
+            // The run's prompt is the session's user input: stamping it at
+            // creation makes the run visible in the DEFAULT listing (the
+            // `excludeEmpty` filter keys on a non-empty last_prompt) with
+            // the task prompt as its preview — nobody types into an
+            // execution session, so nothing else would ever set it.
+            last_prompt: Some(task.prompt.clone()),
             forked_from: None,
             cache_root_id: None,
             custom: None,
@@ -381,22 +387,21 @@ impl WorkspaceRunSpawner {
             let snapshot = self.server_config.read().unwrap_or_else(|e| e.into_inner());
             mirri_core::session_scope_config_from(&snapshot)
         };
-        // ADR-008 / ADR-006 Task 13: the execution session is ROW-EXEMPT —
-        // no metadata row until the user explicitly opens the run
-        // (materialization writes it; the routing note below keeps the
-        // session reachable for approval in the meantime).
+        // The execution session is created EAGERLY: the metadata row and the
+        // wire log both land here, so the run is an ordinary session from
+        // its first moment (listed, durable, restart-safe) rather than a
+        // hidden artifact waiting for an explicit open.
         let session: Option<Arc<mirri_core::SessionScope>> = match manager
-            .create_session_lazy_with_root_ex(metadata, scope_config, sandbox_root, true)
+            .create_session_with_root(metadata, scope_config, sandbox_root)
             .await
         {
             Ok(session) => {
-                // ADR-021 (manual runs' approval face): note the lazy
-                // execution session as ACTIVE in its workspace so the
-                // approval RPCs (`approval.listPending` / `approval.decide`)
-                // can route to it while its turn is parked on the gate.
-                // This is the ROUTING table only — the session list and
-                // the index stay flat (ADR-008's explicit-open admission is
-                // untouched; `note_active` never writes the index).
+                // ADR-021 (manual runs' approval face): note the execution
+                // session as ACTIVE in its workspace so the approval RPCs
+                // (`approval.listPending` / `approval.decide`) can route to
+                // it while its turn is parked on the gate. (The create
+                // itself does not register a routing entry — `note_active`
+                // is what makes the mid-run session addressable.)
                 self.registry
                     .note_active(session.id().as_str(), &workspace_id);
                 Some(session)
@@ -438,10 +443,9 @@ impl WorkspaceRunSpawner {
 
         // 3-4. The injection + finale travel on their own task (or, on the
         // test seam's `spawn_and_settle`, inline). The session Arc travels
-        // with the prepared run (ADR-008: the execution session is NOT in
-        // the routing tables — the active table and the index only learn
-        // it on the explicit-open path — so `resolve_session_via` would
-        // fail; the create returned the authoritative Arc). The SAME run
+        // with the prepared run: the create returned the authoritative Arc,
+        // which is what the injection takes (no re-resolve — the session is
+        // live and routable, but the Arc is already in hand). The SAME run
         // id rides the terminal record (the opener and the finale are one
         // run — review Minor's unified run_id).
         let run_id = opened_run_id;
@@ -660,9 +664,10 @@ impl WorkspaceRunSpawner {
                 task.permission_posture,
                 Some(PermissionPosture::AskDeny) | Some(PermissionPosture::ReadOnly) | None
             );
-        // The lazy execution session has NO agents (SDR-004 defers
-        // everything) — the 4b defect's second half: the injection's
-        // `get_agent(main)` answered None and dropped the turn. The run's
+        // A manager-created session has NO agents (the `session.create` RPC
+        // is what normally builds them; the spawner's create does not) — the
+        // 4b defect's second half: the injection's `get_agent(main)`
+        // answered None and dropped the turn. The run's
         // main agent is created HERE, the same shape the session-create
         // path builds: the config's default model (the spawner's create
         // already required one to exist), the essential profile's tool
@@ -721,17 +726,17 @@ impl WorkspaceRunSpawner {
                 );
             }
         }
-        // The agent's mode IS the task's mode (A4) — the lazy session may
-        // have carried a pre-existing agent, so stamp it explicitly too.
+        // The agent's mode IS the task's mode (A4) — stamp it explicitly on
+        // any pre-existing agent too.
         if let Some(agent) = session.get_agent(&main_agent_id).await {
             agent.set_permission_mode(runtime_mode);
         }
         let flow_config =
             cron_flow_config(&session, super::DEFAULT_MAIN_AGENT_ID, &self.server_config).await;
-        // D.2 m4 review fix: the spawner injects the ALREADY-HELD session
-        // Arc — the lazy execution session never enters the routing tables
-        // (ADR-008), so the resolve-based face would answer `Injected`
-        // without ever running the turn (the 4b defect).
+        // The spawner injects the ALREADY-HELD session Arc (the create
+        // returned it) instead of re-resolving — the run's session is the
+        // one this fire created, and passing the Arc keeps that identity
+        // explicit.
         let status = inject_cron_prompt_into_session(
             &self.registry,
             Arc::clone(&session),
@@ -742,8 +747,10 @@ impl WorkspaceRunSpawner {
             &self.usage_model_key_handles,
             &self.llm_factory,
             &self.in_flight_turns,
-            // ADR-008: the run turn never settles into the index.
-            None,
+            // ADR-009: the run turn is an ordinary turn — its settle
+            // refreshes the session row and the index exactly like an
+            // interactive turn's does.
+            self.settle_index.clone(),
             &self.flag_registry,
             &self.goal_chain_states,
             &self.goal_chain_resources,
