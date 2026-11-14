@@ -1,6 +1,6 @@
 //! Tool result truncation — model-context truncation for oversized tool results.
 //!
-//! When a tool produces text output exceeding [`MAX_CHARS`], the full text is
+//! When a tool produces text output exceeding [`MAX_BYTES`], the full text is
 //! persisted to disk and the model-visible output is replaced with a bounded
 //! preview containing metadata and a recovery path. This prevents oversized
 //! tool results from consuming disproportionate context window space while
@@ -17,14 +17,23 @@ use uuid::Uuid;
 
 use crate::tool::{ToolOutput, ToolResult};
 
-/// Maximum characters of tool output text allowed inline in model context.
+/// Maximum UTF-8 **bytes** of tool output text allowed inline in model context.
 ///
 /// Outputs at or below this size pass through unchanged. Outputs strictly
 /// larger than this are persisted to disk and replaced with a preview.
-pub const MAX_CHARS: usize = 50_000;
+///
+/// The unit is bytes, not characters: the budget models context-window
+/// consumption, which is byte-shaped. A CJK character costs three bytes, so
+/// character-based accounting would over-admit Chinese text by 3x. Tool
+/// output that claims a "characters" figure must therefore say characters
+/// only where it really counts characters (see [`PREVIEW_CHARS`]).
+pub const MAX_BYTES: usize = 50_000;
 
-/// Number of characters of preview text included in the truncated replacement
-/// shown to the model.
+/// Number of **characters** of preview text included in the truncated
+/// replacement shown to the model.
+///
+/// Character-based on purpose: this is a readability truncation, and slicing
+/// mid-codepoint would produce invalid UTF-8.
 pub const PREVIEW_CHARS: usize = 2_000;
 
 /// Persists oversized tool result text to disk and replaces the inline output
@@ -75,13 +84,17 @@ impl ToolResultTruncator {
     ///
     /// - Only [`ToolOutput::Text`] is considered for truncation;
     ///   [`ToolOutput::Parts`] is returned unchanged regardless of size.
-    /// - If the text length is `<= MAX_CHARS`, the result is returned unchanged.
-    /// - If `result.truncated` is already `true`, the result is returned
-    ///   unchanged (it was already truncated upstream).
+    /// - If the body byte length is `<= MAX_BYTES`, the result is returned
+    ///   unchanged.
+    /// - The `truncated` flag does **not** exempt a result: sizing is decided
+    ///   by the real byte count alone.
     /// - Otherwise, the full text is saved to
     ///   `{home_dir}/tool-results/{safe_stem}-{uuid}.txt` and the output is
     ///   replaced with a preview containing metadata, a recovery path, and the
     ///   first [`PREVIEW_CHARS`] characters. `truncated` is set to `true`.
+    /// - The producer's `note`, if any, does not survive alongside the
+    ///   preview: its text moves into the preview as a
+    ///   `note_before_truncation` field and `note` becomes `None`.
     ///
     /// If the file write fails (e.g. disk full, permission denied), the
     /// original result is returned unchanged rather than losing the output.
@@ -96,11 +109,13 @@ impl ToolResultTruncator {
             ToolOutput::Parts(_) => return result,
         };
 
-        if text.len() <= MAX_CHARS {
-            return result;
-        }
-
-        if result.truncated {
+        // Size is the only exemption. A producer's `truncated` flag is a
+        // description of what it did, not a permission slip: an over-budget
+        // result must be paged down regardless of how the producer labelled
+        // itself, or a producer that truncates only its *line count* (Read
+        // caps at 1000 lines x 2000 chars = ~2 MB) would push the whole thing
+        // into the context window.
+        if text.len() <= MAX_BYTES {
             return result;
         }
 
@@ -120,9 +135,23 @@ impl ToolResultTruncator {
             return result;
         }
 
-        let preview = render_preview(tool_name, tool_call_id, &text, &output_path);
+        let preview = render_preview(
+            tool_name,
+            tool_call_id,
+            &text,
+            &output_path,
+            result.note.as_deref(),
+        );
 
         result.output = ToolOutput::Text(preview);
+        // The note describes the output it shipped with. Once that output is
+        // replaced by a preview the two would contradict each other (a Read
+        // note claiming "lines 1-100 of 1000" above a 3-line preview), so the
+        // preview becomes the single authority on what was delivered. The
+        // note's facts survive inside the preview as `note_before_truncation`
+        // rather than being dropped. Tool-agnostic: any producer's note — Read
+        // line ranges, grep cutoffs — takes the same path.
+        result.note = None;
         result.truncated = true;
         result
     }
@@ -134,27 +163,40 @@ impl ToolResultTruncator {
 /// - A truncation notice naming the threshold.
 /// - Metadata fields: `tool_name`, `tool_call_id`, `output_size_chars`,
 ///   `output_size_bytes`, `output_path`.
+/// - `note_before_truncation` carrying the producer's original note, when it
+///   had one (see [`ToolResultTruncator::truncate_for_model`]).
 /// - A `next_step` instruction directing the model to use `Read` with the
 ///   `output_path` for full content.
 /// - The first [`PREVIEW_CHARS`] characters of the original text under a
 ///   `[preview]` header.
-fn render_preview(tool_name: &str, tool_call_id: &str, text: &str, output_path: &Path) -> String {
+fn render_preview(
+    tool_name: &str,
+    tool_call_id: &str,
+    text: &str,
+    output_path: &Path,
+    note: Option<&str>,
+) -> String {
     let output_size_chars = text.chars().count();
     let output_size_bytes = text.len();
     let preview_text: String = text.chars().take(PREVIEW_CHARS).collect();
 
-    let lines = [
-        format!("Tool output exceeded {MAX_CHARS} characters; showing a preview only."),
+    let mut lines = vec![
+        format!("Tool output exceeded {MAX_BYTES} bytes; showing a preview only."),
         format!("tool_name: {tool_name}"),
         format!("tool_call_id: {tool_call_id}"),
         format!("output_size_chars: {output_size_chars}"),
         format!("output_size_bytes: {output_size_bytes}"),
         format!("output_path: {}", output_path.display()),
+    ];
+    if let Some(note) = note {
+        lines.push(format!("note_before_truncation: {note}"));
+    }
+    lines.extend([
         "next_step: Use Read with output_path to page through the full output.".to_string(),
         String::new(),
         "[preview]".to_string(),
         preview_text,
-    ];
+    ]);
     lines.join("\n")
 }
 
@@ -230,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn should_return_unchanged_when_text_under_max_chars() {
+    fn should_return_unchanged_when_text_under_max_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let truncator = ToolResultTruncator::new(dir.path());
         let result = text_result("small output");
@@ -245,26 +287,26 @@ mod tests {
     }
 
     #[test]
-    fn should_return_unchanged_when_text_exactly_at_max_chars() {
+    fn should_return_unchanged_when_text_exactly_at_max_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let truncator = ToolResultTruncator::new(dir.path());
-        let text = "x".repeat(MAX_CHARS);
+        let text = "x".repeat(MAX_BYTES);
         let result = text_result(&text);
 
         let truncated = truncator.truncate_for_model("Read", "call_1", result);
 
         assert!(!truncated.truncated);
         match &truncated.output {
-            ToolOutput::Text(t) => assert_eq!(t.len(), MAX_CHARS),
+            ToolOutput::Text(t) => assert_eq!(t.len(), MAX_BYTES),
             ToolOutput::Parts(_) => panic!("expected text output"),
         }
     }
 
     #[test]
-    fn should_truncate_when_text_exceeds_max_chars() {
+    fn should_truncate_when_text_exceeds_max_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let truncator = ToolResultTruncator::new(dir.path());
-        let text = "x".repeat(MAX_CHARS + 1);
+        let text = "x".repeat(MAX_BYTES + 1);
         let result = text_result(&text);
 
         let truncated = truncator.truncate_for_model("Bash", "call_2", result);
@@ -272,7 +314,7 @@ mod tests {
         assert!(truncated.truncated);
         match &truncated.output {
             ToolOutput::Text(rendered) => {
-                assert!(rendered.contains("Tool output exceeded 50000 characters"));
+                assert!(rendered.contains("Tool output exceeded 50000 bytes"));
                 assert!(rendered.contains("tool_name: Bash"));
                 assert!(rendered.contains("tool_call_id: call_2"));
                 assert!(rendered.contains("output_size_chars:"));
@@ -286,34 +328,11 @@ mod tests {
     }
 
     #[test]
-    fn should_return_unchanged_when_already_truncated() {
-        let dir = tempfile::tempdir().unwrap();
-        let truncator = ToolResultTruncator::new(dir.path());
-        let text = "x".repeat(MAX_CHARS + 1);
-        let result = ToolResult {
-            output: ToolOutput::Text(text.clone()),
-            is_error: false,
-            note: None,
-            stop_turn: false,
-            truncated: true,
-            injection: None,
-        };
-
-        let truncated = truncator.truncate_for_model("Read", "call_3", result);
-
-        assert!(truncated.truncated);
-        match &truncated.output {
-            ToolOutput::Text(t) => assert_eq!(t, &text),
-            ToolOutput::Parts(_) => panic!("expected text output"),
-        }
-    }
-
-    #[test]
     fn should_return_unchanged_when_output_is_parts() {
         let dir = tempfile::tempdir().unwrap();
         let truncator = ToolResultTruncator::new(dir.path());
         let parts = vec![crate::message::ContentPart::Text {
-            text: "x".repeat(MAX_CHARS + 1),
+            text: "x".repeat(MAX_BYTES + 1),
         }];
         let result = ToolResult {
             output: ToolOutput::Parts(parts),
@@ -334,7 +353,7 @@ mod tests {
     fn should_persist_full_text_to_disk_when_truncated() {
         let dir = tempfile::tempdir().unwrap();
         let truncator = ToolResultTruncator::new(dir.path());
-        let text = format!("{}tail survives on disk", "x".repeat(MAX_CHARS + 1));
+        let text = format!("{}tail survives on disk", "x".repeat(MAX_BYTES + 1));
         let result = text_result(&text);
 
         let truncated = truncator.truncate_for_model("Lookup", "call_5", result);
@@ -353,7 +372,7 @@ mod tests {
     fn should_preserve_is_error_flag_when_truncated() {
         let dir = tempfile::tempdir().unwrap();
         let truncator = ToolResultTruncator::new(dir.path());
-        let text = "x".repeat(MAX_CHARS + 1);
+        let text = "x".repeat(MAX_BYTES + 1);
         let result = ToolResult {
             output: ToolOutput::Text(text),
             is_error: true,
@@ -374,8 +393,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let truncator = ToolResultTruncator::new(dir.path());
 
-        let text_a = format!("{}first", "a".repeat(MAX_CHARS + 1));
-        let text_b = format!("{}second", "b".repeat(MAX_CHARS + 1));
+        let text_a = format!("{}first", "a".repeat(MAX_BYTES + 1));
+        let text_b = format!("{}second", "b".repeat(MAX_BYTES + 1));
 
         let result_a = truncator.truncate_for_model("Lookup", "call_repeat", text_result(&text_a));
         let result_b = truncator.truncate_for_model("Lookup", "call_repeat", text_result(&text_b));
@@ -403,7 +422,7 @@ mod tests {
     fn should_sanitize_tool_name_and_call_id_when_building_file_stem() {
         let dir = tempfile::tempdir().unwrap();
         let truncator = ToolResultTruncator::new(dir.path());
-        let text = "x".repeat(MAX_CHARS + 1);
+        let text = "x".repeat(MAX_BYTES + 1);
         let result = text_result(&text);
 
         let truncated = truncator.truncate_for_model("Lookup Tool", "call:lookup", result);
@@ -424,7 +443,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let truncator = ToolResultTruncator::new(dir.path());
         let prefix = "PREVIEW_CONTENT_HERE";
-        let text = format!("{prefix}{}", "x".repeat(MAX_CHARS + 1));
+        let text = format!("{prefix}{}", "x".repeat(MAX_BYTES + 1));
         let result = text_result(&text);
 
         let truncated = truncator.truncate_for_model("Read", "call_7", result);
@@ -437,7 +456,7 @@ mod tests {
         // which starts with our prefix.
         assert!(rendered.contains(prefix));
         // The preview should not contain text beyond PREVIEW_CHARS.
-        // The full text has MAX_CHARS + 1 + prefix.len() chars, so the tail
+        // The full text has MAX_BYTES + 1 + prefix.len() bytes, so the tail
         // 'x's beyond PREVIEW_CHARS should not appear in the preview section.
         let preview_section = rendered.split("[preview]\n").nth(1).unwrap_or("");
         assert!(preview_section.starts_with(prefix));
@@ -449,7 +468,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let truncator = ToolResultTruncator::new(dir.path());
         // Use multi-byte characters to verify char vs byte distinction.
-        let text = "é".repeat(MAX_CHARS + 1); // é is 2 bytes in UTF-8
+        let text = "é".repeat(MAX_BYTES + 1); // é is 2 bytes in UTF-8
         let result = text_result(&text);
 
         let truncated = truncator.truncate_for_model("Read", "call_8", result);
@@ -458,8 +477,8 @@ mod tests {
             ToolOutput::Text(t) => t,
             ToolOutput::Parts(_) => panic!("expected text output"),
         };
-        assert!(rendered.contains(&format!("output_size_chars: {}", MAX_CHARS + 1)));
-        assert!(rendered.contains(&format!("output_size_bytes: {}", (MAX_CHARS + 1) * 2)));
+        assert!(rendered.contains(&format!("output_size_chars: {}", MAX_BYTES + 1)));
+        assert!(rendered.contains(&format!("output_size_bytes: {}", (MAX_BYTES + 1) * 2)));
     }
 
     #[test]
@@ -467,7 +486,7 @@ mod tests {
         // Given an oversized result whose text is made of multi-byte characters
         let dir = tempfile::tempdir().unwrap();
         let truncator = ToolResultTruncator::new(dir.path());
-        let text = "é".repeat(MAX_CHARS + 1); // é is 2 bytes in UTF-8
+        let text = "é".repeat(MAX_BYTES + 1); // é is 2 bytes in UTF-8
         let result = text_result(&text);
 
         // When truncating for the model
@@ -486,43 +505,12 @@ mod tests {
     }
 
     #[test]
-    fn should_return_unchanged_when_text_is_exactly_max_plus_one_but_already_truncated() {
-        // Given a result sitting just past the boundary (MAX_CHARS + 1 chars)
-        // that is already marked truncated
-        let dir = tempfile::tempdir().unwrap();
-        let truncator = ToolResultTruncator::new(dir.path());
-        let text = "x".repeat(MAX_CHARS + 1);
-        let result = ToolResult {
-            output: ToolOutput::Text(text.clone()),
-            is_error: false,
-            note: None,
-            stop_turn: false,
-            truncated: true,
-            injection: None,
-        };
-
-        // When truncating for the model
-        let truncated = truncator.truncate_for_model("Read", "call_boundary", result);
-
-        // Then the result is returned unchanged and nothing is persisted
-        assert!(truncated.truncated);
-        match &truncated.output {
-            ToolOutput::Text(t) => assert_eq!(t, &text),
-            ToolOutput::Parts(_) => panic!("expected text output"),
-        }
-        assert!(
-            !dir.path().join("tool-results").exists(),
-            "an already-truncated result must not be persisted again"
-        );
-    }
-
-    #[test]
     fn should_handle_newlines_in_preview_correctly_when_text_has_many_lines() {
         // Given an oversized result whose text is many newline-terminated lines
         let dir = tempfile::tempdir().unwrap();
         let truncator = ToolResultTruncator::new(dir.path());
         let line = "line-of-tool-output\n";
-        let text = line.repeat((MAX_CHARS / line.len()) + 5);
+        let text = line.repeat((MAX_BYTES / line.len()) + 5);
         let result = text_result(&text);
 
         // When truncating for the model
@@ -628,7 +616,7 @@ mod tests {
         );
 
         // When an oversized result is truncated for the model
-        let text = format!("{}tail survives the cut", "x".repeat(MAX_CHARS + 1));
+        let text = format!("{}tail survives the cut", "x".repeat(MAX_BYTES + 1));
         let truncated = truncator.truncate_for_model("Lookup", "call_1", text_result(&text));
 
         // Then the tool-results directory is created through the double
@@ -678,13 +666,190 @@ mod tests {
         );
 
         // When an oversized result is truncated
-        let text = "x".repeat(MAX_CHARS + 1);
+        let text = "x".repeat(MAX_BYTES + 1);
         let truncated = truncator.truncate_for_model("Read", "call_2", text_result(&text));
 
         // Then the original output is returned unchanged rather than lost
         assert!(!truncated.truncated);
         match &truncated.output {
             ToolOutput::Text(t) => assert_eq!(t, &text),
+            ToolOutput::Parts(_) => panic!("expected text output"),
+        }
+    }
+
+    /// Given a result whose text is 20,000 Chinese characters (60,000 bytes)
+    /// When truncating for the model with a 50,000-byte budget
+    /// Then it IS truncated, because bytes — not characters — measure cost
+    #[test]
+    fn should_measure_budget_in_bytes_when_text_is_multibyte() {
+        let dir = tempfile::tempdir().unwrap();
+        let truncator = ToolResultTruncator::new(dir.path());
+        // 20,000 CJK chars = 60,000 bytes: past the 50,000-byte budget,
+        // even though the character count is well under it.
+        let text = "中".repeat(20_000);
+        let result = text_result(&text);
+
+        let truncated = truncator.truncate_for_model("Read", "call_cjk", result);
+
+        assert!(
+            truncated.truncated,
+            "60,000 bytes must exceed a 50,000-byte budget regardless of character count"
+        );
+    }
+
+    /// Given a result that self-reports truncation but is still far over the
+    /// byte budget (Read caps at 1000 lines x 2000 chars = ~2 MB)
+    /// When truncating for the model
+    /// Then it IS truncated, because the producer's flag is not a permission
+    /// slip
+    #[test]
+    fn should_truncate_an_over_budget_result_even_when_it_self_reports_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let truncator = ToolResultTruncator::new(dir.path());
+        let result = ToolResult {
+            output: ToolOutput::Text("x".repeat(MAX_BYTES + 1)),
+            is_error: false,
+            note: Some("Read truncated: showing lines 1-1000 of 1200".to_string()),
+            stop_turn: false,
+            truncated: true,
+            injection: None,
+        };
+
+        let out = truncator.truncate_for_model("Read", "call_self", result);
+
+        assert!(out.truncated);
+        match &out.output {
+            ToolOutput::Text(t) => assert!(
+                t.contains("Tool output exceeded"),
+                "an over-budget result must be paged down even when it claims \
+                 to be truncated already"
+            ),
+            ToolOutput::Parts(_) => panic!("expected text output"),
+        }
+    }
+
+    /// Given an over-budget result that self-reports truncation
+    /// When truncating for the model
+    /// Then the full text is still persisted, so the model can page to it
+    #[test]
+    fn should_persist_the_full_text_when_an_over_budget_result_self_reports_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let truncator = ToolResultTruncator::new(dir.path());
+        let text = format!("{}tail survives", "x".repeat(MAX_BYTES + 1));
+        let result = ToolResult {
+            output: ToolOutput::Text(text.clone()),
+            is_error: false,
+            note: None,
+            stop_turn: false,
+            truncated: true,
+            injection: None,
+        };
+
+        let out = truncator.truncate_for_model("Read", "call_self_disk", result);
+
+        let rendered = match &out.output {
+            ToolOutput::Text(t) => t.clone(),
+            ToolOutput::Parts(_) => panic!("expected text output"),
+        };
+        let persisted_path = rendered
+            .lines()
+            .find_map(|line| line.strip_prefix("output_path: "))
+            .expect("preview must name the persisted file");
+        let persisted = std::fs::read_to_string(persisted_path).unwrap();
+        assert_eq!(
+            persisted, text,
+            "the full over-budget text must still be recoverable from disk"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Note rewriting: the preview is the single authority on what was sent
+    // -----------------------------------------------------------------------
+
+    /// Given a result whose note says the output was cut to lines 1-100 of
+    /// 1000, and whose text exceeds the byte budget
+    /// When truncating for the model
+    /// Then `note` is cleared and the original note survives inside the
+    /// preview as `note_before_truncation`, so the model sees one consistent
+    /// account of what it received rather than a note contradicting the
+    /// preview.
+    #[test]
+    fn should_move_the_note_into_the_preview_and_clear_it_when_truncating() {
+        let dir = tempfile::tempdir().unwrap();
+        let truncator = ToolResultTruncator::new(dir.path());
+        let original_note = "Read lines 1-100 of 1000.";
+        let result = ToolResult {
+            output: ToolOutput::Text("x".repeat(MAX_BYTES + 1)),
+            is_error: false,
+            note: Some(original_note.to_string()),
+            stop_turn: false,
+            truncated: false,
+            injection: None,
+        };
+
+        let truncated = truncator.truncate_for_model("Read", "call_note", result);
+
+        assert!(
+            truncated.note.is_none(),
+            "the producer's note must not survive alongside the preview"
+        );
+        let rendered = match &truncated.output {
+            ToolOutput::Text(t) => t,
+            ToolOutput::Parts(_) => panic!("expected text output"),
+        };
+        assert!(
+            rendered.contains(&format!("note_before_truncation: {original_note}")),
+            "the original note must be preserved inside the preview, got:\n{rendered}"
+        );
+    }
+
+    /// Given a result with no note whose text exceeds the byte budget
+    /// When truncating for the model
+    /// Then the preview carries no `note_before_truncation` line at all —
+    /// not an empty one — and `note` stays `None`.
+    #[test]
+    fn should_omit_the_note_line_when_truncating_a_result_without_a_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let truncator = ToolResultTruncator::new(dir.path());
+        let result = text_result(&"x".repeat(MAX_BYTES + 1));
+
+        let truncated = truncator.truncate_for_model("Bash", "call_no_note", result);
+
+        assert!(truncated.note.is_none());
+        let rendered = match &truncated.output {
+            ToolOutput::Text(t) => t,
+            ToolOutput::Parts(_) => panic!("expected text output"),
+        };
+        assert!(
+            !rendered.contains("note_before_truncation:"),
+            "a note-less result must not gain an empty note line, got:\n{rendered}"
+        );
+    }
+
+    /// Given a result with a note whose text is within the byte budget
+    /// When truncating for the model
+    /// Then the result passes through with its note intact — the rewrite only
+    /// applies to results whose output is actually replaced.
+    #[test]
+    fn should_keep_the_note_when_the_text_is_under_max_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let truncator = ToolResultTruncator::new(dir.path());
+        let original_note = "Read lines 1-3 of 3.";
+        let result = ToolResult {
+            output: ToolOutput::Text("small output".to_string()),
+            is_error: false,
+            note: Some(original_note.to_string()),
+            stop_turn: false,
+            truncated: false,
+            injection: None,
+        };
+
+        let passthrough = truncator.truncate_for_model("Read", "call_small_note", result);
+
+        assert_eq!(passthrough.note.as_deref(), Some(original_note));
+        assert!(!passthrough.truncated);
+        match &passthrough.output {
+            ToolOutput::Text(t) => assert_eq!(t, "small output"),
             ToolOutput::Parts(_) => panic!("expected text output"),
         }
     }

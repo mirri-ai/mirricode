@@ -31,7 +31,7 @@
 
 ### 0.4 结果构建
 
-- 输出经缓冲式构建：总量上限 50,000 字符、单行上限 2,000 字符（Bash 用默认；FetchURL/WebSearch 关闭单行上限）；超限逐行追加 `[...truncated]`，成功/失败结果在截断时追加 `Output is truncated to fit in the message.`。
+- 输出经缓冲式构建：总量上限 50,000 字节、单行上限 2,000 字符（Bash 用默认；FetchURL/WebSearch 关闭单行上限）；超限逐行追加 `[...truncated]`，成功/失败结果在截断时追加 `Output is truncated to fit in the message.`。
 - 执行链末端超大纯文本另有**全文落盘**两级截断（预览 2,000 字符 + 唯一输出路径，requirements US3.3）。（注：Read 的单行截断标记 `...` 是工具自身的行级截断，与结果构建器的 `[...truncated]` 分属两层。）
 
 ### 0.5 路径守卫（文件类工具共用）
@@ -111,8 +111,8 @@ Read a text file and return its content with 1-based line numbers. This is the t
 **输出契约**：
 - 成功输出 = 逐行 `<lineNo>\t<content>`（行号 1 起）；超长行截断为前 1997 字符 + `...`（总长恰 2000）。
 - 行尾归一化：纯 CRLF 文件显示为 LF；mixed/lone-CR 显示字面 `\r`。
-- **note 侧信道**（仅模型可见，不进 UI），`<system>` 包裹，语句空格连接：请求被完整交付时只回报区间 `Read lines ${start}-${end} of ${total}.`（不含「截断/请继续」措辞）；被单次上限截短时为 `Read truncated: showing lines ${start}-${end} of ${total}; continue with 'line_offset': ${end+1}`；单行超长追加 `some lines exceed 2000 characters and were truncated`（分号连接）；mixed 行尾提示 `Mixed or lone carriage-return line endings are shown as \r. Use exact \r\n or \r escapes in Edit.old_string for those lines.`。
-- 尾部模式（负偏移）：读最后 `|line_offset|` 行构成尾部窗口，再收缩——`n_lines` 保留窗口内**靠前**的 n_lines 行（例：`line_offset:-100, n_lines:50` 返回倒数第 100~51 行），100 KB 从末尾向前保留能装下的行。
+- **note 侧信道**（仅模型可见，不进 UI），`<system>` 包裹，语句空格连接：请求被完整交付时只回报区间 `Read lines ${start}-${end} of ${total}.`（不含「截断/请继续」措辞）；被单次上限截短或输出预算（字节）停止交付时为 `Read truncated: showing lines ${start}-${end} of ${total}; re-read from 'line_offset': 1 to page through the file`；尾部读被预算裁头时同样如实陈述交付的后缀区间并指引从头翻页——工具不构造自动向前串联的翻页链（ADR-9）；单行超长追加 `some lines exceed 2000 characters and were truncated`（分号连接）；mixed 行尾提示 `Mixed or lone carriage-return line endings are shown as \r. Use exact \r\n or \r escapes in Edit.old_string for those lines.`。
+- 尾部模式（负偏移）：读最后 `|line_offset|` 行构成尾部窗口，再收缩——`n_lines` 保留窗口内**靠前**的 n_lines 行（例：`line_offset:-100, n_lines:50` 返回倒数第 100~51 行），输出预算（50,000 字节）从尾部向前保留能装下的行，窗口恒锚定文件末行。
 
 **错误面**：
 
@@ -448,7 +448,7 @@ schema 级校验：`timeout` 超上限 `timeout must be ≤ ${cap}s (background|
 | 用户取消 | `Interrupted by user` |
 | spawn/注册失败 | `error.message` |
 
-**非功能**：前台默认 60s、上限 300s；后台默认 600s、上限 86400s；`disable_timeout` 仅后台生效；前台超时默认转后台并重布防为后台超时；两阶段杀灭（SIGTERM → 5s 宽限 → SIGKILL）；输出缓冲 50,000 字符 / 行 2,000；每次调用全新 shell（变量/目录/历史不保留）；执行形态 `cd '{cwd}' && {command}`（cwd 单引号转义）；stdin 立即关闭（交互命令收 EOF）。
+**非功能**：前台默认 60s、上限 300s；后台默认 600s、上限 86400s；`disable_timeout` 仅后台生效；前台超时默认转后台并重布防为后台超时；两阶段杀灭（SIGTERM → 5s 宽限 → SIGKILL）；输出缓冲 50,000 字节 / 行 2,000；每次调用全新 shell（变量/目录/历史不保留）；执行形态 `cd '{cwd}' && {command}`（cwd 单引号转义）；stdin 立即关闭（交互命令收 EOF）。
 
 **界面呈现**：无 chip；卡片头部 `Running a command` / `Ran a command`（错误整体 error 色；参数截断 `Truncated Bash`）；命令预览 `$ ` 前缀 + 命令体（折叠态 ≤10 行）；结果折叠态前 3 行（成功暗色、错误 error 色），超出 `... (N more lines, ctrl+o to expand)`；运行超过短暂阈值后提示按快捷键转后台、用户可随时主动转后台（US2.6）。
 
@@ -473,7 +473,7 @@ Only fully-formed public `http`/`https` URLs are supported; other schemes are no
 - 空 body：`The response body is empty.`。
 - 成功：先一行说明（提取态 `The returned content is the main text extracted from the page.` / 透传态 `The returned content is the full response body, returned verbatim.`）+ 恒追加 `If you use it in your answer, cite this page as a markdown link, e.g. [title](url).`，空行后正文。
 - 本地 provider 提取规则：HTTP ≥400 拒收；`text/plain` / `text/markdown` 原样透传；其余 HTML 走正文提取（成功 `# {title}\n\n{text}`，失败回退主体文本并同样带标题行）。
-- 输出 50,000 字符（单行不限长），截断标记同 §0.4。
+- 输出 50,000 字节（单行不限长），截断标记同 §0.4。
 
 **错误面**（外层包装：HTTP 错误 `Failed to fetch URL. Status: {status}. {msg}`；网络错误 `Failed to fetch URL due to network error: {url}. {msg}`）：
 
@@ -516,7 +516,7 @@ When you rely on a result in your answer, cite its source URL so the user can ve
 **输出契约**：
 - 无结果：`No search results found.`（isError: false）。
 - 有结果：逐条渲染（条间 `---` 分隔）：`Title: {title}` / `Site: {siteName}`（有则）/ `Date: {date}`（有则）/ `URL: {url}` / `Snippet: {snippet}`；末尾恒追加 `When you rely on a result in your answer, cite it inline as a markdown link, e.g. [title](url).`。
-- 输出 50,000 字符（单行不限长）。
+- 输出 50,000 字节（单行不限长）。
 
 **错误面**（分类，均 isError: true）：
 
@@ -528,7 +528,7 @@ When you rely on a result in your answer, cite its source URL so the user can ve
 | 网络失败 | `Search failed (network): {message}` |
 | 兜底 | `Search failed: {message}` |
 
-**非功能**：无工具自有超时；输出 50,000 字符；本地代码不截断结果条数，上限由远端服务决定。
+**非功能**：无工具自有超时；输出 50,000 字节；本地代码不截断结果条数，上限由远端服务决定。
 
 **界面呈现**：chip = 结果条数（按列表行计数，`N results` / `no results` / `web result`）；卡片头部 `Used WebSearch (query)`；成功折叠态空、展开显全量。
 

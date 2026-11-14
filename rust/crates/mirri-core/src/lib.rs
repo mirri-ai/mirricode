@@ -280,7 +280,7 @@ pub use tool_registry::{
     schedule_and_execute,
 };
 pub use tool_result_truncation::{
-    MAX_CHARS as TRUNCATION_MAX_CHARS, PREVIEW_CHARS as TRUNCATION_PREVIEW_CHARS,
+    MAX_BYTES as TRUNCATION_MAX_BYTES, PREVIEW_CHARS as TRUNCATION_PREVIEW_CHARS,
     ToolResultTruncator,
 };
 pub use tool_select::{DisclosureState, ToolSelectConfig, ToolSelectService};

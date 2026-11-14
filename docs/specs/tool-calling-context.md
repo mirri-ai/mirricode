@@ -38,7 +38,7 @@
 - 取消：`raceWithAbortGrace` 2 秒宽限（:69/:912）；用户取消文案（:905-909，见 requirements US2.5）；非用户取消 `Tool "${toolName}" was aborted`（:534-539）。
 - 超时转后台：Bash `bashAutoBackgroundOnTimeout`（`bashTool.ts:26-28,154-156`，config 可关）；`Command killed by timeout (…)`（:352）。
 - stopBatch：`prepareSkippedToolCall`（:450-454，`'Tool skipped because a previous tool call stopped the turn.'`）。
-- 两级截断：工具内 ToolResultBuilder → `toolResultTruncation/toolResultTruncationService.ts:42`（>50,000 落盘 `<homeDir>/…/tool-results/` :59-71，预览 2,000 字符 :84-103，文案 `Tool output exceeded 50000 characters; showing a preview only.`）。
+- 两级截断：工具内 ToolResultBuilder → `toolResultTruncation/toolResultTruncationService.ts:42`（>50,000 落盘 `<homeDir>/…/tool-results/` :59-71，预览 2,000 字符 :84-103，文案 `Tool output exceeded 50000 characters; showing a preview only.`）。**[已退役引擎的历史描述]**：该 TS 截断链随 v1/v2 引擎退役而消亡；现行 rust 实现口径为**字节**（SDR-007 / ADR-9，`rust/crates/mirri-core/src/tool_result_truncation.rs`），本行保留仅作迁移对照。
 - 归流：loop `loopService.ts:907-963`（recordUnexecutedToolCalls :975-1001、tool.call/tool.result loop 事件、stopTurn → finishReason completed :960-962）；`contextMemory/loopEventFold.ts:175-185` 折叠为 tool 角色消息；中断恢复合成结果（:48-49）。
 - 事件面：`toolExecutorEvents.ts:9-41`（tool.call.started/progress/result + beforeToolExecute 两段式 :133-165）。
 

@@ -330,7 +330,7 @@ pub struct TurnFlow {
     wire_recorder: Option<Arc<dyn WireOpRecorder>>,
     /// Optional tool result truncator for oversized tool outputs.
     ///
-    /// When set, tool results exceeding `MAX_CHARS` are persisted to disk
+    /// When set, tool results exceeding `MAX_BYTES` are persisted to disk
     /// and replaced with a bounded preview before being appended to context
     /// memory. Mirrors the TS `budgetToolResultForModel` behavior.
     tool_result_truncator: Option<ToolResultTruncator>,

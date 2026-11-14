@@ -35,7 +35,7 @@ const MAX_LINES: u64 = 1000;
 /// limit — the rendered-window cap, applied here to the input only when the
 /// model did not explicitly narrow the request). Explicit `line_offset` /
 /// `n_lines` requests stream through files of any size.
-const MAX_BYTES: u64 = 100 * 1024;
+const MAX_FILE_BYTES: u64 = 100 * 1024;
 
 /// Stream chunk size for range reads: keeps memory bounded by the requested
 /// line window instead of the file size while paging through large files.
@@ -263,10 +263,10 @@ async fn read_file_range(
         // Whole-file reads of oversized files are refused fast — an explicit
         // range request pages through instead, so the guidance names the
         // paging parameters.
-        Ok(stat) if stat.size > MAX_BYTES && !explicit_range => {
+        Ok(stat) if stat.size > MAX_FILE_BYTES && !explicit_range => {
             return ToolResult::error(format!(
                 "Read refused '{path}': file is {} bytes, which exceeds the \
-                 whole-file read limit of {MAX_BYTES} bytes (100 KB). Re-read \
+                 whole-file read limit of {MAX_FILE_BYTES} bytes (100 KB). Re-read \
                  with 'line_offset' or 'n_lines' to page through the file.",
                 stat.size
             ));
@@ -346,37 +346,102 @@ async fn read_file_range(
     }
 
     let shown: Vec<&str> = sink.shown();
-    let any_line_truncated = shown
-        .iter()
-        .any(|line| line.chars().count() > MAX_LINE_LENGTH);
 
-    let mut output = String::new();
-    for (index, line) in shown.iter().enumerate() {
-        output.push_str(&format!(
-            "{}\t{}\n",
-            sink.start() + index + 1,
-            truncate_line(line)
-        ));
-    }
+    // Render line by line, stopping before the shared context budget is
+    // exceeded. Accounting is done on the *rendered* line (line number, tab,
+    // content, newline), because that is what actually reaches the model —
+    // estimating from the raw line length would drift on every line.
+    //
+    // Both read directions emit at least one line when `shown` is non-empty:
+    // `truncate_line` caps a line at MAX_LINE_LENGTH (2000) characters, so a
+    // rendered line is at most ~2020 bytes — far under the 50,000-byte
+    // budget. The "always keep one line" guard keeps that invariant explicit
+    // rather than implied, so a future change to MAX_LINE_LENGTH cannot
+    // silently produce an empty window.
+    //
+    // The trimming direction follows the read direction:
+    //   * forward read — fill from the head, stop at the budget, deliver the
+    //     `[start, start+m]` prefix.
+    //   * tail read — fill from the *back*, stop at the budget, deliver the
+    //     `[total-k, total]` suffix. A tail read means "the end of the
+    //     file", so the window must keep ending at the last line; trimming
+    //     the head is what makes an over-budget tail fit without moving away
+    //     from EOF. Skipping the budget entirely for tails instead would let
+    //     a wide-line file push ~2 MB into the downstream truncator, which
+    //     replaces the whole result with a 2000-character preview — the exact
+    //     failure this budget exists to prevent.
+    let budget = crate::tool_result_truncation::MAX_BYTES;
+    let (first_index, last_index, output, emitted_line_truncated) = if line_offset < 0 {
+        let mut output = String::new();
+        let mut first = shown.len();
+        let mut line_clipped = false;
+        for (index, line) in shown.iter().enumerate().rev() {
+            let line_no = sink.start() + index + 1;
+            let clipped = line.chars().count() > MAX_LINE_LENGTH;
+            let rendered = format!("{line_no}\t{}\n", truncate_line(line));
+            if first < shown.len() && output.len() + rendered.len() > budget {
+                break;
+            }
+            output.insert_str(0, &rendered);
+            first = index;
+            line_clipped |= clipped;
+        }
+        (first, shown.len(), output, line_clipped)
+    } else {
+        let mut output = String::new();
+        let mut emitted = 0usize;
+        let mut line_clipped = false;
+        for (index, line) in shown.iter().enumerate() {
+            let line_no = sink.start() + index + 1;
+            let clipped = line.chars().count() > MAX_LINE_LENGTH;
+            let rendered = format!("{line_no}\t{}\n", truncate_line(line));
+            if emitted > 0 && output.len() + rendered.len() > budget {
+                break;
+            }
+            output.push_str(&rendered);
+            emitted += 1;
+            line_clipped |= clipped;
+        }
+        (0, emitted, output, line_clipped)
+    };
+    let emitted = last_index - first_index;
+    // The budget stopped the window before the line cap / file end did.
+    let byte_stopped = emitted < shown.len();
+    // 1-based line numbers of the delivered window's ends.
+    let first_line_no = sink.start() + first_index + 1;
+    let last_line_no = sink.start() + last_index;
+    // An empty window (empty file, or an offset past EOF) reports nothing
+    // delivered rather than a nonsensical "lines 1-0" range.
+    let range_clause = if emitted == 0 {
+        format!("no lines of {}", sink.total())
+    } else {
+        format!("lines {first_line_no}-{last_line_no} of {}", sink.total())
+    };
 
     // A read is truncated only when content the model asked for could not be
-    // delivered: the per-call line cap cut the window short, or a single line
-    // was clipped. A window the caller explicitly narrowed and then fully
-    // received is complete — reporting it as truncated pushes the model to
-    // re-read what it already has.
-    let range_clause = format!(
-        "lines {}-{} of {}",
-        sink.start() + 1,
-        sink.end(),
-        sink.total()
-    );
-    let truncated = (sink.end() < sink.total() && n_lines >= MAX_LINES) || any_line_truncated;
+    // delivered: the per-call line cap cut the window short, the byte budget
+    // stopped it, or a delivered line was clipped. A window the caller
+    // explicitly narrowed and then fully received is complete — reporting it
+    // as truncated pushes the model to re-read what it already has.
+    //
+    // The clipped-line flag is computed over the *emitted* lines only: a line
+    // the budget never delivered is not the model's problem yet.
+    let any_line_truncated = emitted_line_truncated;
+    let truncated =
+        (sink.end() < sink.total() && n_lines >= MAX_LINES) || any_line_truncated || byte_stopped;
     let mut note = if truncated {
+        // The note states what was delivered and how to cover the rest; it
+        // does not construct the next read. Anchoring a continuation to the
+        // delivered window broke differently by read mode: a forward offset
+        // past the window walks away from a head-trimmed tail's undelivered
+        // lines, and an offset just before the window turns one insight into
+        // a page chain the model never asked for. Paging from line 1 always
+        // addresses the whole file, so every truncation points there and the
+        // model decides which span it still needs (SDR-007 / ADR-9).
         format!(
-            "Read truncated: showing {range_clause}; continue with 'line_offset': {}",
-            sink.end() + 1
+            "Read truncated: showing {range_clause}; re-read from 'line_offset': 1 to page through the file"
         )
-    } else if sink.end() < sink.total() {
+    } else if last_line_no < sink.total() {
         format!("Read {range_clause}.")
     } else {
         String::new()
@@ -524,6 +589,14 @@ mod tests {
         path
     }
 
+    /// The 1-based line number of the first delivered line.
+    fn first_delivered_line(text: &str) -> usize {
+        text.lines()
+            .next()
+            .and_then(|line| line.split('\t').next()?.parse().ok())
+            .expect("at least one delivered line")
+    }
+
     #[tokio::test]
     async fn should_return_numbered_lines_when_reading_a_three_line_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -587,6 +660,11 @@ mod tests {
         assert_eq!(output_text(&result), "1\t1\n2\t2\n");
     }
 
+    /// Given a file far longer than one call can return
+    /// When a whole-file read is capped at 1000 lines
+    /// Then the note states the delivered range and points at paging from
+    /// line 1 — never at a line just past the window to auto-chain the next
+    /// read (SDR-007 / ADR-9)
     #[tokio::test]
     async fn should_flag_truncation_when_the_requested_window_exceeds_the_per_call_cap() {
         // Given a 1200-line file and a request for more lines than one call
@@ -597,17 +675,23 @@ mod tests {
             "cap.txt",
             &(1..=1200).map(|n| format!("{n}\n")).collect::<String>(),
         );
-        let result =
-            read_file_range(local_fs(), path.to_string_lossy().into_owned(), 1, 5000, true).await;
+        let result = read_file_range(
+            local_fs(),
+            path.to_string_lossy().into_owned(),
+            1,
+            5000,
+            true,
+        )
+        .await;
 
         // Then the result is capped at 1000 lines and says it was cut short,
-        // with the next line offset to continue from
+        // states what it delivered, and leaves paging to the model
         assert!(!result.is_error);
         assert!(result.truncated);
         let note = result.note.clone().expect("truncation note");
         assert_eq!(
             note,
-            "Read truncated: showing lines 1-1000 of 1200; continue with 'line_offset': 1001"
+            "Read truncated: showing lines 1-1000 of 1200; re-read from 'line_offset': 1 to page through the file"
         );
         assert_eq!(output_text(&result).lines().count(), 1000);
     }
@@ -1208,7 +1292,36 @@ mod tests {
         // bytes refused files in the 100000..=102399 range)
         assert!(!result.is_error, "output was: {}", output_text(&result));
         let output = output_text(&result);
-        assert_eq!(output.lines().count(), 1000);
+        // The line cap (1000 lines) alone would emit 54,000 bytes (49 content
+        // + 3 line-number + 1 tab bytes per line), which exceeds the shared
+        // budget; the byte budget therefore stops the window at line 927
+        // (49,950 bytes, the next line would overshoot). The range below pins
+        // that: 920 rules out a regression that delivers only a handful of
+        // lines, 1000 is the line cap this read must not reach.
+        let rendered_lines = output.lines().count();
+        assert!(
+            (920..1000).contains(&rendered_lines),
+            "expected the budget to stop the window between 920 and 999 lines, got {rendered_lines}"
+        );
+        assert!(
+            output.len() <= crate::tool_result_truncation::MAX_BYTES,
+            "output was {} bytes, over the shared budget",
+            output.len()
+        );
+        // A budget-stopped window is a truncation and says where it stopped.
+        assert!(
+            result.truncated,
+            "a budget-limited read must report itself truncated"
+        );
+        let note = result.note.as_deref().expect("truncation note");
+        assert!(
+            note.contains("showing lines 1-"),
+            "the note must name the delivered window, got: {note}"
+        );
+        assert!(
+            note.contains("re-read from 'line_offset': 1 to page through the file"),
+            "the note must point at paging from line 1, got: {note}"
+        );
         assert!(output.starts_with("1\t0001"), "output was: {output}");
     }
 
@@ -1297,6 +1410,384 @@ mod tests {
         assert!(
             n_lines.contains("1000") && !n_lines.contains("2000"),
             "the schema must state 1000, not 2000: {n_lines}"
+        );
+    }
+
+    /// Given a file whose first 1000 lines are far larger than the context
+    /// budget (1000 lines x ~2000 chars)
+    /// When reading it with an explicit whole-file range
+    /// Then the output stays within the shared byte budget, so the runner
+    /// truncator never has to replace it with a preview
+    #[tokio::test]
+    async fn should_keep_output_within_the_shared_budget_when_the_file_is_huge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = (1..=1000)
+            .map(|n| format!("{n:04} {}\n", "y".repeat(1995)))
+            .collect::<String>();
+        let path = write_fixture(tmp.path(), "huge.txt", &content);
+
+        let result = read_file_range(
+            local_fs(),
+            path.to_string_lossy().into_owned(),
+            1,
+            MAX_LINES,
+            true,
+        )
+        .await;
+
+        assert!(!result.is_error);
+        let bytes = output_text(&result).len();
+        assert!(
+            bytes <= crate::tool_result_truncation::MAX_BYTES,
+            "Read output was {bytes} bytes, over the {} byte shared budget",
+            crate::tool_result_truncation::MAX_BYTES
+        );
+        assert!(
+            result.truncated,
+            "a budget-limited read must report itself truncated"
+        );
+        let note = result.note.as_deref().expect("truncation note");
+        assert!(
+            note.contains("line_offset"),
+            "the note must give the paging offset, got: {note}"
+        );
+    }
+
+    /// Given a huge file where the byte budget stops the window mid-file
+    /// When reading it
+    /// Then the note states the delivered range and points at paging from
+    /// line 1, so the model decides which span it still needs rather than
+    /// being walked forward one window at a time (SDR-007 / ADR-9)
+    #[tokio::test]
+    async fn should_point_every_truncation_at_paging_from_line_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = (1..=1000)
+            .map(|n| format!("{n:04} {}\n", "y".repeat(1995)))
+            .collect::<String>();
+        let path = write_fixture(tmp.path(), "stop.txt", &content);
+
+        let result = read_file_range(
+            local_fs(),
+            path.to_string_lossy().into_owned(),
+            1,
+            MAX_LINES,
+            true,
+        )
+        .await;
+
+        let delivered: Vec<usize> = output_text(&result)
+            .lines()
+            .filter_map(|line| line.split('\t').next()?.parse().ok())
+            .collect();
+        let first = *delivered.first().expect("at least one delivered line");
+        let last = *delivered.last().expect("at least one delivered line");
+        let note = result.note.as_deref().expect("truncation note");
+        assert!(
+            note.contains(&format!("showing lines {first}-{last} of 1000")),
+            "the note must name the delivered window, got: {note}"
+        );
+        assert!(
+            note.contains("re-read from 'line_offset': 1 to page through the file"),
+            "the note must point at paging from line 1, got: {note}"
+        );
+        assert!(
+            !note.contains(&format!("'line_offset': {}", last + 1)),
+            "the note must not auto-chain past the delivered window, got: {note}"
+        );
+    }
+
+    /// Given a small file that fits comfortably
+    /// When reading it whole
+    /// Then it is delivered complete and not flagged truncated
+    #[tokio::test]
+    async fn should_deliver_a_small_file_whole_within_the_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_fixture(tmp.path(), "small.txt", "one\ntwo\nthree\n");
+
+        let result = read_file_range(
+            local_fs(),
+            path.to_string_lossy().into_owned(),
+            1,
+            10,
+            false,
+        )
+        .await;
+
+        assert!(!result.is_error);
+        assert!(!result.truncated);
+        assert_eq!(output_text(&result), "1\tone\n2\ttwo\n3\tthree\n");
+    }
+
+    /// Given an offset past the end of the file
+    /// When reading it
+    /// Then the result is empty and carries no malformed line range
+    #[tokio::test]
+    async fn should_report_no_line_range_when_the_offset_is_past_the_end() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_fixture(tmp.path(), "past.txt", "only\n");
+
+        let result = read_file_range(
+            local_fs(),
+            path.to_string_lossy().into_owned(),
+            6,
+            10,
+            false,
+        )
+        .await;
+
+        assert!(!result.is_error);
+        assert_eq!(output_text(&result), "");
+        if let Some(note) = result.note.as_deref() {
+            assert!(
+                !note.contains("lines 6-5") && !note.contains("lines 1-0"),
+                "an empty window must not report an inverted range, got: {note}"
+            );
+        }
+    }
+
+    /// Given a file with a large tail
+    /// When reading it with a negative offset asking for the last lines
+    /// Then the delivered window still ends at the file's last line — the
+    /// byte budget trims from the head, never from the tail — and the note
+    /// states the delivered suffix and points at paging from line 1 rather
+    /// than at the line just before the window (SDR-007 / ADR-9)
+    #[tokio::test]
+    async fn should_keep_the_window_at_the_file_tail_when_reading_with_a_negative_offset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = (1..=400)
+            .map(|n| format!("{n:04} {}\n", "w".repeat(500)))
+            .collect::<String>();
+        let path = write_fixture(tmp.path(), "tail.txt", &content);
+
+        // Ask for the last 100 lines; the rendered window is ~50 KB at most.
+        let result = read_file_range(
+            local_fs(),
+            path.to_string_lossy().into_owned(),
+            -100,
+            100,
+            true,
+        )
+        .await;
+
+        assert!(!result.is_error);
+        let text = output_text(&result);
+        let last_no: usize = text
+            .lines()
+            .last()
+            .and_then(|line| line.split('\t').next()?.parse().ok())
+            .expect("at least one delivered line");
+        assert_eq!(
+            last_no, 400,
+            "a tail read must end at the file's last line, got {last_no}"
+        );
+        // Rendering all 100 lines would be ~50,505 bytes, just over the
+        // 50,000-byte budget, so the head is trimmed to the 98-line suffix
+        // (49,980 bytes) and reported. The tail itself never moves.
+        assert!(
+            result.truncated,
+            "the budget trimmed the head, so the read is truncated"
+        );
+        assert!(
+            text.starts_with("303\t0303"),
+            "output should start at line 303, got: {}",
+            &text[..40]
+        );
+        assert_eq!(text.lines().count(), 98);
+        let note = result.note.as_deref().expect("truncation note");
+        assert!(
+            note.contains("showing lines 303-400 of 400"),
+            "the note must name the delivered suffix, got: {note}"
+        );
+        assert!(
+            note.contains("re-read from 'line_offset': 1 to page through the file"),
+            "the note must point at paging from line 1, got: {note}"
+        );
+        // The note must not hand back a page chain: naming the line just
+        // before the window is what made each re-read walk one window
+        // further back until the model had paged the whole file.
+        assert!(
+            !note.contains("'line_offset': 302"),
+            "the note must not anchor the next read just before the window, \
+             got: {note}"
+        );
+    }
+
+    /// Given a file far longer than one call can return
+    /// When reading it with a tail offset larger than the per-call line cap
+    /// Then the window keeps the cap's worth of lines at the head of the
+    /// requested tail, reports truncation, and points at paging from line 1
+    /// like every other truncation — the undelivered lines below the window
+    /// are never handed to the model as the next offset (SDR-007 / ADR-9)
+    #[tokio::test]
+    async fn should_page_from_line_one_when_a_tail_read_hits_the_line_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_fixture(
+            tmp.path(),
+            "cap-tail.txt",
+            &(1..=5000).map(|n| format!("{n}\n")).collect::<String>(),
+        );
+
+        let result = read_file_range(
+            local_fs(),
+            path.to_string_lossy().into_owned(),
+            -5000,
+            MAX_LINES,
+            true,
+        )
+        .await;
+
+        assert!(!result.is_error);
+        assert!(result.truncated);
+        let text = output_text(&result);
+        let delivered: Vec<usize> = text
+            .lines()
+            .filter_map(|line| line.split('\t').next()?.parse().ok())
+            .collect();
+        assert_eq!(delivered.first(), Some(&1));
+        assert_eq!(delivered.last(), Some(&1000));
+        let note = result.note.as_deref().expect("truncation note");
+        assert_eq!(
+            note,
+            "Read truncated: showing lines 1-1000 of 5000; re-read from 'line_offset': 1 to page through the file"
+        );
+    }
+
+    /// Given a file of 1000 very wide lines (1995 chars each) that cannot
+    /// fit the byte budget as a whole tail
+    /// When reading it with `line_offset = -1000`
+    /// Then the byte budget trims the *head* of the tail window: the output
+    /// fits, ends at the file's last line, reports truncation, and the note
+    /// says which suffix was delivered and points at paging from line 1
+    #[tokio::test]
+    async fn should_trim_the_head_of_a_wide_tail_read_to_stay_within_the_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = (1..=1000)
+            .map(|n| format!("{n:04} {}\n", "z".repeat(1995)))
+            .collect::<String>();
+        let path = write_fixture(tmp.path(), "wide-tail.txt", &content);
+
+        let result = read_file_range(
+            local_fs(),
+            path.to_string_lossy().into_owned(),
+            -1000,
+            DEFAULT_N_LINES,
+            true,
+        )
+        .await;
+
+        assert!(!result.is_error);
+        let text = output_text(&result);
+        assert!(
+            text.len() <= crate::tool_result_truncation::MAX_BYTES,
+            "tail read was {} bytes, over the {} byte shared budget",
+            text.len(),
+            crate::tool_result_truncation::MAX_BYTES
+        );
+        assert!(
+            result.truncated,
+            "a budget-trimmed tail read must report itself truncated"
+        );
+        let delivered: Vec<usize> = text
+            .lines()
+            .filter_map(|line| line.split('\t').next()?.parse().ok())
+            .collect();
+        let first = *delivered.first().expect("at least one delivered line");
+        let last = *delivered.last().expect("at least one delivered line");
+        // The window still ends at the file's last line — only its head was
+        // trimmed. 24 wide lines (48,121 bytes) is what the budget admits: a
+        // 25th line would push it to 50,125 bytes.
+        assert_eq!(last, 1000, "the tail must not move away from EOF");
+        assert_eq!(
+            first, 977,
+            "the budget must trim the head to the 977-1000 suffix"
+        );
+        assert_eq!(delivered.len(), 24);
+        assert!(
+            text.len() <= 49_000,
+            "the trimmed tail should sit just under the budget, got {} bytes",
+            text.len()
+        );
+        let note = result.note.as_deref().expect("truncation note");
+        assert!(
+            note.contains(&format!("lines {first}-{last} of 1000")),
+            "the note must name the delivered suffix, got: {note}"
+        );
+        // Every truncation points at page-one paging: the note neither walks
+        // past EOF nor anchors the next read just above the window.
+        assert!(
+            note.contains("re-read from 'line_offset': 1 to page through the file"),
+            "the note must point at paging from line 1, got: {note}"
+        );
+        assert!(
+            !note.contains(&format!("'line_offset': {}", last + 1)),
+            "a tail read must not be told to continue past EOF, got: {note}"
+        );
+    }
+
+    /// Given a file of 400 wide lines whose tail window is trimmed by the
+    /// byte budget
+    /// When reading the last 100 lines with a negative offset and following
+    /// the note's guidance to page from line 1
+    /// Then the second read starts at line 1 and reaches the lines above the
+    /// first window by the model's own paging, not by a chained offset that
+    /// only ever reaches the previous slice
+    #[tokio::test]
+    async fn should_reach_lines_above_the_window_when_following_a_tail_note() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = (1..=400)
+            .map(|n| format!("{n:04} {}\n", "v".repeat(500)))
+            .collect::<String>();
+        let path = write_fixture(tmp.path(), "tail-advance.txt", &content);
+
+        let first_read = read_file_range(
+            local_fs(),
+            path.to_string_lossy().into_owned(),
+            -100,
+            100,
+            true,
+        )
+        .await;
+        assert!(!first_read.is_error);
+        assert!(first_read.truncated, "the head must be trimmed");
+        let first_text = output_text(&first_read);
+        let first_start = first_delivered_line(&first_text);
+        let last_start = first_text.lines().last().map(first_delivered_line);
+        assert_eq!(
+            last_start,
+            Some(400),
+            "the tail window must end at the file's last line"
+        );
+        assert!(
+            first_start > 1,
+            "the fixture must force a head trim, got start {first_start}"
+        );
+        let note = first_read.note.as_deref().expect("truncation note");
+        assert!(
+            note.contains("re-read from 'line_offset': 1 to page through the file"),
+            "the note must point at paging from line 1, got: {note}"
+        );
+
+        // Follow the note literally: page from line 1. The undelivered lines
+        // above the tail window are reachable from there, and the model keeps
+        // control of how far it pages.
+        let second_read = read_file_range(
+            local_fs(),
+            path.to_string_lossy().into_owned(),
+            1,
+            100,
+            true,
+        )
+        .await;
+        assert!(!second_read.is_error);
+        let second_start = first_delivered_line(&output_text(&second_read));
+        assert_eq!(
+            second_start, 1,
+            "paging from line 1 must start at line 1, got {second_start}"
+        );
+        assert!(
+            second_start < first_start,
+            "paging from line 1 must reach lines above the delivered window \
+             (start {first_start}), got {second_start}"
         );
     }
 }
