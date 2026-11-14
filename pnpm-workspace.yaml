@@ -35,6 +35,11 @@ overrides:
   "markdown-it@<14.3.3": "14.3.3"
   "tsx>esbuild": "^0.28.2"
   "vitepress>vite": "^6.4.3"
+  # GHSA-3g3m-2fjr-6pw4 (glob >=9 <=14.0.1): js-beautify pins ^13.0.6, which
+  # is in the vulnerable range. Only this chain is lifted to 14 — the
+  # electron-winstaller chain (glob@7 via @electron/asar/rimraf) is outside
+  # the advisory range and still relies on the removed callback API.
+  "js-beautify>glob": "^14.0.6"
   # A floor, not a lockfile pin: this started as "get off the vulnerable
   # <1.42.3 releases", and pinning the exact version would keep dragging the
   # editor back to whatever was latest the day it was written.
