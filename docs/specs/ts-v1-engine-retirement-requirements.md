@@ -56,7 +56,7 @@
 | 对象 | 保留理由 |
 |---|---|
 | `apps/mirri-web` | Web 前端（本地重实现 wire 类型；`@mirri-ai/protocol` 仅 2 个纯函数消费点） |
-| `apps/mirri-desktop`、`apps/mirri-desktop-lite` | 桌面壳（已纯 Rust 后端） |
+| `apps/mirri-desktop` | 桌面壳（已纯 Rust 后端） |
 | `packages/protocol` | web 前端内联引用解析 + 契约 schema；server-e2e 依赖 |
 | `packages/kosong` | web src 不依赖，但 model catalog / provider 元数据被谁用需最终确认——见 ADR-011 |
 | `packages/telemetry` | desktop 无依赖面残留、TS CLI 删除后消费者待最终审计——见 ADR-011 |

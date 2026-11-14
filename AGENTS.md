@@ -24,7 +24,6 @@ Before designing ANY change that touches engine/core behavior, answer FIRST: "wh
 
 - `apps/mirri-web`: the browser web UI. Vue 3 + Vite + vue-i18n; talks to the server over REST + WebSocket under `/api/v1` (wire types re-implemented locally). The dev proxy targets the **rust core engine (v3)** by default (root `pnpm dev:web`). See `apps/mirri-web/AGENTS.md`.
 - `apps/mirri-desktop`: the Electron desktop shell. Packages and spawns the rust `mirri web` binary as its backend.
-- `apps/mirri-desktop-lite`: the experimental Electrobun lightweight desktop shell (second shell, coexists with `apps/mirri-desktop`). Own daemon (port 55828, `~/.mirri-code/server-lite/`); implements the web bridge contract; **excluded from the pnpm workspace and root tsconfig** (Hutch-managed toolchain — run `hutch install` inside the app, not pnpm). See `apps/mirri-desktop-lite/README.md`.
 - `packages/protocol`: wire-protocol pure functions and contract schemas shared with the web front end and the black-box e2e client.
 - `packages/e2e-harness`: e2e test infrastructure — the fake LLM provider server (OpenAI-compatible SSE) used by the web rust e2e suites.
 - `packages/server-e2e`: live black-box e2e wire client and scenarios against a running rust server (`MIRRICODE_SERVER_URL`, default `http://127.0.0.1:58627`). See `packages/server-e2e/AGENTS.md`.

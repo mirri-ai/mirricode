@@ -170,7 +170,7 @@ Rust 是**唯一**的引擎实现。TypeScript 引擎链（v1、v2、TS CLI/TUI 
 
 | 类别 | 内容 |
 |---|---|
-| 前端 | `apps/mirri-web`（浏览器 UI）、`apps/mirri-desktop` / `apps/mirri-desktop-lite`（桌面壳，均 spawn rust `mirri` 二进制） |
+| 前端 | `apps/mirri-web`（浏览器 UI）、`apps/mirri-desktop`（桌面壳，spawn rust `mirri` 二进制） |
 | 契约与工具支撑包 | `packages/protocol`（wire schema 纯函数）、`packages/release`（版本锚） |
 | 测试基础设施 | `packages/e2e-harness`（fake provider server）、`packages/server-e2e`（黑盒 wire 客户端） |
 

@@ -1,8 +1,0 @@
-.hutch/
-node_modules/
-build/
-dist/
-*.tsbuildinfo
-.cottontail-tmp/
-build/
-artifacts/
