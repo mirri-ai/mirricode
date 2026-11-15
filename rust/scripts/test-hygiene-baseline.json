@@ -32,19 +32,19 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-core/tests/session_group.rs:12254": {
+    "crates/mirri-core/tests/session_group.rs:12255": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-core/tests/session_group.rs:13735": {
+    "crates/mirri-core/tests/session_group.rs:13736": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-core/tests/session_group.rs:13741": {
+    "crates/mirri-core/tests/session_group.rs:13742": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-core/tests/session_group.rs:17227": {
+    "crates/mirri-core/tests/session_group.rs:17228": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
@@ -548,107 +548,107 @@
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:2349": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:2350": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:2456": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:2457": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:2602": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:2604": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:2827": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:2829": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:2877": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:2879": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:2965": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:2967": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:3810": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:3815": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:3870": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:3875": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:3964": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:3969": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4288": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4293": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4417": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4423": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4660": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4666": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4700": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4706": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4732": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4738": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4787": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4793": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4814": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4820": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4845": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4851": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4924": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:4930": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:5062": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:5068": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:5127": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:5133": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:5171": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:5177": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:5213": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:5219": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:5256": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:5262": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:5305": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:5311": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:5322": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:5328": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },
-    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:5390": {
+    "crates/mirri-embedded/src/embedded_server/tests/b2_notification_tests.rs:5396": {
       "type": "sleep",
       "reason": "poll-step: deadline-bounded polling step (sanctioned form, 16-design §4.2 rule 4)"
     },

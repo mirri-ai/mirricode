@@ -211,10 +211,24 @@ impl Tool for AgentTool {
             }));
         }
 
+        // The DISPATCH kind this call will run under. For a spawn that is the
+        // call's own input; for a resume it is the child's stored identity —
+        // a resume carries no `run_in_background`, so gating on the input
+        // alone would let a background child bypass the background gate and
+        // capacity limit, and would register the resumed run as a foreground
+        // task (invisible to the dock).
+        let will_run_in_background = match &resume {
+            Some(agent_id) => self
+                .host
+                .child_run_in_background(agent_id)
+                .unwrap_or(run_in_background),
+            None => run_in_background,
+        };
+
         // Background gating (D-50, TS agent.ts:85): reject BEFORE spawning
         // when the task-view tools are not all active — the model must not
         // get a task_id it cannot observe or stop.
-        if run_in_background && !(self.background_gate)() {
+        if will_run_in_background && !(self.background_gate)() {
             return Ok(ToolExecution::Error(crate::tool::ToolErrorResult {
                 message: "Background agent execution is not available for this agent because \
                           TaskList, TaskOutput, and TaskStop are not enabled."
@@ -228,7 +242,7 @@ impl Tool for AgentTool {
         // subagent that never runs. Advisory only; the authoritative check
         // runs at `register_background` (the residual race is cleaned up
         // there).
-        if run_in_background && !self.tasks.can_register_background() {
+        if will_run_in_background && !self.tasks.can_register_background() {
             return Ok(ToolExecution::Error(crate::tool::ToolErrorResult {
                 message: crate::task::TASK_CAPACITY_MESSAGE.to_string(),
             }));
@@ -314,6 +328,14 @@ impl Tool for AgentTool {
                     // task (the WaitingSubagent probe falls back to it
                     // when the child's activity clock is frozen).
                     let child_wait_registry = handle.wait_registry.clone();
+                    // The DISPATCH identity, decided by the host: for a
+                    // resume this is the child's original background
+                    // identity (the resume call itself carries no flag), so
+                    // reading it from the call input would demote a
+                    // background child to the foreground on every resume —
+                    // which is exactly what hid resumed subagents from the
+                    // dock's `runInBackground`-filtered task list.
+                    let run_in_background = handle.run_in_background;
 
                     let mut task = SubagentTask::new(handle, task_desc, child_cancel.clone());
 
@@ -337,15 +359,27 @@ impl Tool for AgentTool {
                             Err(message) => {
                                 // Residual capacity race (a concurrent
                                 // registration closed the window between
-                                // the pre-check and here): the spawn side
-                                // effects already happened, so clean them
-                                // up — cancel the child token and forget
-                                // the children entry; the `subagent.spawned`
-                                // event this minted cannot be retracted,
-                                // which is why the pre-check above does
-                                // the common rejection.
+                                // the pre-check and here).
+                                //
+                                // For a SPAWN the side effects already
+                                // happened, so they are cleaned up — cancel
+                                // the child token and forget the children
+                                // entry; the `subagent.spawned` event this
+                                // minted cannot be retracted, which is why
+                                // the pre-check above does the common
+                                // rejection.
+                                //
+                                // A RESUME has no spawn side effects to undo,
+                                // and `forget_child` would destroy a
+                                // perfectly resumable identity (its entry is
+                                // the only thing holding the child's
+                                // TurnFlow and history linkage) — so the
+                                // resume keeps its entry and only reports
+                                // the failure.
                                 child_cancel.cancel();
-                                host.forget_child(&agent_id);
+                                if resume.is_none() {
+                                    host.forget_child(&agent_id);
+                                }
                                 return ToolResult::error(message);
                             }
                         };
@@ -852,20 +886,24 @@ mod tests {
     impl SubagentHost for MockHost {
         fn spawn(&self, request: SpawnRequest) -> EngineResult<SubagentHandle> {
             let agent_id = format!("agent-mock-{}", request.profile_name);
+            // A real host answers with the dispatch identity its caller
+            // passed (the Agent tool reads it back off the handle).
             if self.should_fail {
                 Ok(SubagentHandle::from_error(
                     agent_id,
                     request.profile_name,
                     request.model,
                     "mock failure".into(),
-                ))
+                )
+                .with_run_in_background(request.run_in_background))
             } else {
                 Ok(SubagentHandle::from_result(
                     agent_id,
                     request.profile_name,
                     request.model,
                     self.result.clone(),
-                ))
+                )
+                .with_run_in_background(request.run_in_background))
             }
         }
 
@@ -1118,6 +1156,124 @@ mod tests {
                 });
             assert_eq!(task.session_id, "test-session");
         }
+    }
+
+    /// Given a subagent first dispatched in the background, When it is
+    /// resumed WITHOUT repeating `run_in_background`, Then the resumed run is
+    /// still tracked as a background (detached) task.
+    ///
+    /// The background identity belongs to the SUBAGENT, not to the second
+    /// tool call: the model's documented resume form carries only
+    /// `prompt`/`description`/`resume`, so reading the flag from THIS call's
+    /// input silently converts a background child into a foreground one. The
+    /// web dock only lists `kind === 'subagent' && runInBackground` rows, so
+    /// that conversion made a revived subagent disappear from the dock.
+    #[tokio::test]
+    async fn should_keep_a_resumed_subagent_in_the_background_when_the_original_run_was_background()
+    {
+        // A host that remembers, per agent, whether the spawn asked for the
+        // background — the production host's `ChildEntry` is the storage.
+        struct RememberingHost {
+            background: std::sync::Mutex<std::collections::HashMap<String, bool>>,
+        }
+        impl SubagentHost for RememberingHost {
+            fn spawn(&self, request: SpawnRequest) -> EngineResult<SubagentHandle> {
+                let agent_id = "agent-resume-identity".to_string();
+                self.background
+                    .lock()
+                    .unwrap()
+                    .insert(agent_id.clone(), request.run_in_background);
+                Ok(
+                    SubagentHandle::from_result(
+                        agent_id,
+                        request.profile_name,
+                        request.model,
+                        "done".into(),
+                    )
+                    .with_run_in_background(request.run_in_background),
+                )
+            }
+            fn resume(&self, request: ResumeRequest) -> EngineResult<SubagentHandle> {
+                // The production host answers from the child's stored
+                // identity; the mock mirrors that contract.
+                let remembered = self
+                    .background
+                    .lock()
+                    .unwrap()
+                    .get(&request.agent_id)
+                    .copied()
+                    .unwrap_or(false);
+                Ok(
+                    SubagentHandle::from_result(
+                        request.agent_id,
+                        "coder".to_string(),
+                        None,
+                        "resumed".into(),
+                    )
+                    .with_run_in_background(remembered),
+                )
+            }
+        }
+
+        let tasks = Arc::new(TaskManager::new());
+        let tool = AgentTool::new(
+            Arc::new(RememberingHost {
+                background: std::sync::Mutex::new(std::collections::HashMap::new()),
+            }),
+            Arc::clone(&tasks),
+            "test-session".to_string(),
+            None,
+            open_gate(),
+        );
+
+        // Given: the first dispatch runs in the background.
+        let spawned = run_tool(
+            &tool,
+            json!({
+                "prompt": "start the work",
+                "description": "background dispatch",
+                "run_in_background": true
+            }),
+        )
+        .await;
+        assert!(!spawned.is_error, "the background spawn must succeed: {spawned:?}");
+
+        // When: the subagent is resumed the documented way — no repeat of
+        // `run_in_background`.
+        let resumed = run_tool(
+            &tool,
+            json!({
+                "prompt": "keep going",
+                "description": "resume the same agent",
+                "resume": "agent-resume-identity"
+            }),
+        )
+        .await;
+        assert!(!resumed.is_error, "the resume must succeed: {resumed:?}");
+
+        // Then: both runs are tracked as detached (background) tasks for that
+        // agent, so a `detached`-based read face keeps reporting the child as
+        // a background subagent.
+        let rows: Vec<_> = tasks
+            .list()
+            .into_iter()
+            .filter(|t| {
+                matches!(
+                    &t.kind,
+                    TaskKind::Agent { agent_id: Some(id), .. } if id == "agent-resume-identity"
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows.len(),
+            2,
+            "spawn and resume each register one task row, got {rows:?}"
+        );
+        assert!(
+            rows.iter().all(|t| t.detached),
+            "a resumed background subagent must stay detached — the background \
+             identity is the child's, not this call's: {rows:?}"
+        );
     }
 
     #[tokio::test]

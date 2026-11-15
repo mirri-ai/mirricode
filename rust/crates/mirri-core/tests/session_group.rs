@@ -11464,6 +11464,7 @@ async fn should_restore_multi_agent_session_to_last_switched_model() {
                 swarm_item: None,
                 parent_tool_call_id: None,
                 swarm_index: None,
+                run_in_background: false,
             },
         ],
     )

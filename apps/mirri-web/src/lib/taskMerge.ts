@@ -49,7 +49,10 @@ export function keepLiveSubagents(
 ): AppTask[] {
   const restIds = new Set(restBased.map((t) => t.id));
   const liveSubagents = existing.filter((t) => t.kind === 'subagent' && !restIds.has(t.id));
-  if (liveSubagents.length === 0) return restBased;
+  // The collapse below owns the "one subagent, one row" invariant, so the
+  // no-live-row fast path must honour it too — a freshly loaded session has
+  // only REST rows (one per run of each child).
+  if (liveSubagents.length === 0) return collapseSubagentRuns(restBased);
   const restById = new Map(restBased.map((t) => [t.id, t] as const));
   const restByAgentId = new Map(
     restBased.flatMap((t) => (t.agentId !== undefined ? [[t.agentId, t] as const] : [])),
@@ -130,7 +133,50 @@ export function keepLiveSubagents(
     return folded;
   });
   const rest = restBased.filter((t) => !foldedRestIds.has(t.id));
-  return [...rest, ...merged];
+  return collapseSubagentRuns([...rest, ...merged]);
+}
+
+/**
+ * Collapse the rows of ONE subagent to the row that describes it NOW.
+ *
+ * A subagent accumulates a task row per run: the spawn registers one, and
+ * every resume registers another (a resumed background child stays detached —
+ * ADR-017). Those rows are separate *runs*, but the dock and the detail panel
+ * ask about the *child*: "is it working, and can I open it". Listing its run
+ * history as sibling rows made one revived subagent show up as `子 Agent (2)`.
+ *
+ * The surviving row is the running one (there is at most one — the host
+ * rejects a concurrent resume), otherwise the most recently created. Rows
+ * without an `agentId` are left alone: nothing links them to an identity.
+ */
+function collapseSubagentRuns(tasks: AppTask[]): AppTask[] {
+  const winnerByAgent = new Map<string, AppTask>();
+  for (const task of tasks) {
+    if (task.kind !== 'subagent' || task.agentId === undefined) continue;
+    const current = winnerByAgent.get(task.agentId);
+    if (current === undefined) {
+      winnerByAgent.set(task.agentId, task);
+      continue;
+    }
+    const prefer =
+      current.status === 'running'
+        ? false
+        : task.status === 'running' ||
+          new Date(task.createdAt).getTime() >= new Date(current.createdAt).getTime();
+    if (prefer) winnerByAgent.set(task.agentId, task);
+  }
+  if (winnerByAgent.size === 0) return tasks;
+  const dropped = new Set<string>();
+  const kept: AppTask[] = [];
+  for (const task of tasks) {
+    const winner = task.agentId !== undefined ? winnerByAgent.get(task.agentId) : undefined;
+    if (winner !== undefined && winner.id !== task.id) {
+      dropped.add(task.id);
+      continue;
+    }
+    kept.push(task);
+  }
+  return dropped.size === 0 ? tasks : kept;
 }
 
 /**

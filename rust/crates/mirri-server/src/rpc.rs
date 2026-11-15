@@ -2513,13 +2513,41 @@ impl RpcHandler for SnapshotSessionHandler {
         let mut subagents: Vec<Value> = Vec::new();
         let registrations = session.list_subagent_registrations().await;
         if !registrations.is_empty() {
+            // One agent can hold several task rows across its run history:
+            // a spawn registers one, and every resume registers another. The
+            // roster describes the child, so it must read the row that
+            // describes the child NOW — a running row first, otherwise the
+            // most recently created one. Keeping an arbitrary row (whichever
+            // the id-ordered task list happened to write last) reported a
+            // finished early run — and its `detached` flag — for a child that
+            // was running again in the background.
             let mut task_by_agent: HashMap<String, mirri_core::task::AgentTask> = HashMap::new();
             for task in session.tasks().list() {
                 if let mirri_core::task::TaskKind::Agent {
                     agent_id: Some(id), ..
                 } = &task.kind
                 {
-                    task_by_agent.insert(id.clone(), task);
+                    match task_by_agent.get(id) {
+                        None => {
+                            task_by_agent.insert(id.clone(), task);
+                        }
+                        Some(current) => {
+                            let prefer = match (
+                                current.status == mirri_core::task::TaskStatus::Running,
+                                task.status == mirri_core::task::TaskStatus::Running,
+                            ) {
+                                // A running row always wins: it is the run
+                                // the child is in right now.
+                                (false, true) => true,
+                                (true, false) => false,
+                                // Same liveness class → newest wins.
+                                _ => task.created_at >= current.created_at,
+                            };
+                            if prefer {
+                                task_by_agent.insert(id.clone(), task);
+                            }
+                        }
+                    }
                 }
             }
             let swarm_outcomes = match &first_agent {
@@ -7178,6 +7206,7 @@ mod tests {
                     swarm_item: Some(item.to_string()),
                     parent_tool_call_id: Some("call-swarm".to_string()),
                     swarm_index: Some(index),
+                    run_in_background: false,
                 })
                 .await;
         }
@@ -7236,6 +7265,93 @@ mod tests {
             assert_eq!(row["status"], json!(expected.0), "row: {row:?}");
             assert_eq!(row["subagent_phase"], json!(expected.1), "row: {row:?}");
         }
+    }
+
+    /// Given a background subagent that has TWO task rows — the settled spawn
+    /// run and the running resume run — When the snapshot roster is read, Then
+    /// it reports the RUNNING row and its background identity.
+    ///
+    /// The roster is a description of the child, not of one dispatch. Reading
+    /// whichever row the id-ordered task list happened to write last meant a
+    /// resumed background subagent came back as the finished first run — with
+    /// `runInBackground: false`, since the resume used to register a
+    /// foreground task. The dock only lists `runInBackground` rows, so that
+    /// combination hid the revived child after any reload.
+    #[tokio::test]
+    async fn should_report_the_running_row_when_a_subagent_has_several_task_rows() {
+        // Given: one background child with a settled spawn run and a running
+        // resume run (the resume's own task row is detached in production;
+        // the ORDER here is the point — the finished row is listed last).
+        let (_tmp, manager, session_id) = session_manager_with_session().await;
+        let session = manager
+            .get_session(&SessionId::new(&session_id))
+            .await
+            .expect("created session is live");
+        session
+            .create_agent(AgentId::new("main"), AgentScopeConfig::default())
+            .await
+            .expect("main agent must be creatable");
+        session
+            .record_op(WireOp::SubagentRegistered {
+                agent_id: "agent-resumed".to_string(),
+                profile_name: "coder".to_string(),
+                model: None,
+                thinking_effort: None,
+                parent_agent_id: Some("main".to_string()),
+                swarm_item: None,
+                parent_tool_call_id: None,
+                swarm_index: None,
+                run_in_background: true,
+            })
+            .await;
+        let tasks = session.tasks();
+        let spawn_task = tasks.register_background(
+            TaskKind::Agent {
+                agent_id: Some("agent-resumed".to_string()),
+                subagent_type: Some("coder".to_string()),
+                parent_tool_call_id: None,
+                swarm_index: None,
+                model: None,
+            },
+            "first run".to_string(),
+            session_id.clone(),
+            None,
+        )
+        .expect("the spawn run registers a background task");
+        tasks.stop(&spawn_task);
+        let resume_task = tasks.register_background(
+            TaskKind::Agent {
+                agent_id: Some("agent-resumed".to_string()),
+                subagent_type: Some("coder".to_string()),
+                parent_tool_call_id: None,
+                swarm_index: None,
+                model: None,
+            },
+            "resumed run".to_string(),
+            session_id.clone(),
+            None,
+        )
+        .expect("the resumed run registers a background task");
+        // Touch the ids so an unused-binding warning cannot hide a broken
+        // fixture: both rows must exist before the roster is read.
+        assert_ne!(spawn_task, resume_task, "two distinct task rows");
+
+        let event_channels = Arc::new(SessionEventChannelRegistry::new(256));
+        let handler = snapshot_handler(&manager, &event_channels);
+
+        // When: the roster is read
+        let value = handler
+            .handle(json!({ "sessionId": session_id }))
+            .await
+            .expect("snapshot resolves");
+
+        // Then: the child reads as running AND background — the dock's filter
+        // keeps it, and the detail panel shows the live run.
+        let roster = value["subagents"].as_array().expect("subagents array");
+        assert_eq!(roster.len(), 1, "one child, one roster row: {roster:?}");
+        let row = &roster[0];
+        assert_eq!(row["status"], json!("running"), "row: {row:?}");
+        assert_eq!(row["run_in_background"], json!(true), "row: {row:?}");
     }
 
     #[tokio::test]

@@ -326,6 +326,16 @@ pub struct SubagentHandle {
     /// c) and free its concurrency slot (ADR-011 d) while it awaits a user
     /// decision. `None` for synthetic / test handles (no parking signals).
     pub suspension_rx: Option<tokio::sync::mpsc::UnboundedReceiver<SuspensionNotice>>,
+    /// Whether this run was dispatched in the background.
+    ///
+    /// The background identity belongs to the CHILD, not to the dispatching
+    /// tool call: a subagent first dispatched with `run_in_background: true`
+    /// keeps returning a `task_id` to its parent on every later `resume`,
+    /// even though the model's documented resume form carries only
+    /// `prompt`/`description`/`resume`. The host answers this from the
+    /// child's stored identity; the tool layer reads it here instead of
+    /// re-deriving it from the resume call's input.
+    pub run_in_background: bool,
 }
 
 impl SubagentHandle {
@@ -344,7 +354,16 @@ impl SubagentHandle {
             activity: None,
             wait_registry: None,
             suspension_rx: None,
+            run_in_background: false,
         }
+    }
+
+    /// Stamps whether this run was dispatched in the background (see
+    /// [`Self::run_in_background`]). Builder style: consumes and returns
+    /// the handle.
+    pub fn with_run_in_background(mut self, run_in_background: bool) -> Self {
+        self.run_in_background = run_in_background;
+        self
     }
 
     /// Attach the member's suspension-boundary feed (see
@@ -856,6 +875,20 @@ pub trait SubagentHost: Send + Sync {
     /// Returns `Err` if the agent_id is not found, already running, or
     /// does not belong to this session.
     fn resume(&self, request: ResumeRequest) -> EngineResult<SubagentHandle>;
+
+    /// The dispatch identity of an existing child, when this host knows the
+    /// agent — `Some(true)` for a child whose runs are dispatched in the
+    /// background.
+    ///
+    /// The resume call itself carries no `run_in_background` (the model's
+    /// documented resume form has only `prompt`/`description`/`resume`), so a
+    /// caller that needs to gate on the dispatch kind — the Agent tool's
+    /// capability and capacity pre-checks run BEFORE the resume starts a
+    /// turn — has to ask the host. `None` for unknown children and for hosts
+    /// that do not track child identities (the default).
+    fn child_run_in_background(&self, _agent_id: &str) -> Option<bool> {
+        None
+    }
 
     /// Forget a child outright — used when a dispatch was rejected AFTER
     /// the spawn side effects (the residual capacity race in the Agent

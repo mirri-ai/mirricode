@@ -1874,6 +1874,27 @@ export function createAgentProjector(): AgentProjector {
         break;
       }
 
+      case 'subagent.resumed': {
+        // A resume is a NEW run on an existing identity — the one signal
+        // allowed to lift terminal stickiness (ADR-010 ②). A `started` frame
+        // cannot: it is also what a late/replayed frame publishes, which is
+        // exactly what the stickiness protects against.
+        //
+        // The payload carries the child's stored dispatch identity, so the
+        // revived row keeps its place in the dock's background list even
+        // though the resume call itself carries no `run_in_background`.
+        const task = patchSubagent(s, sessionId, p?.subagentId, {
+          subagentPhase: 'working',
+          status: 'running',
+          startedAt: new Date().toISOString(),
+          completedAt: undefined,
+          suspendedReason: undefined,
+          runInBackground: p?.runInBackground === true,
+        });
+        if (task) out.push({ type: 'taskCreated', sessionId, task });
+        break;
+      }
+
       case 'subagent.suspended': {
         // ADR-011: the wire `reason` is either the structured snake_case object
         // `{ kind: "approval" | "question" | "rate_limit", request_id?,
@@ -2317,6 +2338,7 @@ const KNOWN_AGENT_CORE_TYPES = new Set([
   'warning',
   'subagent.spawned',
   'subagent.started',
+  'subagent.resumed',
   'subagent.suspended',
   'subagent.completed',
   'subagent.failed',

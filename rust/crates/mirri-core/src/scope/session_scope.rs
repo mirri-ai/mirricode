@@ -1413,6 +1413,7 @@ impl SessionScope {
             swarm_item,
             parent_tool_call_id,
             swarm_index,
+            run_in_background,
         } = &op
         {
             let mut registry = self.subagent_registry.write().await;
@@ -1427,6 +1428,7 @@ impl SessionScope {
                     swarm_item: swarm_item.clone(),
                     parent_tool_call_id: parent_tool_call_id.clone(),
                     swarm_index: *swarm_index,
+                    run_in_background: *run_in_background,
                 },
             );
         }

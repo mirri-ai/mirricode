@@ -464,3 +464,80 @@ describe('mergeSnapshotSubagents preserves the REST task link', () => {
   });
 });
 
+
+describe('one subagent, one dock row (ADR-017 resumed runs)', () => {
+  it('should collapse a resumed background subagent to its running row', () => {
+    // Given: one background child whose spawn run settled and whose resume
+    // run is in flight. Each run registered its own (detached) task row, so
+    // REST returns two rows carrying the same agent id.
+    const settledRun = liveTask({
+      id: 'task-spawn',
+      agentId: 'agent-r',
+      backgroundTaskId: 'task-spawn',
+      status: 'completed',
+      subagentPhase: 'completed',
+      runInBackground: true,
+      createdAt: '2025-01-01T00:00:00.000Z',
+    });
+    const liveRow = liveTask({
+      id: 'agent-r',
+      agentId: 'agent-r',
+      backgroundTaskId: 'task-resume',
+      status: 'running',
+      runInBackground: true,
+      createdAt: '2025-01-01T00:00:10.000Z',
+    });
+
+    // When the REST list folds into the WS-owned row
+    const merged = keepLiveSubagents([settledRun, { ...settledRun, id: 'task-resume', status: 'running', backgroundTaskId: 'task-resume', createdAt: '2025-01-01T00:00:10.000Z' }], [liveRow]);
+
+    // Then: the child shows up exactly once, as the run in flight — the dock
+    // must not count one subagent as two background tasks
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      agentId: 'agent-r',
+      id: 'agent-r',
+      status: 'running',
+      runInBackground: true,
+    });
+  });
+
+  it('should keep the most recent run when no run of the subagent is running', () => {
+    // Given: a subagent with two settled runs (spawn, then resume), both
+    // detached background task rows
+    const older = liveTask({
+      id: 'agent-done-older',
+      agentId: 'agent-done',
+      status: 'completed',
+      runInBackground: true,
+      createdAt: '2025-01-01T00:00:00.000Z',
+    });
+    const newer = liveTask({
+      id: 'agent-done-newer',
+      agentId: 'agent-done',
+      status: 'cancelled',
+      runInBackground: true,
+      createdAt: '2025-01-01T00:01:00.000Z',
+    });
+
+    // When the list is folded
+    const merged = keepLiveSubagents([older, newer], []);
+
+    // Then: one row survives, describing the latest run
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ id: 'agent-done-newer', status: 'cancelled' });
+  });
+
+  it('should keep distinct subagents and non-subagent rows untouched', () => {
+    // Given: two different subagents plus a bash task
+    const first = liveTask({ id: 'agent-1', agentId: 'agent-1', runInBackground: true });
+    const second = liveTask({ id: 'agent-2', agentId: 'agent-2', runInBackground: true });
+    const bash = liveTask({ id: 'task-bash', agentId: undefined, kind: 'bash', runInBackground: true });
+
+    // When folded
+    const merged = keepLiveSubagents([first, second, bash], []);
+
+    // Then: nothing is collapsed across identities
+    expect(merged.map((t) => t.id).sort()).toEqual(['agent-1', 'agent-2', 'task-bash']);
+  });
+});

@@ -935,6 +935,7 @@ mod drain_tests {
             swarm_item: None,
             parent_tool_call_id: None,
             swarm_index: None,
+            run_in_background: false,
         }
     }
 

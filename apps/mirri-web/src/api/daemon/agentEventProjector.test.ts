@@ -300,6 +300,70 @@ describe('terminal row stickiness against late intermediate subagent events (ADR
     expect(row).toMatchObject({ status: 'completed', subagentPhase: 'completed' });
     expect(row?.segments ?? []).toEqual([]);
   });
+
+  it('should revive a settled background subagent row when the engine reports a resume', () => {
+    // Given: a background subagent that spawned and then completed — the row
+    // is terminal and carries the background flag the dock filters on
+    const projector = createAgentProjector();
+    let state: MirriClientState = fold(projector, createInitialState(), 'subagent.spawned', {
+      subagentId: 'agent-r',
+      runInBackground: true,
+    });
+    state = fold(projector, state, 'subagent.started', {
+      subagentId: 'agent-r',
+      runInBackground: true,
+    });
+    state = fold(projector, state, 'subagent.completed', {
+      subagentId: 'agent-r',
+      resultSummary: 'done',
+    });
+    expect(taskFor(state, 'agent-r')).toMatchObject({
+      status: 'completed',
+      runInBackground: true,
+    });
+
+    // When: the engine publishes subagent.resumed for that same child
+    state = fold(projector, state, 'subagent.resumed', {
+      subagentId: 'agent-r',
+      runInBackground: true,
+    });
+
+    // Then: the row is running again AND still a background row, so the
+    // dock's `kind === 'subagent' && runInBackground` filter keeps showing it
+    // (a resume is a new run, not a late frame — terminal stickiness is the
+    // protection against the latter only)
+    const row = taskFor(state, 'agent-r');
+    expect(row).toMatchObject({
+      status: 'running',
+      subagentPhase: 'working',
+      runInBackground: true,
+    });
+    expect(row?.completedAt).toBeUndefined();
+  });
+
+  it('should mark a revived subagent row as background from the resume payload when the original spawn never reached this client', () => {
+    // Given: a client that subscribed AFTER the spawn, so its projected row
+    // came from a terminal lifecycle frame with no background flag
+    const projector = createAgentProjector();
+    let state: MirriClientState = fold(projector, createInitialState(), 'subagent.completed', {
+      subagentId: 'agent-late',
+      resultSummary: 'first run',
+    });
+    expect(taskFor(state, 'agent-late')).toMatchObject({ status: 'completed' });
+
+    // When: the engine resumes that child in the background
+    state = fold(projector, state, 'subagent.resumed', {
+      subagentId: 'agent-late',
+      runInBackground: true,
+    });
+
+    // Then: the payload's dispatch identity is what makes the row visible in
+    // the dock — this client never saw a spawn to inherit it from
+    expect(taskFor(state, 'agent-late')).toMatchObject({
+      status: 'running',
+      runInBackground: true,
+    });
+  });
 });
 
 describe('seedTurnUsage (snapshot fold onto the projector)', () => {

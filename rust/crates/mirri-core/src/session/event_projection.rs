@@ -785,6 +785,17 @@ pub fn project(event: &SessionEvent) -> Option<ProjectedEvent> {
             false,
             json!({ "subagentId": subagent_id }),
         ),
+        SessionEvent::SubagentResumed {
+            subagent_id,
+            run_in_background,
+        } => (
+            "event.subagent.resumed",
+            false,
+            json!({
+                "subagentId": subagent_id,
+                "runInBackground": run_in_background,
+            }),
+        ),
         SessionEvent::SubagentSuspended {
             subagent_id,
             reason,

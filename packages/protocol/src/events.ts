@@ -726,6 +726,14 @@ export interface SubagentStartedEvent {
   readonly subagentId: string;
 }
 
+/** A resume starts a new run on an existing subagent identity. */
+export interface SubagentResumedEvent {
+  readonly type: 'subagent.resumed';
+  readonly subagentId: string;
+  /** The child's stored dispatch identity — a resume call has no such flag. */
+  readonly runInBackground: boolean;
+}
+
 export interface SubagentSuspendedEvent {
   readonly type: 'subagent.suspended';
   readonly subagentId: string;
@@ -882,6 +890,7 @@ export type AgentEvent =
   | SkillCatalogChangedEvent
   | SubagentSpawnedEvent
   | SubagentStartedEvent
+  | SubagentResumedEvent
   | SubagentSuspendedEvent
   | SubagentCompletedEvent
   | SubagentFailedEvent
@@ -1500,6 +1509,22 @@ export const subagentStartedEventSchema = z.object({
   subagentId: z.string(),
 }) satisfies z.ZodType<SubagentStartedEvent>;
 
+/**
+ * A resume starts a NEW run on an existing subagent identity.
+ *
+ * Separate from `subagent.started` because the two mean different things to a
+ * client that already rendered the child: a `started` frame can arrive late
+ * for a run that already settled (and must not revive a terminal row), while
+ * a `resumed` frame legitimately moves a settled row back to running. The
+ * payload carries the child's stored dispatch identity (`runInBackground`),
+ * since the resume call itself has no such parameter.
+ */
+export const subagentResumedEventSchema = z.object({
+  type: z.literal('subagent.resumed'),
+  subagentId: z.string(),
+  runInBackground: z.boolean(),
+}) satisfies z.ZodType<SubagentResumedEvent>;
+
 export const subagentSuspendedEventSchema = z.object({
   type: z.literal('subagent.suspended'),
   subagentId: z.string(),
@@ -1633,6 +1658,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   mcpServerStatusEventSchema,
   subagentSpawnedEventSchema,
   subagentStartedEventSchema,
+  subagentResumedEventSchema,
   subagentSuspendedEventSchema,
   subagentCompletedEventSchema,
   subagentFailedEventSchema,

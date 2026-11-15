@@ -3658,6 +3658,7 @@ async fn write_f5_member_source(manager: &SessionManager, session_id: &SessionId
             swarm_item: None,
             parent_tool_call_id: None,
             swarm_index: None,
+            run_in_background: false,
         })
         .await
         .unwrap();
@@ -3728,6 +3729,7 @@ async fn should_serve_subagent_pending_steers_from_the_single_scan_cache_after_r
         swarm_item: None,
         parent_tool_call_id: None,
         swarm_index: None,
+        run_in_background: false,
     })
     .await
     .unwrap();

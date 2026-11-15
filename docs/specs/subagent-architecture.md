@@ -439,3 +439,24 @@ mirri-server（接线）
 
 4. **影响范围**：需求侧 SDR-016 / US3.5（本 ADR 是其技术承接）；派发工具（`Agent`）的说明面、参数说明与后台返回正文三处文案；工具逐规格文档（tool-calling 域的派发工具条目同步）——**注意该域 §3.1 现行 Agent 条目收录的是 TS v2 对齐版文案，其判据措辞（收益导向 + 条件式默认陈述）与本 ADR 的依赖导向判据存在三处实质分歧（判据措辞/默认陈述方式/描述排序），同步时须按 SDR-016 重写而非照抄**；ROADMAP O10（后台结果轮询指引漂移）随本 ADR 收敛——其登记的「no-polling 对齐」与本 ADR 的「等待时机引导」同一落点，实现批次一并处理；`AgentSwarm`（前台同步聚合语义）不受影响。
 
+
+### ADR-017 派发身份属于子代理身份，不属于单次派发（2026-11-15）
+
+1. **背景与动机**：`Agent` 工具的 `run_in_background` 只在「派发」这一层被读取——spawn 时按入参决定前后台，resume 时却重新读**本次调用入参**（模型文档化的续作形态只带 `prompt`/`description`/`resume`，没有该参数，默认 `false`）。后果是同一个子代理的身份被逐次改写：首轮后台派发的子代理，续作时被登记为前台任务（`detached=false`），运行时行为也随之改变（前后台的任务跟踪、超时与孤儿保护面不同）。观测面（web 底部 subagent 控制区）按后台身份过滤行，于是续作后的子代理从该面板消失；快照名册又从「该 agent 的多条任务行里任取一条」读取 `detached`，重启/刷新后身份进一步取决于任务 id 的排序，变得不可预期。根因是**身份归属错位**：`run_in_background` 被当作一次调用的参数，而它是子代理的持久属性。
+
+2. **决策**：
+
+   a) **身份随身份走**：宿主为每个子代理记录派发身份（`ChildEntry::run_in_background` / `SubagentRegistration::run_in_background`），spawn 时写入，resume 时沿袭；`SubagentHandle` 携带该值，工具层从 handle 读取而非从入参重算。前台/后台门禁与容量预检同样按「该次运行的实际身份」判定（`SubagentHost::child_run_in_background`），否则后台续作会绕过这两道闸。
+
+   b) **持久化到身份注册**：身份写入 `WireOp::SubagentRegistered`（`runInBackground`，缺省 `false`，旧日志按前台读——与它们当时的派发一致），重启收养据此恢复，续作在跨重启后仍保持身份。
+
+   c) **续作是既有身份上的新一轮**：resume 发布新的 `subagent.resumed { subagentId, runInBackground }` 事件，**不再**沿用 `subagent.started`。二者语义不同：`started` 也可能是迟到/重放的帧，客户端对其保持终态粘滞（ADR-010 ②）；`resumed` 是明确的新一轮，是唯一允许把已终结行拉回运行态的信号。不发布 `subagent.spawned`——那会把续作谎报为「创建」，且它与回放路径共用「创建帧」语义（session/consistency.rs 的收养合成）。
+
+   d) **名册读「当前」**：快照名册描述的是子代理.now，同一身份有多条任务行时取运行中的行，否则取最新创建的行；不得依赖任务表的排序。
+
+3. **被否决的备选方案**：
+   a) **resume 时复用 `subagent.spawned` 并带后台身份**——把续作谎报为创建帧，与回放侧合成路径的「创建」语义冲突，且客户端无法区分「新子代理」与「同一子代理的新一轮」，终态粘滞与续作复活将长期互相打架。
+   b) **只让 web 侧在 `started` 上解除终态粘滞**——削弱 ADR-010 ② 对迟到帧的保护；且无法覆盖「行已被对账收敛掉」与「刷新后名册读错行」两类形态，单独实施只能治好一部分症状。
+   c) **仅修 `ChildEntry` 不落持久化**——重启收养重建 entry 时身份丢失（收养路径连 `swarm_item` 都回落到 `None`），同一症状在重启后复发。
+
+4. **影响范围**：`subagent/host.rs`（身份记录、沿袭、收养、事件发布）、`subagent/mod.rs`（`SubagentHandle::run_in_background` 与 `SubagentHost::child_run_in_background`）、`tools/agent_tool.rs`（身份取自 handle、预检按实际身份、失败清理不再误删续作身份）、`mirri-proto`（注册 op 与状态字段）、`session/manager`（收养透传）、`mirri-server/rpc.rs`（名册选区）；客户端 `agentEventProjector.ts`（消费 `subagent.resumed`）、`packages/protocol`（事件 schema）。ADR-010 ② 的终态粘滞语义**不变**——本 ADR 只是为它补上「续作」这一合法例外。
