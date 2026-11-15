@@ -88,6 +88,11 @@ function createSession(): AppSession {
   };
 }
 
+/** Boot-binding seam spy: the client's `load` must bind the shared event
+ *  pipeline (the `bindEvents` dep) — see the eager-transport-connect
+ *  describe below. */
+const bindEventsMock = vi.fn();
+
 function createState(): ExtendedState {
   return {
     ...createInitialState(),
@@ -151,6 +156,7 @@ function createDeps(): UseWorkspaceStateDeps {
     updateSessionMessages: vi.fn(),
     nextOptimisticMsgId: () => 'msg_opt_1',
     getEventConn: () => null,
+    bindEvents: bindEventsMock,
     syncSessionFromSnapshot: vi.fn(),
     subscribeToSessionEvents: vi.fn(),
     hasLoadedMessages: vi.fn(),
@@ -1591,6 +1597,18 @@ describe('useWorkspaceState — load eager transport connect (P11c)', () => {
 
   afterEach(() => {
     clearCredential();
+  });
+
+  it('should bind the event pipeline at boot when the client loads', async () => {
+    // The event connection must bind at boot, not at the first session
+    // snapshot — an unbound client dispatches `event.session.created` into
+    // the void and scheduled-run sessions only appear after a manual refresh.
+    bindEventsMock.mockClear();
+    setCredential('tok-boot');
+    const state = createState();
+    const ws = useWorkspaceState(state, { ...createDeps() } as unknown as UseWorkspaceStateDeps);
+    await ws.load();
+    expect(bindEventsMock).toHaveBeenCalledTimes(1);
   });
 
   it('should call connectTransport before the parallel boot fetches when a credential exists', async () => {

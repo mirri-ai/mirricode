@@ -1244,6 +1244,12 @@ const lastSkillCatalogChange = ref<{
   trigger: 'file' | 'config' | 'plugin' | 'manual';
 } | null>(null);
 
+/** Bind the shared event connection. Called at app boot (the client's `load`
+ *  wrapper) and before a session snapshot subscribes. The pipeline used to
+ *  bind lazily at the first session snapshot only — a client with no session
+ *  open had NO event handlers at all, so server-side session creations were
+ *  dispatched into the void and the tree only learned about them on the next
+ *  manual refresh. */
 function connectEventsIfNeeded(): void {
   if (eventConn !== null) return;
   // Guard: jsdom and some environments have no WebSocket
@@ -3023,6 +3029,7 @@ const workspaceState = useWorkspaceState(rawState, {
   sideChat,
   modelProvider,
   pushOperationFailure,
+  bindEvents: connectEventsIfNeeded,
   activity,
   sessionsKnownEmpty,
   setSessions,

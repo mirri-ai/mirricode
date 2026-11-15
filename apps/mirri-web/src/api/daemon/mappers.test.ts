@@ -381,6 +381,113 @@ describe('toAppEvent — event.mcp.server.status', () => {
   });
 });
 
+describe('toAppEvent — event.session.created (engine row dialect, SDR-127)', () => {
+  it('should map the engine session row onto an app session when the announcement carries the list-row view', () => {
+    // Given an `event.session.created` frame carrying the rust engine's OWN
+    // listing row (camelCase `SessionView` — the shape `session.list` items
+    // have, re-exported verbatim so a live row and a refreshed row are
+    // identical)
+    const wire = {
+      type: 'event.session.created',
+      session_id: '',
+      seq: 0,
+      timestamp: '2026-11-15T01:00:00.000Z',
+      payload: {
+        session: {
+          id: 'session-run-1',
+          title: 'Nightly patrol',
+          createdAt: '2026-11-15T01:00:00.000Z',
+          updatedAt: '2026-11-15T01:00:00.000Z',
+          agentCount: 1,
+          tags: ['cron-task:task-1'],
+          status: 'running',
+          busy: true,
+          mainTurnActive: true,
+          pendingInteraction: 'none',
+          model: 'mirri-default',
+          cwd: '/workspace/project',
+          archived: false,
+          usage: { inputTokens: 12, outputTokens: 3, cacheReadTokens: 0, cacheCreationTokens: 0 },
+          messageCount: 2,
+          lastSeq: 4,
+          lastPrompt: 'patrol the workspace',
+          pinned: false,
+        },
+      },
+    } as unknown as WireEvent;
+
+    // When it is mapped
+    const appEvent = toAppEvent(wire);
+
+    // Then the tree row carries the identity, title and prompt preview the
+    // sidebar renders — read off the engine's camelCase spelling, which the
+    // REST snake_case mapper would have thrown on (silently dropping the
+    // whole frame)
+    expect(appEvent.type).toBe('sessionCreated');
+    if (appEvent.type !== 'sessionCreated') return;
+    expect(appEvent.session).toMatchObject({
+      id: 'session-run-1',
+      title: 'Nightly patrol',
+      lastPrompt: 'patrol the workspace',
+      cwd: '/workspace/project',
+      busy: true,
+      mainTurnActive: true,
+      model: 'mirri-default',
+      messageCount: 2,
+      lastSeq: 4,
+      archived: false,
+    });
+  });
+
+  it('should still map the REST daemon snake_case row when the announcement comes from the v2 backend', () => {
+    // Given the REST daemon's dialect — the row carries `metadata` /
+    // `agent_config`, which the engine row never does
+    const wire: WireEvent = {
+      type: 'event.session.created',
+      session_id: 'session-v2',
+      seq: 3,
+      timestamp: '2026-11-15T01:00:00.000Z',
+      payload: {
+        session: {
+          id: 'session-v2',
+          title: 'v2 session',
+          created_at: '2026-11-15T01:00:00.000Z',
+          updated_at: '2026-11-15T01:00:00.000Z',
+          busy: false,
+          archived: false,
+          last_prompt: 'v2 prompt',
+          metadata: { cwd: '/v2/root' },
+          agent_config: { model: 'v2-model' },
+          usage: {
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_read_tokens: 3,
+            cache_creation_tokens: 4,
+            total_cost_usd: 0,
+            context_tokens: 0,
+            context_limit: 0,
+            turn_count: 0,
+          },
+          message_count: 5,
+          last_seq: 6,
+        },
+      },
+    } as unknown as WireEvent;
+
+    // When it is mapped
+    const appEvent = toAppEvent(wire);
+
+    // Then the snake_case row still lands (the dialect switch must not
+    // regress the older backend)
+    expect(appEvent.type).toBe('sessionCreated');
+    if (appEvent.type !== 'sessionCreated') return;
+    expect(appEvent.session.id).toBe('session-v2');
+    expect(appEvent.session.title).toBe('v2 session');
+    expect(appEvent.session.lastPrompt).toBe('v2 prompt');
+    expect(appEvent.session.cwd).toBe('/v2/root');
+  });
+});
+
 describe('approval request identity (supervision B1)', () => {
   it('should map the requesting member agent id when the wire row carries one, and leave it absent otherwise', () => {
     // Given an approval ask from a member agent and one from the main agent

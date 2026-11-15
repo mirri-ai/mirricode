@@ -101,14 +101,16 @@ pub const PROJECTED_EVENT_METHODS: [&str; 46] = [
 ];
 
 /// The closed vocabulary of projected **server-scoped** `event.*` methods —
-/// the workspace lifecycle events a [`ServerEvent`] produces. Kept separate
-/// from [`PROJECTED_EVENT_METHODS`] (the session-scoped vocabulary) because
+/// the session-creation announcement and the workspace lifecycle events a
+/// [`ServerEvent`] produces. Kept separate from
+/// [`PROJECTED_EVENT_METHODS`] (the session-scoped vocabulary) because
 /// server events are not [`SessionEvent`]s: they carry no session envelope
 /// (`sessionId` is the synthesized empty string), no per-session seq, and
 /// are never replayed through a session cursor. Both vocabularies together
 /// are the `event.*` surface the TS contract suite reconciles against (the
 /// NAPI `embedded_event_methods` export unions them).
-pub const SERVER_PROJECTED_EVENT_METHODS: [&str; 3] = [
+pub const SERVER_PROJECTED_EVENT_METHODS: [&str; 4] = [
+    "event.session.created",
     "event.workspace.created",
     "event.workspace.deleted",
     "event.workspace.updated",
@@ -127,17 +129,30 @@ pub struct WorkspaceSnapshot {
     pub name: Option<String>,
 }
 
-/// A server-scoped lifecycle event — workspace registry changes, not
-/// session activity. Emitted by the [`EmbeddedServer`](crate::EmbeddedServer)
-/// after a registry mutation lands, broadcast to every event subscriber
-/// (and to the `EngineAdapter::subscribe_events` channel) as an
-/// `event.workspace.*` notification.
+/// A server-scoped lifecycle event — a session or workspace lifecycle change
+/// that is not session *activity*. [`ServerEvent::SessionCreated`] is emitted
+/// by the [`EmbeddedServer`](crate::EmbeddedServer) when a session comes into
+/// existence (the shared create seam: the `session.create` RPC, the fork and
+/// child paths, and the scheduled-task run spawner), and the workspace
+/// variants after a registry mutation lands. Every variant is broadcast to
+/// every event subscriber (and to the `EngineAdapter::subscribe_events`
+/// channel) as its `event.*` notification.
 ///
-/// Deliberately NOT a [`SessionEvent`]: no session is involved, so these
-/// events must not pollute the per-session relay/seq machinery (design
-/// `08-multi-workspace.md` §T2 structure decision).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Deliberately NOT a [`SessionEvent`]: [`SessionEvent`]s ride one session's
+/// bus and carry that session's seq/cursor envelope, while a created session
+/// has no subscriber, no cursor and (before it exists) no id a client could
+/// subscribe to — the announcement must reach every connected client, so it
+/// takes the server-scoped shape (design `08-multi-workspace.md` §T2
+/// structure decision; the SDR-127 live-visibility face).
+#[derive(Debug, Clone, PartialEq)]
 pub enum ServerEvent {
+    /// A session was created. `session` is the backend's **list-row** view,
+    /// carried verbatim and re-exported as the payload's `session` object so
+    /// a client's adopted row renders identically to the one a list refresh
+    /// produces. It travels as an opaque JSON value because the row shape is
+    /// the backend's own (`SessionView` in `mirri-embedded`); core only
+    /// frames it.
+    SessionCreated { session: Value },
     /// A workspace was registered for the first time.
     WorkspaceCreated { workspace: WorkspaceSnapshot },
     /// A registered workspace's metadata changed (a touch or a rename).
@@ -155,6 +170,7 @@ impl ServerEvent {
     /// The wire method this event projects to.
     pub fn method(&self) -> &'static str {
         match self {
+            ServerEvent::SessionCreated { .. } => "event.session.created",
             ServerEvent::WorkspaceCreated { .. } => "event.workspace.created",
             ServerEvent::WorkspaceUpdated { .. } => "event.workspace.updated",
             ServerEvent::WorkspaceDeleted { .. } => "event.workspace.deleted",
@@ -174,6 +190,10 @@ impl ServerEvent {
 /// merged flat into `params` exactly like the session projection.
 pub fn project_server_event(event: &ServerEvent) -> ProjectedNotification {
     let (method, payload) = match event {
+        ServerEvent::SessionCreated { session } => (
+            event.method(),
+            json!({ "session": session }),
+        ),
         ServerEvent::WorkspaceCreated { workspace }
         | ServerEvent::WorkspaceUpdated { workspace } => (
             event.method(),
@@ -1350,10 +1370,13 @@ mod tests {
 
     // Given the server event vocabulary, when compared to the closed list,
     // then every variant maps to exactly one method (the contract 3 single
-    // source for the workspace lifecycle verbs).
+    // source for the session-created and workspace lifecycle verbs).
     #[test]
     fn should_cover_every_server_event_variant_in_the_vocabulary() {
         let projected: Vec<&str> = [
+            ServerEvent::SessionCreated {
+                session: json!({ "id": "session-1" }),
+            },
             ServerEvent::WorkspaceCreated {
                 workspace: snapshot("w", "/p", None),
             },
@@ -1373,5 +1396,35 @@ mod tests {
         let mut projected = projected;
         projected.sort_unstable();
         assert_eq!(vocabulary, projected);
+    }
+
+    // Given a created-session server event carrying a list-row view, when it
+    // is projected, then the notification carries the event.session.created
+    // method, the server-scoped envelope (empty session id, volatile, no
+    // seq/epoch) and the view verbatim under `session` — the payload is the
+    // row itself, never a re-shaped copy.
+    #[test]
+    fn should_project_session_created_with_the_row_view_verbatim() {
+        let row = json!({
+            "id": "session-7",
+            "title": "Nightly patrol",
+            "lastPrompt": "patrol the workspace",
+            "cwd": "/proj/a",
+        });
+        let event = ServerEvent::SessionCreated {
+            session: row.clone(),
+        };
+
+        let notification = project_server_event(&event);
+
+        assert_eq!(notification.method, "event.session.created");
+        assert_eq!(notification.params["sessionId"], json!(""));
+        assert_eq!(notification.params["volatile"], json!(true));
+        assert!(
+            notification.params.get("seq").is_none(),
+            "a server-scoped announcement never carries a session cursor: {:?}",
+            notification.params
+        );
+        assert_eq!(notification.params["session"], row);
     }
 }

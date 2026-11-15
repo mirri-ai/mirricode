@@ -2960,6 +2960,16 @@ impl EventTranslator {
             // documented rather than falling through the unknown-event
             // catch-all).
             "workspace.created" | "workspace.updated" | "workspace.deleted" => return None,
+            // `session.created` (SDR-127, the live session-tree announcement)
+            // is a session-lifecycle notice for a MULTI-SESSION client: ACP
+            // serves one session per agent process and its `session/update`
+            // vocabulary has no "a session exists" verb, so the event is
+            // deliberately dropped — an explicit arm, so the drop is a
+            // decision rather than the unknown-event catch-all. Note this
+            // arm is reached only for the addressed session's own frames;
+            // the announcement rides the server-scoped broadcast (an empty
+            // sessionId), which the arms above already drop as sessionless.
+            "session.created" => return None,
             // Turn bookkeeping: v1 expresses turn boundaries through the
             // `session/prompt` response, not updates — a failed turn surfaces
             // as that response's JSON-RPC error.

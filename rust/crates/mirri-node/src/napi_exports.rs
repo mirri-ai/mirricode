@@ -474,7 +474,8 @@ pub fn embedded_method_names() -> Vec<String> {
 /// [`PROJECTED_EVENT_METHODS`](mirri_core::event_projection::PROJECTED_EVENT_METHODS)
 /// union the server-scoped
 /// [`SERVER_PROJECTED_EVENT_METHODS`](mirri_core::event_projection::SERVER_PROJECTED_EVENT_METHODS)
-/// (`event.workspace.created/updated/deleted`, the W2 server lifecycle
+/// (`event.session.created` — the session-creation announcement — plus
+/// `event.workspace.created/updated/deleted`, the W2 server lifecycle
 /// surface), sorted.
 ///
 /// Used by the TS-side contract suite to reconcile the event vocabulary

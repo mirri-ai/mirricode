@@ -1683,3 +1683,230 @@ async fn should_write_the_row_for_a_cron_execution_session_when_the_run_settles(
     );
     let _ = tmp;
 }
+
+// ---------------------------------------------------------------------------
+// Live run-session visibility (SDR-127's real-time face): a session the
+// engine opens is announced on the server-scoped event stream the moment it
+// exists, so a connected client adopts it into the session tree without a
+// manual refresh.
+// ---------------------------------------------------------------------------
+
+/// One `event.session.created` notification's session payload, read off the
+/// server-scoped stream. `None` for any other notification.
+fn session_created_payload(
+    notification: &mirri_transport::frame::JsonRpcNotification,
+) -> Option<serde_json::Value> {
+    (notification.method == "event.session.created")
+        .then(|| notification.params.get("session").cloned())
+        .flatten()
+}
+
+/// Drain the server-scoped stream until the created announcement for
+/// `session_id` arrives (a bounded wait; every other announcement — e.g. a
+/// previous run's — is skipped, so the assertion is "this session is
+/// announced", not "it is the first frame").
+async fn wait_for_session_created(
+    events: &mut tokio::sync::broadcast::Receiver<
+        mirri_transport::frame::JsonRpcNotification,
+    >,
+    session_id: &str,
+) -> mirri_transport::frame::JsonRpcNotification {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let Ok(Ok(notification)) = tokio::time::timeout_at(deadline, events.recv()).await else {
+            panic!("event.session.created for {session_id} never arrived");
+        };
+        let Some(session) = session_created_payload(&notification) else {
+            continue;
+        };
+        if session["id"] == json!(session_id) {
+            return notification;
+        }
+    }
+}
+
+/// Given a connected client subscribed to the engine's server-scoped event
+/// stream, when a fired workspace task opens its execution session, then
+/// `event.session.created` arrives carrying that session, and its view is
+/// row-identical to what `session.list` returns (title + lastPrompt), so the
+/// tree row a live client renders matches the one a refresh produces.
+#[tokio::test]
+async fn should_announce_the_run_session_when_a_fired_task_opens_its_execution_session() {
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("patrol done");
+    let (server, tmp, _home) = ws4b_server(Arc::clone(&mock));
+    let workspace_id = default_workspace_id(&server);
+    let added = server
+        .call_method(
+            "cron.add",
+            json!({
+                "workspaceId": &workspace_id,
+                "cron": "*/5 * * * *",
+                "prompt": "patrol the workspace",
+                "recurring": true,
+                "title": "Nightly patrol",
+            }),
+        )
+        .await
+        .expect("workspace cron.add");
+    let task_id = added["taskId"].as_str().unwrap().to_string();
+    let cron = ws_cron(&server);
+    cron.set_next_fire_at(
+        &task_id,
+        Some(chrono::Utc::now() - chrono::Duration::seconds(5)),
+    );
+    let fires = drive_cron_pass_capture(&server).await;
+    assert_eq!(fires.len(), 1, "the due task fires exactly once: {fires:?}");
+    let fire = fires[0].clone();
+
+    // The client is listening BEFORE the run opens its session — the
+    // production ordering (a desktop/web client attaches on connect, long
+    // before a scheduled fire).
+    let mut events = server
+        .subscribe_server_events()
+        .expect("the engine exposes the session-created stream");
+
+    server
+        .workspace_run_spawner()
+        .spawn_and_settle(
+            workspace_id.clone(),
+            task_id.clone(),
+            fire.trigger,
+            fire.scheduled_at,
+            None,
+        )
+        .await;
+
+    let session_ref = cron
+        .runs(&task_id)
+        .iter()
+        .find(|run| run.status == mirri_core::cron::RunStatus::Succeeded)
+        .and_then(|run| run.session_ref.clone())
+        .unwrap_or_else(|| panic!("the run finished Succeeded: {:?}", cron.runs(&task_id)));
+    let notification = wait_for_session_created(&mut events, &session_ref).await;
+    let session = session_created_payload(&notification).expect("the created payload");
+
+    // The envelope is server-scoped: no session cursor, no per-session seq,
+    // and an EMPTY session id — a created announcement must never move a
+    // client's "last session" pointer (the approval/question ask routing).
+    assert_eq!(
+        notification.params["sessionId"],
+        json!(""),
+        "the created announcement carries the server-scoped empty session id: {:?}",
+        notification.params
+    );
+    assert_eq!(notification.params["volatile"], json!(true));
+    assert!(
+        notification.params.get("seq").is_none(),
+        "a created announcement never occupies a session cursor slot: {:?}",
+        notification.params
+    );
+
+    // The payload is the LIST ROW: same title and lastPrompt a refresh
+    // renders, so the live tree row and the refreshed row cannot diverge.
+    let listed = listed_session_row(&server, json!({ "excludeEmpty": true }), &session_ref)
+        .await
+        .unwrap_or_else(|| panic!("the run session is listed: {session_ref}"));
+    assert_eq!(
+        session["title"], listed["title"],
+        "the announced title matches the listed row: announced={session} listed={listed}"
+    );
+    assert_eq!(
+        session["lastPrompt"], listed["lastPrompt"],
+        "the announced preview matches the listed row: announced={session} listed={listed}"
+    );
+    assert_eq!(
+        session["lastPrompt"],
+        json!("patrol the workspace"),
+        "the announced preview is the task prompt: {session}"
+    );
+    assert_eq!(
+        session["cwd"], listed["cwd"],
+        "the announced workspace root matches the listed row: announced={session} listed={listed}"
+    );
+    let _ = tmp;
+}
+
+/// Given a connected client, when the `session.create` RPC opens a session,
+/// then the SAME announcement arrives — the create seam is shared, so every
+/// creation path (RPC create, fork, scheduled run) is live-visible instead of
+/// only the cron path being special-cased.
+#[tokio::test]
+async fn should_announce_the_session_when_the_create_rpc_opens_one() {
+    let mock = Arc::new(ScriptedLlm::new());
+    let (server, tmp, _home) = ws4b_server(Arc::clone(&mock));
+    let mut events = server
+        .subscribe_server_events()
+        .expect("the engine exposes the session-created stream");
+
+    let created = server
+        .call_method("session.create", json!({ "title": "ad-hoc browse" }))
+        .await
+        .expect("session.create");
+    let session_id = created["id"].as_str().expect("the created session id");
+
+    let notification = wait_for_session_created(&mut events, session_id).await;
+    let session = session_created_payload(&notification).expect("the created payload");
+    assert_eq!(session["id"], json!(session_id));
+    assert_eq!(
+        session["title"],
+        json!("ad-hoc browse"),
+        "the announced view carries the created session's title: {session}"
+    );
+    let _ = tmp;
+}
+
+/// Given a session that already exists, when it is resumed (and then a NEW
+/// session is opened), then the resume produces NO created announcement — the
+/// next announcement on the stream belongs to the new session. A resume is a
+/// re-hydration, not a creation; announcing it would re-adopt (and re-order)
+/// a row the client already has.
+#[tokio::test]
+async fn should_not_announce_a_session_again_when_it_is_resumed() {
+    let mock = Arc::new(ScriptedLlm::new());
+    mock.push_text("first turn done");
+    let (server, tmp, _home) = ws4b_server(Arc::clone(&mock));
+    let created = server
+        .call_method("session.create", json!({ "title": "resumable" }))
+        .await
+        .expect("session.create");
+    let original = created["id"].as_str().unwrap().to_string();
+    // Materialize it: only a session with a wire log can be resumed.
+    server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &original, "text": "hello", "mode": "fire" }),
+        )
+        .await
+        .expect("message.send");
+    server
+        .call_method("session.close", json!({ "session_id": &original }))
+        .await
+        .expect("session.close");
+
+    // Subscribe AFTER the original create/close: the resume below is the only
+    // creation-adjacent action in the window.
+    let mut events = server
+        .subscribe_server_events()
+        .expect("the engine exposes the session-created stream");
+    server
+        .call_method("session.resume", json!({ "sessionId": &original }))
+        .await
+        .expect("session.resume");
+    let next = server
+        .call_method("session.create", json!({ "title": "opened after resume" }))
+        .await
+        .expect("session.create");
+    let next_id = next["id"].as_str().unwrap().to_string();
+
+    // The first announcement must be the NEW session: a resume that re-issued
+    // created would have queued `original` ahead of it.
+    let notification = wait_for_session_created(&mut events, &next_id).await;
+    let session = session_created_payload(&notification).expect("the created payload");
+    assert_eq!(
+        session["id"],
+        json!(next_id),
+        "the resume did not re-announce the resumed session: {session}"
+    );
+    let _ = tmp;
+}

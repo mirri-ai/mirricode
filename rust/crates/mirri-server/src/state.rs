@@ -140,6 +140,18 @@ pub struct ServerState {
     /// Guards the one-time spawn of the skill-catalog engine → broadcast
     /// forwarder (see [`Self::skill_catalog_event_rx`]).
     skill_catalog_event_forwarder: Arc<std::sync::OnceLock<()>>,
+    /// The server-scoped lifecycle event broadcast (SDR-127): the
+    /// `event.session.created` / `event.workspace.*` notifications every
+    /// connection observes — a created session is the only signal that makes
+    /// a session the client never subscribed to appear in its tree, so this
+    /// surface is not opt-in per connection. Fed by a single forwarder task
+    /// (spawned lazily by [`Self::server_event_rx`]) that drains the engine's
+    /// `subscribe_server_events` broadcast verbatim (the engine projects
+    /// once).
+    server_event_tx: broadcast::Sender<mirri_transport::frame::JsonRpcNotification>,
+    /// Guards the one-time spawn of the engine → server-event forwarder
+    /// (see [`Self::server_event_rx`]).
+    server_event_forwarder: Arc<std::sync::OnceLock<()>>,
     /// Tracks every in-flight engine-call task (the spawned wrapper behind
     /// [`Self::dispatch_engine`]). The graceful-shutdown drain
     /// ([`Self::drain_engine_calls`]) waits on this tracker so in-flight
@@ -247,6 +259,8 @@ impl ServerState {
             mcp_event_forwarder: Arc::new(std::sync::OnceLock::new()),
             skill_catalog_event_tx: broadcast::channel(MCP_EVENT_CHANNEL_CAPACITY).0,
             skill_catalog_event_forwarder: Arc::new(std::sync::OnceLock::new()),
+            server_event_tx: broadcast::channel(MCP_EVENT_CHANNEL_CAPACITY).0,
+            server_event_forwarder: Arc::new(std::sync::OnceLock::new()),
             engine_call_tracker: Arc::new(TaskTracker::new()),
             lifecycle: None,
             shutdown_recorded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -395,6 +409,62 @@ impl ServerState {
             });
         }
         self.skill_catalog_event_tx.subscribe()
+    }
+
+    /// A fresh receiver on the server-scoped lifecycle broadcast, and the lazy
+    /// start of its engine → broadcast forwarder (SDR-127; the
+    /// [`Self::mcp_event_rx`] precedent shape): the first connection subscribes
+    /// and spawns the single task that drains the engine's
+    /// `subscribe_server_events` broadcast onto this channel. The engine
+    /// already projects each event, so the forwarder relays the notification
+    /// verbatim — one projection, N connections.
+    ///
+    /// Engines without the surface (a remote adapter, a test stub) answer
+    /// `MethodNotFound` — the forwarder logs and exits, and connections
+    /// simply never observe a created announcement (the honest shape: their
+    /// client keeps its refresh-based behaviour).
+    ///
+    /// **Process-lifetime assumption** (the same ledger fact as
+    /// [`Self::mcp_event_rx`]): the forwarder is spawned once per
+    /// [`ServerState`] and has no shutdown path by design — the serve binary
+    /// runs it until the process exits.
+    pub(crate) fn server_event_rx(
+        &self,
+    ) -> broadcast::Receiver<mirri_transport::frame::JsonRpcNotification> {
+        if self.server_event_forwarder.set(()).is_ok() {
+            let engine = Arc::clone(&self.engine);
+            let tx = self.server_event_tx.clone();
+            tokio::spawn(async move {
+                let mut rx = match engine.subscribe_server_events() {
+                    Ok(rx) => rx,
+                    Err(error) => {
+                        tracing::debug!(
+                            %error,
+                            "engine has no server-scoped event surface; session-created announcements stay silent"
+                        );
+                        return;
+                    }
+                };
+                loop {
+                    match rx.recv().await {
+                        Ok(notification) => {
+                            // A send failure means "no live subscriber" — the
+                            // forwarder keeps draining, so a late subscriber
+                            // never misses the engine's channel position.
+                            let _ = tx.send(notification);
+                        }
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::warn!(
+                                skipped,
+                                "server event forwarder lagged; dropped announcements"
+                            );
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+        }
+        self.server_event_tx.subscribe()
     }
 
     /// Configure the application-level heartbeat interval for the unified

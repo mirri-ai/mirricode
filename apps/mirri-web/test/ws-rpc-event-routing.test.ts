@@ -125,6 +125,71 @@ describe('routeRpcEventToAppEvents', () => {
     ]);
   });
 
+  it('routes a sessionless created-session announcement through toAppEvent so the tree adopts it live', () => {
+    // Given the engine's `event.session.created` announcement: a
+    // server-scoped frame (synthesized empty session id) carrying the
+    // engine's own list row for a session the client never subscribed to
+    // (a scheduled task's run session, SDR-127)
+    const projector = createAgentProjector();
+    const event: RpcEvent = {
+      type: 'event.session.created',
+      sessionId: '',
+      seq: undefined,
+      epoch: undefined,
+      volatile: true,
+      payload: {
+        session: {
+          id: 'session-run-1',
+          title: 'Nightly patrol',
+          createdAt: '2026-11-15T01:00:00.000Z',
+          updatedAt: '2026-11-15T01:00:00.000Z',
+          busy: true,
+          archived: false,
+          cwd: '/workspace/project',
+          lastPrompt: 'patrol the workspace',
+        },
+      },
+    };
+
+    // When it is routed through the event bridge
+    const events = routeRpcEventToAppEvents(projector, event);
+
+    // Then the created session reaches the reducer as an adoptable row — a
+    // frame dropped here is the defect this contract exists for (the tree
+    // never shows the run without a manual refresh)
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'sessionCreated',
+      session: {
+        id: 'session-run-1',
+        title: 'Nightly patrol',
+        lastPrompt: 'patrol the workspace',
+        cwd: '/workspace/project',
+      },
+    });
+  });
+
+  it('routes an unqualified created-session announcement (no session id at all) instead of dropping it', () => {
+    // The envelope's sessionId is optional on the transport; the
+    // announcement is server-scoped either way and must still be routed.
+    const projector = createAgentProjector();
+    const event: RpcEvent = {
+      type: 'event.session.created',
+      sessionId: undefined,
+      seq: undefined,
+      epoch: undefined,
+      volatile: true,
+      payload: {
+        session: { id: 'session-run-2', title: 'run two', cwd: '/workspace/project' },
+      },
+    };
+
+    const events = routeRpcEventToAppEvents(projector, event);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'sessionCreated' });
+  });
+
   it('routes a sessionless workspace updated event with the renamed workspace', () => {
     // Given a server-scoped `event.workspace.updated` frame (rust dialect,
     // empty session id)

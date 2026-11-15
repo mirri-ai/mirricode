@@ -841,6 +841,13 @@ impl EmbeddedServer {
         // in-memory listing still sees it (the live union over the built
         // runtimes), so the create is immediately usable.
 
+        // The creation seam's announcement (SDR-127's live face): a
+        // connected client adopts the row without waiting for a list
+        // refresh. The row is the LISTING row, so the adopted row and a
+        // refreshed row cannot diverge; the announcement lands after the
+        // session is live and routable (a resume never comes through here).
+        self.announce_session_created(&self.session_created_row(&session).await);
+
         serde_json::to_value(self.session_view(&session).await)
             .map_err(|e| EngineError::Internal(e.to_string()))
     }
@@ -2574,6 +2581,12 @@ impl EmbeddedServer {
         // dropping it as "never conversed".
         self.index_upsert_live(new_session.id(), &new_session.metadata().await);
 
+        // A fork IS a creation (SDR-127): announce it after the row landed,
+        // so every connected client adopts the child row — the forking
+        // client's own tab included (it renders from the same event
+        // stream, and the reducer's id de-dupe makes the adoption safe).
+        self.announce_session_created(&self.session_created_row(&new_session).await);
+
         serde_json::to_value(self.session_view(&new_session).await)
             .map_err(|e| EngineError::Internal(e.to_string()))
     }
@@ -3186,6 +3199,10 @@ impl EmbeddedServer {
         // drops the child until its first message stamps a last_prompt
         // (the same defect session.fork's write-through fixes).
         self.index_upsert_live(new_session.id(), &new_session.metadata().await);
+
+        // The child is a creation too (SDR-127) — the same announcement
+        // after the row landed.
+        self.announce_session_created(&self.session_created_row(&new_session).await);
 
         to_result(SessionHandleResult {
             id: new_session.id().as_str().to_string(),

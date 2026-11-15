@@ -157,6 +157,7 @@ function createHarness(opts?: { initialized?: boolean }) {
     updateSessionMessages: vi.fn(),
     nextOptimisticMsgId: () => 'msg_opt_1',
     getEventConn: () => null,
+    bindEvents: vi.fn(),
     syncSessionFromSnapshot: vi.fn().mockResolvedValue('ok'),
     reopenSession: vi.fn().mockResolvedValue('ok'),
     hasLoadedMessages: () => true,

@@ -806,6 +806,13 @@ struct RpcConnection {
     /// `skill.catalogChanged` notifications — the `mcp_subscription`
     /// precedent shape.
     skill_catalog_subscription: Option<JoinHandle<()>>,
+    /// The server-scoped lifecycle event forwarder (SDR-127): one task per
+    /// connection relaying the engine's `event.session.created` /
+    /// `event.workspace.*` broadcast onto this connection's outbox. Not
+    /// opt-in — unlike the MCP / skill-catalog surfaces a created session is
+    /// the only signal that makes a session the client never subscribed to
+    /// appear in its tree, so every connection is wired at handshake.
+    server_events_subscription: Option<JoinHandle<()>>,
     /// Per-session cooldown bookkeeping for `resync_required` signaling: the
     /// wall-clock instant each session's last resync signal was sent. A
     /// client stuck in a lag→resync→re-subscribe loop (a slow renderer
@@ -2011,6 +2018,37 @@ struct SinkGate {
     held: Vec<TerminalFrame>,
 }
 
+/// Relay the engine's server-scoped lifecycle broadcast onto one connection's
+/// outbox — the `event.session.created` / `event.workspace.*` surface every
+/// connection observes from handshake on (SDR-127). The notifications arrive
+/// already projected (the engine frames them once), so this forwarder adds no
+/// interpretation; a lagging consumer is logged and skipped (the next list
+/// read reconciles the tree).
+fn spawn_server_event_forwarder(
+    outbox: mpsc::Sender<Outbound>,
+    mut live_rx: broadcast::Receiver<JsonRpcNotification>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match live_rx.recv().await {
+                Ok(notification) => {
+                    let frame = JsonRpcFrame::Notification(notification).to_value();
+                    if outbox.send(Outbound::Frame(frame)).await.is_err() {
+                        break; // the connection's writer is gone
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(
+                        skipped,
+                        "server event stream lagged; dropped announcements (the client's next list read reconciles)"
+                    );
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
+}
+
 /// Forward one live terminal frame to a connection's outbox — the sink
 /// closure installed by `terminal_attach`. The session and terminal ids
 /// are captured by the closure (the [`TerminalFrame`] itself carries only
@@ -2082,6 +2120,14 @@ async fn run_connection(socket: WebSocket, state: ServerState) {
     // Its termination (socket write failed, or every sender dropped) ends
     // this loop — nothing can leave the connection after that.
     let mut writer = tokio::spawn(write_outbound(sink, outbox_rx, closed_tx));
+    // The server-scoped lifecycle stream (SDR-127): subscribed at handshake,
+    // before the connection can be addressed at all — a `session.create`
+    // answered on this connection must not race its own announcement out of
+    // the window. The receiver is taken here (the lazy engine → broadcast
+    // forwarder starts with the first connection) and handed to the
+    // per-connection forwarder below.
+    let server_event_rx = state.server_event_rx();
+    let server_event_outbox = outbox_tx.clone();
     // Reverse RPC state shared with the WsReverseRpcCallback instances
     // stored on subscribed sessions' artifacts: the callback sends requests
     // straight onto the outbox (the writer delivers them) and awaits the
@@ -2099,6 +2145,10 @@ async fn run_connection(socket: WebSocket, state: ServerState) {
         terminal_attachments: HashMap::new(),
         mcp_subscription: None,
         skill_catalog_subscription: None,
+        server_events_subscription: Some(spawn_server_event_forwarder(
+            server_event_outbox.clone(),
+            server_event_rx,
+        )),
         resync_cooldowns: HashMap::new(),
     };
 
@@ -2201,6 +2251,12 @@ async fn run_connection(socket: WebSocket, state: ServerState) {
     // End the app-level skill-catalog event forwarder (ADR-010 Task 6) the
     // same way.
     if let Some(forwarder) = connection.skill_catalog_subscription.take() {
+        forwarder.abort();
+    }
+    // And the server-scoped lifecycle forwarder (SDR-127) — the outbox
+    // closure would end it too, but the explicit abort guarantees no
+    // buffered announcement escapes after the connection is gone.
+    if let Some(forwarder) = connection.server_events_subscription.take() {
         forwarder.abort();
     }
 }
@@ -3381,6 +3437,7 @@ mod tests {
             terminal_attachments: HashMap::new(),
             mcp_subscription: None,
             skill_catalog_subscription: None,
+            server_events_subscription: None,
             resync_cooldowns: HashMap::new(),
         };
         (connection, outbox_rx)
@@ -3533,6 +3590,170 @@ mod tests {
                 .await
                 .is_err(),
             "an aborted forwarder must not relay events"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Server-scoped lifecycle events (SDR-127): the every-connection
+    // `event.session.created` surface
+    // -----------------------------------------------------------------------
+
+    /// A stub engine whose server-scoped broadcast the test controls — the
+    /// `PoolEventEngine` twin for the created-session surface.
+    struct ServerEventEngine {
+        server_tx: broadcast::Sender<JsonRpcNotification>,
+        /// Fires once per `subscribe_server_events` call, so the test awaits
+        /// the state-level forwarder's subscription instead of sampling.
+        subscribed: tokio::sync::Notify,
+    }
+
+    impl ServerEventEngine {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                server_tx: broadcast::channel(64).0,
+                subscribed: tokio::sync::Notify::new(),
+            })
+        }
+
+        fn emit(&self, notification: JsonRpcNotification) {
+            let _ = self.server_tx.send(notification);
+        }
+
+        fn engine_receivers(&self) -> usize {
+            self.server_tx.receiver_count()
+        }
+
+        async fn wait_subscribed(&self) {
+            loop {
+                if self.engine_receivers() > 0 {
+                    return;
+                }
+                self.subscribed.notified().await;
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EngineAdapter for ServerEventEngine {
+        async fn call_method(
+            &self,
+            method: &str,
+            _params: serde_json::Value,
+        ) -> Result<Value, mirri_transport::adapter::EngineError> {
+            Err(mirri_transport::adapter::EngineError::MethodNotFound(
+                method.to_string(),
+            ))
+        }
+
+        async fn subscribe_events(
+            &self,
+        ) -> Result<mpsc::Receiver<JsonRpcNotification>, mirri_transport::adapter::EngineError>
+        {
+            let (_tx, rx) = mpsc::channel(8);
+            Ok(rx)
+        }
+
+        fn subscribe_server_events(
+            &self,
+        ) -> Result<broadcast::Receiver<JsonRpcNotification>, mirri_transport::adapter::EngineError>
+        {
+            let receiver = self.server_tx.subscribe();
+            self.subscribed.notify_one();
+            Ok(receiver)
+        }
+
+        async fn on_reverse_rpc(
+            &self,
+            _handler: mirri_transport::adapter::ReverseRpcHandler,
+        ) -> Result<(), mirri_transport::adapter::EngineError> {
+            Ok(())
+        }
+
+        async fn dispose(&self) -> Result<(), mirri_transport::adapter::EngineError> {
+            Ok(())
+        }
+    }
+
+    /// Given two connections attached to one engine, when the engine
+    /// announces a created session, then BOTH connections receive the
+    /// notification verbatim — the announcement is not opt-in per
+    /// connection (a session the client never subscribed to is exactly the
+    /// case it exists for), and the single state-level forwarder serves
+    /// every connection.
+    #[tokio::test]
+    async fn should_forward_the_session_created_announcement_to_every_connection() {
+        // Given one engine and two connections over it
+        let engine = ServerEventEngine::new();
+        let state = pool_event_state(Arc::clone(&engine) as Arc<dyn EngineAdapter>).await;
+        let mut first_rx = state.server_event_rx();
+        engine.wait_subscribed().await;
+        let mut second_rx = state.server_event_rx();
+        assert_eq!(
+            engine.engine_receivers(),
+            1,
+            "one engine receiver serves every connection"
+        );
+
+        // When the engine announces a created session
+        let announcement = JsonRpcNotification::new(
+            "event.session.created",
+            json!({
+                "sessionId": "",
+                "volatile": true,
+                "session": { "id": "session-run-1", "title": "Nightly patrol" },
+            }),
+        );
+        engine.emit(announcement.clone());
+
+        // Then both connections observe it, unmodified
+        for receiver in [&mut first_rx, &mut second_rx] {
+            let received = tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+                .await
+                .expect("the announcement reaches the connection within the timeout")
+                .expect("the broadcast stays open");
+            assert_eq!(received.method, "event.session.created");
+            assert_eq!(received.params, announcement.params);
+        }
+    }
+
+    /// Given a connection whose forwarder was aborted (the disconnect
+    /// teardown `run_connection` performs), when the engine announces a
+    /// created session, then nothing is relayed onto the still-open outbox.
+    #[tokio::test]
+    async fn should_forward_nothing_after_the_connection_teardown_aborts_the_server_event_forwarder() {
+        // Given a connection with a live outbox and its forwarder aborted
+        let (outbox_tx, mut outbox_rx) = mpsc::channel::<Outbound>(16);
+        let (server_tx, _keep_open) = broadcast::channel::<JsonRpcNotification>(16);
+        let mut connection = RpcConnection {
+            state: pool_event_state(Arc::new(NoopEngine)).await,
+            outbox: outbox_tx.clone(),
+            subscriptions: HashMap::new(),
+            reverse_rpc: Arc::new(std::sync::Mutex::new(ReverseRpcState::new(Vec::new()))),
+            terminal_attachments: HashMap::new(),
+            mcp_subscription: None,
+            skill_catalog_subscription: None,
+            server_events_subscription: Some(spawn_server_event_forwarder(
+                outbox_tx,
+                server_tx.subscribe(),
+            )),
+            resync_cooldowns: HashMap::new(),
+        };
+        if let Some(forwarder) = connection.server_events_subscription.take() {
+            forwarder.abort();
+        }
+
+        // When the engine announces a created session
+        let _ = server_tx.send(JsonRpcNotification::new(
+            "event.session.created",
+            json!({ "sessionId": "", "session": { "id": "session-run-1" } }),
+        ));
+
+        // Then no frame escapes — a sanctioned negative window
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), outbox_rx.recv())
+                .await
+                .is_err(),
+            "an aborted server-event forwarder must not relay announcements"
         );
     }
 }

@@ -510,6 +510,12 @@ impl EmbeddedServer {
         // so each injected turn's settle can refresh the session.
         let settle_index = self.session_index();
         let flag_registry = Arc::clone(self.flag_registry());
+        // The run-session announcement's inputs (SDR-127): the pre-framed
+        // server-event sender and the listing-row source bundle. Both are
+        // cheap clones; the spawned scheduler task holds no
+        // `&EmbeddedServer`.
+        let server_events = self.server_events.clone();
+        let view_source = super::SessionViewSource::from_server(self);
         // The goal continuation decision runs after each cron turn's
         // settle — the scheduler task holds no `&EmbeddedServer`, so the
         // chain-state map travels with it as a cloned field Arc.
@@ -531,6 +537,11 @@ impl EmbeddedServer {
         // Arcs the session passes take — the spawner needs no `&self`.
         let run_spawner: Arc<dyn WorkspaceFireExecutor> = Arc::new(WorkspaceRunSpawner {
             registry: Arc::clone(&registry),
+            // The run session's live announcement (SDR-127): the scheduler
+            // task holds no `&EmbeddedServer`, so the two view inputs travel
+            // with it — the pre-framed broadcast and the row-source bundle.
+            server_events: server_events.clone(),
+            view_source: view_source.clone(),
             turn_flows: Arc::clone(&turn_flows),
             activity_trackers: Arc::clone(&activity_trackers),
             steer_buffers: Arc::clone(&steer_buffers),
