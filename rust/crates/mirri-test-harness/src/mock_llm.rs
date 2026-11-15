@@ -1,7 +1,7 @@
 //! Scripted LLM provider for tests: a [`MockLlm`] that plays back a queue of
 //! [`MockResponse`]s instead of calling a real provider, plus a
 //! [`MockLlmFactory`] that hands the shared mock to every agent of a
-//! [`mirri_server::ServerState`] or a [`mirri_embedded::EmbeddedServer`], so
+//! `mirri_server::ServerState` or a `mirri_embedded::EmbeddedServer`, so
 //! the engine loop runs without API keys.
 //!
 //! Responses are consumed in FIFO order, one per `chat()` call. The stop
