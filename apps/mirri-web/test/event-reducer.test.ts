@@ -447,6 +447,40 @@ describe('reduceAppEvent sessions reference stability', () => {
     expect(next.sessions).not.toBe(state.sessions);
     expect(next.sessions.map((s) => s.id)).toEqual(['s2', 's1']);
   });
+
+  it('adopts a created session exactly once when the same announcement arrives twice', () => {
+    // A scheduled run's session is announced by the engine (SDR-127) and may
+    // also be announced again by another creation path's broadcast; the
+    // adoption is keyed by id, so the tree keeps one row.
+    const announcement = {
+      type: 'sessionCreated' as const,
+      session: makeSession('session-run-1', '2026-02-01T00:00:00.000Z'),
+    };
+    const first = reduceAppEvent(
+      { ...createInitialState(), sessions: [] },
+      announcement,
+      { sessionId: '', seq: 0 },
+    );
+    const second = reduceAppEvent(first, announcement, { sessionId: '', seq: 0 });
+    expect(second.sessions.map((s) => s.id)).toEqual(['session-run-1']);
+  });
+
+  it('leaves an already-listed row untouched when the announcement names it', () => {
+    // The client listed the run session a moment ago (a manual refresh), so
+    // the announcement must neither duplicate the row nor re-order it.
+    const listed = makeSession('session-run-1', '2026-01-01T00:00:00.000Z');
+    const state = { ...createInitialState(), sessions: [listed] };
+    const next = reduceAppEvent(
+      state,
+      {
+        type: 'sessionCreated',
+        session: makeSession('session-run-1', '2026-02-01T00:00:00.000Z'),
+      },
+      { sessionId: '', seq: 0 },
+    );
+    expect(next.sessions).toHaveLength(1);
+    expect(next.sessions[0]).toBe(listed);
+  });
 });
 
 describe('reduceAppEvent messageCreated cron origin', () => {

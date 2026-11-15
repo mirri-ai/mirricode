@@ -90,6 +90,32 @@ pub trait EngineAdapter: Send + Sync {
         ))
     }
 
+    /// Subscribe to the engine's **server-scoped** lifecycle events — the
+    /// `event.*` notifications that are not session activity and must reach
+    /// every connected client (a session coming into existence, a
+    /// workspace registry change). The engine projects each event itself
+    /// (`mirri_core::event_projection::project_server_event`), so the
+    /// receiver carries ready-to-frame notifications and the transport never
+    /// re-derives the payload shape.
+    ///
+    /// Unlike [`Self::subscribe_mcp_pool_events`] /
+    /// [`Self::subscribe_skill_catalog_events`], this surface is not
+    /// opt-in per connection: a session-created announcement is the only
+    /// signal that makes a session the client never subscribed to appear in
+    /// its tree, so a wire host forwards it to every connection
+    /// unconditionally.
+    ///
+    /// Engines without a server-event surface answer `MethodNotFound`
+    /// (the trait default); the embedded engine overrides it with its
+    /// server-event broadcast.
+    fn subscribe_server_events(
+        &self,
+    ) -> Result<tokio::sync::broadcast::Receiver<JsonRpcNotification>, EngineError> {
+        Err(EngineError::MethodNotFound(
+            "event.session.created".to_string(),
+        ))
+    }
+
     /// The sessions that currently have an engine turn in flight — any
     /// dispatch origin (user prompts, parked-notification reactivations,
     /// cron). Transport read faces (`session.status` / `session.snapshot` /

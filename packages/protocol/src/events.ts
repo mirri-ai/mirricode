@@ -407,6 +407,26 @@ export interface SessionMetaUpdatedEvent {
   readonly patch?: Record<string, unknown>;
 }
 
+/**
+ * A session came into existence — the live announcement (SDR-127) every
+ * creation path emits: the `session.create` / `session.fork` /
+ * `session.createChild` RPCs and the scheduled-task run spawner.
+ *
+ * Two dialects carry it, and the difference is load-bearing:
+ *
+ * - **The TS v2 daemon** sends the snake_case `Session` row (this package's
+ *   `sessionSchema` — `created_at`, `metadata`, `agent_config`, …).
+ * - **The rust engine** sends its own `SessionView` row, which is camelCase
+ *   (`createdAt`, `cwd`, `lastPrompt`, …) and is byte-identical to a
+ *   `session.list` item. The engine re-exports the listing row verbatim on
+ *   purpose: the row a client adopts live must render exactly like the row a
+ *   list refresh produces.
+ *
+ * A consumer reads the dialect by shape — the REST row always carries
+ * `metadata`, the engine row never does (see the web client's
+ * `toAppSessionFromEvent`). The envelope is server-scoped in both dialects:
+ * `sessionId` is the empty string and the frame carries no per-session seq.
+ */
 export interface SessionCreatedEvent {
   readonly type: 'event.session.created';
   readonly session: Session;

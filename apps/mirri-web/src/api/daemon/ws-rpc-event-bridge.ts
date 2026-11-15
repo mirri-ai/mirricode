@@ -40,12 +40,19 @@ export function routeRpcEventToAppEvents(
   projector: AgentProjector,
   event: RpcEvent,
 ): AppEvent[] {
-  // A sessionless frame is unroutable EXCEPT the server-scoped workspace
-  // lifecycle events (`event.workspace.*`): they carry the synthesized
-  // empty session id — the W2 unseal routes them through the same
-  // toAppEvent path the session-scoped protocol events take, so the
-  // multi-client workspace mirror reaches applyWorkspaceEvent.
-  if (event.sessionId === undefined && !event.type.startsWith('event.workspace.')) return [];
+  // A sessionless frame is unroutable EXCEPT the server-scoped lifecycle
+  // events (`event.session.created`, `event.workspace.*`): they carry the
+  // synthesized empty session id — the W2 unseal routes them through the
+  // same toAppEvent path the session-scoped protocol events take, so the
+  // multi-client adoption (a session the client never subscribed to) and
+  // the workspace mirror both reach their consumers.
+  if (
+    event.sessionId === undefined &&
+    !event.type.startsWith('event.workspace.') &&
+    event.type !== 'event.session.created'
+  ) {
+    return [];
+  }
   const sessionId = event.sessionId ?? '';
   const decision = classifyFrame(event.type, event.payload);
   if (decision.route === 'ignore') return [];

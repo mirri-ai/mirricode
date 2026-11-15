@@ -311,6 +311,11 @@ export interface UseWorkspaceStateDeps {
   ) => void;
   nextOptimisticMsgId: () => string;
   getEventConn: () => MirriEventConnection | null;
+  /** Bind the shared event connection (the facade's `connectEventsIfNeeded`).
+   *  Called at boot, inside `load` — a client with no session open must still
+   *  receive server-side session creations (`event.session.created`), or the
+   *  tree only learns about them on the next manual refresh. */
+  bindEvents: () => void;
   syncSessionFromSnapshot: (sessionId: string) => Promise<SyncSessionResult>;
   reopenSession: (sessionId: string) => Promise<SyncSessionResult>;
   hasLoadedMessages: (sessionId: string) => boolean;
@@ -1262,6 +1267,11 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       if (api.connectTransport !== undefined) {
         await api.connectTransport().catch(() => undefined);
       }
+      // Bind the event pipeline at boot (not at the first session snapshot):
+      // an unbound connection dispatches every server event into the void,
+      // so a run session created while no session is open would never reach
+      // the tree.
+      deps.bindEvents();
       // /meta is a PUBLIC route, so it can (and should) be read before the
       // auth gate: its `dangerousBypassAuth` tells us whether the engine even
       // has an auth gate. Fetch it first and surface its state effects once; the

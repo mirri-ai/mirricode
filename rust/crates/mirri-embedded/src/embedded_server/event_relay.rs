@@ -16,8 +16,7 @@ use chrono::Utc;
 use mirri_core::{EventBus, LiveEventCallback, ServerEvent, SessionEvent, event_projection};
 use mirri_transport::frame::JsonRpcNotification;
 
-use super::EmbeddedServer;
-
+use super::{EmbeddedServer, SessionScope, SessionView, SessionViewSource};
 /// Build the `event.<type>` notification for one session event through the
 /// shared projection (`mirri_core::event_projection::event_notification`),
 /// or `None` when the event has no wire projection
@@ -63,21 +62,76 @@ pub(super) fn live_chunk_callback(
     mirri_core::session::live_relay::live_event_callback(event_bus, agent_id, session_id, turn_id)
 }
 
+/// Project one server-scoped event and push it onto the broadcast — the ONE
+/// projection point for both emitters: [`EmbeddedServer::emit_server_event`]
+/// (which holds `&self`) and the captured-sender tasks that hold no
+/// `&EmbeddedServer` (the cron run spawner's fire-and-forget task). A send
+/// failure only means "no subscribers" — never fatal.
+pub(super) fn send_server_event(
+    sender: &tokio::sync::broadcast::Sender<JsonRpcNotification>,
+    event: ServerEvent,
+) {
+    let projected = event_projection::project_server_event(&event);
+    let _ = sender.send(JsonRpcNotification {
+        method: projected.method,
+        params: projected.params,
+    });
+}
+
 impl EmbeddedServer {
     // --- event plumbing ---------------------------------------------------
 
-    /// Broadcast one server-scoped lifecycle event (workspace
-    /// create/touch/rename/delete) to every event subscriber. The
-    /// per-subscriber forwarders installed by [`EngineAdapter::subscribe_events`]
-    /// translate the broadcast into `event.workspace.*` notifications on the
-    /// subscriber's channel; direct broadcast consumers (the serve wire's
-    /// server-level event surface) subscribe to the broadcast itself.
+    /// Broadcast one server-scoped lifecycle event (a session or workspace
+    /// lifecycle change) to every event subscriber. The per-subscriber
+    /// forwarders installed by [`EngineAdapter::subscribe_events`] relay the
+    /// pre-framed notification onto the subscriber's channel; direct
+    /// broadcast consumers (the serve wire's connection-level surface, via
+    /// [`EngineAdapter::subscribe_server_events`]) read the same frames.
     ///
-    /// Callers emit AFTER the registry mutation persisted — an event must
-    /// never announce a change the engine did not commit.
+    /// Callers emit AFTER the mutation landed — an event must never announce
+    /// a change the engine did not commit.
     pub(super) fn emit_server_event(&self, event: ServerEvent) {
-        // A send failure only means "no subscribers" — never fatal.
-        let _ = self.server_events.send(event);
+        send_server_event(&self.server_events, event);
+    }
+
+    /// Announce a freshly created session on the server-scoped stream —
+    /// **the single creation seam** every creation path calls (`session.create`,
+    /// `session.fork`, `session.createChild`, and the scheduled-task run
+    /// spawner), so a connected client adopts the row live instead of
+    /// discovering it on its next list refresh (SDR-127's real-time face).
+    ///
+    /// The payload is [`Self::session_created_row`] — the same LIST ROW
+    /// `session.list` composes, so the adopted row and a refreshed row
+    /// cannot diverge. Emitted AFTER the session exists and its index row
+    /// landed (the announcement must never outrun the state it describes);
+    /// a resume deliberately does NOT go through here — re-announcing would
+    /// re-adopt and re-order a row the client already holds.
+    ///
+    /// The value is a plain `serde_json::Value` because the row crosses into
+    /// `mirri-core`'s projection, which frames but never interprets it.
+    pub(super) fn announce_session_created(&self, row: &SessionView) {
+        let Ok(session) = serde_json::to_value(row) else {
+            tracing::warn!(
+                session_id = %row.id,
+                "session.created announcement dropped: the row does not serialize"
+            );
+            return;
+        };
+        self.emit_server_event(ServerEvent::SessionCreated { session });
+    }
+
+    /// The LIST ROW of a live session — the one row constructor shared by
+    /// `session.list` and the created announcement. `last_prompt` comes from
+    /// the index row (the live scope carries none, SDR-004), exactly as the
+    /// listing's merged entry supplies it.
+    pub(super) async fn session_created_row(&self, session: &SessionScope) -> SessionView {
+        let last_prompt = self
+            .session_index()
+            .and_then(|index| index.get_session(session.id().as_str()))
+            .and_then(|row| row.last_prompt.clone());
+        SessionViewSource::from_server(self)
+            .listing_row_of(session, last_prompt)
+            .await
     }
 
     /// Start relaying one session's event bus to every event subscriber.

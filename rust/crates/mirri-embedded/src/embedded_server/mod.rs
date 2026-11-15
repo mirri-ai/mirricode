@@ -64,6 +64,13 @@
 //! Engine turns additionally surface
 //! [`SessionEvent::AgentMessageChunk`] events for every incremental
 //! assistant `TextDelta`, so UIs can stream replies token-by-token.
+//!
+//! Server-scoped lifecycle events ride the same subscriber stream without a
+//! session envelope: `event.session.created` (a session came into existence —
+//! the live session-tree announcement every creation path emits) and
+//! `event.workspace.*`. They are projected once at emit time and also
+//! exposed pre-framed through [`EngineAdapter::subscribe_server_events`], so a
+//! wire host can forward them to every connection.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -77,11 +84,11 @@ use tokio::sync::mpsc;
 
 use mirri_core::{
     AgentId, AgentScope, CancelToken, ContentPart, EngineError as CoreEngineError, Goal,
-    GoalManager, ModelCatalog, ProfileManager, ReverseRpcCallback, ServerConfig, ServerEvent,
+    GoalManager, ModelCatalog, ProfileManager, ReverseRpcCallback, ServerConfig,
     SessionActivityState, SessionInfo, SessionManager, SessionPendingInteraction, SessionScope,
     SessionTurnOutcome, SteerBuffer, TokenUsage, TurnEndResult, TurnFlow, TurnFlowConfig,
     TurnStopReason, WorkspaceId, activity_view::AgentActivityState, compaction::FullCompaction,
-    event_projection, permission::PermissionRule, session::agent_status::AgentStatusPublisher,
+    permission::PermissionRule, session::agent_status::AgentStatusPublisher,
     turn_flow::ActivityTracker,
 };
 use mirri_os::SyncFs as _;
@@ -797,102 +804,154 @@ impl From<&SessionInfo> for SessionView {
     }
 }
 
+/// The dependency bundle the wire-view constructor reads: every input is a
+/// cloned `Arc`/handle off the server, so a task that does **not** hold
+/// `&EmbeddedServer` (the cron run spawner's fire-and-forget task) can still
+/// build the exact row the listing renders — the single row constructor
+/// (`SessionViewSource::view_of`), never a second copy of the shape.
+#[derive(Clone)]
+pub(super) struct SessionViewSource {
+    registry: Arc<WorkspaceRegistry>,
+    in_flight_turns: InFlightTurnsMap,
+    relay_seq_watermarks: Arc<std::sync::Mutex<HashMap<String, u64>>>,
+    session_index: Option<Arc<mirri_session_index::SessionIndex>>,
+    /// The bound workspace root — the `cwd` fallback for a session whose
+    /// metadata carries no `work_dir` (predates W4).
+    fallback_cwd: std::path::PathBuf,
+}
+
+impl SessionViewSource {
+    /// Snapshot the view inputs off the owning server (cheap Arc clones).
+    pub(super) fn from_server(server: &EmbeddedServer) -> Self {
+        Self {
+            registry: Arc::clone(&server.registry),
+            in_flight_turns: Arc::clone(&server.in_flight_turns),
+            relay_seq_watermarks: Arc::clone(&server.relay_seq_watermarks),
+            session_index: server.session_index(),
+            fallback_cwd: server.manager.workspace().cwd().to_path_buf(),
+        }
+    }
+}
+
 /// Build the wire view of a live session scope: the static metadata plus the
 /// runtime fields — busy from the in-flight turn registry, model and
 /// messageCount from the first agent, usage summed across every agent
 /// (SDR-002), and lastSeq from the session's durable relay watermark.
 async fn build_session_view(server: &EmbeddedServer, session: &SessionScope) -> SessionView {
-    let metadata = session.metadata().await;
-    let session_id = session.id();
-    let extras = session.runtime_extras().await;
-    let session_prefix = format!("{}:", session_id.as_str());
-    let in_flight_busy = {
-        let turns = server
-            .in_flight_turns
+    SessionViewSource::from_server(server).view_of(session).await
+}
+
+impl SessionViewSource {
+    /// The live session's wire view — the exact shape every session-facing
+    /// response carries (metadata + runtime fields + the index-row pin
+    /// overlay). Callers that render a LIST row use
+    /// [`Self::listing_row_of`], which adds the listing's own `last_prompt`
+    /// composition on top.
+    pub(super) async fn view_of(&self, session: &SessionScope) -> SessionView {
+        let metadata = session.metadata().await;
+        let session_id = session.id();
+        let extras = session.runtime_extras().await;
+        let session_prefix = format!("{}:", session_id.as_str());
+        let in_flight_busy = {
+            let turns = self
+                .in_flight_turns
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            turns.keys().any(|key| key.starts_with(&session_prefix))
+        };
+        let activity = match session_routing::resolve_artifacts_via(&self.registry, session_id.as_str()) {
+            Ok(artifacts) => artifacts.activity_shadow.snapshot_value(),
+            Err(_) => SessionActivityState::default(),
+        };
+        // `busy` is the aggregate "any work is happening" relay: the in-flight
+        // turn registry (agent turns) OR the activity shadow (background tasks
+        // light busy through the fold). `main_turn_active` is the shadow's
+        // authoritative main-agent LED alone — the in-flight registry keys don't
+        // distinguish main from subagent turns, but fire-mode main turns publish
+        // `TurnStarted{agent_id:"main"}` which the shadow folds.
+        let busy = activity.busy || in_flight_busy;
+        let last_seq = self
+            .relay_seq_watermarks
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        turns.keys().any(|key| key.starts_with(&session_prefix))
-    };
-    let activity = match server.resolve_session_artifacts(session_id.as_str()) {
-        Ok(artifacts) => artifacts.activity_shadow.snapshot_value(),
-        Err(_) => SessionActivityState::default(),
-    };
-    // `busy` is the aggregate "any work is happening" relay: the in-flight
-    // turn registry (agent turns) OR the activity shadow (background tasks
-    // light busy through the fold). `main_turn_active` is the shadow's
-    // authoritative main-agent LED alone — the in-flight registry keys don't
-    // distinguish main from subagent turns, but fire-mode main turns publish
-    // `TurnStarted{agent_id:"main"}` which the shadow folds.
-    let busy = activity.busy || in_flight_busy;
-    let last_seq = server
-        .relay_seq_watermarks
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(session_id.as_str())
-        .copied()
-        .unwrap_or(0);
-    let mut view = SessionView {
-        id: session_id.as_str().to_string(),
-        title: metadata.title,
-        created_at: metadata.created_at,
-        updated_at: metadata.updated_at,
-        agent_count: session.list_agents().await.len(),
-        tags: metadata.tags.into_iter().collect(),
-        status: Some("running".to_string()),
-        busy,
-        main_turn_active: activity.main_turn_active,
-        pending_interaction: pending_kind(&activity.pending_interaction),
-        last_turn_reason: activity.last_turn_reason.as_ref().map(outcome_str),
-        model: extras.model,
-        usage: SessionUsageView {
-            first_call: extras.first_call.as_ref().map(SessionFirstCallView::from),
-            ..SessionUsageView::from(extras.usage)
-        },
-        message_count: extras.message_count,
-        last_seq,
-        archived: metadata.archived,
-        // The session's OWN workspace root (W4): `work_dir` is backfilled at
-        // create from the owning (routed) manager's cwd, so a session of a
-        // non-default workspace reports its own root — never the process
-        // default root. The fallback keeps the historical value for sessions
-        // whose state predates the field.
-        cwd: Some(metadata.work_dir.clone().unwrap_or_else(|| {
-            server
-                .manager
-                .workspace()
-                .cwd()
-                .to_string_lossy()
-                .into_owned()
-        })),
-        // The live scope carries no last_prompt — the listing overlays the
-        // index row's value onto the view (W5).
-        last_prompt: None,
-        // The user-interaction recency key (SDR-014): the live scope's
-        // metadata is the authoritative source.
-        last_used_at: metadata.last_used_at,
-        // A live session is never compressed (ADR-004: the write path
-        // forces the plain shape) — the retention fields stay at rest.
-        compressed: false,
-        compressed_at: None,
-        // The pin trio post-fills from the metadata ROW (SDR-016/017:
-        // pins ride the store port; the live scope's memory never sees
-        // them — the last_prompt overlay precedent).
-        pinned: false,
-        pinned_at: None,
-        pin_color: None,
-    };
-    // The row overlay: the index row (when this engine has one) is the
-    // pin trio's home. `unwrap_or_default` keeps a no-index engine's view
-    // at the resting values above.
-    if let Some(row) = server
-        .session_index()
-        .and_then(|index| index.get_session(session_id.as_str()))
-    {
-        view.pinned = row.pinned;
-        view.pinned_at = row.pinned_at.map(stamp_rfc3339);
-        view.pin_color = row.pin_color;
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session_id.as_str())
+            .copied()
+            .unwrap_or(0);
+        let mut view = SessionView {
+            id: session_id.as_str().to_string(),
+            title: metadata.title,
+            created_at: metadata.created_at,
+            updated_at: metadata.updated_at,
+            agent_count: session.list_agents().await.len(),
+            tags: metadata.tags.into_iter().collect(),
+            status: Some("running".to_string()),
+            busy,
+            main_turn_active: activity.main_turn_active,
+            pending_interaction: pending_kind(&activity.pending_interaction),
+            last_turn_reason: activity.last_turn_reason.as_ref().map(outcome_str),
+            model: extras.model,
+            usage: SessionUsageView {
+                first_call: extras.first_call.as_ref().map(SessionFirstCallView::from),
+                ..SessionUsageView::from(extras.usage)
+            },
+            message_count: extras.message_count,
+            last_seq,
+            archived: metadata.archived,
+            // The session's OWN workspace root (W4): `work_dir` is backfilled at
+            // create from the owning (routed) manager's cwd, so a session of a
+            // non-default workspace reports its own root — never the process
+            // default root. The fallback keeps the historical value for sessions
+            // whose state predates the field.
+            cwd: Some(metadata.work_dir.clone().unwrap_or_else(|| {
+                self.fallback_cwd.to_string_lossy().into_owned()
+            })),
+            // The live scope carries no last_prompt — the listing overlays the
+            // index row's value onto the view (W5).
+            last_prompt: None,
+            // The user-interaction recency key (SDR-014): the live scope's
+            // metadata is the authoritative source.
+            last_used_at: metadata.last_used_at,
+            // A live session is never compressed (ADR-004: the write path
+            // forces the plain shape) — the retention fields stay at rest.
+            compressed: false,
+            compressed_at: None,
+            // The pin trio post-fills from the metadata ROW (SDR-016/017:
+            // pins ride the store port; the live scope's memory never sees
+            // them — the last_prompt overlay precedent).
+            pinned: false,
+            pinned_at: None,
+            pin_color: None,
+        };
+        // The row overlay: the index row (when this engine has one) is the
+        // pin trio's home. `unwrap_or_default` keeps a no-index engine's view
+        // at the resting values above.
+        if let Some(row) = self
+            .session_index
+            .as_ref()
+            .and_then(|index| index.get_session(session_id.as_str()))
+        {
+            view.pinned = row.pinned;
+            view.pinned_at = row.pinned_at.map(stamp_rfc3339);
+            view.pin_color = row.pin_color;
+        }
+        view
     }
-    view
+
+    /// The LIST ROW of a live session: [`Self::view_of`] plus the listing's
+    /// own overlay — `last_prompt` (the live scope carries none; the merged
+    /// entry supplies the index row's value, SDR-004) and the pin trio. This
+    /// is the ONE row constructor `session.list` and the
+    /// `event.session.created` announcement share, so a session the tree
+    /// adopts live is row-identical to the one a refresh produces.
+    pub(super) async fn listing_row_of(
+        &self,
+        session: &SessionScope,
+        last_prompt: Option<String>,
+    ) -> SessionView {
+        let mut view = self.view_of(session).await;
+        view.last_prompt = last_prompt;
+        view
+    }
 }
 
 /// RFC 3339 with second precision (the retention stamps' wire form —
@@ -1224,13 +1283,18 @@ pub struct EmbeddedServer {
     /// subscriber's channel open forever — the subscriber's `recv()` must
     /// resolve `None` once the engine is disposed.
     subscriber_forwarders: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
-    /// The server-scoped lifecycle event broadcast — workspace
-    /// create/touch/rename/delete ([`ServerEvent`]). Every `subscribe_events`
-    /// call installs a forwarder from this broadcast to the caller's channel,
-    /// so the workspace lifecycle events ride the single `EngineAdapter`
-    /// event stream (contract 3 — the vocabulary's consumer sync), never the
-    /// per-session relay/seq machinery.
-    server_events: tokio::sync::broadcast::Sender<ServerEvent>,
+    /// The server-scoped lifecycle event broadcast — a session coming into
+    /// existence (`SessionCreated`, the SDR-127 live-visibility face) and
+    /// workspace create/touch/rename/delete ([`ServerEvent`]). Every
+    /// `subscribe_events` call installs a forwarder from this broadcast to
+    /// the caller's channel, so the server-scoped events ride the single
+    /// `EngineAdapter` event stream (contract 3 — the vocabulary's consumer
+    /// sync), never the per-session relay/seq machinery. The broadcast
+    /// carries **already-projected** notifications (one projection per
+    /// emit), so a second consumer — the serve wire's
+    /// [`EngineAdapter::subscribe_server_events`] face — reads the same
+    /// frames without re-deriving the payload shape.
+    server_events: tokio::sync::broadcast::Sender<JsonRpcNotification>,
     /// The instance epoch stamped on every durable event notification the
     /// relays forward — one UUID minted per [`EmbeddedServer`]
     /// construction, mirroring the server's instance-id semantics: a change
@@ -5994,23 +6058,20 @@ impl EngineAdapter for EmbeddedServer {
         let (tx, rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
         // Server-scoped lifecycle events ride the same channel as the
         // session relays (contract 3 — one event stream per subscriber):
-        // a per-subscriber forwarder translates the server-event broadcast
-        // into notifications on this subscriber's channel. The forwarder is
-        // spawned here — `subscribe_events` is async, so a Tokio runtime is
-        // guaranteed to exist. A lagging subscriber is lagged (the
-        // broadcast's bounded-ring semantics), never blocking the emitter.
+        // a per-subscriber forwarder relays the server-event broadcast onto
+        // this subscriber's channel. The broadcast already carries the
+        // projected notification (see `emit_server_event`), so no
+        // re-projection happens here. The forwarder is spawned here —
+        // `subscribe_events` is async, so a Tokio runtime is guaranteed to
+        // exist. A lagging subscriber is lagged (the broadcast's bounded-ring
+        // semantics), never blocking the emitter.
         let mut server_rx = self.server_events.subscribe();
         let server_tx = tx.clone();
         let server_forwarder = tokio::spawn(async move {
             loop {
                 match server_rx.recv().await {
-                    Ok(event) => {
-                        let notification = event_projection::project_server_event(&event);
-                        let framed = JsonRpcNotification {
-                            method: notification.method,
-                            params: notification.params,
-                        };
-                        if server_tx.send(framed).await.is_err() {
+                    Ok(notification) => {
+                        if server_tx.send(notification).await.is_err() {
                             break; // the subscriber's channel closed
                         }
                     }
@@ -6105,6 +6166,18 @@ impl EngineAdapter for EmbeddedServer {
             *cb = Some(callback);
         }
         Ok(())
+    }
+
+    /// The server-scoped lifecycle surface (SDR-127's live face): the
+    /// pre-framed `event.session.created` / `event.workspace.*` broadcast.
+    /// A wire host forwards it to every connection so a session the client
+    /// never subscribed to (a scheduled task's run session) still appears in
+    /// its tree without a list refresh. The notifications arrive projected
+    /// (`emit_server_event` projects once), so the host frames them verbatim.
+    fn subscribe_server_events(
+        &self,
+    ) -> Result<tokio::sync::broadcast::Receiver<JsonRpcNotification>, EngineError> {
+        Ok(self.server_events.subscribe())
     }
 
     /// The sessions with an engine turn in flight right now — the union

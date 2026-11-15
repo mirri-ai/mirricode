@@ -156,6 +156,130 @@ export function mergeSnapshotSession(
   };
 }
 
+/**
+ * The engine's `SessionView` row as it arrives on the wire — the camelCase
+ * shape `session.list` items carry, and the shape an `event.session.created`
+ * announcement carries verbatim (the engine re-exports its own listing row).
+ *
+ * Structural (not the transport's `RpcSessionView` type) so the mapper lives
+ * here, next to the REST row mapper, without the transport importing back
+ * into this module. Every optional field is optional for the same reason it
+ * is on the wire: an older engine omits what it does not know.
+ */
+export interface EngineSessionView {
+  id: string;
+  title?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  lastUsedAt?: string | null;
+  busy?: boolean;
+  mainTurnActive?: boolean;
+  pendingInteraction?: 'none' | 'approval' | 'question';
+  lastTurnReason?: 'completed' | 'cancelled' | 'failed' | 'stalled' | 'interrupted';
+  archived?: boolean;
+  pinned?: boolean;
+  pinnedAt?: string | null;
+  pinColor?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray' | null;
+  compressed?: boolean;
+  lastPrompt?: string | null;
+  cwd?: string | null;
+  model?: string | null;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+    firstCall?: {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheCreationTokens: number;
+    };
+  } | null;
+  messageCount?: number;
+  lastSeq?: number;
+}
+
+/**
+ * Map the engine's `SessionView` onto the app session — **the** row mapper for
+ * every engine-sourced session row: `session.list` items and the
+ * `event.session.created` announcement both go through it, so a row a client
+ * adopts live renders exactly like the row a refresh would have produced.
+ *
+ * Fields the engine's view does not carry get honest defaults (the sidebar's
+ * documented fallbacks), never fabricated values: no cost/turn counters (the
+ * view has none), and `workspaceId` stays absent — the engine's rows identify
+ * their workspace by `cwd`, which is the same key the refreshed row uses.
+ */
+export function toAppSessionFromEngineView(view: EngineSessionView): AppSession {
+  const usage = view.usage ?? {};
+  const firstCall = usage.firstCall;
+  return {
+    id: view.id,
+    title: view.title ?? '',
+    createdAt: view.createdAt ?? '',
+    updatedAt: view.updatedAt ?? '',
+    // SDR-014: the wire null (legacy/closed rows) degrades to undefined so
+    // the reader's `lastUsedAt ?? updatedAt` fallback applies.
+    lastUsedAt: view.lastUsedAt ?? undefined,
+    busy: view.busy === true,
+    mainTurnActive: view.mainTurnActive === true,
+    pendingInteraction: view.pendingInteraction,
+    lastTurnReason: view.lastTurnReason,
+    archived: view.archived === true,
+    pinned: view.pinned === true,
+    pinnedAt: view.pinnedAt ?? undefined,
+    pinColor: view.pinColor ?? undefined,
+    compressed: view.compressed === true,
+    lastPrompt: view.lastPrompt ?? undefined,
+    cwd: view.cwd ?? '',
+    model: view.model ?? '',
+    usage: {
+      inputTokens: usage.inputTokens ?? 0,
+      outputTokens: usage.outputTokens ?? 0,
+      cacheReadTokens: usage.cacheReadTokens ?? 0,
+      cacheCreationTokens: usage.cacheCreationTokens ?? 0,
+      totalCostUsd: 0,
+      contextTokens: 0,
+      contextLimit: 0,
+      turnCount: 0,
+      firstCall: firstCall
+        ? {
+            inputTokens: firstCall.inputTokens,
+            outputTokens: firstCall.outputTokens,
+            cacheReadTokens: firstCall.cacheReadTokens,
+            cacheCreationTokens: firstCall.cacheCreationTokens,
+          }
+        : undefined,
+    },
+    messageCount: view.messageCount ?? 0,
+    lastSeq: view.lastSeq ?? 0,
+  };
+}
+
+/**
+ * Map `event.session.created`'s payload session onto the app row.
+ *
+ * Two dialects reach this path: the engine's camelCase `SessionView` (a live
+ * announcement from the rust core — the SDR-127 surface) and the REST
+ * daemon's snake_case `WireSession` (the older v1/v2 backend). Discriminating
+ * on the REST-only `metadata` object is unambiguous: the engine's view never
+ * carries it, and every REST row does. Picking the wrong mapper is not a
+ * cosmetic difference — the REST mapper throws on a camelCase row, and the
+ * event bridge drops the whole frame, so the session would silently never
+ * appear in the tree.
+ */
+export function toAppSessionFromEvent(payload: unknown): AppSession {
+  const session = (payload ?? {}) as Record<string, unknown>;
+  const engineShaped =
+    typeof session['id'] === 'string' &&
+    (session['metadata'] === undefined || typeof session['metadata'] !== 'object');
+  if (engineShaped) {
+    return toAppSessionFromEngineView(session as unknown as EngineSessionView);
+  }
+  return toAppSession(session as unknown as WireSession);
+}
+
 export function toAppSession(wire: WireSession): AppSession {
   return {
     id: wire.id,
@@ -618,7 +742,11 @@ export function toAppEvent(wire: WireEvent): AppEvent {
   switch ((wire as { type: string }).type) {
     // ----- Session lifecycle -----
     case 'event.session.created':
-      return { type: 'sessionCreated', session: toAppSession(w.payload.session) };
+      // Two dialects: the engine's camelCase `SessionView` (the live
+      // announcement every creation path emits — SDR-127) and the REST
+      // daemon's snake_case row. The dialect-tolerant reader lives in
+      // `toAppSessionFromEvent`.
+      return { type: 'sessionCreated', session: toAppSessionFromEvent(w.payload.session) };
 
     case 'event.session.updated':
       return {

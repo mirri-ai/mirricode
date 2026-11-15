@@ -70,6 +70,18 @@ pub const RUN_SUMMARY_MAX_CHARS: usize = 500;
 #[derive(Clone)]
 pub(crate) struct WorkspaceRunSpawner {
     pub(crate) registry: Arc<WorkspaceRegistry>,
+    /// The server-scoped event broadcast — a run's execution session is
+    /// announced on it the moment it exists (SDR-127's live face). Travels
+    /// as the raw sender (the scheduler task holds no `&EmbeddedServer`), so
+    /// the announcement rides the same pre-framed channel every subscriber
+    /// reads.
+    pub(crate) server_events: tokio::sync::broadcast::Sender<
+        mirri_transport::frame::JsonRpcNotification,
+    >,
+    /// The wire-view inputs the listing row is built from (the ONE row
+    /// constructor `session.list` shares) — the spawned task holds no
+    /// `&EmbeddedServer`, so the source travels as a cloned bundle.
+    pub(crate) view_source: super::SessionViewSource,
     pub(crate) turn_flows: TurnFlowMap,
     pub(crate) activity_trackers: ActivityTrackerMap,
     pub(crate) steer_buffers: SteerBufferMap,
@@ -116,6 +128,8 @@ impl EmbeddedServer {
     pub(super) fn workspace_run_spawner(&self) -> WorkspaceRunSpawner {
         WorkspaceRunSpawner {
             registry: Arc::clone(&self.registry),
+            server_events: self.server_events.clone(),
+            view_source: super::SessionViewSource::from_server(self),
             turn_flows: Arc::clone(&self.turn_flows),
             activity_trackers: Arc::clone(&self.activity_trackers),
             steer_buffers: Arc::clone(&self.steer_buffers),
@@ -193,6 +207,35 @@ impl QueueDrainExecutor {
 }
 
 impl WorkspaceRunSpawner {
+    /// Announce a run's freshly created execution session on the
+    /// server-scoped stream (SDR-127's live face) — the SAME listing row
+    /// `session.list` composes for the session, so a client that adopts the
+    /// row live renders exactly what a refresh would have produced.
+    async fn announce_run_session(&self, session: &mirri_core::SessionScope) {
+        // `last_prompt` lives on the index row (the live scope carries
+        // none): the create wrote the row through the manager's metadata
+        // store, so the value read here is the one the listing reports.
+        let last_prompt = self
+            .settle_index
+            .as_ref()
+            .and_then(|index| index.get_session(session.id().as_str()))
+            .and_then(|row| row.last_prompt.clone());
+        let row = self.view_source.listing_row_of(session, last_prompt).await;
+        let Ok(session_view) = serde_json::to_value(&row) else {
+            tracing::warn!(
+                session_id = %row.id,
+                "cron run session.created announcement dropped: the row does not serialize"
+            );
+            return;
+        };
+        super::event_relay::send_server_event(
+            &self.server_events,
+            mirri_core::ServerEvent::SessionCreated {
+                session: session_view,
+            },
+        );
+    }
+
     /// The §8 pipeline. Fire-and-forget (R1): records `Running` (or the
     /// concurrency skip) and returns; the turn runs on its own task.
     /// `queued_run_id` (Some): the drain side of the Queue posture — the
@@ -440,6 +483,14 @@ impl WorkspaceRunSpawner {
         // append (a duplicate Running would break the concurrency check).
         cron.set_run_session_ref(&task_id, &opened_run_id, &session_id)
             .await;
+
+        // The live-visible announcement (SDR-127): the run's execution
+        // session exists and its subject is stamped, so every connected
+        // client adopts the row NOW — the session tree no longer waits for a
+        // manual refresh to show a scheduled run that has already started.
+        // The row is the LISTING row (`View of` + the row's last_prompt), so
+        // the adopted row and a later refresh's row are identical.
+        self.announce_run_session(&session).await;
 
         // 3-4. The injection + finale travel on their own task (or, on the
         // test seam's `spawn_and_settle`, inline). The session Arc travels

@@ -125,6 +125,7 @@ import type { RpcEvent } from './json-rpc-client';
 import {
   isPlaceholderSessionUsage,
   toAppMessageContent,
+  toAppSessionFromEngineView,
   toAppTask as toAppTaskFromWire,
 } from './mappers';
 import { getCredential, markAuthRequired } from './serverAuth';
@@ -1271,12 +1272,15 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     // classified away here (see ws-rpc-event-bridge).
     this.unsubscribeAnyEvent = this.client.onAnyEvent((event: RpcEvent) => {
       // W2 unseal: session-scoped events keep the last-session tracking;
-      // the server-scoped `event.workspace.*` lifecycle frames carry the
-      // synthesized empty session id (or none at all) and must NOT clobber
-      // the last-session pointer the approval/question ask routing reads.
+      // the server-scoped `event.session.created` / `event.workspace.*`
+      // lifecycle frames carry the synthesized empty session id (or none at
+      // all) and must NOT clobber the last-session pointer the
+      // approval/question ask routing reads.
       if (event.sessionId === undefined) {
         const isServerScoped =
-          event.type.startsWith('event.workspace.') || event.type === 'skill.catalogChanged';
+          event.type.startsWith('event.workspace.') ||
+          event.type === 'event.session.created' ||
+          event.type === 'skill.catalogChanged';
         if (!isServerScoped) return;
       } else if (event.sessionId !== '') {
         this.lastSessionId = event.sessionId;
@@ -3806,62 +3810,14 @@ export class WsRpcApi implements Partial<MirriWebApi> {
 // Mapping helpers
 // ---------------------------------------------------------------------------
 
-/** Map the v2 SessionView to the v1 AppSession; fields the v2 view does not
- *  expose get neutral defaults (documented per field where it matters). */
+/** Map the v2 SessionView to the v1 AppSession. The mapper itself lives in
+ *  `mappers.ts` (`toAppSessionFromEngineView`) and is shared with the
+ *  `event.session.created` announcement, so a row adopted live and a row
+ *  produced by a `session.list` refresh are shaped by one function — they
+ *  cannot drift. Fields the v2 view does not expose get neutral defaults
+ *  (documented per field where it matters). */
 function toAppSession(view: RpcSessionView): AppSession {
-  const usage = view.usage ?? {};
-  return {
-    id: view.id,
-    title: view.title ?? '',
-    createdAt: view.createdAt ?? '',
-    updatedAt: view.updatedAt ?? '',
-    // The P7c runtime fields: the engine's SessionView reports busy, the
-    // first agent's model, the four-bucket usage, and the context message
-    // count; older engine builds (or static-info-derived views) answer
-    // neutral values, which map onto the same defaults as before.
-    busy: view.busy === true,
-    archived: view.archived === true,
-    // SDR-016/017 pin trio — defensive against older engines.
-    pinned: view.pinned === true,
-    pinnedAt: view.pinnedAt ?? undefined,
-    pinColor: view.pinColor ?? undefined,
-    // The retention compression verdict — the sidebar "已压缩" badge and the
-    // fork-entry gate's input (older engine builds answer false).
-    compressed: view.compressed === true,
-    // The work-facts tuple (US4.4/SDR-013): the main conversation's turn
-    // state — feeds the sidebar's "running" indicator after a refresh
-    // (isMainTurnActive's listed fallback) and the action-required badge.
-    mainTurnActive: view.mainTurnActive === true,
-    pendingInteraction: view.pendingInteraction,
-    lastTurnReason: view.lastTurnReason,
-    lastPrompt: view.lastPrompt ?? undefined,
-    model: view.model ?? '',
-    cwd: view.cwd ?? '',
-    usage: {
-      inputTokens: usage.inputTokens ?? 0,
-      outputTokens: usage.outputTokens ?? 0,
-      cacheReadTokens: usage.cacheReadTokens ?? 0,
-      cacheCreationTokens: usage.cacheCreationTokens ?? 0,
-      totalCostUsd: 0,
-      contextTokens: 0,
-      contextLimit: 0,
-      turnCount: 0,
-      firstCall: usage.firstCall
-        ? {
-            inputTokens: usage.firstCall.inputTokens,
-            outputTokens: usage.firstCall.outputTokens,
-            cacheReadTokens: usage.firstCall.cacheReadTokens,
-            cacheCreationTokens: usage.firstCall.cacheCreationTokens,
-          }
-        : undefined,
-    },
-    messageCount: view.messageCount ?? 0,
-    lastSeq: view.lastSeq ?? 0,
-    // SDR-014: the recency sort key. The wire null (legacy/closed rows)
-    // degrades to undefined so the reader's lastUsedAt ?? updatedAt
-    // fallback applies.
-    lastUsedAt: view.lastUsedAt ?? undefined,
-  };
+  return toAppSessionFromEngineView(view);
 }
 
 /** TEST-ONLY entry point over the internal `toAppSession` (the v2 wire
