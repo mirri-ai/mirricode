@@ -52,6 +52,10 @@ export interface Session {
    *  sidebar row's "已压缩" badge input; copy/fork entries are disabled
    *  until the archive is restored. */
   compressed?: boolean;
+  /** SDR-016/017: pin trio — drives the search dialog's quick pin/unpin
+   *  toggle (the row's pin button mirrors the sidebar row's semantics). */
+  pinned?: boolean;
+  pinColor?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray';
 }
 
 /**
@@ -122,6 +126,16 @@ export interface WorkspaceGroup {
 
 /** Sidebar session-list scope: only the active workspace, or all workspaces. */
 export type WorkspaceScope = 'current' | 'all';
+
+/** SDR-020: one row of the sidebar's global pinned section. The row carries
+ *  its sort projection (position fields only) plus the workspace it lives in —
+ *  the section is cross-workspace, so the row has to say where it came from
+ *  (its hover hint and the active-row highlight read from here). */
+export interface PinnedSessionEntry extends SortableSessionRow {
+  workspaceId: string;
+  /** Display name of the owning workspace (the row's hover hint). */
+  workspaceName: string;
+}
 
 export type ToolStatus = 'ok' | 'running' | 'error';
 

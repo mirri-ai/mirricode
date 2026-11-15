@@ -19,7 +19,7 @@ import {
   type WorkspaceSortMode,
 } from '../lib/workspaceOrder';
 import { mergeWorkspaces } from '../lib/mergeWorkspaces';
-import { projectSessionForSort, sortSessionsByUse } from '../lib/sessionSorting';
+import { projectSessionForSort, sortSessionsByUse, splitPinnedSessions } from '../lib/sessionSorting';
 import { mergeSnapshotMessages } from '../lib/snapshotMessages';
 import { mergeSnapshotSubagents } from '../lib/taskMerge';
 import { buildSwarmEndedMarkerMessage, shouldAppendSwarmEndedMarker } from '../lib/swarmEndedMarker';
@@ -104,6 +104,7 @@ import type {
   ConversationStatus,
   DiffViewLine,
   PermissionMode,
+  PinnedSessionEntry,
   QueuedPromptView,
   Session,
   SessionWorkFacts,
@@ -2838,6 +2839,8 @@ const sessionsForView = computed<Session[]>(() => {
         workspaceId,
         workspaceName: nameByWorkspaceId.get(workspaceId),
         compressed: s.compressed === true,
+        pinned: s.pinned === true,
+        pinColor: s.pinColor,
       };
     });
 });
@@ -2887,6 +2890,41 @@ const workFactsBySession = computed<Map<string, SessionWorkFacts>>(() => {
  * row). Exposed for provide/inject wiring; the ref itself stays private. */
 const sessionTimeClockTick = computed(() => sessionTimeClock.value);
 
+/** SDR-020: the sidebar's session rows, once — each paired with its owning
+ *  workspace. Both the global pinned section and the per-workspace groups
+ *  read this one projection, so they can never disagree about which rows
+ *  exist; a session under a removed (hidden) workspace is filtered out here
+ *  once, for both.
+ *  Position-only: the projection carries {id, title, lastUsedAt, updatedAt,
+ *  pinned, pinnedAt, pinColor} plus the workspace's id/name — never
+ *  work-facts, so badge churn cannot re-sort the list. */
+const sidebarSessionRows = computed(() => {
+  const visible = workspacesView.value;
+  const visibleIds = new Set(visible.map((w) => w.id));
+  const nameById = new Map(visible.map((w) => [w.id, w.name]));
+  return rawState.sessions
+    .filter((session) => !session.parentSessionId) // child sessions stay out of the list
+    .map((session) => {
+      const workspaceId = workspaceIdForSession(session);
+      return {
+        ...projectSessionForSort(session),
+        workspaceId,
+        workspaceName: nameById.get(workspaceId) ?? '',
+      };
+    })
+    .filter((row) => visibleIds.has(row.workspaceId));
+});
+
+/**
+ * SDR-020: the sidebar's global pinned section — every pinned session from
+ * every workspace, ordered by pin moment (the latest pin reads at the top).
+ * Empty when nothing is pinned, which hides the whole section. Reads only the
+ * split's position fields plus the workspace's display name.
+ */
+const pinnedSessions = computed<PinnedSessionEntry[]>(
+  () => splitPinnedSessions(sidebarSessionRows.value).pinned,
+);
+
 /** Per-workspace groups for the 'all workspaces' scope. */
 const workspaceGroups = computed<WorkspaceGroup[]>(() => {
   const byId = new Map<string, SortableSessionRow[]>();
@@ -2896,20 +2934,15 @@ const workspaceGroups = computed<WorkspaceGroup[]>(() => {
   // times are derived per-row by SessionRow via the work-facts lookup, so
   // this computed is not invalidated by work-facts churn (and the 30s time
   // clock tick no longer recomputes it either).
-  // SDR-016: the pinned group rides the top of every workspace's list —
-  // the single comparator owns the ordering (pinned first, pinnedAt desc
-  // within the group, recency below).
-  for (const s of sortSessionsByUse(
-    rawState.sessions
-      .filter((session) => !session.parentSessionId) // child sessions stay out of the list
-      .map(projectSessionForSort),
-  )) {
-    const wid = workspaceIdForSession(
-      rawState.sessions.find((session) => session.id === s.id)!,
-    );
-    const list = byId.get(wid) ?? [];
-    list.push(s);
-    byId.set(wid, list);
+  // SDR-020: the groups stay COMPLETE (pinned rows included) — they are also
+  // the mobile switcher's data source. Hiding a pinned row from its desktop
+  // workspace group is that component's presentation decision (it paginates
+  // over the unpinned subset), so the row renders exactly once in the sidebar
+  // (the global section above) while the mobile sheet keeps its inline list.
+  for (const row of sortSessionsByUse(sidebarSessionRows.value)) {
+    const list = byId.get(row.workspaceId) ?? [];
+    list.push(row);
+    byId.set(row.workspaceId, list);
   }
   return workspacesView.value.map((w) => ({
     workspace: w,
@@ -3296,6 +3329,10 @@ export function useMirriWebClient() {
     activeWorkspaceId,
     sessionsForView,
     workspaceGroups,
+    /** SDR-020: the sidebar's global pinned section — every pinned session
+     *  from every workspace, ordered by pin moment. Empty when nothing is
+     *  pinned (the section then does not render at all). */
+    pinnedSessions,
     /** SDR-002: per-session badge/spinner facts keyed by id — SessionRow
      *  reads its row's facts from here (injected via provide/inject), so
      *  the sort projection stays decoupled from live work-facts churn. */

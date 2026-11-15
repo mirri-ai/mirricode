@@ -4,7 +4,12 @@
 // work-facts tuple or usage.
 
 import { describe, expect, it } from 'vitest';
-import { sortSessionsByUse, projectSessionForSort, sortKeyEpoch } from './sessionSorting';
+import {
+  sortSessionsByUse,
+  projectSessionForSort,
+  sortKeyEpoch,
+  splitPinnedSessions,
+} from './sessionSorting';
 
 describe('sidebar sort projection (SDR-002 position-state decoupling)', () => {
   it('should order by lastUsedAt falling back to updatedAt', () => {
@@ -76,5 +81,57 @@ describe('sessionSorting pinned group (SDR-016)', () => {
       row('fresh', { lastUsedAt: '2025-01-01T00:00:00Z' }),
     ]);
     expect(sorted.map((r) => r.id)).toEqual(['fresh', 'stale']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SDR-020: the global pinned section
+// ---------------------------------------------------------------------------
+
+describe('sessionSorting global pinned split (SDR-020)', () => {
+  const row = (
+    id: string,
+    opts: { pinned?: boolean; pinnedAt?: string; lastUsedAt?: string; updatedAt?: string } = {},
+  ) => ({
+    id,
+    title: id,
+    lastUsedAt: opts.lastUsedAt,
+    updatedAt: opts.updatedAt ?? '2025-01-01T00:00:00Z',
+    pinned: opts.pinned ?? false,
+    pinnedAt: opts.pinnedAt,
+  });
+
+  it('should collect every pinned row into the pinned list and leave the rest untouched', () => {
+    const { pinned, rest } = splitPinnedSessions([
+      row('plain-a', { lastUsedAt: '2024-01-01T00:00:00Z' }),
+      row('pin-a', { pinned: true, pinnedAt: '2025-01-01T00:00:00Z' }),
+      row('plain-b', { lastUsedAt: '2025-06-01T00:00:00Z' }),
+      row('pin-b', { pinned: true, pinnedAt: '2026-01-01T00:00:00Z' }),
+    ]);
+
+    expect(pinned.map((r) => r.id)).toEqual(['pin-b', 'pin-a']);
+    // 其余行保持输入顺序 —— 分流不改写它的排序语义（组内排序仍由
+    // sortSessionsByUse 负责）。
+    expect(rest.map((r) => r.id)).toEqual(['plain-a', 'plain-b']);
+  });
+
+  it('should order the pinned list by pin moment descending across workspaces', () => {
+    const { pinned } = splitPinnedSessions([
+      row('old', { pinned: true, pinnedAt: '2020-01-01T00:00:00Z' }),
+      row('newest', { pinned: true, pinnedAt: '2030-01-01T00:00:00Z' }),
+      row('middle', { pinned: true, pinnedAt: '2025-01-01T00:00:00Z' }),
+    ]);
+
+    expect(pinned.map((r) => r.id)).toEqual(['newest', 'middle', 'old']);
+  });
+
+  it('should return an empty pinned list when nothing is pinned', () => {
+    const { pinned, rest } = splitPinnedSessions([
+      row('plain-a'),
+      row('plain-b'),
+    ]);
+
+    expect(pinned).toEqual([]);
+    expect(rest.map((r) => r.id)).toEqual(['plain-a', 'plain-b']);
   });
 });

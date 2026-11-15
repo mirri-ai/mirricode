@@ -32,7 +32,22 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: [id: string];
   close: [];
+  /** Quick pin/unpin from a result row — same semantics as the sidebar
+   *  row's pin button (single click = colorless pin / unpin). Color
+   *  editing stays in the sidebar's status-pin palette. */
+  pin: [id: string];
+  unpin: [id: string];
 }>();
+
+// Server-backed hits are lean views without the pin trio; resolve the
+// pinned flag against the full session list so the quick toggle's state
+// (and therefore its pin/unpin direction) is right on both paths.
+const pinnedById = computed(() => new Map(props.sessions.map((s) => [s.id, s.pinned === true])));
+
+function isPinned(id: string, fallback: boolean | undefined): boolean {
+  if (fallback !== undefined) return fallback;
+  return pinnedById.value.get(id) ?? false;
+}
 
 // The parent controls visibility with `v-if`, so the dialog is open whenever
 // this component is mounted. Dialog owns focus trap, Esc/overlay close, and the
@@ -173,6 +188,12 @@ function openSelected(): void {
   if (hit) openHit(hit.session.id);
 }
 
+/** Quick pin toggle on a result row — mirrors the sidebar row's pin button. */
+function togglePin(hit: Hit): void {
+  if (isPinned(hit.session.id, hit.session.pinned)) emit('unpin', hit.session.id);
+  else emit('pin', hit.session.id);
+}
+
 function onKeydown(e: KeyboardEvent): void {
   if (isCompositionKeyEvent(e)) return;
   if (e.key === 'ArrowDown') {
@@ -216,7 +237,11 @@ onMounted(() => {
 
     <div ref="listRef" class="sd-list" role="listbox">
       <template v-if="results.length > 0">
-        <button
+        <!-- The row is a div[role=option] (not a <button>) so it can nest
+             the quick pin button without invalid button-in-button markup;
+             keyboard flow is owned by the search input (↑↓/↵), the row
+             only needs pointer selection + the aria-selected state. -->
+        <div
           v-for="(hit, i) in results"
           :key="hit.session.id"
           class="sd-row"
@@ -234,6 +259,17 @@ onMounted(() => {
               v-html="highlightHtml(hit.session.workspaceName ?? hit.session.workspaceId ?? '', hit.inWorkspace ? query : '')"
             ></span>
             <span class="sd-time">{{ hit.session.time }}</span>
+            <button
+              type="button"
+              class="sd-pin"
+              :class="isPinned(hit.session.id, hit.session.pinned) ? ['pinned', `pin-${hit.session.pinColor ?? 'gray'}`] : undefined"
+              :label="isPinned(hit.session.id, hit.session.pinned) ? t('sidebar.unpin') : t('sidebar.pin')"
+              :aria-label="isPinned(hit.session.id, hit.session.pinned) ? t('sidebar.unpin') : t('sidebar.pin')"
+              data-test-id="search-pin-btn"
+              @click.stop="togglePin(hit)"
+            >
+              <Icon name="pushpin" size="sm" />
+            </button>
           </span>
           <!-- eslint-disable-next-line vue/no-v-html -- highlightHtml escapes the source before injecting <mark>. -->
           <span class="sd-title" v-html="highlightHtml(hit.session.title, hit.inTitle ? query : '')"></span>
@@ -243,7 +279,7 @@ onMounted(() => {
             class="sd-snippet"
             v-html="highlightHtml(hit.snippetText, query)"
           ></span>
-        </button>
+        </div>
       </template>
       <div v-else class="sd-empty">
         {{ showSearching ? t('sidebar.searching') : t('sidebar.searchNoResults') }}
@@ -333,6 +369,30 @@ onMounted(() => {
   flex: none;
   font-family: var(--font-mono);
   color: var(--color-text-faint);
+}
+
+/* Quick pin button on a result row — same semantics as the sidebar row's
+   pin button; muted at rest, tinted with the pin color while pinned. */
+.sd-pin {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text-faint);
+  cursor: pointer;
+}
+.sd-pin:hover {
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
+}
+.sd-pin.pinned {
+  color: var(--pin-color, var(--pin-gray));
 }
 
 .sd-title {

@@ -53,6 +53,15 @@ const emit = defineEmits<{
   refreshWorkspace: [workspaceId: string];
 }>();
 
+// SDR-020: a pinned row does NOT render in its workspace group — it renders
+// once, in the sidebar's global pinned section (pinning is a cross-workspace
+// "this matters" statement). The group's DATA stays complete (pinned rows are
+// still in `group.sessions`; they carry the mobile switcher's inline list), so
+// this is purely where the desktop draws the line. Everything below paginates
+// over the unpinned subset, so the show-more counts describe what this group
+// actually renders.
+const groupRows = computed(() => props.group.sessions.filter((s) => !s.pinned));
+
 // Sessions to render: all when expanded, otherwise only the first page. The
 // collapse is a pure view-layer trim — data, cursor and hasMore stay intact, so
 // re-expanding never refetches. When collapsed, the active session is always
@@ -60,23 +69,23 @@ const emit = defineEmits<{
 // link would otherwise be hidden past the first page, so navigation would land
 // on a missing row. It appends in newest-first order (older than the head).
 const visibleSessions = computed(() => {
-  if (props.isExpanded(props.group.workspace.id)) return props.group.sessions;
-  const head = props.group.sessions.slice(0, props.group.initialCount);
+  if (props.isExpanded(props.group.workspace.id)) return groupRows.value;
+  const head = groupRows.value.slice(0, props.group.initialCount);
   if (props.activeId && !head.some((s) => s.id === props.activeId)) {
-    const active = props.group.sessions.find((s) => s.id === props.activeId);
+    const active = groupRows.value.find((s) => s.id === props.activeId);
     if (active) return [...head, active];
   }
   return head;
 });
 // True once more than the first page is loaded — gates the show-less/show-all toggle.
 const canToggleExpand = computed(
-  () => props.group.sessions.length > props.group.initialCount,
+  () => groupRows.value.length > props.group.initialCount,
 );
 function showMoreCount(): number {
   return Math.max(0, props.group.workspace.sessionCount - props.group.sessions.length);
 }
 function showAllCount(): number {
-  return props.group.sessions.length - props.group.initialCount;
+  return groupRows.value.length - props.group.initialCount;
 }
 
 // Drag-to-reorder: the group header is the drag handle. We stash the workspace

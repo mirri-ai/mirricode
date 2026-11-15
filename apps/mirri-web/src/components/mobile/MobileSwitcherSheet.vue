@@ -50,6 +50,11 @@ const emit = defineEmits<{
   addWorkspace: [];
   rename: [id: string, title: string];
   archive: [id: string];
+  /** Quick pin/unpin from a session row — same semantics as the sidebar
+   *  row's pin button (single click = colorless pin / unpin). Color
+   *  editing stays in the sidebar's status-pin palette. */
+  pin: [id: string];
+  unpin: [id: string];
   /** The W6 three-choice delete (purge / remove / cancel) — needs
    * `@delete-workspace="(id, mode) => client.deleteWorkspace(id, mode)"`
    * wiring in App.vue. */
@@ -178,6 +183,12 @@ function onRename(s: SortableSessionRow): void {
   const title = next?.trim();
   if (title) emit('rename', s.id, title);
 }
+
+/** Quick pin toggle on a session row — mirrors the sidebar row's pin button. */
+function togglePin(s: SortableSessionRow): void {
+  if (s.pinned) emit('unpin', s.id);
+  else emit('pin', s.id);
+}
 async function onArchive(id: string): Promise<void> {
   menuFor.value = null;
   if (
@@ -305,6 +316,18 @@ async function onDeleteWorkspace(ws: WorkspaceView): Promise<void> {
               <div class="s">{{ timeOf(s) }}</div>
             </div>
             <span v-if="(attentionBySession[s.id] ?? 0) > 0" class="att">{{ attentionBySession[s.id] }}</span>
+            <!-- Quick pin toggle — single click pins colorless / unpins,
+                 mirroring the sidebar row's pin button. -->
+            <IconButton
+              size="lg"
+              class="kb pin-kb"
+              :class="s.pinned ? ['pinned', `pin-${s.pinColor ?? 'gray'}`] : undefined"
+              :label="s.pinned ? t('sidebar.unpin') : t('sidebar.pin')"
+              data-test-id="mobile-pin-btn"
+              @click.stop="togglePin(s)"
+            >
+              <Icon name="pushpin" size="md" />
+            </IconButton>
             <IconButton
               size="lg"
               class="kb"
@@ -514,6 +537,11 @@ async function onDeleteWorkspace(ws: WorkspaceView): Promise<void> {
   padding: 1px 7px;
 }
 .srow .kb:active { color: var(--color-text); background: var(--color-surface-sunken); }
+/* Quick pin button — muted at rest, tinted with the pin color while
+   pinned (the `pin-<color>` classes map to --pin-color in style.css). */
+.srow .pin-kb { color: var(--color-text-faint); }
+.srow .pin-kb.pinned { color: var(--pin-color, var(--pin-gray)); }
+.srow .pin-kb:active { color: var(--color-text); background: var(--color-surface-sunken); }
 
 /* Kebab menu — surface from Menu primitive; only positioning here. */
 .kmenu {
