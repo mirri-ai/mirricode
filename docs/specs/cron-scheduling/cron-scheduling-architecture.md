@@ -49,7 +49,7 @@ CronTask {
 ```
 
 - **TTL 基准改造（SDR-005 / 阶段一 D-M5）**：过期判定从 `now - created_at >= TTL` 改为 `now - last_fired_or_created >= TTL`——每次成功投递推进基准（fire-refresh）。停摆出口保持「终触发搭载投递」的既有形态。
-- **计数推进点**：与游标推进同址（同锁内），保证 max_fires 判定与投递原子；到达上限的 fire 计划携带「计满」标记（信封新增键，复用 stale 的终信号呈现位）。
+- **计数推进点**：与游标推进同址（同锁内），保证 max_fires 判定与投递原子；到达上限的 fire 计划携带「计满」标记（origin 新增键，复用 stale 的终信号呈现位；SDR-128 后信号只走结构化 origin，不进消息）。
 - **缺省解释**：`origin` 缺省 agent、`unattended` 缺省 false、`max_fires` 缺省无上限——旧记录语义零变化；A.4（SDR-003）的 recurring 工具层默认改 false 不经此模型（工具参数层裁决，恢复层现状缺省见 context §1）。
 
 ## 2. 服务层：CronService（统一 CRUD 语义）
@@ -175,7 +175,7 @@ RunSpawner::spawn(fire) {
   2. session.create(workspace_id=fire.workspace, 形态=普通会话)
      —— 不 spawn 会话级驱动/事件中继；持久化走普通会话的 eager 路径：创建即写 metadata 行 + 起 wire log，
      运行 prompt 记为 last_prompt（ADR-023，取代 ADR-008 的行豁免懒会话）
-  3. 注入提示词（cron 信封 + 权限姿态 turn_origin=Cron{...}）
+  3. 注入提示词（逐字原文，SDR-128/ADR-024：无信封；调度信号走结构化 origin + 权限姿态 turn_origin=Cron{...}）
   4. 等待回合终局 → 回合按普通会话的收敛路径 settle 进会话索引（note_turn_settled）→ RunRecord 落
      {状态, 起止, 时长, 用量归因=task:fire.task, session_ref}
   5. 回合资源释放（不留常驻循环）；会话本体留在会话列表里，留存交给会话留存策略（ADR-023）
@@ -312,3 +312,5 @@ RunSpawner::spawn(fire) {
 - **ADR-022（2026-11-04，用户裁决）· CreateScheduledTask 收敛为单次工具审批**（对应 cron-improvement SDR-126）：删除 `ScheduledTaskCreationSink::register_creation` 这条「工具执行后再注册第二张 gate 条目」的旁路——工具的创建动作回到 `execute` 本身：审批链里 `CreateScheduledTaskNeverAutoApprovePolicy` 仍在链首对该工具无条件 `Ask{never_auto_approve:true}`（这是唯一一次审批，也保证任何权限模式都弹），用户批准后 `execute` 经新的宿主接口 `ScheduledTaskCreator::create(draft)` 调 `WorkspaceCronManager::add`，把「已创建（任务 id、计划摘要）」作为工具结果同步返回；拒绝即工具调用被拦截，`execute` 不运行，零副作用，拒绝理由随工具被拒的标准回执回到模型。随之删除：`scheduled_task_pending` 内存映射与 `draftId`、`approval.decide` 里的创建分支（`decide_scheduled_task_creation`）、G4 的 steer 通知注入、`cron.pendingApprovals` RPC 与设置页待确认区。审批卡的内容由该工具 `ExecutionPlan.display` 提供：`ToolInputDisplay` 新增结构化变体 `ScheduledTaskCreate { cron, timezone?, workspace_id, permission_mode?, model?, effort?, title?, prompt, recurring, max_fires?, reason? }`，聊天审批卡按它渲染人话详情（工作区名由前端用 workspace_id 映射，核心工具拿不到注册表）。这样重启后不存在「批了但任务没建」的窗口（批准与创建在同一次工具执行里）。被否决备选：保留旁路并把第一次审批改成自动放行——旁路的内存映射与重启丢失问题仍在。影响范围：§9.3、§9.4、ADR-013（其「提议-审批通道」描述整体被本条取代）。
 
 - **ADR-023（2026-11-14，用户裁决）· 执行会话走普通会话生命周期**（对应阶段一 SDR-127）：执行会话不再是「行豁免懒会话」，改为与普通会话同一条创建/持久化路径。**创建**：`cron_run_spawner.rs` 仍以「新建会话」的形态起跑，但不再走 row-exempt 例外——创建调用不再带行豁免，改走普通创建路径（`SessionManager` 侧的行豁免口因此不再被本域消费）：创建即写 metadata 行、即起 `wire.jsonl`（wire ops 不再缓冲在内存等物化）；metadata 的 `last_prompt` 直接写成该次运行的 prompt（不再留空），因此默认列表的 `exclude_empty` 条件不再把它过滤掉。**回合收敛**：spawner 不再刻意绕开索引写穿——`RunSpawner` 持有 settle-index 句柄，回合结束时执行与 `message.send` 同一的 `note_turn_settled`（metadata 行写穿 + 索引 upsert），运行期间会话即可在列表中出现、可被打开。**run→会话链接**：`RunRecord.session_ref` 语义不变（仍指向本次运行的执行会话），`set_run_session_ref` / 终态记录的写入路径不变。**`cron.run.open` 降级为幂等兼容口**：`dispatch_open_cron_run` 仍保留、仍返回 `{sessionId, materialized}`，但 `materialize_session` 对已持久化会话是 no-op（`false`），该 RPC 不再是可见性的必要条件——前端在会话缺失时仍可调它作为兜底，正常路径无需先调。**清扫移除**：删除 `UNOPENED_RUN_SESSION_TTL` 常量与 `cron_driver` 里的 `sweep_unopened_execution_sessions` 调用——可见性反转后「未打开」不是可判定状态，留存唯一真值源是会话留存策略（ADR-012 被取代）。**前端 openRun**：`ScheduledTaskDetail.vue` 的 `openRun` 选中会话并收起设置浮层（经既有 `openSessionById` 路径，与侧栏点开普通会话一致）；同时修复其静默失败——`openSessionFromDeepLink` 内部 `fetchSessionIntoList` 在会话不存在时返回 `false` 而不抛错，`available` 为假时整条链路无提示也不选中任何会话，用户点了没反应；修复后该分支必须产生可见反馈（与 RPC 抛错路径同族），且失败时不假装已打开。被否决备选：a) 保留行豁免、仅修 `openRun` 的反馈（可见性缺口本身是误导源——用户不会为确认「跑没跑」去翻运行历史；见 SDR-127 被否决备选 a）；b) 折中「创建时写行、响应首条用户消息才写 wire log」（半持久化形态让「会话可见但点开是空的」成为新的误导，且索引与 wire log 出现两个真值时机）；c) 保留 7 天清扫但只对「从未被列表显示」的会话生效（该集合为空——创建即入列表，清扫没有对象，留着只是死代码与误导性注释）。影响范围：§0 存储层、§6（打开路径）、§8/§8.1/§8.2、§10 映射表、ADR-008 与 ADR-012（被取代）；会话管理域（懒物化的例外准入收窄回「普通会话」的唯一形态，本域不再消费 row-exempt 口）、会话留存域（执行会话纳入其既有范围）。
+
+- **ADR-024（2026-11-15，用户裁决）· 注入消息逐字交付**（对应阶段一 SDR-128）：删除 `<cron-fire>` 信封——`mirri-core/src/cron/format.rs`（`render_cron_fire_envelope` 及其测试）整体移除，`cron_driver.rs` 的 `inject_cron_prompt_into_session` 把 `fire.prompt` 原文注入：模型收到的、`turn.prompt` wire 记录的、界面显示的三者一致。调度元数据（jobId、cron、recurring、coalescedCount、stale、maxFires、lateByMs）本就完整承载于 `turn.prompt` 的结构化 `origin`（`kind: "cron_job"`）与 `cron.fired` 事件，信封是重复的第二载体，删除后无信息丢失（迟到标记、合并计数的断言改查 `origin`）。前端 `extractCronPrompt` / `stripCronEnvelope` 降级为**旧记录的只读兼容剥离器**——旧 wire log 仍含信封，新记录不再产生，该兼容只读不写。界面 `CronNotice` 气泡只渲染消息本文：去掉「定时任务已触发 / 已错过」标题（气泡=消息，消息里不得出现用户没写的内容），调度/状态信息维持在气泡外的元数据行。被否决备选：a) 保留信封、只删界面标题（模型收到的仍不是所设内容，「发什么」未满足）；b) 信封内容挪进系统提示（换通道仍是擅自加内容）；c) 标题保留为气泡内徽章（气泡即消息，同 b 的加料问题）。影响范围：§8 注入流水线与 B2 T9（被取代）、`mirri-core/src/cron/format.rs`（删除）、`apps/mirri-web` 的 `messagesToTurns.ts`（兼容读取器注释）与 `CronNotice.vue`（渲染口径）；b2_notification 测试族的信封断言改写为逐字契约。

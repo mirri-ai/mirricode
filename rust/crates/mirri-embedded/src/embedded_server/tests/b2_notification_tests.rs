@@ -1689,9 +1689,10 @@ fn seed_overdue_cron_task(session: &mirri_core::SessionScope, session_id: &str, 
 
 /// Given a running main-agent turn, when a cron task comes due, then the
 /// fire is held — no turn runs for it while the gate holds — and the first
-/// idle tick injects it wrapped in the `<cron-fire>` envelope (B2 T9).
+/// idle tick injects the prompt VERBATIM (SDR-128: no envelope, no prefix —
+/// the message is exactly what the user configured).
 #[tokio::test]
-async fn should_hold_the_cron_fire_until_idle_and_inject_it_enveloped() {
+async fn should_hold_the_cron_fire_until_idle_and_inject_it_verbatim() {
     let mock = Arc::new(ScriptedLlm::new());
     let release = mock.push_gated("First reply");
     mock.push_text("cron reply");
@@ -1743,11 +1744,10 @@ async fn should_hold_the_cron_fire_until_idle_and_inject_it_enveloped() {
     })
     .await;
 
-    // Then the next idle tick injects the fire, enveloped: the model input
-    // starts with <cron-fire, ends with </cron-fire>, and carries the raw
-    // prompt verbatim inside the <prompt> body.
+    // Then the next idle tick injects the fire VERBATIM: the model input is
+    // exactly the configured prompt — no envelope, no prefix (SDR-128).
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    let enveloped_input = loop {
+    let injected_input = loop {
         let found = {
             let recorded = mock
                 .recorded_messages
@@ -1756,7 +1756,7 @@ async fn should_hold_the_cron_fire_until_idle_and_inject_it_enveloped() {
             recorded
                 .iter()
                 .map(|messages| messages.to_string())
-                .find(|text| text.contains("check the deployment") && text.contains("<cron-fire "))
+                .find(|text| text.contains("check the deployment"))
         };
         if let Some(text) = found {
             break text;
@@ -1769,12 +1769,8 @@ async fn should_hold_the_cron_fire_until_idle_and_inject_it_enveloped() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
     assert!(
-        enveloped_input.contains("<cron-fire jobId=\\\"cron-b2\\\""),
-        "the envelope names the firing task: {enveloped_input}"
-    );
-    assert!(
-        enveloped_input.contains("</cron-fire>"),
-        "the envelope closes: {enveloped_input}"
+        !injected_input.contains("<cron-fire "),
+        "the prompt must be delivered verbatim, with no envelope: {injected_input}"
     );
 }
 
@@ -2107,10 +2103,10 @@ async fn should_leave_a_mixed_buffer_untouched_until_the_next_turn() {
 }
 
 /// Given an idle session, when a cron task fires, then the injected prompt
-/// carries the envelope and the raw prompt stays recoverable (the
-/// extractCronPrompt caliber — no web change needed).
+/// is the configured text VERBATIM (SDR-128: no envelope, no prefix), and
+/// the durable turn.prompt records the same verbatim text.
 #[tokio::test]
-async fn should_inject_the_enveloped_prompt_when_idle() {
+async fn should_inject_the_prompt_verbatim_when_idle() {
     let mock = Arc::new(ScriptedLlm::new());
     mock.push_text("ack");
     mock.push_text("cron reply");
@@ -2131,24 +2127,25 @@ async fn should_inject_the_enveloped_prompt_when_idle() {
     seed_overdue_cron_task(&session, &session_id, "report the build status");
 
     // Then within a few ticks the injected turn's LLM input carries the
-    // full envelope with the raw prompt verbatim.
+    // prompt exactly as configured (SDR-128: verbatim, no envelope).
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         let all = recorded_all(&mock).to_string();
-        if all.contains("report the build status")
-            && all.contains("<cron-fire ")
-            && all.contains("</cron-fire>")
-        {
+        if all.contains("report the build status") {
+            assert!(
+                !all.contains("<cron-fire "),
+                "the prompt must be delivered verbatim, with no envelope: {all}"
+            );
             break;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the enveloped cron prompt never reached the model: {all}"
+            "the cron prompt never reached the model: {all}"
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    // And the durable turn.prompt recorded the enveloped text (the wire
-    // log's cron turn is replayable, envelope included).
+    // And the durable turn.prompt records the same verbatim text (the wire
+    // log's cron turn is replayable; the fire's metadata rides `origin`).
     let wire_log_path = server
         .session_manager()
         .persistence()
@@ -2160,9 +2157,9 @@ async fn should_inject_the_enveloped_prompt_when_idle() {
             op,
             WireOp::TurnPrompt { input, origin }
                 if origin["kind"] == "cron_job"
-                    && input[0]["text"].as_str().unwrap_or("").starts_with("<cron-fire ")
+                    && input[0]["text"].as_str().unwrap_or("") == "report the build status"
         )),
-        "the turn.prompt carries the envelope: {ops:?}"
+        "the turn.prompt carries the prompt verbatim: {ops:?}"
     );
 }
 
@@ -4859,7 +4856,8 @@ async fn should_redeliver_a_held_fire_when_the_session_closes_and_reopens() {
         session_id: session_id.clone(),
         recurring: false,
         // Backdated enough that the close→reopen redelivery lands past
-        // the C.2a lateness threshold — the envelope must carry the mark.
+        // the C.2a lateness threshold — the turn.prompt origin must carry
+        // the mark (SDR-128: the message itself stays verbatim).
         created_at: chrono::Utc::now() - chrono::Duration::minutes(10),
         ..mirri_core::cron::cron_task_base("cron-held", "* * * * *", "held across the close")
     }]);
@@ -4900,8 +4898,9 @@ async fn should_redeliver_a_held_fire_when_the_session_closes_and_reopens() {
         .expect("resume");
 
     // Then the held fire is redelivered once the (now idle) session is
-    // drained — the envelope is visible to the model, carrying the C.2a
-    // lateness mark (the fire was scheduled two minutes before it landed).
+    // drained — VERBATIM (SDR-128), with the C.2a lateness mark riding the
+    // turn.prompt origin (the fire was scheduled two minutes before it
+    // landed).
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let redelivered = loop {
         let found = {
@@ -4912,7 +4911,7 @@ async fn should_redeliver_a_held_fire_when_the_session_closes_and_reopens() {
             recorded
                 .iter()
                 .map(|messages| messages.to_string())
-                .find(|text| text.contains("held across the close") && text.contains("<cron-fire "))
+                .find(|text| text.contains("held across the close"))
         };
         if let Some(text) = found {
             break text;
@@ -4924,9 +4923,24 @@ async fn should_redeliver_a_held_fire_when_the_session_closes_and_reopens() {
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
+    // And the durable turn.prompt origin carries the lateness mark while
+    // the message text itself stays verbatim (SDR-128).
+    let wire_log_path = server
+        .session_manager()
+        .persistence()
+        .wire_log_path(&SessionId::new(&session_id));
+    let log = JsonlAppendLog::open(&wire_log_path).await.unwrap();
+    let ops = log.read_all().await.unwrap();
     assert!(
-        redelivered.contains("lateByMs=\\\""),
-        "the redelivered fire carries the lateness mark: {redelivered}"
+        ops.iter().any(|op| matches!(
+            op,
+            WireOp::TurnPrompt { input, origin }
+                if origin["kind"] == "cron_job"
+                    && origin["lateByMs"].is_number()
+                    && input[0]["text"].as_str().unwrap_or("") == "held across the close"
+        )),
+        "the turn.prompt carries the lateness mark on the origin and the \
+         prompt verbatim: {redelivered} / {ops:?}"
     );
 }
 
@@ -5100,7 +5114,7 @@ async fn should_merge_a_new_due_fire_into_the_held_one_while_busy() {
             recorded
                 .iter()
                 .map(|messages| messages.to_string())
-                .find(|text| text.contains("merge me") && text.contains("<cron-fire "))
+                .find(|text| text.contains("merge me"))
         };
         if let Some(text) = found {
             break text;
@@ -5112,23 +5126,34 @@ async fn should_merge_a_new_due_fire_into_the_held_one_while_busy() {
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
-    assert!(
-        merged.contains("coalescedCount=\\\""),
-        "the merged injection carries the held periods: {merged}"
-    );
+    // The coalesced count rides the turn.prompt origin — the message text
+    // itself stays verbatim (SDR-128).
+    let wire_log_path = server
+        .session_manager()
+        .persistence()
+        .wire_log_path(&SessionId::new(&session_id));
+    let log = JsonlAppendLog::open(&wire_log_path).await.unwrap();
+    let ops = log.read_all().await.unwrap();
     // The white-box cursor resets make every 50ms tick fire a period —
     // far more than the two the test forced, but the assertion's point
     // is the MERGE (one injection, a count > 1 accumulating the holds),
     // not the exact number.
-    let count = merged
-        .split("coalescedCount=\\\"")
-        .nth(1)
-        .and_then(|rest| rest.split('\\').next())
-        .and_then(|n| n.parse::<usize>().ok())
+    let count = ops
+        .iter()
+        .filter_map(|op| match op {
+            WireOp::TurnPrompt { input, origin }
+                if origin["kind"] == "cron_job"
+                    && input[0]["text"].as_str().unwrap_or("") == "merge me" =>
+            {
+                origin["coalescedCount"].as_u64()
+            }
+            _ => None,
+        })
+        .max()
         .unwrap_or(0);
     assert!(
         count >= 2,
-        "the merged injection accumulated the held periods (count={count}): {merged}"
+        "the merged injection accumulated the held periods (count={count}): {merged} / {ops:?}"
     );
     let session = server
         .session_manager()

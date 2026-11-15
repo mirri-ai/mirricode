@@ -41,8 +41,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// LLM-facing rendering (the `<cron-fire>` envelope).
-pub mod format;
 /// The workspace-level cron store + shared fire-planning types (stage-2
 /// batch-4a, T2/T3).
 pub mod workspace_store;

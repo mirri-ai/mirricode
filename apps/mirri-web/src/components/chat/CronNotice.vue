@@ -3,11 +3,12 @@
      than a real user. It is styled to read like a user message — a right-
      aligned, max-width-capped bubble in the user-bubble colour — because a cron
      fire is semantically a message the user scheduled earlier. The bubble shows
-     the title + the fired prompt in full, wrapping across lines (no truncation,
-     no tooltip). Schedule / status / job id / fire time sit in a small meta row
-     beneath the bubble, mirroring the meta row under a real user message; the
-     fire time reuses the same <MessageTime> component as a user message so the
-     two stay identical.
+     the fired prompt VERBATIM and nothing else (SDR-128: no title or prefix —
+     the message is exactly what the user configured), wrapping across lines
+     (no truncation, no tooltip). Schedule / status / job id / fire time sit in
+     a small meta row beneath the bubble, mirroring the meta row under a real
+     user message; the fire time reuses the same <MessageTime> component as a
+     user message so the two stay identical.
 
      Renders either as a standalone turn (pass turnId for the scroll anchor) or
      embedded inside an assistant turn's blocks — in both cases it takes the
@@ -35,10 +36,6 @@ const { t } = useI18n();
 
 const cron = computed(() => props.cron);
 const missed = computed(() => cron.value?.missedCount !== undefined);
-
-const title = computed(() =>
-  missed.value ? t('conversation.cron.missed') : t('conversation.cron.fired'),
-);
 
 const schedule = computed(() => {
   const expr = cron.value?.cron;
@@ -77,7 +74,6 @@ const text = computed(() => props.text ?? '');
     role="status"
   >
     <div class="cn-bubble">
-      <span class="cn-title">{{ title }}</span>
       <template v-if="text"> <span class="cn-prompt">{{ text }}</span></template>
     </div>
     <div class="cn-meta">

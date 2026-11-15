@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use mirri_core::{
     AgentId, CancelToken, InteractionKernel, PromptOrigin, SessionEvent, SteerBuffer,
-    cron::format::render_cron_fire_envelope, event_projection::turn_stop_reason_wire,
+    event_projection::turn_stop_reason_wire,
 };
 use mirri_proto::WireOp;
 use mirri_transport::adapter::EngineError;
@@ -1215,9 +1215,8 @@ pub(crate) async fn inject_cron_prompt_into_session(
     // The cron-job origin object the TS kernel's `CronJobOrigin` declares:
     // the firing task's identity plus the real coalesced/stale values
     // (B5) — the prompt itself is injected as the engine turn's content
-    // wrapped in the `<cron-fire>` envelope (B2 T9: the model reads the
-    // firing context, the web client peels it back with
-    // `extractCronPrompt`).
+    // VERBATIM (SDR-128); the firing context rides this structured origin
+    // and the `cron.fired` event, never the message text.
     let mut origin = json!({
         "kind": "cron_job",
         "jobId": fire.task_id,
@@ -1235,7 +1234,11 @@ pub(crate) async fn inject_cron_prompt_into_session(
     if let Some(late_by_ms) = fire.late_by_ms {
         origin["lateByMs"] = json!(late_by_ms);
     }
-    let prompt = render_cron_fire_envelope(&fire);
+    // SDR-128: the message is delivered VERBATIM — the user's configured
+    // prompt is what the model receives, with no envelope or prefix. The
+    // fire's scheduling metadata rides the structured `origin` above, never
+    // the message text.
+    let prompt = fire.prompt.clone();
     let prompt_wire = json!([{ "type": "text", "text": prompt }]);
     // Persist the turn's opening (the `turn.prompt` bracket and the durable
     // user message) with the cron-job origin, exactly the `logRecord`
