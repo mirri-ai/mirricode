@@ -452,6 +452,17 @@ html[data-color-scheme="dark"][data-accent="mono"] {
      `.ch-logo.is-dev` override of `--logo`. Scheme-independent on purpose. */
   --color-logo-dev: #f5b301;
 
+  /* Pin accent colors (SDR-017): the seven macOS folder-label presets. One
+     definition shared by the session row's side bar, the status pin, and the
+     palette swatches — components consume them via `pin-<color>` classes. */
+  --pin-red: #e5484d;
+  --pin-orange: #e0821c;
+  --pin-yellow: #cb9a10;
+  --pin-green: #2fb46a;
+  --pin-blue: #3e85f5;
+  --pin-purple: #9a5cd0;
+  --pin-gray: #8b929e;
+
   /* -- spacing (4px grid) -------------------------------------------------- */
   --space-1: 4px;
   --space-2: 8px;
@@ -544,6 +555,17 @@ html[data-color-scheme="dark"][data-accent="mono"] {
   --p-bp-sm: 640px;
   --p-bp-md: 980px;
 }
+
+/* pin-<color> → --pin-color: pin visuals (the session row's side bar, the
+   status pin, the palette swatches) read one local variable, so the seven
+   presets stay defined once above. */
+.pin-red { --pin-color: var(--pin-red); }
+.pin-orange { --pin-color: var(--pin-orange); }
+.pin-yellow { --pin-color: var(--pin-yellow); }
+.pin-green { --pin-color: var(--pin-green); }
+.pin-blue { --pin-color: var(--pin-blue); }
+.pin-purple { --pin-color: var(--pin-purple); }
+.pin-gray { --pin-color: var(--pin-gray); }
 
 /* Responsive dialog sizing — scales with viewport. */
 @media (min-width: 1000px) {

@@ -1117,6 +1117,7 @@ function openPr(url: string): void {
           :active-workspace-id="client.activeWorkspaceId.value"
           :sessions="client.sessionsForView.value"
           :groups="client.workspaceGroups.value"
+          :pinned-sessions="client.pinnedSessions.value"
           :active-id="client.activeSessionId.value"
           :attention-by-session="client.attentionBySession.value"
           :pending-by-session="client.pendingBySession.value"

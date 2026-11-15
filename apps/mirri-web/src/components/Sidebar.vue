@@ -20,8 +20,14 @@ import {
   saveCollapsedWorkspaces,
 } from '../lib/storage';
 import { moveInOrder, type DropPosition, type WorkspaceSortMode } from '../lib/workspaceOrder';
-import type { Session, WorkspaceGroup as WorkspaceGroupType, WorkspaceView } from '../types';
+import type {
+  PinnedSessionEntry,
+  Session,
+  WorkspaceGroup as WorkspaceGroupType,
+  WorkspaceView,
+} from '../types';
 import SearchSessionsDialog from './dialogs/SearchSessionsDialog.vue';
+import SessionRow from './SessionRow.vue';
 import WorkspaceGroup from './WorkspaceGroup.vue';
 import { isMacosDesktop } from '../lib/desktopFlag';
 import IconButton from './ui/IconButton.vue';
@@ -71,6 +77,10 @@ const props = withDefaults(
     activeWorkspaceId: string | null;
     sessions: Session[];
     groups: WorkspaceGroupType[];
+    /** SDR-020: every pinned session, across workspaces, ordered by pin
+     *  moment — the global "pinned" section above the workspace groups.
+     *  Empty hides the section entirely. */
+    pinnedSessions?: PinnedSessionEntry[];
     activeId: string;
     /** Current workspace sort mode — drives the section-header sort button. */
     workspaceSortMode: WorkspaceSortMode;
@@ -96,6 +106,7 @@ const props = withDefaults(
     attentionBySession: () => ({}),
     pendingBySession: () => ({}),
     unreadBySession: () => ({}),
+    pinnedSessions: () => [],
     colWidth: 220,
     refreshingIds: () => new Set<string>(),
     interruptedCountByWorkspace: () => ({}),
@@ -110,6 +121,9 @@ const emit = defineEmits<{
   addWorkspace: [];
   rename: [id: string, title: string];
   archive: [id: string];
+  /** SDR-016/017: pin with an optional color; unpin clears the trio. */
+  pin: [id: string, color?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray'];
+  unpin: [id: string];
   deleteWorkspace: [id: string, mode: WorkspaceDeleteMode];
   reorderWorkspaces: [ids: string[]];
   setWorkspaceSortMode: [mode: WorkspaceSortMode];
@@ -626,6 +640,31 @@ const showNewWorkspaceButton = false;
         </div>
 
         <template v-else>
+          <!-- SDR-020: the global pinned section. Pinning is a cross-workspace
+               "this matters" statement, so pinned sessions leave their
+               workspace group and aggregate here, latest pin on top. Hidden
+               entirely when nothing is pinned. -->
+          <div v-if="pinnedSessions.length > 0" class="pinned-section" data-test-id="pinned-section">
+            <div class="side-section-label">
+              <span class="side-section-title">{{ t('sidebar.pinnedSection') }}</span>
+            </div>
+            <SessionRow
+              v-for="s in pinnedSessions"
+              :key="s.id"
+              :session="s"
+              :active="s.id === activeId"
+              :approval-count="pendingBySession[s.id]?.approvals ?? 0"
+              :question-count="pendingBySession[s.id]?.questions ?? 0"
+              :unread="unreadBySession[s.id] ?? false"
+              :workspace-name="s.workspaceName"
+              @select="onSelectSession"
+              @rename="(id, title) => emit('rename', id, title)"
+              @archive="(id) => emit('archive', id)"
+              @pin="(id, color) => emit('pin', id, color)"
+              @unpin="(id) => emit('unpin', id)"
+            />
+          </div>
+
           <div class="side-section-label">
             <span class="side-section-title">{{ t('sidebar.workspaces') }}</span>
             <div class="side-section-actions">
@@ -680,6 +719,8 @@ const showNewWorkspaceButton = false;
               @select-session="onSelectSession"
               @rename-session="(id, title) => emit('rename', id, title)"
               @archive-session="(id) => emit('archive', id)"
+              @pin-session="(id, color) => emit('pin', id, color)"
+              @unpin-session="(id) => emit('unpin', id)"
               @load-more="onLoadMore"
               @toggle-expand="toggleExpand"
               @ws-dragstart="onWsDragstart"
@@ -758,6 +799,8 @@ const showNewWorkspaceButton = false;
       :sessions="sessions"
       :active-id="activeId"
       @select="onSelectSession"
+      @pin="(id) => emit('pin', id)"
+      @unpin="(id) => emit('unpin', id)"
       @close="showSearch = false"
     />
   </aside>
@@ -988,6 +1031,15 @@ const showNewWorkspaceButton = false;
   display: flex;
   align-items: center;
   gap: 2px;
+}
+
+/* SDR-020: the global pinned section above the workspace list. It ends with a
+   hairline so the pinned block reads as its own shelf — the workspace groups
+   below start under a second section label. */
+.pinned-section {
+  padding-bottom: var(--space-2);
+  margin-bottom: var(--space-2);
+  border-bottom: 1px solid var(--color-line);
 }
 
 /* Workspace drag-to-reorder: a line at the top (drop-before) or bottom
