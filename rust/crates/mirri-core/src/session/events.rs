@@ -602,6 +602,24 @@ pub enum SessionEvent {
     #[serde(rename = "subagent_started")]
     SubagentStarted { subagent_id: String },
 
+    /// A dormant subagent was resumed and its new run is starting — the
+    /// `subagent.resumed` wire event.
+    ///
+    /// Distinct from [`Self::SubagentStarted`] because the two carry
+    /// different meanings for a client that already rendered this child: a
+    /// `started` frame can arrive late for a run that has already finished
+    /// (and must NOT revive a terminal row — ADR-010 ②), whereas a
+    /// `resumed` frame is a NEW run on an existing identity and is the one
+    /// signal that may legitimately move a settled row back to running.
+    #[serde(rename = "subagent_resumed")]
+    SubagentResumed {
+        subagent_id: String,
+        /// Whether this run was dispatched in the background — the child's
+        /// stored dispatch identity, not the resume call's input (a resume
+        /// carries no such flag).
+        run_in_background: bool,
+    },
+
     /// A subagent was suspended (parked for a later retry or awaiting a
     /// user decision — ADR-011). Published by
     /// [`SessionSubagentHost`](crate::subagent::SessionSubagentHost) when

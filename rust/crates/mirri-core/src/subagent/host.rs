@@ -114,6 +114,14 @@ struct ChildEntry {
     /// onto their flows (grandchildren inherit it the same way — the
     /// entry is the persistence point across the child's resume cycles).
     turn_origin: crate::permission::TurnOriginContext,
+    /// Whether the child's runs are dispatched in the background.
+    ///
+    /// Set from the SPAWN request (the only place the flag is ever given by
+    /// a caller) and then inherited by every later resume: the model's
+    /// documented resume form carries no `run_in_background`, so re-deriving
+    /// it from the resume call silently demotes a background child to a
+    /// foreground one. Survives the run, like `swarm_item` and `turn_origin`.
+    run_in_background: bool,
 }
 
 /// Production [`SubagentHost`] backed by [`SessionScope`].
@@ -469,7 +477,12 @@ impl SessionSubagentHost {
                     registration.model.clone(),
                 )
             };
-            self.adopt_child_entry(agent_id, profile_name, model);
+            self.adopt_child_entry(
+                agent_id,
+                profile_name,
+                model,
+                registration.run_in_background,
+            );
             adopted += 1;
         }
         tracing::debug!(
@@ -481,7 +494,13 @@ impl SessionSubagentHost {
     /// Register a single child into the host's children map (shared by
     /// [`Self::adopt_session_agents`] and the live-spawn path's counterpart),
     /// creating its `ChildEntry` with a fresh turn flow when absent.
-    fn adopt_child_entry(&self, agent_id: AgentId, profile_name: String, model: Option<String>) {
+    fn adopt_child_entry(
+        &self,
+        agent_id: AgentId,
+        profile_name: String,
+        model: Option<String>,
+        run_in_background: bool,
+    ) {
         let mut children = self.children.lock().unwrap_or_else(|e| e.into_inner());
         children
             .entry(agent_id.as_str().to_string())
@@ -530,6 +549,10 @@ impl SessionSubagentHost {
                     // lineage marker is a spawn-time fact, not persisted
                     // across restarts in batch 1).
                     turn_origin: crate::permission::TurnOriginContext::default(),
+                    // The dispatch identity IS persisted (the registration
+                    // op carries it) — an adopted child resumes as the
+                    // background subagent it was, or the dock loses it.
+                    run_in_background,
                 }
             });
     }
@@ -814,6 +837,9 @@ impl SubagentHost for SessionSubagentHost {
                     swarm_item: request.swarm_item.clone(),
                     activity: Arc::clone(&activity_tracker),
                     turn_origin: request.turn_origin.clone(),
+                    // The dispatch identity is decided HERE, once — every
+                    // later resume inherits it.
+                    run_in_background: request.run_in_background,
                 },
             );
         }
@@ -990,6 +1016,7 @@ impl SubagentHost for SessionSubagentHost {
                         swarm_item: registered_swarm_item.clone(),
                         parent_tool_call_id: request.parent_tool_call_id.clone(),
                         swarm_index: request.swarm_index,
+                        run_in_background: request.run_in_background,
                     })
                     .await;
 
@@ -1578,7 +1605,8 @@ impl SubagentHost for SessionSubagentHost {
             SubagentHandle::new(agent_id, request.profile_name, resolved_model, completion)
                 .with_activity(activity_tracker)
                 .with_wait_registry(child_registry)
-                .with_suspension_rx(suspension_rx),
+                .with_suspension_rx(suspension_rx)
+                .with_run_in_background(request.run_in_background),
         )
     }
 
@@ -1616,6 +1644,11 @@ impl SubagentHost for SessionSubagentHost {
         children.get(agent_id).is_some_and(|entry| entry.running)
     }
 
+    fn child_run_in_background(&self, agent_id: &str) -> Option<bool> {
+        let children = self.children.lock().unwrap_or_else(|e| e.into_inner());
+        children.get(agent_id).map(|entry| entry.run_in_background)
+    }
+
     fn claim_child_notification_turn(&self, agent_id: &str) -> Option<NotificationRunGuard> {
         // The claim is the atomic form of `is_child_running`'s probe (review
         // round 2, F1): take-and-set under the same map lock the spawn /
@@ -1640,7 +1673,7 @@ impl SubagentHost for SessionSubagentHost {
         //    concurrent second resume impossible — the pre-fix code had no
         //    running-state flag, so a mid-run resume queued a second turn on
         //    the same TurnFlow.
-        let (profile_name, model, turn_flow, activity, entry_origin) = {
+        let (profile_name, model, turn_flow, activity, entry_origin, entry_run_in_background) = {
             let mut children = self.children.lock().unwrap_or_else(|e| e.into_inner());
             let entry = children.get_mut(&request.agent_id).ok_or_else(|| {
                 EngineError::RequestInvalid(format!(
@@ -1663,6 +1696,10 @@ impl SubagentHost for SessionSubagentHost {
                 // S5: the entry's stored lineage rides the resume — a
                 // resumed lineage child keeps its origin for the new run.
                 entry.turn_origin.clone(),
+                // The dispatch identity rides the resume too: a background
+                // child stays a background child (the resume call itself
+                // carries no such flag).
+                entry.run_in_background,
             )
         };
         if let Ok(mut flow) = turn_flow.try_lock() {
@@ -1702,6 +1739,10 @@ impl SubagentHost for SessionSubagentHost {
         // its own copies for the hook/event payloads.
         let entry_profile_name = profile_name.clone();
         let entry_model = model.clone();
+        // `entry_run_in_background` (read under the children lock above)
+        // rides into the completion future as-is: the `subagent.started`
+        // this future publishes must describe the resumed run's real
+        // dispatch kind, and the handle reports the same value.
         // The engine's flag registry — travels as an owned Arc so the
         // `'static` completion future never borrows the host.
         let flag_registry = self.flag_registry.clone();
@@ -1766,11 +1807,17 @@ impl SubagentHost for SessionSubagentHost {
                 let resolved_model_str = entry_model.clone().unwrap_or_default();
 
                 // The resumed child is live again — announce the start on the
-                // session bus (the `subagent.started` wire event).
+                // session bus. A resume is a NEW run on an existing identity,
+                // so it announces `subagent.resumed` rather than
+                // `subagent.started`: the latter is also what a late/replayed
+                // frame publishes, and clients keep terminal rows sticky
+                // against it (ADR-010 ②). The dispatch identity rides along
+                // so the dock can put the child back in its background list.
                 publish_subagent_event(
                     &event_bus,
-                    SessionEvent::SubagentStarted {
+                    SessionEvent::SubagentResumed {
                         subagent_id: child_agent_id.clone(),
+                        run_in_background: entry_run_in_background,
                     },
                 );
 
@@ -2249,7 +2296,8 @@ impl SubagentHost for SessionSubagentHost {
         Ok(
             SubagentHandle::new(request.agent_id, profile_name, model, completion)
                 .with_activity(activity)
-                .with_suspension_rx(suspension_rx),
+                .with_suspension_rx(suspension_rx)
+                .with_run_in_background(entry_run_in_background),
         )
     }
 
@@ -4118,6 +4166,81 @@ mod tests {
         assert_eq!(
             stops, 2,
             "spawn + resume must both fire SubagentStop: {log}"
+        );
+    }
+
+    /// Given a subagent spawned with `run_in_background: true`, When it is
+    /// resumed, Then the resume publishes `subagent.resumed` carrying the
+    /// child's background identity — and NOT `subagent.started`, whose
+    /// terminal-stickiness meaning clients rely on (ADR-010 ②).
+    ///
+    /// This is the engine half of the dock contract: a client that already
+    /// rendered the child has a terminal row, and only a "new run on an
+    /// existing identity" frame may revive it. Re-publishing `spawned` would
+    /// lie about a creation, and re-publishing `started` would be
+    /// indistinguishable from a late frame.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn should_publish_subagent_resumed_with_the_background_identity_when_a_background_child_resumes()
+     {
+        let session = make_session(SessionScopeConfig::default());
+        let (host, bus) = make_running_host(&session);
+        let mut receiver = bus.subscribe();
+        // Spawn as a BACKGROUND child — the dispatcher's only chance to say so.
+        let mut handle = host
+            .spawn(SpawnRequest {
+                profile_name: "coder".to_string(),
+                prompt: "start".to_string(),
+                description: "background child".to_string(),
+                model: None,
+                cancel: CancelToken::new(),
+                run_in_background: true,
+                parent_tool_call_id: None,
+                swarm_index: None,
+                swarm_item: None,
+                suppress_rate_limit_failure_event: false,
+                turn_origin: Default::default(),
+            })
+            .unwrap();
+        let agent_id = handle.agent_id.clone();
+        (&mut handle.completion).await.expect("first run completes");
+
+        let mut resumed = host
+            .resume(ResumeRequest {
+                agent_id,
+                prompt: "continue".to_string(),
+                cancel: CancelToken::new(),
+                retry: false,
+                suppress_rate_limit_failure_event: false,
+            })
+            .expect("resume accepted");
+        (&mut resumed.completion)
+            .await
+            .expect("resumed run completes");
+
+        let mut saw_started_after_spawn = false;
+        let mut resumed_identity = None;
+        while let Ok(event) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv()).await
+        {
+            match event {
+                Ok(SessionEvent::SubagentStarted { .. }) => saw_started_after_spawn = true,
+                Ok(SessionEvent::SubagentResumed {
+                    run_in_background, ..
+                }) => {
+                    assert!(
+                        saw_started_after_spawn,
+                        "the spawn's own started frame precedes the resume"
+                    );
+                    resumed_identity = Some(run_in_background);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            resumed_identity,
+            Some(true),
+            "the resume must carry the child's background identity"
         );
     }
 

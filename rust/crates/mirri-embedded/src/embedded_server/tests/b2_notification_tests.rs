@@ -2314,6 +2314,7 @@ async fn should_deliver_a_notification_to_the_owning_agent_when_a_nested_subagen
             swarm_item: None,
             parent_tool_call_id: None,
             swarm_index: None,
+            run_in_background: false,
         })
         .await;
     let tasks = session.tasks();
@@ -2568,6 +2569,7 @@ async fn should_not_redeliver_a_subagent_notification_after_the_session_is_resum
             swarm_item: None,
             parent_tool_call_id: None,
             swarm_index: None,
+            run_in_background: false,
         })
         .await;
     // The child's journal slot must exist for the resume to rehydrate the
@@ -3147,6 +3149,7 @@ async fn should_not_re_park_a_pre_fix_subagent_notification_steer_into_main_on_r
             swarm_item: None,
             parent_tool_call_id: None,
             swarm_index: None,
+            run_in_background: false,
         })
         .await;
     // The child's journal slot must exist for the resume to rehydrate it.
@@ -3363,6 +3366,7 @@ async fn should_silently_reappend_a_notification_whose_steer_was_flushed_but_nev
             swarm_item: None,
             parent_tool_call_id: None,
             swarm_index: None,
+            run_in_background: false,
         })
         .await;
     // The child's journal slot must exist for the resume to rehydrate it.
@@ -3575,6 +3579,7 @@ async fn should_silently_reappend_undelivered_subagent_notifications_on_resume()
             swarm_item: None,
             parent_tool_call_id: None,
             swarm_index: None,
+            run_in_background: false,
         })
         .await;
     // The child's journal slot must exist for the resume to rehydrate the
@@ -4382,6 +4387,7 @@ async fn should_use_pinned_model_for_notification_turn_addressed_to_subagent() {
             swarm_item: None,
             parent_tool_call_id: None,
             swarm_index: None,
+            run_in_background: false,
         })
         .await;
     let tasks = session.tasks();

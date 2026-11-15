@@ -449,4 +449,15 @@ pub struct SubagentRegistration {
     /// The member's index inside its swarm batch, when applicable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub swarm_index: Option<u32>,
+    /// Whether the member's runs are dispatched in the background.
+    ///
+    /// Part of the child's IDENTITY, not of one dispatch: the model's
+    /// documented resume form carries no `run_in_background`, so a resumed
+    /// background child must recover the flag from here or it silently
+    /// becomes a foreground run (and disappears from the dock's
+    /// `runInBackground`-filtered list). Absent on journals written before
+    /// the field existed — those read as foreground, matching how they were
+    /// dispatched.
+    #[serde(rename = "runInBackground", default)]
+    pub run_in_background: bool,
 }

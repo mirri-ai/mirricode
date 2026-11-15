@@ -800,6 +800,12 @@ pub enum WireOp {
         /// The member's index inside its swarm batch (swarm members only).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         swarm_index: Option<u32>,
+        /// Whether the member's runs are dispatched in the background — part
+        /// of the identity, so a resume recovers it after a restart. Absent
+        /// on journals written before the field existed (those read as
+        /// foreground, matching how they were dispatched).
+        #[serde(rename = "runInBackground", default)]
+        run_in_background: bool,
     },
 
     // ── Forward compatibility ──────────────────────────────────────────

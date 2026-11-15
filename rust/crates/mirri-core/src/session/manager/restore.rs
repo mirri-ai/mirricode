@@ -2200,6 +2200,7 @@ mod tests {
             swarm_item: None,
             parent_tool_call_id: None,
             swarm_index: None,
+            run_in_background: false,
         });
 
         // When the subagent roster is restored (its agent stays dormant), then
@@ -2287,6 +2288,7 @@ mod tests {
             swarm_item: None,
             parent_tool_call_id: None,
             swarm_index: None,
+            run_in_background: false,
         });
 
         // When the subagent roster is restored (lazy: only the registry is
@@ -2360,6 +2362,7 @@ mod tests {
             swarm_item: None,
             parent_tool_call_id: None,
             swarm_index: None,
+            run_in_background: false,
         });
 
         // When the subagent is restored
@@ -2420,6 +2423,7 @@ mod tests {
             swarm_item: None,
             parent_tool_call_id: None,
             swarm_index: None,
+            run_in_background: false,
         });
         state.permission.mode = "auto".to_string();
 
@@ -2506,6 +2510,7 @@ mod tests {
             swarm_item: None,
             parent_tool_call_id: None,
             swarm_index: None,
+            run_in_background: false,
         });
 
         // When the subagents are restored (scan-only ceiling)
@@ -2618,6 +2623,7 @@ mod tests {
             swarm_item: None,
             parent_tool_call_id: None,
             swarm_index: None,
+            run_in_background: false,
         });
 
         // When the roster is restored and the child hydrated
@@ -2694,6 +2700,7 @@ mod tests {
             swarm_item: None,
             parent_tool_call_id: None,
             swarm_index: None,
+            run_in_background: false,
         });
         restore_subagents(&session, &state, &persistence, None).await;
 

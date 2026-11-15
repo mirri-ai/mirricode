@@ -2359,6 +2359,7 @@ impl SessionManager {
                     swarm_item,
                     parent_tool_call_id,
                     swarm_index,
+                    run_in_background,
                 } => {
                     registered_children.push(mirri_proto::SubagentRegistration {
                         agent_id: child_id,
@@ -2369,6 +2370,7 @@ impl SessionManager {
                         swarm_item,
                         parent_tool_call_id,
                         swarm_index,
+                        run_in_background,
                     });
                 }
                 foldable => {

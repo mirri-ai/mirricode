@@ -742,6 +742,7 @@ pub fn apply_with_limits(
             swarm_item,
             parent_tool_call_id,
             swarm_index,
+            run_in_background,
         } => {
             // Upsert by agent id — the latest registration of an identity
             // wins (a re-registration is a metadata change; the child's
@@ -755,6 +756,7 @@ pub fn apply_with_limits(
                 swarm_item: swarm_item.clone(),
                 parent_tool_call_id: parent_tool_call_id.clone(),
                 swarm_index: *swarm_index,
+                run_in_background: *run_in_background,
             };
             match state
                 .subagents
@@ -3598,6 +3600,7 @@ mod tests {
             swarm_item: None,
             parent_tool_call_id: Some("call-1".to_string()),
             swarm_index: None,
+            run_in_background: false,
         };
         state = reduce(&state, &first).0;
         state = reduce(
@@ -3611,6 +3614,7 @@ mod tests {
                 swarm_item: Some("batch-a".to_string()),
                 parent_tool_call_id: None,
                 swarm_index: Some(1),
+                run_in_background: false,
             },
         )
         .0;
@@ -3626,6 +3630,7 @@ mod tests {
                 swarm_item: None,
                 parent_tool_call_id: None,
                 swarm_index: None,
+                run_in_background: false,
             },
         )
         .0;
