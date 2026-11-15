@@ -161,7 +161,7 @@ pub fn fold_turn_usages(ops: &[WireOp]) -> TurnUsageFold {
                     bracket.opener = Some(TurnOpener {
                         turn_key: bracket.record.turn_key.clone(),
                         bracket: bracket.record.bracket,
-                        origin: message.get("origin").cloned().unwrap_or(Value::Null),
+                        origin: normalize_origin(message.get("origin")),
                         content_sig: content_signature(message.get("content")),
                     });
                 }
@@ -507,6 +507,21 @@ fn row_signature(message: &crate::context::ContextMessage) -> Option<(Value, Val
     let origin = serde_json::to_value(message.origin.as_ref()?).ok()?;
     let content = serde_json::to_value(&message.message.content).ok()?;
     Some((origin, content_signature(Some(&content))))
+}
+
+/// Normalize a wire message origin to the `PromptOrigin` enum's canonical
+/// serialization, so the opener↔row match compares at the enum's identity
+/// level. The wire stamps fire metadata onto cron origins (jobId, cron,
+/// coalescedCount, …) that the unit `CronJob` variant does not carry — raw-JSON
+/// equality against the enum round-trip can never hold for those. Unparseable
+/// origins keep their raw value (dirty data compares byte-wise, as before).
+fn normalize_origin(raw: Option<&Value>) -> Value {
+    match raw {
+        None => Value::Null,
+        Some(value) => serde_json::from_value::<crate::origin::PromptOrigin>(value.clone())
+            .map(|origin| serde_json::to_value(&origin).unwrap_or(Value::Null))
+            .unwrap_or_else(|_| value.clone()),
+    }
 }
 
 #[cfg(test)]
@@ -974,6 +989,44 @@ mod tests {
         // Then: both land on the same last-assistant row
         assert_eq!(durations.get(&2), Some(&1200));
         assert_eq!(ended_ats.get(&2), Some(&1730000000000));
+    }
+
+    #[test]
+    fn should_attribute_the_assistant_row_of_a_cron_turn_when_the_wire_origin_carries_fire_metadata(
+    ) {
+        // The scheduled-fire write stamps the FULL fire metadata onto the
+        // message origin (jobId / cron / coalescedCount / …), while
+        // `PromptOrigin::CronJob` is a unit variant whose canonical
+        // serialization is just `{"kind":"cron_job"}`. The opener↔row match
+        // must compare at the enum's identity level — raw-JSON equality can
+        // never hold here, and the turn's usage/duration rows go unattributed
+        // (the cold-open "totals show, per-turn usage missing" symptom).
+        let fire_origin = json!({
+            "kind": "cron_job",
+            "jobId": "cron-01",
+            "cron": "* * * * *",
+            "recurring": true,
+            "coalescedCount": 1,
+            "stale": false,
+            "maxFires": false,
+        });
+        let ops = vec![
+            turn_prompt("hi"),
+            user_append("hi", fire_origin),
+            step_end(100, 50, 1000, 200),
+            turn_ended(1, Some(800), Some(1730000000000)),
+        ];
+        let fold = fold_turn_usages(&ops);
+        let mut row = ContextMessage::from_message(Message::user("hi"));
+        row.origin = Some(PromptOrigin::CronJob);
+        row.entry_seq = 1;
+        let history = vec![row, assistant_row(2, "done")];
+        let assignment = assign_turn_rows(&fold, &history);
+        assert_eq!(
+            assignment.prompt_ids.get(&2).map(String::as_str),
+            Some("turn-1"),
+            "the cron turn's assistant row must attribute: {assignment:?}"
+        );
     }
 
     #[test]
