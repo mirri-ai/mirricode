@@ -13,8 +13,15 @@
 // shape (`isOneOffCandidate`); comparing ends.date against the
 // preview's t0 (and the recurring derivation from it) is the form
 // layer's job (batch 8), which owns the t0 truth.
+//
+// Round-trip symmetry (the 保存后回显 defect): `compileSchedule` and
+// `scheduleFromExpression` are the two directions of ONE mapping, so a
+// stored rule reopens in the shape the user entered it in — a preset stays a
+// preset, a field rule stays a field rule, and only a genuinely
+// un-representable expression falls back to the advanced (raw) form.
 
 import type { AppCronInterval } from '../api/types';
+import { humanizeCron } from './cronHumanize';
 
 /** A wall-clock time `HH:MM` (0-23 : 0-59, zero-padded). */
 export type ClockTime = string;
@@ -67,6 +74,9 @@ export type CronSchedule =
       ends: ScheduleEnds;
     };
 
+/** The custom-rule branch of the union (the dialog's scratch editor value). */
+export type CustomSchedule = Extract<CronSchedule, { kind: 'custom' }>;
+
 /** The compiled submission value (ADR-016 §1.3): a cron preset
  * translates into an expression; a custom interval stays the structured
  * spec (never a pseudo-expression). `endBoundary` carries the ends date
@@ -80,6 +90,22 @@ export type CompiledSchedule =
     };
 
 type Translator = (key: string, params?: Record<string, unknown>) => string;
+
+/** The field-mode unit the picker's dialog offers, with its inclusive pick
+ *  bounds (minute 0 / hour 0 are VALID picks). */
+type ScheduleFieldUnit = NonNullable<CustomSchedule['field']>['unit'];
+
+const PICK_BOUNDS: Record<ScheduleFieldUnit, { min: number; max: number }> = {
+  'minute-of-hour': { min: 0, max: 59 },
+  'hour-of-day': { min: 0, max: 23 },
+  'day-of-month': { min: 1, max: 31 },
+  'day-of-week': { min: 1, max: 7 },
+};
+
+/** The neutral wall-clock time a field rule carries when its unit has no time
+ *  of its own (a minute-of-hour / hour-of-day rule). Keeping an explicit value
+ *  means switching the unit inside the dialog stays coherent. */
+const DEFAULT_FIELD_TIME: ClockTime = '09:00';
 
 const DAY_KEYS: Record<number, string> = {
   1: 'settings.cronRuleWeekdayShort_1',
@@ -286,84 +312,245 @@ export function scheduleTimezoneLabel(timezone: string): string {
   return trimmed === '' ? 'UTC' : trimmed;
 }
 
-/** The readable description (ADR-016 §1.4 / R4): generated from the
- * STRUCTURE, never parsed back from the expression — the same value
- * `compileSchedule` consumes, so 所选 → 提交值 → 描述 are one source.
- * The timezone rides as a visible prefix (VU8); the one-off phrasing
- * (ends day === first fire day) is the CALLER's composition on top of
- * the preview t0 — this layer only states the inclusive end
- * ("…until X, inclusive") when an end date is set. */
+function isPlainNumber(field: string): boolean {
+  return /^\d+$/.test(field);
+}
+
+/** The comma list of one field as numbers, or null when any pick is not an
+ * integer inside `[min, max]` (an out-of-range pick must never be rounded
+ * into a preset). */
+function parsePickerList(field: string, min: number, max: number): number[] | null {
+  if (!/^\d+(,\d+)*$/.test(field)) return null;
+  const picks = [...new Set(field.split(',').map(Number))].toSorted((a, b) => a - b);
+  return picks.every((pick) => pick >= min && pick <= max) ? picks : null;
+}
+
+function clockOf(hour: number, minute: number): ClockTime {
+  return `${pad2(hour)}:${pad2(minute)}`;
+}
+
+/** The picker shape a stored cron expression stands for — the INVERSE of
+ *  `compileSchedule` (R4 显示=实际, echo side). Everything `compileSchedule`
+ *  can emit comes back as the shape that produced it: the six presets as
+ *  presets, a field rule as its structured options. An expression with no
+ *  structured equivalent (every-minute, step values, month filters, a
+ *  day-of-week list that is byte-identical to the weekly preset) answers null,
+ *  and the caller keeps it in the advanced (raw) form.
+ *
+ *  `ends` is always `never` here: the end date is the task's own field, not a
+ *  property of the expression — `scheduleFromTask` folds it in. */
+export function scheduleFromExpression(expr: string): CronSchedule | null {
+  const fields = expr.trim().split(/\s+/);
+  if (fields.length !== 5) return null;
+  const [minute, hour, dom, month, dow] = fields as [string, string, string, string, string];
+  // A month filter has no picker equivalent at all.
+  if (month !== '*') return null;
+
+  const ends: ScheduleEnds = { kind: 'never' };
+  const fieldRule = (
+    unit: ScheduleFieldUnit,
+    picks: number[],
+    time: ClockTime = DEFAULT_FIELD_TIME,
+  ): CustomSchedule => ({
+    kind: 'custom',
+    mode: 'field',
+    field: { unit, picks, time },
+    ends,
+  });
+
+  if (!isPlainNumber(minute)) {
+    // A minute pick list over every hour — 按字段重复 › 每小时几分.
+    const picks = parsePickerList(minute, PICK_BOUNDS['minute-of-hour'].min, PICK_BOUNDS['minute-of-hour'].max);
+    if (picks === null || picks.length < 2 || hour !== '*' || dom !== '*' || dow !== '*') return null;
+    return fieldRule('minute-of-hour', picks);
+  }
+  const minuteNumber = Number(minute);
+  if (minuteNumber > 59) return null;
+
+  if (hour === '*') {
+    // `M * * * *` — the 每小时 preset (the minute list case is handled above,
+    // so a single minute here is unambiguous).
+    return dom === '*' && dow === '*' ? { kind: 'hourly', minute: minuteNumber } : null;
+  }
+
+  if (!isPlainNumber(hour)) {
+    // An hour pick list fires at :00 of each picked hour.
+    const picks = parsePickerList(hour, PICK_BOUNDS['hour-of-day'].min, PICK_BOUNDS['hour-of-day'].max);
+    if (picks === null || picks.length < 2 || minuteNumber !== 0 || dom !== '*' || dow !== '*') return null;
+    return fieldRule('hour-of-day', picks);
+  }
+  const hourNumber = Number(hour);
+  if (hourNumber > 23) return null;
+  const time = clockOf(hourNumber, minuteNumber);
+
+  if (dow === '*') {
+    if (dom === '*') return { kind: 'daily', time };
+    if (!isPlainNumber(dom)) {
+      // A day-of-month pick list — 按字段重复 › 每月几号.
+      const picks = parsePickerList(dom, PICK_BOUNDS['day-of-month'].min, PICK_BOUNDS['day-of-month'].max);
+      if (picks === null || picks.length < 2) return null;
+      return fieldRule('day-of-month', picks, time);
+    }
+    const day = Number(dom);
+    if (day < 1 || day > 31) return null;
+    return { kind: 'monthly', day, time };
+  }
+
+  if (dom !== '*') return null;
+  if (dow === '1-5') return { kind: 'weekday', time };
+  const days = parsePickerList(dow, PICK_BOUNDS['day-of-week'].min, PICK_BOUNDS['day-of-week'].max);
+  // `parsePickerList` already range-checks; the weekly preset is the simpler
+  // of the two equivalent shapes (a day-of-week list compiles identically).
+  return days === null ? null : { kind: 'weekly', days, time };
+}
+
+/** A plain-data deep copy of a schedule value.
+ *
+ *  The pickers' models are Vue reactive (a deep Proxy), and a dialog writing
+ *  through `v-model` can hand a NESTED proxy back into a ref — so the copy
+ *  must be made without `structuredClone`, which throws `DataCloneError` on a
+ *  Proxy (the reported 自定义规则确认后不生效). A `CronSchedule` is
+ *  JSON-serializable pure data by contract, so one JSON round-trip is an exact
+ *  copy: nested proxies are flattened, absent optionals stay absent, and the
+ *  result is always cloneable again. */
+export function cloneScheduleData<T extends CronSchedule>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+/** Fold the custom dialog's scratch state into the rule it confirms (A8).
+ *
+ *  Pure so the dialog has no logic of its own: the picks text is parsed into
+ *  `field.picks` (valid numbers inside the unit's bounds, de-duplicated and
+ *  sorted), and a non-empty Advanced expression wins over the structured
+ *  options (confirming switches the mode to `raw`). The answer is plain data —
+ *  the model must never hold a proxy. */
+export function confirmCustomDraft(
+  draft: CustomSchedule,
+  picksText: string,
+  rawText: string,
+): CustomSchedule {
+  const value = cloneScheduleData(draft);
+  const expr = rawText.trim();
+  // A non-empty expression wins over the structured options: in raw mode it
+  // IS the rule (the mirror is the textarea's source of truth), and in field
+  // mode it is the Advanced fold (confirm switches to raw).
+  if (value.mode === 'raw') {
+    value.raw = { expr };
+  } else if (value.mode === 'field' && expr !== '') {
+    value.mode = 'raw';
+    value.raw = { expr };
+  }
+  if (value.mode === 'field') {
+    const field = value.field ?? { unit: 'day-of-week' as const, picks: [1], time: DEFAULT_FIELD_TIME };
+    const bounds = PICK_BOUNDS[field.unit];
+    const picks = [
+      ...new Set(
+        picksText
+          .split(',')
+          .map((pick) => Number(pick.trim()))
+          .filter((pick) => Number.isInteger(pick) && pick >= bounds.min && pick <= bounds.max),
+      ),
+    ].toSorted((a, b) => a - b);
+    value.field = { ...field, picks };
+  }
+  if (value.mode === 'raw' && value.raw === undefined && expr !== '') {
+    value.raw = { expr };
+  }
+  // A mode switch seeds every sub-option slot; an empty expression in a
+  // structured mode carries no meaning, so it stays ABSENT (the wire's
+  // absent-key convention) instead of riding an empty `raw` object.
+  if (value.mode !== 'raw' && (value.raw?.expr.trim() ?? '') === '') {
+    delete value.raw;
+  }
+  return value;
+}
+
+/** The readable RULE sentence (ADR-016 §1.4 / R4) — the words alone, without
+ *  the zone prefix and without the end note. Every surface that shows a rule
+ *  (the picker's live sentence, the task card's frequency line) reads THIS,
+ *  so what a preview says while typing is exactly what the card says later.
+ *
+ *  A raw expression is humanized when the humanizer recognizes it
+ *  (`* * * * *` → 每分钟) and shows the expression only when it cannot — the
+ *  honest fallback, never a wrong friendly label. */
+export function describeScheduleRule(schedule: CronSchedule, t: Translator): string {
+  switch (schedule.kind) {
+    case 'hourly':
+      return t('settings.cronRuleDescHourly', { minute: `:${pad2(schedule.minute)}` });
+    case 'daily':
+      return t('settings.cronRuleDescDaily', { time: schedule.time });
+    case 'weekday':
+      return t('settings.cronRuleDescWeekday', { time: schedule.time });
+    case 'weekly':
+      return schedule.days.length === 0
+        ? t('settings.cronRuleDescWeeklyNoDays')
+        : t('settings.cronRuleDescWeekly', {
+            days: [...schedule.days]
+              .toSorted((a, b) => a - b)
+              .map((d) => weekdayLabel(d, t))
+              .join(', '),
+            time: schedule.time,
+          });
+    case 'monthly':
+      return t('settings.cronRuleDescMonthly', { day: schedule.day, time: schedule.time });
+    case 'custom': {
+      if (schedule.mode === 'interval') {
+        const interval = schedule.interval;
+        if (interval === undefined) return t('settings.cronRuleDescCustom');
+        return interval.every === 1 && (interval.unit === 'day' || interval.unit === 'week')
+          ? // SDR-116: every=1 reads the natural word (每天/每周), never 「每 1 天」.
+            t(
+              interval.unit === 'day'
+                ? 'settings.cronRuleDescIntervalEveryOne'
+                : 'settings.cronRuleDescIntervalEveryOneWeek',
+              { time: interval.time },
+            )
+          : t('settings.cronRuleDescInterval', {
+              every: interval.every,
+              unit: t(`settings.cronRuleIntervalUnit_${interval.unit}`),
+              time: interval.time,
+            });
+      }
+      if (schedule.mode === 'raw') {
+        const expr = schedule.raw?.expr ?? '';
+        // R5's honest fallback — the same principle humanizeCron applies: an
+        // expression the humanizer can read says so in words (每分钟), and one
+        // it cannot shows the truth, never a wrong friendly label.
+        const humanized = humanizeCron(expr, t);
+        return humanized === expr
+          ? t('settings.cronRuleDescRaw', { expr })
+          : humanized;
+      }
+      const field = schedule.field;
+      return field === undefined
+        ? t('settings.cronRuleDescCustom')
+        : describeFieldMode(field, t);
+    }
+  }
+}
+
+/** The inclusive-end note of a rule (`…（至 DATE 止，含当日）`), or '' when the
+ *  rule has no end date. Presets carry no ends of their own — only the custom
+ *  branch has the slot. */
+export function describeScheduleEnds(schedule: CronSchedule, t: Translator): string {
+  return schedule.kind === 'custom' && schedule.ends.kind === 'on'
+    ? t('settings.cronRuleDescEndsOn', { date: schedule.ends.date })
+    : '';
+}
+
+/** The readable description (ADR-016 §1.4 / R4): the rule sentence with the
+ *  timezone as a visible prefix (VU8) and the inclusive end note. The one-off
+ *  phrasing (ends day === first fire day) is the CALLER's composition on top
+ *  of the preview t0 — this layer only states the inclusive end. */
 export function describeSchedule(
   schedule: CronSchedule,
   timezone: string,
   t: Translator,
 ): string {
   const tz = scheduleTimezoneLabel(timezone);
-  let core: string;
-  switch (schedule.kind) {
-    case 'hourly':
-      core = t('settings.cronRuleDescHourly', { minute: `:${pad2(schedule.minute)}` });
-      break;
-    case 'daily':
-      core = t('settings.cronRuleDescDaily', { time: schedule.time });
-      break;
-    case 'weekday':
-      core = t('settings.cronRuleDescWeekday', { time: schedule.time });
-      break;
-    case 'weekly':
-      core =
-        schedule.days.length === 0
-          ? t('settings.cronRuleDescWeeklyNoDays')
-          : t('settings.cronRuleDescWeekly', {
-              days: [...schedule.days]
-                .toSorted((a, b) => a - b)
-                .map((d) => weekdayLabel(d, t))
-                .join(', '),
-              time: schedule.time,
-            });
-      break;
-    case 'monthly':
-      core = t('settings.cronRuleDescMonthly', { day: schedule.day, time: schedule.time });
-      break;
-    case 'custom': {
-      if (schedule.mode === 'interval') {
-        const interval = schedule.interval;
-        core =
-          interval === undefined
-            ? t('settings.cronRuleDescCustom')
-            : interval.every === 1 && (interval.unit === 'day' || interval.unit === 'week')
-              ? // SDR-116: every=1 reads the natural word (每天/每周), never 「每 1 天」.
-                t(
-                  interval.unit === 'day'
-                    ? 'settings.cronRuleDescIntervalEveryOne'
-                    : 'settings.cronRuleDescIntervalEveryOneWeek',
-                  { time: interval.time },
-                )
-              : t('settings.cronRuleDescInterval', {
-                  every: interval.every,
-                  unit: t(`settings.cronRuleIntervalUnit_${interval.unit}`),
-                  time: interval.time,
-                });
-      } else if (schedule.mode === 'raw') {
-        // R5's honest fallback — the same principle humanizeCron applies:
-        // an unrecognizable shape shows the truth (the raw expression),
-        // never a wrong friendly label.
-        core = t('settings.cronRuleDescRaw', { expr: schedule.raw?.expr ?? '' });
-      } else {
-        const field = schedule.field;
-        core =
-          field === undefined
-            ? t('settings.cronRuleDescCustom')
-            : describeFieldMode(field, t);
-      }
-      break;
-    }
-  }
-  const endsSuffix =
-    schedule.kind === 'custom' && schedule.ends.kind === 'on'
-      ? ` ${t('settings.cronRuleDescEndsOn', { date: schedule.ends.date })}`
-      : '';
-  return `${tz} ${core}${endsSuffix}`;
+  const ends = describeScheduleEnds(schedule, t);
+  const endsSuffix = ends === '' ? '' : ` ${ends}`;
+  return `${tz} ${describeScheduleRule(schedule, t)}${endsSuffix}`;
 }
 
 function describeFieldMode(

@@ -33,7 +33,8 @@ const props = defineProps<{
   models: AppModel[];
   /** The parent's (submitting) flag for the edit save. */
   saving: boolean;
-  /** Bumped by the parent after any mutation so the history reloads. */
+  /** Bumped by the parent after any mutation (once its reload answered) so
+   *  the settings form remounts from the fresh row and the history reloads. */
   refreshKey: number;
 }>();
 
@@ -57,8 +58,10 @@ const tab = ref<'settings' | 'history'>('settings');
 const status = computed(() => scheduledTaskStatus(props.task));
 const title = computed(() => props.task.title ?? t('settings.scheduledTaskUntitled'));
 
-/** The edit form's initial draft — rebuilt from the task each time the task
- *  row changes (a save or pause answers the fresh row). */
+/** The edit form's initial draft — rebuilt from the task row, so a remount
+ *  (the parent's `refreshKey` bump after a reload) starts from the SAVED
+ *  values. The form itself keeps a local copy while it is mounted; only this
+ *  key change re-seeds it. */
 const initialDraft = computed(() => draftFromTask(props.task, localTimezone()));
 
 // -------------------------------------------------------------------------

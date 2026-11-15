@@ -15,7 +15,14 @@ import type {
   AppCronTask,
   AppCronTaskInput,
 } from '../api/types';
-import { compileSchedule, isOneOffCandidate, scheduleComplete, type CronSchedule } from './cronSchedule';
+import {
+  compileSchedule,
+  isOneOffCandidate,
+  scheduleComplete,
+  scheduleFromExpression,
+  type CronSchedule,
+  type ScheduleEnds,
+} from './cronSchedule';
 
 // ---------------------------------------------------------------------------
 // The task list
@@ -206,6 +213,17 @@ export const EMPTY_CRON_DRAFT: CronCreateDraft = {
   effort: '',
 };
 
+/** A plain-data deep copy of a draft — the form owns a local copy of what the
+ *  parent prefilled (cancel discards it). The parent's draft is reactive and
+ *  its schedule may already hold nested proxies (the picker writes chunks
+ *  back through `v-model`), so the copy cannot be `structuredClone` (it throws
+ *  `DataCloneError` on a Proxy) nor a shallow spread. A draft is
+ *  JSON-serializable pure data by contract, so one round-trip is an exact,
+ *  always-cloneable copy. */
+export function cloneCronDraft(draft: CronCreateDraft): CronCreateDraft {
+  return JSON.parse(JSON.stringify(draft)) as CronCreateDraft;
+}
+
 /** A fresh draft with the timezone pre-filled as the user's local zone (the
  *  default is a VISIBLE value the user can see and change) and the page's
  *  workspace preset (A2: the workspace comes from the workspace list — the
@@ -226,9 +244,10 @@ export function newCronDraft(workspaceId: string): CronCreateDraft {
  *  never an empty picker that would silently re-anchor it. */
 export function draftFromTask(task: AppCronTask, fallbackTimezone = ''): CronCreateDraft {
   return {
-    // A task persisted before the structured picker (or one whose shape the
-    // picker cannot reproduce) opens with the raw expression — the advanced
-    // path stays honest rather than guessing a preset.
+    // The rule reopens in the representation it was entered in (preset /
+    // interval / field / advanced) — `scheduleFromTask` is the inverse of the
+    // form's compile step, so the echo is never a 自定义 label the user did
+    // not pick.
     schedule: scheduleFromTask(task),
     prompt: task.prompt,
     timezone: task.timezone?.trim() || fallbackTimezone,
@@ -241,14 +260,20 @@ export function draftFromTask(task: AppCronTask, fallbackTimezone = ''): CronCre
   };
 }
 
-/** The schedule the picker opens with for an existing task: its interval
- *  spec when it has one, else its expression in the advanced (raw) custom
- *  shape; the end date rides along when set. */
+/** The schedule the picker opens with for an existing task (A9 echo). The
+ *  stored value must reopen in the SAME representation it was entered in, so
+ *  the projection is the inverse of `compileSchedule`:
+ *  - an interval spec → the custom interval shape;
+ *  - an expression one of the six presets compiles to → that preset;
+ *  - an expression a field rule compiles to → that structured field rule;
+ *  - anything else → the advanced (raw) expression, shown in human words when
+ *    the humanizer reads it (`* * * * *` → 每分钟) instead of a bare 自定义.
+ *  The end date rides along when set — it belongs to the task, not the rule. */
 function scheduleFromTask(task: AppCronTask): CronSchedule | null {
-  const ends =
+  const ends: ScheduleEnds =
     task.endsAt !== undefined && task.endsAt !== null && task.endsAt !== ''
-      ? ({ kind: 'on', date: task.endsAt } as const)
-      : ({ kind: 'never' } as const);
+      ? { kind: 'on', date: task.endsAt }
+      : { kind: 'never' };
   if (task.interval) {
     return {
       kind: 'custom',
@@ -266,7 +291,32 @@ function scheduleFromTask(task: AppCronTask): CronSchedule | null {
     };
   }
   if (task.cron.trim() === '') return null;
-  return { kind: 'custom', mode: 'raw', raw: { expr: task.cron }, ends };
+  const rebuilt = scheduleFromExpression(task.cron);
+  if (rebuilt === null) {
+    return { kind: 'custom', mode: 'raw', raw: { expr: task.cron.trim() }, ends };
+  }
+  // A preset carries no ends of its own (only the custom branch has the slot),
+  // and the picker's preset editing has no end control either — an ended
+  // preset expression therefore stays in the custom shape so the end date
+  // survives the round trip instead of being silently dropped.
+  if (ends.kind === 'on') {
+    return rebuilt.kind === 'custom'
+      ? { ...rebuilt, ends }
+      : { ...rawOf(rebuilt), ends };
+  }
+  return rebuilt;
+}
+
+/** The advanced form of a rule (used when a preset expression has to keep an
+ *  end date, which the preset branches cannot carry). */
+function rawOf(schedule: CronSchedule): Extract<CronSchedule, { kind: 'custom' }> {
+  const compiled = compileSchedule(schedule, '');
+  return {
+    kind: 'custom',
+    mode: 'raw',
+    raw: { expr: compiled.type === 'cron' ? compiled.cron : '' },
+    ends: { kind: 'never' },
+  };
 }
 
 /** Whether the draft can be submitted: a complete schedule and a prompt are
