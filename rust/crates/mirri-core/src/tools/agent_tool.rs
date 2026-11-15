@@ -328,14 +328,25 @@ impl Tool for AgentTool {
                     // task (the WaitingSubagent probe falls back to it
                     // when the child's activity clock is frozen).
                     let child_wait_registry = handle.wait_registry.clone();
-                    // The DISPATCH identity, decided by the host: for a
-                    // resume this is the child's original background
-                    // identity (the resume call itself carries no flag), so
-                    // reading it from the call input would demote a
-                    // background child to the foreground on every resume —
-                    // which is exactly what hid resumed subagents from the
-                    // dock's `runInBackground`-filtered task list.
-                    let run_in_background = handle.run_in_background;
+                    // The DISPATCH identity of THIS run.
+                    //
+                    // A spawn carries it in the call input — that is the value
+                    // this tool put into the `SpawnRequest`, so the input is
+                    // authoritative (a host's handle echo is a convenience,
+                    // not a second source of truth).
+                    //
+                    // A resume does NOT: the documented resume form has only
+                    // `prompt`/`description`/`resume`, so only the host knows
+                    // what the child was dispatched as. Reading the input
+                    // there demoted a background child to the foreground —
+                    // which is what hid resumed subagents from the dock's
+                    // `runInBackground`-filtered task list, and silently
+                    // changed their supervision.
+                    let run_in_background = if resume.is_some() {
+                        handle.run_in_background
+                    } else {
+                        run_in_background
+                    };
 
                     let mut task = SubagentTask::new(handle, task_desc, child_cancel.clone());
 
