@@ -432,10 +432,11 @@ export function confirmCustomDraft(
   const value = cloneScheduleData(draft);
   const expr = rawText.trim();
   // A non-empty expression wins over the structured options: in raw mode it
-  // IS the rule (the mirror is the textarea's source of truth), and in field
-  // mode it is the Advanced fold (confirm switches to raw).
+  // IS the rule (the mirror is the textarea's source of truth, with the
+  // draft's slot as its fallback), and in field mode it is the Advanced fold
+  // (confirm switches to raw).
   if (value.mode === 'raw') {
-    value.raw = { expr };
+    value.raw = { expr: expr !== '' ? expr : value.raw?.expr ?? '' };
   } else if (value.mode === 'field' && expr !== '') {
     value.mode = 'raw';
     value.raw = { expr };
