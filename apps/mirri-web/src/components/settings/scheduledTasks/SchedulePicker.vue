@@ -9,7 +9,7 @@
      visible, clickable prefix. The prediction timeline is the FORM's
      business (ScheduledTaskForm renders it from the emitted preview). -->
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, toRaw, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { getMirriWebApi } from '../../../api';
 import Button from '../../ui/Button.vue';
@@ -19,11 +19,15 @@ import IconButton from '../../ui/IconButton.vue';
 import Input from '../../ui/Input.vue';
 import Select from '../../ui/Select.vue';
 import {
+  cloneScheduleData,
   compileSchedule,
-  describeSchedule,
+  confirmCustomDraft,
+  describeScheduleEnds,
+  describeScheduleRule,
   newSchedule,
   scheduleComplete,
   type CronSchedule,
+  type CustomSchedule,
   type ScheduleEnds,
   type ScheduleKind,
 } from '../../../lib/cronSchedule';
@@ -124,8 +128,6 @@ function toggleWeekday(day: number): void {
 
 // --- the custom rule editor (A8: opens the moment 自定义 is picked) -------
 
-type CustomSchedule = Extract<CronSchedule, { kind: 'custom' }>;
-
 /** The editor's scratch copy — cancel discards, confirm writes back (the
  *  in-dialog edits never touch the model until confirmed). */
 const customDraft = ref<CustomSchedule | null>(null);
@@ -134,23 +136,13 @@ const customPicksText = ref('');
 /** The raw-expression text mirror (field mode's Advanced fold). */
 const customRawText = ref('');
 
-/** The per-unit inclusive pick bounds (minute 0 / hour 0 are VALID picks). */
-const PICK_BOUNDS: Record<CustomScheduleFieldUnit, { min: number; max: number }> = {
-  'minute-of-hour': { min: 0, max: 59 },
-  'hour-of-day': { min: 0, max: 23 },
-  'day-of-month': { min: 1, max: 31 },
-  'day-of-week': { min: 1, max: 7 },
-};
-type CustomScheduleFieldUnit = NonNullable<CustomSchedule['field']>['unit'];
-
 function openCustomDialog(): void {
   const current = schedule.value;
   if (current === null || current.kind !== 'custom') return;
-  // The model reads the parent's reactive draft (a Proxy that structuredClone
-  // refuses to clone) — unwrap to the plain object before copying it. Only
-  // the top layer needs unwrapping: the write-back in onCustomConfirm now
-  // deep-copies, so the model never holds nested proxies.
-  customDraft.value = structuredClone(toRaw(current));
+  // The model is a deep reactive Proxy and the dialog writes through nested
+  // v-models, so its own slots may be Proxies too — `structuredClone` refuses
+  // those (DataCloneError), while `cloneScheduleData` flattens every layer.
+  customDraft.value = cloneScheduleData(current);
   customPicksText.value = (current.field?.picks ?? []).join(',');
   customRawText.value = current.raw?.expr ?? '';
   customOpen.value = true;
@@ -159,34 +151,10 @@ function openCustomDialog(): void {
 function onCustomConfirm(): void {
   const draft = customDraft.value;
   if (draft === null) return;
-  // A deep copy of the reactive scratch draft: the shallow spread keeps the
-  // nested `ends` / `raw` / `field` objects as reactive proxies, and the model
-  // must never hold nested proxies (a later reopen re-clones the value with
-  // `structuredClone`, which cannot clone a proxy).
-  const value: CustomSchedule = structuredClone(toRaw(draft));
-  // field mode + a non-empty Advanced expression means the user opted for the
-  // expression over the structured options — confirm switches to raw.
-  if (value.mode === 'field' && customRawText.value.trim() !== '') {
-    value.mode = 'raw';
-    value.raw = { expr: customRawText.value.trim() };
-  }
-  if (value.mode === 'field') {
-    const field = value.field ?? { unit: 'day-of-week' as const, picks: [1], time: '09:00' };
-    const bounds = PICK_BOUNDS[field.unit];
-    const picks = [
-      ...new Set(
-        customPicksText.value
-          .split(',')
-          .map((s) => Number(s.trim()))
-          .filter((n) => Number.isInteger(n) && n >= bounds.min && n <= bounds.max),
-      ),
-    ].toSorted((a, b) => a - b);
-    value.field = { ...field, picks };
-  }
-  if (value.mode === 'raw' && value.raw === undefined && customRawText.value.trim() !== '') {
-    value.raw = { expr: customRawText.value.trim() };
-  }
-  schedule.value = value;
+  // The fold is pure (`confirmCustomDraft`): the picks text becomes the
+  // structured pick list, an Advanced expression wins over it, and the answer
+  // is plain data so the model never holds a nested proxy.
+  schedule.value = confirmCustomDraft(draft, customPicksText.value, customRawText.value);
   customOpen.value = false;
 }
 
@@ -226,7 +194,12 @@ const compiled = computed(() =>
 );
 
 const description = computed(() =>
-  schedule.value === null ? '' : describeSchedule(schedule.value, effectiveTimezone.value, t),
+  schedule.value === null ? '' : describeScheduleRule(schedule.value, t),
+);
+
+/** The inclusive-end note the sentence carries ('' when the rule has none). */
+const scheduleEnds = computed(() =>
+  schedule.value === null ? '' : describeScheduleEnds(schedule.value, t),
 );
 
 watch(
@@ -454,7 +427,8 @@ function setTimezone(zone: string): void {
       </div>
 
       <!-- The readable sentence (所选 → 提交值 → 描述 one source) with the
-           clickable zone prefix. -->
+           clickable zone prefix. The zone rides the prefix ONCE — the
+           sentence itself never repeats it. -->
       <div v-if="schedule !== null" class="rule-description">
         <span
           class="rule-tz"
@@ -465,6 +439,7 @@ function setTimezone(zone: string): void {
           @keydown.enter.prevent="timezoneEditing = !timezoneEditing"
         >{{ effectiveTimezone }}</span>
         <span>{{ description }}</span>
+        <span v-if="scheduleEnds" class="rule-ends">{{ scheduleEnds }}</span>
       </div>
       <div v-if="timezoneEditing" class="rule-tz-editor">
         <button
@@ -709,6 +684,8 @@ function setTimezone(zone: string): void {
   border-bottom: 1px dotted var(--color-accent);
 }
 .rule-tz-editor { display: flex; flex-wrap: wrap; gap: var(--space-1); align-items: center; }
+/* The inclusive-end note reads as a quieter tail of the sentence. */
+.rule-ends { color: var(--color-text-faint); font-size: var(--text-xs); }
 .rule-tz-option {
   border: 1px solid var(--color-line-strong);
   background: var(--color-surface-raised);

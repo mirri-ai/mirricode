@@ -9,9 +9,12 @@
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { AppCronTask } from '../../../api/types';
-import { scheduledTaskRunCount, scheduledTaskStatus } from '../../../lib/cronManagement';
-import { describeSchedule, type CronSchedule } from '../../../lib/cronSchedule';
-import { humanizeCron } from '../../../lib/cronHumanize';
+import {
+  draftFromTask,
+  scheduledTaskRunCount,
+  scheduledTaskStatus,
+} from '../../../lib/cronManagement';
+import { describeScheduleRule } from '../../../lib/cronSchedule';
 
 const props = defineProps<{
   task: AppCronTask;
@@ -28,42 +31,21 @@ const { t, locale } = useI18n();
  *  never a locale string). */
 const title = computed(() => props.task.title ?? t('settings.scheduledTaskUntitled'));
 
-/** The repeat rule in human words (A7: no 周期规则 jargon leaks into the
- *  card — 「每天 09:00」, not a cron expression; an expression the humanizer
- *  cannot read falls back to its raw spelling, the honest degrade). */
-const scheduleText = computed(() => {
-  const task = props.task;
-  if (task.interval) {
-    // SDR-116: every=1 day/week reads the natural word (每天/每周), not 「每 1 天」.
-    if (task.interval.every === 1 && (task.interval.unit === 'day' || task.interval.unit === 'week')) {
-      return t(
-        task.interval.unit === 'day'
-          ? 'settings.cronRuleDescIntervalEveryOne'
-          : 'settings.cronRuleDescIntervalEveryOneWeek',
-        { time: task.interval.time },
-      );
-    }
-    return t('settings.cronRuleDescInterval', {
-      every: task.interval.every,
-      unit: t(`settings.cronRuleIntervalUnit_${task.interval.unit}`),
-      time: task.interval.time,
-    });
-  }
-  if (task.cron.trim() === '') return t('settings.scheduledTaskUntitled');
-  const humanized = humanizeCron(task.cron, t);
-  return humanized;
-});
+/** The repeat rule in human words. The card reads the SAME projection the
+ *  edit form reopens with (`draftFromTask` → `describeScheduleRule`), so what
+ *  the preview says while typing is exactly what the card says afterwards: a
+ *  preset reads 「每天 09:00 执行」, an every-minute expression reads
+ *  「每分钟」, and only a rule with no structured equivalent keeps its
+ *  expression. The zone is NOT part of the sentence — the form shows it as
+ *  its own clickable chip, and repeating it here would push the next-run
+ *  clause out of the card's single-line metadata row. */
+const schedule = computed(() => draftFromTask(props.task).schedule);
 
-/** The preset-shaped description when the task's expression is one of the
- *  six presets (the card prefers the structured sentence over the generic
- *  humanizer); otherwise the humanizer's answer. */
-const presetScheduleText = computed(() => {
-  const parsed = presetFromExpression(props.task.cron);
-  if (parsed === null) return null;
-  return describeSchedule(parsed, props.task.timezone ?? '', t);
-});
-
-const frequencyText = computed(() => presetScheduleText.value ?? scheduleText.value);
+const frequencyText = computed(() =>
+  schedule.value === null
+    ? t('settings.scheduledTaskUntitled')
+    : describeScheduleRule(schedule.value, t),
+);
 
 /** The next-run clause: the soonest upcoming ideal occurrence, or an honest
  *  status word when nothing more will fire (§5: 下次 in a distinguishable
@@ -104,30 +86,6 @@ const runCountText = computed(() =>
 const endsSuffix = computed(() =>
   props.task.endsAt ? t('settings.scheduledTaskEndsAt', { date: props.task.endsAt }) : '',
 );
-
-/** Recognize the six presets' expressions so the card can show the same
- *  structured sentence the form built (compile in reverse, tolerantly:
- *  anything else returns null and the humanizer speaks instead). */
-function presetFromExpression(expr: string): CronSchedule | null {
-  const fields = expr.trim().split(/\s+/);
-  if (fields.length !== 5) return null;
-  const [minute, hour, dom, month, dow] = fields as [string, string, string, string, string];
-  if (!/^\d+$/.test(minute)) return null;
-  const pad = (value: string) => String(Number(value)).padStart(2, '0');
-  if (hour === '*' && dom === '*' && month === '*' && dow === '*') {
-    return { kind: 'hourly', minute: Number(minute) };
-  }
-  if (!/^\d+$/.test(hour)) return null;
-  const time = `${pad(hour)}:${pad(minute)}`;
-  if (month !== '*') return null;
-  if (dom === '*' && dow === '*') return { kind: 'daily', time };
-  if (dom === '*' && dow === '1-5') return { kind: 'weekday', time };
-  if (dom === '*' && /^\d(,\d)*$/.test(dow)) {
-    return { kind: 'weekly', days: dow.split(',').map(Number), time };
-  }
-  if (/^\d+$/.test(dom) && dow === '*') return { kind: 'monthly', day: Number(dom), time };
-  return null;
-}
 </script>
 
 <template>

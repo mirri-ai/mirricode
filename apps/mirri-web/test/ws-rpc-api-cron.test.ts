@@ -393,11 +393,12 @@ describe('ScheduledTaskPanel structure (§5 / A1 / A6 / A12)', () => {
     expect(findAll(tree, (n) => n.attrs['data-testid'] === 'workspace-locked')).toHaveLength(1);
   });
 
-  it('Given a reactive custom rule, When the picker copies it to reopen the custom editor, Then the copy succeeds through the proxy', async () => {
-    // `openCustomDialog` runs on a click (SSR cannot drive it), so the
-    // custom rule is handed over the same way the model does it — as a
-    // reactive value — and the shipped source is pinned to unwrap it.
-    expect(readSfc('SchedulePicker.vue')).toMatch(/structuredClone\(toRaw\(current\)\)/);
+  it('should copy a reactive custom rule through the proxy when the picker reopens the custom editor', async () => {
+    // `openCustomDialog` runs on a click (SSR cannot drive it), so the custom
+    // rule is handed over the same way the model does it — as a reactive
+    // value — and the shipped source is pinned to the shared proxy-safe copy.
+    const { cloneScheduleData } = await import('../src/lib/cronSchedule');
+    expect(readSfc('SchedulePicker.vue')).toMatch(/cloneScheduleData\(current\)/);
     const schedule = reactive<CronSchedule>({
       kind: 'custom',
       mode: 'raw',
@@ -405,7 +406,7 @@ describe('ScheduledTaskPanel structure (§5 / A1 / A6 / A12)', () => {
       ends: { kind: 'never' },
     });
     expect(() => structuredClone(schedule)).toThrow();
-    const copy = structuredClone(toRaw(schedule));
+    const copy = cloneScheduleData(schedule);
     expect(copy).toEqual({ kind: 'custom', mode: 'raw', raw: { expr: '*/5 * * * *' }, ends: { kind: 'never' } });
     expect(isReactive(copy)).toBe(false);
   });
@@ -488,39 +489,40 @@ describe('ScheduledTaskPanel structure (§5 / A1 / A6 / A12)', () => {
     expect(html).not.toContain('已运行 0 次');
   });
 
-  it('Given a confirmed custom rule, When the editor reopens, Then the stored model value carries no nested proxies', async () => {
+  it('should confirm a custom rule into plain model data when the dialog writes back', async () => {
     // The write-back after confirming a custom rule must deep-copy the
     // reactive scratch draft: a shallow spread leaves the nested `ends` /
     // `raw` / `field` objects as proxies inside the model, and the NEXT
-    // openCustomDialog then re-clones them — DataCloneError again.
-    expect(readSfc('SchedulePicker.vue')).toMatch(/const value: CustomSchedule = structuredClone\(toRaw\(draft\)\)/);
+    // openCustomDialog then re-copies them — DataCloneError again.
+    const { cloneScheduleData, confirmCustomDraft } = await import('../src/lib/cronSchedule');
+    expect(readSfc('SchedulePicker.vue')).toMatch(
+      /schedule\.value = confirmCustomDraft\(draft, customPicksText\.value, customRawText\.value\)/,
+    );
 
     // Replay the real data flow with the repo's own reactivity: the scratch
-    // draft is a deep reactive ref, the confirm deep-copies it into the
-    // model, and the reopen clones the model value.
-    const customDraft = ref<CronSchedule | null>({
+    // draft is a deep reactive ref, the whole-value replacement a dialog mode
+    // switch performs leaves nested proxies inside it, and the confirm hands
+    // the model plain data.
+    const customDraft = ref<Extract<CronSchedule, { kind: 'custom' }>>({
       kind: 'custom',
       mode: 'raw',
       raw: { expr: '*/5 * * * *' },
       ends: { kind: 'on', date: '2026-12-31' },
     });
-    const model = ref<CronSchedule | null>(null);
+    const current = customDraft.value;
+    customDraft.value = { ...current, mode: 'raw' }; // `setCustomMode`'s shape
+    expect(() => structuredClone(toRaw(customDraft.value))).toThrow();
 
-    // confirm: onCustomConfirm's write-back
-    const draft = customDraft.value;
-    if (draft !== null && draft.kind === 'custom') {
-      model.value = structuredClone(toRaw(draft));
-    }
-    // reopen: openCustomDialog's copy
-    const current = model.value;
-    const reopened = current !== null ? structuredClone(toRaw(current)) : null;
+    const model = ref<CronSchedule | null>(null);
+    model.value = confirmCustomDraft(customDraft.value, '', '');
+    const reopened = cloneScheduleData(model.value as CronSchedule);
     expect(reopened).toEqual({
       kind: 'custom',
       mode: 'raw',
       raw: { expr: '*/5 * * * *' },
       ends: { kind: 'on', date: '2026-12-31' },
     });
-    expect(isReactive(reopened?.ends ?? null)).toBe(false);
+    expect(isReactive(reopened.ends)).toBe(false);
   });
 
   it('Given the page, When rendered, Then the create entry has no precondition beyond the v3 engine (A1)', async () => {

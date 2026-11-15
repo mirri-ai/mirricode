@@ -19,10 +19,11 @@
      A4: the permission modes are the session's own three, verbatim.
      A9: the workspace is read-only in edit mode (ownership never moves). -->
 <script setup lang="ts">
-import { computed, ref, toRaw, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { AppCronPermissionMode, AppModel } from '../../../api/types';
 import {
+  cloneCronDraft,
   cronDraftRecurring,
   localTimezone,
   type CronCreateDraft,
@@ -69,10 +70,13 @@ const emit = defineEmits<{
 const { t } = useI18n();
 
 const draft = ref<CronCreateDraft>(
-  // The parent hands the draft over through a `ref` — a deep reactive Proxy,
-  // which `structuredClone` refuses to clone (DataCloneError → blank form).
-  // `toRaw` unwraps the proxy layer back to the plain object beneath.
-  structuredClone(toRaw(props.initialDraft)),
+  // The parent hands the draft over through a `ref` (a deep reactive Proxy),
+  // and the schedule picker writes chunks of it back — a nested slot can
+  // therefore be a Proxy too. `structuredClone` throws `DataCloneError` on a
+  // Proxy (the whole form used to render blank), and `toRaw` only unwraps the
+  // top layer. The draft is plain JSON-serializable data by contract, so one
+  // round-trip is an exact deep copy of every layer.
+  cloneCronDraft(props.initialDraft),
 );
 
 /** The visible timezone default: an explicit value, never a silent inherit. */

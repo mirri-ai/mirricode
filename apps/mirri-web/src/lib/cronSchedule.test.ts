@@ -7,15 +7,21 @@
 // rides both shapes isomorphically; raw passes through honestly.
 
 import { describe, expect, it } from 'vitest';
+import { isReactive, reactive, toRaw } from 'vue';
 
 import {
+  cloneScheduleData,
   compileSchedule,
+  confirmCustomDraft,
   describeSchedule,
+  describeScheduleRule,
   isOneOffCandidate,
   newSchedule,
   scheduleComplete,
+  scheduleFromExpression,
   todayLocalDate,
   type CronSchedule,
+  type CustomSchedule,
 } from './cronSchedule';
 
 /** A translator that renders the i18n templates the same shape the real
@@ -211,14 +217,26 @@ describe('describeSchedule (R4: the description states what the schedule does)',
     ).toBe('UTC {settings.cronRuleDescIntervalEveryOneWeek:{"time":"09:30"}}');
   });
 
-  it('Given a raw schedule, When described, Then the honest fallback shows the expression itself', () => {
+  it('Given a raw schedule the humanizer cannot read, When described, Then the honest fallback shows the expression itself', () => {
+    expect(
+      describeSchedule(
+        { kind: 'custom', mode: 'raw', raw: { expr: '0 9 * 3 *' }, ends: { kind: 'never' } },
+        'UTC',
+        t,
+      ),
+    ).toBe('UTC {settings.cronRuleDescRaw:{"expr":"0 9 * 3 *"}}');
+  });
+
+  it('Given a raw schedule the humanizer CAN read, When described, Then it says so in human words instead of the expression', () => {
+    // R4 显示=实际, echo side: `*/5 * * * *` is a 每 5 分钟 rule — showing the
+    // bare expression (or a 自定义 label) hides what the rule does.
     expect(
       describeSchedule(
         { kind: 'custom', mode: 'raw', raw: { expr: '*/5 * * * *' }, ends: { kind: 'never' } },
         'UTC',
         t,
       ),
-    ).toBe('UTC {settings.cronRuleDescRaw:{"expr":"*/5 * * * *"}}');
+    ).toBe('UTC {conversation.cron.everyNMinutes:{"n":"5"}}');
   });
 
   it('Given a weekly schedule with no days selected, When described, Then the incomplete phrasing names the missing choice (never a dangling "Weekly on at 09:03")', () => {
@@ -361,3 +379,283 @@ describe('scheduleComplete (the honest-minimum submittable gate)', () => {
     ).toBe(false);
   });
 });
+
+// --- the inverse: a stored rule opens in the form it was entered in --------
+// The picker's echo must be the same representation as the input. Every
+// shape `compileSchedule` can emit is therefore recognized back into the
+// shape that produced it — a rule is never re-labelled 自定义 just because it
+// came back from the server.
+
+describe('scheduleFromExpression (the picker shape a stored expression stands for)', () => {
+  it.each([
+    ['3 * * * *', { kind: 'hourly', minute: 3 }],
+    ['0 9 * * *', { kind: 'daily', time: '09:00' }],
+    ['3 9 * * 1-5', { kind: 'weekday', time: '09:03' }],
+    ['3 9 * * 1,5', { kind: 'weekly', days: [1, 5], time: '09:03' }],
+    ['3 9 1 * *', { kind: 'monthly', day: 1, time: '09:03' }],
+  ])('should rebuild the preset when the stored expression is %s', (expr, expected) => {
+    expect(scheduleFromExpression(expr)).toEqual(expected);
+  });
+
+  it('should round-trip every preset through compile then parse when the schedule is a preset', () => {
+    const presets: CronSchedule[] = [
+      { kind: 'hourly', minute: 0 },
+      { kind: 'hourly', minute: 59 },
+      { kind: 'daily', time: '23:59' },
+      { kind: 'weekday', time: '00:00' },
+      { kind: 'weekly', days: [1, 3, 7], time: '09:03' },
+      { kind: 'monthly', day: 31, time: '09:03' },
+    ];
+    for (const preset of presets) {
+      const compiled = compileSchedule(preset, 'Asia/Tokyo');
+      expect(compiled.type).toBe('cron');
+      if (compiled.type === 'cron') {
+        expect(scheduleFromExpression(compiled.cron), preset.kind).toEqual(preset);
+      }
+    }
+  });
+
+  it('should rebuild the custom field shape when the stored expression carries a pick list', () => {
+    expect(scheduleFromExpression('0,30 * * * *')).toEqual({
+      kind: 'custom',
+      mode: 'field',
+      // A minute list has no wall-clock time of its own — the field keeps the
+      // picker's neutral default so switching the unit stays coherent.
+      field: { unit: 'minute-of-hour', picks: [0, 30], time: '09:00' },
+      ends: { kind: 'never' },
+    });
+    expect(scheduleFromExpression('0 9,18 * * *')).toEqual({
+      kind: 'custom',
+      mode: 'field',
+      field: { unit: 'hour-of-day', picks: [9, 18], time: '09:00' },
+      ends: { kind: 'never' },
+    });
+    expect(scheduleFromExpression('3 9 1,15 * *')).toEqual({
+      kind: 'custom',
+      mode: 'field',
+      field: { unit: 'day-of-month', picks: [1, 15], time: '09:03' },
+      ends: { kind: 'never' },
+    });
+  });
+
+  it('should prefer the weekly preset when a day list compiles to the same expression as a day-of-week field', () => {
+    // `compileSchedule` emits `3 9 * * 1,3` for both shapes, so the echo has
+    // to pick one: the preset is the simpler of two equivalent answers.
+    expect(scheduleFromExpression('3 9 * * 1,3')).toEqual({
+      kind: 'weekly',
+      days: [1, 3],
+      time: '09:03',
+    });
+  });
+
+  it('should answer null when the expression is one the picker cannot rebuild', () => {
+    // Every-minute, step and month-filtered rules have no structured
+    // equivalent in the picker — they stay the advanced expression.
+    expect(scheduleFromExpression('* * * * *')).toBeNull();
+    expect(scheduleFromExpression('*/5 * * * *')).toBeNull();
+    expect(scheduleFromExpression('0 */2 * * *')).toBeNull();
+    expect(scheduleFromExpression('0 9 * 3 *')).toBeNull();
+    expect(scheduleFromExpression('@daily')).toBeNull();
+    expect(scheduleFromExpression('0 9 * * * *')).toBeNull();
+    expect(scheduleFromExpression('   ')).toBeNull();
+  });
+
+  it('should answer null when a field is out of range instead of inventing a preset', () => {
+    expect(scheduleFromExpression('75 * * * *')).toBeNull();
+    expect(scheduleFromExpression('0 99 * * *')).toBeNull();
+    expect(scheduleFromExpression('3 9 * * 1,9')).toBeNull();
+  });
+});
+
+describe('describeScheduleRule (the rule sentence every surface shares)', () => {
+  it('should omit the zone prefix and the end note when a compact surface asks for the rule alone', () => {
+    expect(describeScheduleRule({ kind: 'daily', time: '09:00' }, t)).toBe(
+      '{settings.cronRuleDescDaily:{"time":"09:00"}}',
+    );
+    expect(
+      describeScheduleRule(
+        {
+          kind: 'custom',
+          mode: 'interval',
+          interval: { every: 1, unit: 'day', time: '09:00' },
+          ends: { kind: 'on', date: '2026-12-31' },
+        },
+        t,
+      ),
+    ).toBe('{settings.cronRuleDescIntervalEveryOne:{"time":"09:00"}}');
+  });
+
+  it('should read a raw expression in human words when the humanizer recognizes it', () => {
+    // The same words the conversation's cron notice already uses — an
+    // every-minute rule reads 每分钟, never the bare expression.
+    const raw = (expr: string): CronSchedule => ({
+      kind: 'custom',
+      mode: 'raw',
+      raw: { expr },
+      ends: { kind: 'never' },
+    });
+    expect(describeScheduleRule(raw('* * * * *'), t)).toBe('{conversation.cron.everyMinute}');
+    expect(describeScheduleRule(raw('*/5 * * * *'), t)).toBe(
+      '{conversation.cron.everyNMinutes:{"n":"5"}}',
+    );
+    expect(describeScheduleRule(raw('0 * * * *'), t)).toBe('{conversation.cron.everyHour}');
+  });
+
+  it('should keep the honest expression when the humanizer cannot read it', () => {
+    expect(
+      describeScheduleRule(
+        { kind: 'custom', mode: 'raw', raw: { expr: '0 9 * 3 *' }, ends: { kind: 'never' } },
+        t,
+      ),
+    ).toBe('{settings.cronRuleDescRaw:{"expr":"0 9 * 3 *"}}');
+  });
+
+  it('should keep the zone prefix and the end note when the full sentence is asked for', () => {
+    expect(describeSchedule({ kind: 'daily', time: '09:00' }, 'Asia/Tokyo', t)).toBe(
+      'Asia/Tokyo {settings.cronRuleDescDaily:{"time":"09:00"}}',
+    );
+    expect(
+      describeSchedule(
+        { kind: 'custom', mode: 'raw', raw: { expr: '* * * * *' }, ends: { kind: 'on', date: '2026-12-31' } },
+        'Asia/Tokyo',
+        t,
+      ),
+    ).toBe(
+      'Asia/Tokyo {conversation.cron.everyMinute} {settings.cronRuleDescEndsOn:{"date":"2026-12-31"}}',
+    );
+  });
+});
+
+describe('cloneScheduleData (the proxy-safe deep copy the pickers copy drafts with)', () => {
+  it('should copy a rule whose nested objects are reactive proxies when the model handed one over', () => {
+    // The reported crash: a dialog writes a nested proxy into the model, so
+    // the model value's own slots are Proxies — `structuredClone` refuses
+    // them (DataCloneError) and the confirm silently did nothing.
+    const contaminated = reactive({
+      kind: 'custom',
+      mode: 'raw',
+      raw: reactive({ expr: '*/5 * * * *' }),
+      ends: reactive({ kind: 'on', date: '2026-12-31' }),
+    }) as CustomSchedule;
+    expect(() => structuredClone(toRaw(contaminated))).toThrow();
+
+    const copy = cloneScheduleData(contaminated);
+    expect(copy).toEqual({
+      kind: 'custom',
+      mode: 'raw',
+      raw: { expr: '*/5 * * * *' },
+      ends: { kind: 'on', date: '2026-12-31' },
+    });
+    expect(isReactive(copy)).toBe(false);
+    expect(isReactive(copy.raw)).toBe(false);
+    expect(isReactive(copy.ends)).toBe(false);
+    expect(() => structuredClone(copy)).not.toThrow();
+  });
+
+  it('should keep the arrays and the absent optionals when the copied rule carries them', () => {
+    const weekly: CronSchedule = { kind: 'weekly', days: [1, 3], time: '09:00' };
+    const copy = cloneScheduleData(weekly);
+    expect(copy).toEqual(weekly);
+    expect(copy).not.toBe(weekly);
+    if (copy.kind === 'weekly' && weekly.kind === 'weekly') {
+      expect(copy.days).not.toBe(weekly.days);
+    }
+
+    const field: CustomSchedule = {
+      kind: 'custom',
+      mode: 'field',
+      field: { unit: 'day-of-week', picks: [1], time: '09:00' },
+      ends: { kind: 'never' },
+    };
+    const fieldCopy = cloneScheduleData(field);
+    expect(fieldCopy).toEqual(field);
+    expect(fieldCopy.interval).toBeUndefined();
+  });
+});
+
+describe('confirmCustomDraft (A8: the dialog confirms into one plain rule)', () => {
+  it('should keep the field mode and the sanitized picks when the structured options are confirmed', () => {
+    const confirmed = confirmCustomDraft(
+      {
+        kind: 'custom',
+        mode: 'field',
+        field: { unit: 'minute-of-hour', picks: [0], time: '09:00' },
+        ends: { kind: 'never' },
+      },
+      ' 30, 0 , 99, 7 ',
+      '',
+    );
+    expect(confirmed.mode).toBe('field');
+    // Sorted, de-duplicated, out-of-range picks dropped.
+    expect(confirmed.field).toEqual({ unit: 'minute-of-hour', picks: [0, 7, 30], time: '09:00' });
+  });
+
+  it('should switch to the expression when the advanced fold holds one', () => {
+    const confirmed = confirmCustomDraft(
+      {
+        kind: 'custom',
+        mode: 'field',
+        field: { unit: 'day-of-week', picks: [1], time: '09:00' },
+        ends: { kind: 'never' },
+      },
+      '1',
+      '  */5 * * * *  ',
+    );
+    expect(confirmed.mode).toBe('raw');
+    expect(confirmed.raw).toEqual({ expr: '*/5 * * * *' });
+  });
+
+  it('should answer a rule free of reactive proxies when the scratch draft was deep-reactive', () => {
+    // The dialog edits a deep-reactive scratch copy; whatever it confirms
+    // must be plain data, or the NEXT open (and every clone) breaks again.
+    const scratch = reactive({
+      kind: 'custom',
+      mode: 'interval',
+      interval: reactive({ every: 2, unit: 'day', time: '09:30' }),
+      ends: reactive({ kind: 'never' }),
+    }) as CustomSchedule;
+    const confirmed = confirmCustomDraft(scratch, '', '');
+    expect(confirmed).toEqual({
+      kind: 'custom',
+      mode: 'interval',
+      interval: { every: 2, unit: 'day', time: '09:30' },
+      ends: { kind: 'never' },
+    });
+    expect(isReactive(confirmed.interval)).toBe(false);
+    expect(isReactive(confirmed.ends)).toBe(false);
+    expect(() => structuredClone(confirmed)).not.toThrow();
+  });
+
+  it('should keep the end date when the dialog confirmed one', () => {
+    const confirmed = confirmCustomDraft(
+      {
+        kind: 'custom',
+        mode: 'interval',
+        interval: { every: 1, unit: 'week', time: '09:00' },
+        ends: { kind: 'on', date: '2026-12-31' },
+      },
+      '',
+      '',
+    );
+    expect(confirmed.ends).toEqual({ kind: 'on', date: '2026-12-31' });
+  });
+
+  it('should carry the typed expression when the dialog confirmed in raw mode', () => {
+    // The raw-mode textarea writes the same mirror the fold reads — the
+    // expression must survive the confirm in raw mode too, not only when it
+    // rides the field mode's Advanced fold.
+    const confirmed = confirmCustomDraft(
+      {
+        kind: 'custom',
+        mode: 'raw',
+        raw: { expr: '' },
+        ends: { kind: 'never' },
+      },
+      '',
+      ' * * * * * ',
+    );
+    expect(confirmed.mode).toBe('raw');
+    expect(confirmed.raw).toEqual({ expr: '* * * * *' });
+  });
+});
+

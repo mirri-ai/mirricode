@@ -82,7 +82,10 @@ const schedulingDisabled = ref(false);
 const loading = ref(false);
 const error = ref('');
 const saving = ref(false);
-/** Bumped after every mutation so the detail's history reloads. */
+/** Bumped after every mutation ONCE THE RELOAD ANSWERED, so the detail
+ *  remounts its form from the fresh row (the saved values). Bumping it before
+ *  the reload left the form showing pre-save values — it had already moved
+ *  past the key the reload's new row needed. */
 const refreshKey = ref(0);
 /** The shared clock the cards' relative labels read. */
 const now = ref(Date.now());
@@ -250,8 +253,13 @@ async function onSave(draft: CronCreateDraft, previewT0: number | null): Promise
       effort: input.effort ?? null,
       permissionMode: input.permissionMode,
     });
-    refreshKey.value++;
+    // Reload FIRST, then bump the key: the detail remounts its form from the
+    // fresh row (the saved values are what the form then shows). Bumping the
+    // key before the reload answered remounted the form from the STALE row —
+    // and because the key had already moved, the reload could not remount it
+    // again, so the form kept showing pre-save values.
     await load({ silent: true });
+    refreshKey.value++;
   } catch (error) {
     client.pushOperationFailure('updateScheduledTask', error);
   } finally {
@@ -270,8 +278,10 @@ async function onTogglePause(): Promise<void> {
     } else {
       await api.pauseWorkspaceCronTask(owner, task.id);
     }
-    refreshKey.value++;
+    // Same ordering as a save: reload first, then bump the key, so the detail
+    // never remounts its form from a row that predates the mutation.
     await load({ silent: true });
+    refreshKey.value++;
   } catch (error) {
     client.pushOperationFailure('togglePauseScheduledTask', error);
   } finally {

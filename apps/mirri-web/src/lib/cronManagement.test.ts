@@ -5,9 +5,11 @@
 // sentence (C3).
 
 import { describe, expect, it } from 'vitest';
+import { isReactive, ref, toRaw } from 'vue';
 
 import {
   EMPTY_CRON_DRAFT,
+  cloneCronDraft,
   cronDraftRecurring,
   cronDraftSubmittable,
   cronDraftToInput,
@@ -23,10 +25,12 @@ import {
   scheduledTaskMatchesFilter,
   scheduledTaskRunCount,
   scheduledTaskStatus,
+  type CronCreateDraft,
   zoneOffsetLabel,
   zonedDateOf,
 } from './cronManagement';
 import type { AppCronTask } from '../api/types';
+import type { CronSchedule } from './cronSchedule';
 
 function task(overrides: Partial<AppCronTask> = {}): AppCronTask {
   return {
@@ -175,6 +179,27 @@ describe('draftFromTask', () => {
     });
   });
 
+  it('Given a task whose expression is a weekday preset, When prefilled, Then the rule reopens as the weekday preset in words', () => {
+    // The echo must be the same representation the user entered: picking
+    // 每个工作日 09:00 stores `3 9 * * 1-5`, and reopening shows 每个工作日.
+    expect(draftFromTask(task({ cron: '3 9 * * 1-5' })).schedule).toEqual({
+      kind: 'weekday',
+      time: '09:03',
+    });
+  });
+
+  it('Given an ended task whose expression is a preset, When prefilled, Then the rule stays in the custom shape so the end date survives', () => {
+    // The preset branches carry no ends slot; dropping the date would silently
+    // change when the task stops.
+    const schedule = draftFromTask(task({ cron: '3 * * * *', endsAt: '2026-12-31' })).schedule;
+    expect(schedule).toEqual({
+      kind: 'custom',
+      mode: 'raw',
+      raw: { expr: '3 * * * *' },
+      ends: { kind: 'on', date: '2026-12-31' },
+    });
+  });
+
   it('Given a task with an interval, When prefilled, Then the interval shape rides and no expression is invented', () => {
     const draft = draftFromTask(
       task({
@@ -207,6 +232,35 @@ describe('draftFromTask', () => {
 
   it('Given a task without a permission mode, When prefilled, Then the selector defaults to manual', () => {
     expect(draftFromTask(task()).permissionMode).toBe('manual');
+  });
+});
+
+describe('cloneCronDraft (the form copy of a prefilled draft)', () => {
+  it('should copy a draft whose schedule holds nested proxies when the picker replaced its whole value', () => {
+    // The picker's whole-value replacement spreads the reactive schedule, so
+    // the new object's nested slots (`interval` / `field` / `ends`) stay
+    // Proxies. `toRaw` only unwraps the top layer, so `structuredClone`
+    // throws on them — which is why the form copies through JSON.
+    const schedule = ref<CronSchedule>({
+      kind: 'custom',
+      mode: 'interval',
+      interval: { every: 1, unit: 'day', time: '09:00' },
+      ends: { kind: 'never' },
+    });
+    const current = schedule.value as Extract<CronSchedule, { kind: 'custom' }>;
+    schedule.value = { ...current, mode: 'field' }; // `patchSchedule`'s shape
+    const live: CronCreateDraft = {
+      ...EMPTY_CRON_DRAFT,
+      schedule: schedule.value,
+      prompt: 'p',
+      timezone: 'UTC',
+    };
+    expect(() => structuredClone(toRaw(live))).toThrow();
+
+    const copy = cloneCronDraft(live);
+    expect(copy.schedule).toEqual(schedule.value);
+    expect(isReactive(copy)).toBe(false);
+    expect(() => structuredClone(copy)).not.toThrow();
   });
 });
 
