@@ -390,29 +390,10 @@ impl EmbeddedServer {
             })
         {
             for row in rows {
-                // ADR-008 (the row-side twin of the live filter below): a
-                // scheduled-task execution session's row is ROUTABLE but
-                // stays out of the listing until the user opens it —
-                // under ADR-006 the row exists from creation (no wire log
-                // yet), so the row itself must carry the exclusion. The
-                // wire-log probe mirrors the live filter's materialization
-                // check: an OPENED execution session (wire log installed)
-                // lists normally.
-                if row.tags.iter().any(|tag| tag.starts_with("cron-task:")) {
-                    let materialized = match self.registry.manager_for(&row.id) {
-                        crate::workspace_registry::ManagerResolution::Active { manager, .. }
-                        | crate::workspace_registry::ManagerResolution::Restored { manager, .. } => {
-                            let dir = manager
-                                .persistence()
-                                .session_dir(&mirri_core::SessionId::new(&row.id));
-                            dir.join(mirri_persistence::compress::WIRE_LOG_FILE).exists()
-                        }
-                        _ => false,
-                    };
-                    if !materialized {
-                        continue;
-                    }
-                }
+                // A scheduled-task run's execution session is an ORDINARY
+                // session: its row is listed like any other (no tag-based
+                // exclusion — the run's session is what the user opens to
+                // read the transcript).
                 by_id.insert(
                     row.id.clone(),
                     MergedSessionEntry {
@@ -450,20 +431,6 @@ impl EmbeddedServer {
                 continue;
             };
             if !in_scope(&owner.workspace_id) {
-                continue;
-            }
-            // ADR-008: a scheduled-task EXECUTION session is routable (so
-            // its parked approval can be decided) but stays out of the
-            // listing until the user explicitly opens it (materialization).
-            // A user-created lazy session (SDR-004) carries no such tag and
-            // is still listed.
-            if live.tags.iter().any(|tag| tag.starts_with("cron-task:"))
-                && let Some(session) = owner
-                    .manager
-                    .get_session(&mirri_core::SessionId::new(&live.id))
-                    .await
-                && !session.wire_log_installed().await
-            {
                 continue;
             }
             // The live row's last_prompt and pin trio come from the index —
@@ -574,12 +541,12 @@ pub(super) async fn note_turn_settled(
 ) {
     // 1. In-memory recency bump.
     session.update_metadata(|_| {}).await;
-    // ADR-008 / ADR-006 Task 13: an UN-MATERIALIZED session never writes
-    // its row at settle — the row lands at materialization (the explicit
-    // open), so a cron execution session's settled turn leaves the
-    // row-exempt contract intact (the wire-log probe is the
-    // materialization truth; a settled turn on an un-opened lazy session
-    // has no disk presence to settle into).
+    // SDR-004 lazy-create guard: a session that has NOT materialized yet (no
+    // wire log — a user-created lazy session before its first message) has
+    // no disk presence to settle into, so its row waits for the first send's
+    // materialization. An eagerly created session (every cron run session)
+    // always has the wire log installed, so its settle lands here like any
+    // interactive turn's.
     if !session.wire_log_installed().await {
         return;
     }

@@ -298,11 +298,11 @@ interface Group {
 // ---------------------------------------------------------------------------
 
 /**
- * Pull the prompt body out of a cron-fire envelope. Server-side, a cron
- * injection reaches the transcript as a user message whose text is wrapped in
- * `<cron-fire …>\n<prompt>\n…\n</prompt>\n</cron-fire>` (see renderCronFireXml
- * in agent-core). We surface only the inner prompt, mirroring the TUI's
- * extractCronPrompt / stripCronEnvelope.
+ * Pull the prompt body out of a legacy cron-fire envelope (records written
+ * before SDR-128). Since SDR-128 the engine injects the configured prompt
+ * VERBATIM — no envelope — so new records pass through unchanged; this
+ * peeler stays only so old transcripts still render their prompt cleanly
+ * (mirrors the TUI's extractCronPrompt / stripCronEnvelope).
  */
 function extractCronPrompt(text: string): string {
   const open = '<prompt>\n';

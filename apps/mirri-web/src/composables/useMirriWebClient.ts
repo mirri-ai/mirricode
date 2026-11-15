@@ -3401,9 +3401,11 @@ export function useMirriWebClient() {
 
     // Actions
     load: workspaceState.load,
-    /** Open a session that may not be in the sidebar list (a scheduled run's
-     *  execution session is hidden from the list but must be openable): fetch
-     *  it into the list, then select it. */
+    /** Open a session addressed by id, whether or not it is already in the
+     *  sidebar list: fetch it into the list when it lives outside the loaded
+     *  pages, then select it (and surface a failure rather than doing nothing
+     *  when the session cannot be resolved). Used by desktop deep links and by
+     *  the scheduled-run history's 打开 entry. */
     openSessionById: workspaceState.openSessionFromDeepLink,
     supportsFileReferences: workspaceState.supportsFileReferences,
     selectSession: async (sessionId: string) => {

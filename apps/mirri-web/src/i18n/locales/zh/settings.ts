@@ -246,6 +246,8 @@ export default {
   scheduledTaskHistoryFactHint: '这里只有真实发生过的运行；时间轴上的时刻是预测。',
   scheduledTaskHistoryTitle: '运行记录',
   scheduledTaskRunOpen: '打开运行',
+  scheduledTaskRunOpenDegradedTitle: '已打开运行，但引擎未能确认',
+  scheduledTaskRunOpenDegradedMessage: '执行会话已照常打开。如果内容看起来不对，可以重新运行该任务。',
   scheduledTaskRunSucceeded: '成功',
   scheduledTaskRunFailed: '失败',
   scheduledTaskRunRunning: '进行中',

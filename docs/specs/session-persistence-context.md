@@ -167,5 +167,5 @@ ADR-006 落地过程中与规格文本的已裁决偏离（均已记录于 workt
 | 1 | 库级独占采用 take-and-release 探测（`BEGIN IMMEDIATE` + 即刻提交）而非持锁式 `EXCLUSIVE` | 持锁式自死锁（迁移写走共享连接，SQLite 单写槽）；语义等价链 = 进入时写槽空闲 + 进程级文件锁挡外来入口 + 每条 SQL 自带 busy 兜底，失败为 Blocked 可重试而非损坏 |
 | 2 | `KNOWN_SCHEMA_FORMAT` 在 migration_v3 存在镜像常量 | 已加地板自检测试（迁移所盖之章必须通过 `open_with_check`），漂移即红 |
 | 3 | 恢复金字塔半重建的归档态仅从压缩形状推断 | wire log 是唯一幸存证据——未压缩归档会话重建后读作未归档，为诚实限制（模块文档已声明） |
-| 4 | `cron.run.open` 物化的行写入走 `materialize_session`（无 row-exempt 泄漏面） | Task 13 语义闭环：创建不写行（exempt）→ turn settle 不写行（物化门）→ 显式打开才落行 |
+| 4 | `cron.run.open` 物化的行写入走 `materialize_session`（无 row-exempt 泄漏面） | Task 13 语义闭环：创建不写行（exempt）→ turn settle 不写行（物化门）→ 显式打开才落行。**2026-11-14 更新：该行豁免语义已被 cron-scheduling/ADR-023 取代——定时任务执行会话改为普通会话生命周期（创建即写行 + 起 wire log，turn settle 正常进索引），`cron.run.open` 降级为幂等兼容口** |
 | 5 | 注册写穿（bound workspace → workspaces.json）由迁移承担且每次启动执行 | 原对账 pass 的职责随对账退役迁移；幂等 upsert 保 created_at/sort_order，单行成本可忽略 |

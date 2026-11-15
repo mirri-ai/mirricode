@@ -831,40 +831,49 @@ impl SessionManager {
 
     /// The [`Self::create_session_lazy`] variant that roots the session's
     /// file-tool sandbox at an explicit directory instead of the workspace
-    /// cwd (the workspace cron run spawner's task-workdir face, ADR-019 /
-    /// VU14 review Major 3). The caller owns validating the directory
-    /// stays inside the workspace root.
+    /// cwd. The caller owns validating the directory stays inside the
+    /// workspace root.
     pub async fn create_session_lazy_with_root(
         &self,
         metadata: SessionMetadata,
         config: SessionScopeConfig,
         workspace_root: Option<PathBuf>,
     ) -> SessionResult<Arc<SessionScope>> {
-        self.create_session_lazy_with_root_ex(metadata, config, workspace_root, false)
-            .await
-    }
-
-    /// The [`Self::create_session_lazy_with_root`] variant that skips the
-    /// creation-time metadata row (ADR-008, ADR-006 Task 13): a
-    /// scheduled-task EXECUTION session writes no row until the user
-    /// explicitly opens it — the row lands at materialization, not at
-    /// creation. The cron run spawner is the sole caller.
-    pub async fn create_session_lazy_with_root_ex(
-        &self,
-        metadata: SessionMetadata,
-        config: SessionScopeConfig,
-        workspace_root: Option<PathBuf>,
-        row_exempt: bool,
-    ) -> SessionResult<Arc<SessionScope>> {
         let session_id = SessionId::new(format!("session-{}", Uuid::new_v4()));
-        self.create_session_inner_ex(
+        self.create_session_inner(
             session_id,
             metadata,
             config,
             Some("startup"),
             true,
             workspace_root,
-            row_exempt,
+        )
+        .await
+    }
+
+    /// The EAGER counterpart of [`Self::create_session_lazy_with_root`]: the
+    /// same caller-supplied sandbox root, but the session is persisted at
+    /// creation exactly like [`Self::create_session`] — metadata row first,
+    /// then the open `wire.jsonl` — so it is an ordinary session from its
+    /// first moment (listed, `session.resume`-able, present after a restart).
+    ///
+    /// The workspace cron run spawner is the caller: a task run's execution
+    /// session is a normal conversation the user can open and read, not a
+    /// hidden artifact.
+    pub async fn create_session_with_root(
+        &self,
+        metadata: SessionMetadata,
+        config: SessionScopeConfig,
+        workspace_root: Option<PathBuf>,
+    ) -> SessionResult<Arc<SessionScope>> {
+        let session_id = SessionId::new(format!("session-{}", Uuid::new_v4()));
+        self.create_session_inner(
+            session_id,
+            metadata,
+            config,
+            Some("startup"),
+            false,
+            workspace_root,
         )
         .await
     }
@@ -895,30 +904,13 @@ impl SessionManager {
     /// `lazy` selects the SDR-04 deferred-persistence path (see
     /// [`Self::create_session_lazy`]); the default `false` keeps the eager
     /// create-persist-at-once behaviour every existing caller relies on.
+    ///
+    /// `workspace_root_override` roots the session's file-tool sandbox at an
+    /// explicit directory instead of the workspace cwd (the cron run
+    /// spawner's task-workdir face, ADR-019 / VU14 review Major 3); the
+    /// caller owns validating it stays inside the workspace root.
     #[allow(clippy::too_many_arguments)]
     async fn create_session_inner(
-        &self,
-        session_id: SessionId,
-        metadata: SessionMetadata,
-        config: SessionScopeConfig,
-        session_start_source: Option<&str>,
-        lazy: bool,
-        workspace_root_override: Option<PathBuf>,
-    ) -> SessionResult<Arc<SessionScope>> {
-        self.create_session_inner_ex(
-            session_id,
-            metadata,
-            config,
-            session_start_source,
-            lazy,
-            workspace_root_override,
-            false,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn create_session_inner_ex(
         &self,
         session_id: SessionId,
         mut metadata: SessionMetadata,
@@ -926,7 +918,6 @@ impl SessionManager {
         session_start_source: Option<&str>,
         lazy: bool,
         workspace_root_override: Option<PathBuf>,
-        row_exempt: bool,
     ) -> SessionResult<Arc<SessionScope>> {
         // Creating (or re-creating under a fixed id) clears any close
         // record for this session — it is live again.
@@ -986,26 +977,20 @@ impl SessionManager {
             // last_prompt-empty row (the listing's `exclude_empty` filter's
             // business) and no directory or files behind when the process
             // exits.
-            // ADR-008 / Task 13 exception gate: a row-EXEMPT lazy creation
-            // (the cron execution session) writes no row either — the row
-            // lands at materialization (the explicit open), keeping the
-            // "no row until opened" contract the flat-list rule reads.
             session.defer_wire_log().await;
-            if !row_exempt {
-                let metadata = session.metadata().await;
-                if let Err(error) = self
-                    .metadata_store
-                    .apply(
-                        &session_id,
-                        &self.metadata_workspace_id(),
-                        creation_metadata_patch(&metadata),
-                    )
-                    .await
-                {
-                    return Err(SessionError::StateFile(format!(
-                        "failed to write the session metadata row: {error}"
-                    )));
-                }
+            let metadata = session.metadata().await;
+            if let Err(error) = self
+                .metadata_store
+                .apply(
+                    &session_id,
+                    &self.metadata_workspace_id(),
+                    creation_metadata_patch(&metadata),
+                )
+                .await
+            {
+                return Err(SessionError::StateFile(format!(
+                    "failed to write the session metadata row: {error}"
+                )));
             }
         } else {
             // ADR-006 write-order reversal: the metadata ROW lands first

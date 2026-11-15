@@ -95,6 +95,9 @@ const emit = defineEmits<{
   /** Polled list refresh from the profiles tab — applied without the loading state. */
   refreshAgent: [result: AppAgentProfileList];
   updateConfig: [patch: Partial<AppConfig>];
+  /** Open a run's execution session in the app: App closes this overlay and
+   *  selects the session. */
+  openRun: [sessionId: string];
   close: [];
 }>();
 
@@ -648,7 +651,7 @@ function archiveTime(iso: string): string {
 
       <!-- Scheduled tasks (cron-improvement A 组: the workspace's routines) -->
       <section v-if="activeTab === 'scheduledTasks'" class="panel profiles-panel">
-        <ScheduledTaskPanel :models="models" />
+        <ScheduledTaskPanel :models="models" @open-run="emit('openRun', $event)" />
       </section>
 
       <!-- Workspace task overview (B7 / P-023) -->

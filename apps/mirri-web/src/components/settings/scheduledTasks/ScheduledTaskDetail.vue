@@ -42,6 +42,9 @@ const emit = defineEmits<{
   save: [draft: CronCreateDraft, previewT0: number | null];
   togglePause: [];
   delete: [];
+  /** Open one run's execution session in the app (the settings overlay closes
+   *  and the session is selected). */
+  openRun: [sessionId: string];
 }>();
 
 const { t, locale } = useI18n();
@@ -138,20 +141,25 @@ function runDurationLabel(run: AppCronRun): string {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
-/** The explicit-open path (the user opening a run materializes its
- *  execution session — idempotent). The execution session is not in the
- *  sidebar list (the list hides sessions without a user prompt), so it is
- *  fetched into the list before it is selected — selecting an unlisted
- *  session renders nothing, and a run parked on an approval would be
- *  undecidable. */
+/** The explicit-open path: the run history's 打开 entry hands the execution
+ *  session to the app, which dismisses this settings overlay and selects the
+ *  session — the same experience as clicking a sidebar row.
+ *
+ *  `cron.run.open` stays a best-effort compat door (the engine already lists
+ *  execution sessions, the call is idempotent), so a failing materialize
+ *  degrades to a warning instead of blocking the open. */
 async function openRun(run: AppCronRun): Promise<void> {
-  if (!run.sessionRef) return;
+  const sessionId = run.sessionRef;
+  if (!sessionId) return;
   try {
-    await api.openCronRun(props.workspaceId, run.sessionRef);
-    await client.openSessionById(run.sessionRef);
+    await api.openCronRun(props.workspaceId, sessionId);
   } catch (error) {
-    client.pushOperationFailure('openCronRun', error);
+    client.pushOperationFailure('openCronRun', error, {
+      title: t('settings.scheduledTaskRunOpenDegradedTitle'),
+      message: t('settings.scheduledTaskRunOpenDegradedMessage'),
+    });
   }
+  emit('openRun', sessionId);
 }
 
 async function onDelete(): Promise<void> {

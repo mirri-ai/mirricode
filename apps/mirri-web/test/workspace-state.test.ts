@@ -40,6 +40,7 @@ const apiMock = vi.hoisted(() => ({
   getFsHome: vi.fn(),
   getHealth: vi.fn(),
   getMeta: vi.fn(),
+  getSession: vi.fn(),
   listSessions: vi.fn(),
   listWorkspaces: vi.fn(),
   listPrompts: vi.fn(),
@@ -2905,6 +2906,61 @@ describe('startSessionAndSendPrompt: draft permission mode', () => {
     expect(apiMock.submitPrompt).toHaveBeenCalledWith(
       'sess_new',
       expect.objectContaining({ permissionMode: 'yolo' }),
+    );
+  });
+});
+
+// --- Opening a session that is not in the sidebar list ------------------------
+//
+// The entry is shared by desktop `mirricode://session/<id>` deep links and by
+// the scheduled-run history's 打开 button (a run's execution session may live
+// outside the loaded pages). Both must end on the session, and a session the
+// daemon does not know must say so instead of doing nothing.
+
+describe('useWorkspaceState — opening a session outside the list', () => {
+  /** The plain createDeps() leaves the sidecar pollers empty, while a real
+   *  selection runs them; the open path is what is under test here. */
+  function openDeps(): UseWorkspaceStateDeps {
+    return {
+      ...createDeps(),
+      taskPoller: { loadTasksForSession: vi.fn() } as unknown as UseWorkspaceStateDeps['taskPoller'],
+      modelProvider: {
+        draftModel: ref(null),
+        skillsBySession: ref({}),
+        loadSkillsForSession: vi.fn(),
+        resolveThinkingForPrompt: async () => undefined,
+      } as unknown as UseWorkspaceStateDeps['modelProvider'],
+      syncSessionFromSnapshot: vi.fn().mockResolvedValue('ok'),
+    } as unknown as UseWorkspaceStateDeps;
+  }
+
+  it('should select the session when it can be fetched into the list', async () => {
+    apiMock.getSession.mockReset().mockResolvedValue({ ...createSession(), id: 'sess_run' });
+    const deps = openDeps();
+    const ws = useWorkspaceState(createState(), deps);
+
+    await ws.openSessionFromDeepLink('sess_run');
+
+    expect(deps.appendSession).toHaveBeenCalled();
+    expect(deps.setActiveSessionId).toHaveBeenCalledWith('sess_run');
+    expect(deps.pushOperationFailure).not.toHaveBeenCalled();
+  });
+
+  it('should surface a visible failure when the session cannot be fetched', async () => {
+    apiMock.getSession.mockReset().mockRejectedValue(new Error('session not found'));
+    const deps = openDeps();
+    const ws = useWorkspaceState(createState(), deps);
+
+    await ws.openSessionFromDeepLink('sess_gone');
+
+    expect(deps.setActiveSessionId).not.toHaveBeenCalled();
+    expect(deps.pushOperationFailure).toHaveBeenCalledWith(
+      'openSession',
+      expect.any(Error),
+      expect.objectContaining({
+        sessionId: 'sess_gone',
+        title: i18n.global.t('warnings.sessionOpenFailedTitle'),
+      }),
     );
   });
 });

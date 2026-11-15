@@ -25541,7 +25541,7 @@ fn should_keep_wire_names_unique_when_the_route_table_is_indexed() {
     // + the two stage-1 batch-3 cron routes (cron.add the user-creation
     // face, cron.listAll the cross-session aggregated listing)
     // + the two stage-2 batch-4b cron routes (cron.runs.list the run
-    // records, cron.run.open the explicit-open materialization; the
+    // records, cron.run.open the run-open compatibility entry; the
     // cron.proposals.list row retired with the proposal channel)
     // + the form batch-6 cron.preview route (the read-only schedule
     // preview face)

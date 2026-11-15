@@ -48,6 +48,8 @@ export default {
   externalOpenInAppMessage: '浏览器会话没有可用的本机启动通道，请在桌面应用中使用此功能。',
   sessionSnapshotMessage: 'Web 没能加载当前会话内容。请确认 Mirri daemon 仍在运行，或刷新页面重试。',
   sessionSnapshotTitle: '无法加载当前会话内容',
+  sessionOpenFailedTitle: '无法打开该会话',
+  sessionOpenFailedMessage: '这个会话没能加载出来，可能已被删除，或 Mirri daemon 没有响应。刷新页面后再试。',
   showDetails: '查看详情',
   copyDetails: '复制诊断信息',
   copied: '已复制',

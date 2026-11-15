@@ -1,8 +1,9 @@
 // apps/mirri-web/src/lib/cronManagement.ts
 // Pure TS — no Vue. The scheduled-task page's view logic: the card list's
 // status filter and ordering, the creation/edit form's draft → wire fold,
-// the prediction timeline's model, and the small display helpers the cards
-// and the detail pane share.
+// the prediction timeline's model, the small display helpers the cards
+// and the detail pane share, and the run-history's open-a-run handoff to
+// the app (leave settings, then select the run's execution session).
 //
 // Concept split (cron-improvement A7): the page manages the WORKSPACE's
 // scheduled tasks only — session timers are the agent's tool behavior and
@@ -480,4 +481,28 @@ export function lastRealRunAt(
     if (latest === null || at > latest) latest = at;
   }
   return latest;
+}
+
+// ---------------------------------------------------------------------------
+// Opening a run's execution session
+// ---------------------------------------------------------------------------
+
+/** What the app offers the run-history's 打开 entry: the settings overlay's
+ *  own visibility and the app's session selection. */
+export interface CronRunSessionHost {
+  /** Dismiss the settings overlay the 打开 button lives in. */
+  closeSettings: () => void;
+  /** Select the session — the same path a sidebar click takes. */
+  openSession: (sessionId: string) => void | Promise<void>;
+}
+
+/** Open a scheduled run's execution session the way the sidebar opens any
+ *  session: leave settings FIRST (the destination is the app's chat view, and
+ *  a failure notice must be visible there), then select the session. */
+export async function openCronRunSession(
+  host: CronRunSessionHost,
+  sessionId: string,
+): Promise<void> {
+  host.closeSettings();
+  await host.openSession(sessionId);
 }

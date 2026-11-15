@@ -1,6 +1,6 @@
 # 定时任务（cron-scheduling）现状盘点
 
-> **快照日期：2026-10-30**（建域首批盘点，代码基线 HEAD `6015a8ed`；2026-10-31 补记 SDR-009/010 的动机场景，代码基线未变；2026-11-03 补记 §5 的 JSON 存储现状快照与 SQLite 基建事实——ADR-020 的事实源）。本文是定时任务域的代码事实清单，随现状变化更新；不含目标与裁决（设计文档单向引用本文）。
+> **快照日期：2026-10-30（最新增量 2026-11-14）**（建域首批盘点，代码基线 HEAD `6015a8ed`；2026-10-31 补记 SDR-009/010 的动机场景，代码基线未变；2026-11-03 补记 §5 的 JSON 存储现状快照与 SQLite 基建事实——ADR-020 的事实源；2026-11-14 补记 §9 的执行会话可见性现状快照——SDR-127 / ADR-023 的事实源，代码基线 `80de6d49`）。本文是定时任务域的代码事实清单，随现状变化更新；不含目标与裁决（设计文档单向引用本文）。
 > 文档基线 = [cron-scheduling-requirements.md](cron-scheduling-requirements.md) + [cron-scheduling-architecture.md](cron-scheduling-architecture.md)。
 > 域范围裁决（SDR-001）：cron 子系统从后台任务与子代理域（subagent E11/E12）**拆出**独立成域；域边界与拆域理由见需求文档 §0。
 > 阶段定位（SDR-009/010，用户裁决 2026-10-31）：阶段一（会话级）服务 **agent 自计时需求**——单次延时回访（PR 创建后等 CI 出结果，避免循环 sleep-poll 浪费算力）、周期巡查、未来指挥官-工人的协作 check；session scope 是该类需求的正确归属。阶段二（工作区级）服务**用户委托例行工作**的产品化需求。两类需求共享机制基建、定位独立。
@@ -88,7 +88,7 @@ workspace 级前置件（**已就绪**）：
 |---|---|
 | `session.create` 已支持 `workspaceId`（路由 key on workspace_id） | `rust/crates/mirri-embedded/src/embedded_server/session_handlers.rs:211-259` |
 | `mirri print` 已验证**无 UI 起跑 session 可行**：create → wait 模式 message.send → 流式收结果；但 manual 审批路径会卡到回合超时 | `rust/crates/mirri-cli/src/print.rs:148-162` |
-| SDR-004 懒物化：session.create 只进内存，**首条用户消息才落盘进 index**——对「每次运行产生一个新 session」的 workspace 级任务是天然友好的存储形态 | 会话管理域 SDR-004 |
+| SDR-004 懒物化：session.create 的 wire log 延后，**首条用户消息才落盘进 index**（metadata 行在创建时即写，见 §9 事实 2 的门禁注释）——2026-10-30 曾据此判断该形态对「每次运行产生一个新 session」的 workspace 级任务友好；**2026-11-14 更正**：该判断不再成立，执行会话改为创建即落盘（ADR-023），懒物化的例外口不再被本域消费 | 会话管理域 SDR-004；现状见 §9 |
 
 ## 6. 可借鉴的既有骨架
 
@@ -123,3 +123,21 @@ workspace 级前置件（**已就绪**）：
 | 等待语义/回合准入（忙则并入、闲则自起）由回合调度域统一裁决，本域注入遵守同一准入契约 | `docs/specs/turn-scheduling-requirements.md`（L1 异步唤醒源） |
 | 审批策略链的形态（policy chain + Ask/Deny/Approve）与「无人值守 ask 一律拒」的先例 | approval 域（SDR-007 d 先例：`deny_when_unattended`） |
 | cron 事件 `cron.fired` / 注入信封 `<cron-fire>` 已定型（B2/B6） | subagent E11/E12、SDR-B2-01 |
+
+## 9. 执行会话的可见性现状（2026-11-14 增补，ADR-023 的事实源）
+
+代码基线 `80de6d49`。此处记的是「执行会话当前以什么形态存在、从哪些路径才可见」的代码事实；目标形态由架构 ADR-023 与需求 SDR-127 给出。
+
+| # | 事实 | 位置 |
+|---|---|---|
+| 1 | 执行会话以**行豁免（row-exempt）懒会话**创建：`create_session_lazy_with_root_ex(metadata, scope_config, sandbox_root, true)`，第四个参数为真即不写 metadata 行 | `rust/crates/mirri-embedded/src/embedded_server/cron_run_spawner.rs:388-405` |
+| 2 | 行豁免的实现：`defer_wire_log()` 后仅在 `!row_exempt` 时写 metadata 行——豁免形态下既不写行也不落 wire log（wire ops 缓冲在内存，等 `materialize_session`） | `rust/crates/mirri-core/src/session/manager/mod.rs:983-1000`（门禁注释在 `:985-991`） |
+| 3 | 执行会话的 `last_prompt` 被显式置 `None`；会话列表的默认视图按 `last_prompt` 是否为空过滤（`exclude_empty`），因此该会话不出现在默认列表 | `cron_run_spawner.rs:374`；过滤语义见 `rust/crates/mirri-core/src/session/manager/mod.rs:986`、`:2236-2257` |
+| 4 | 执行回合**刻意不落索引**：spawner 传给注入管线的 settle-index 句柄是 `None`，并显式注释「the run turn never settles into the index」（spawner 结构体里也不带该句柄） | `cron_run_spawner.rs:745-746`、`:83-86` |
+| 5 | 执行会话不进路由表，注入时直接传已持有的会话 Arc（`resolve_session_via` 会失败）——另注 `note_active` 只为让审批 RPC 在其繁忙时能路由到它 | `cron_run_spawner.rs:384-401`、`:731-735` |
+| 6 | 唯一的可见化入口是 RPC `cron.run.open`：`dispatch_open_cron_run` → `SessionManager::materialize_session`（幂等，已物化返回 `false`） | `rust/crates/mirri-embedded/src/embedded_server/cron_query_handlers.rs:169-199` |
+| 7 | 7 天 TTL 清扫：常量 `UNOPENED_RUN_SESSION_TTL = 7 天`；调度循环每 tick 调 `sweep_unopened_execution_sessions`，把「被终态运行引用 && 从未物化（无 wire log）&& 终态早于 horizon」的会话从工作区活会话表里关闭/丢弃（RunRecord 保留摘要） | `cron_run_spawner.rs:66-69`；`rust/crates/mirri-embedded/src/embedded_server/cron_driver.rs:200-264` |
+| 8 | 前端运行历史的「打开」：`openRun` 先 `api.openCronRun(workspaceId, sessionRef)` 再 `client.openSessionById(sessionRef)`；该组件不负责关闭设置浮层 | `apps/mirri-web/src/components/settings/scheduledTasks/ScheduledTaskDetail.vue:141-155` |
+| 9 | **静默失败点**：`openSessionById` 直连 `openSessionFromDeepLink`；后者以「列表中已有该会话」或 `fetchSessionIntoList(id)` 的返回值判定可用性，而 `fetchSessionIntoList` 在 `getSession` 失败时**吞掉异常并返回 `false`**——`available` 为假时既不选中会话也不报错，用户点击后无任何反馈；只有异常被抛到 `openSessionFromDeepLink` 外层时才会走 `pushOperationFailure('deepLink', ...)`，该分支在「拉取返回 false」路径上不可达 | `apps/mirri-web/src/composables/client/useWorkspaceState.ts:3443-3454`、`:1821-1833`；`useMirriWebClient.ts:3407` |
+| 10 | 运行记录里的 `sessionRef` 由 spawner 在会话创建后 `set_run_session_ref` 写回（会话创建失败时该字段为 `None`，记录为 Failed 并带原因） | `cron_run_spawner.rs:429-437`、`:406-427` |
+

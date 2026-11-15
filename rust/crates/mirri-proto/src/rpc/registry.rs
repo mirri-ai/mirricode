@@ -491,9 +491,9 @@ pub const METHODS: &[MethodEntry] = &[
     // Stage-2 batch 4b (cron-scheduling): one workspace task's run
     // records (C.2) — the panel's consumption face.
     both_kept("cron.runs.list", D::Cron),
-    // Stage-2 batch 4b (cron-scheduling): the explicit-open path
-    // (B.2/C.4, ADR-008) — opening a run record materializes the
-    // execution session into the session index.
+    // Stage-2 batch 4b (cron-scheduling): the run-open compatibility
+    // entry (B.2/C.4) — a run's execution session is an ordinary
+    // eagerly persisted session, so opening one is an idempotent no-op.
     both_kept("cron.run.open", D::Cron),
     // Form batch 6 (cron-scheduling, ADR-017): the read-only preview
     // face — the next N occurrences of a schedule (expression or
