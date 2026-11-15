@@ -3417,24 +3417,10 @@ export function useMirriWebClient() {
     supportsFileReferences: workspaceState.supportsFileReferences,
     selectSession: async (sessionId: string) => {
       await workspaceState.selectSession(sessionId);
-      // SDR-014: a user click on the session row IS use — fire-and-forget
-      // touch (only on the user-interaction path; resync/reconnect/refresh
-      // never route through here), then mirror it locally so the sidebar
-      // re-sorts without waiting for the round-trip. Older engines without
-      // the RPC resolve through the catch below (no local bump either —
-      // without the durable write the optimistic bump would be a lie).
-      const api = getMirriWebApi();
-      if (typeof api.touchSession === 'function') {
-        try {
-          await api.touchSession(sessionId);
-          updateSession(sessionId, (s) => ({
-            ...s,
-            lastUsedAt: new Date().toISOString(),
-          }));
-        } catch {
-          // Best-effort: a failed touch keeps the current sort order.
-        }
-      }
+      // SDR-019: opening is NOT use — never fire `session.touch` here. The
+      // recency key `lastUsedAt` moves only on a user send (the engine's
+      // message-submit handler); a pure open leaves the row's time and sort
+      // position untouched.
       // Daemon-side queue is the source of truth for parked prompts: after a
       // reload/switch the queue area is re-populated from GET /prompts.
       if (rawState.activeSessionId === sessionId) {
