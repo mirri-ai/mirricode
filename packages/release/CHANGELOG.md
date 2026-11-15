@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.3.0
+
+### Minor Changes
+
+- [#224](https://github.com/mirri-ai/mirricode/pull/224) [`e14d5f9`](https://github.com/mirri-ai/mirricode/commit/e14d5f97ae2606b41dda0a434da391244db1d621) Thanks [@im-bravo](https://github.com/im-bravo)! - Scheduled task runs now show up as regular sessions in the session list — visible in the sidebar with the task's title and prompt, searchable, and kept across restarts. Opening a run from the task history jumps straight to its session in the chat area like any other session, and a failed open shows a visible notice instead of silently doing nothing. Scheduled fires now deliver exactly the prompt you configured — no wrapping and no "fired" prefix on the message; schedule details stay outside the message as metadata.
+
+- [#230](https://github.com/mirri-ai/mirricode/pull/230) [`60c96d7`](https://github.com/mirri-ai/mirricode/commit/60c96d77b68d623d03ffdd550930122090cda08b) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Pinned sessions now gather in one "Pinned" section at the top of the sidebar, across every workspace, with the most recently pinned session first — so the sessions that matter are all in one place instead of split into one short list per workspace. A pinned session no longer repeats inside its own workspace group, the section disappears entirely when nothing is pinned, and hovering a row tells you which workspace it belongs to. Each pinned row also carries a colored strip on its left edge plus a pushpin next to the title that opens a seven-color palette; the hover pin icon pins a session in a single click and unpins it on the next click. List search and the mobile switcher offer the same pin and unpin actions.
+
+### Patch Changes
+
+- [#227](https://github.com/mirri-ai/mirricode/pull/227) [`5e496ff`](https://github.com/mirri-ai/mirricode/commit/5e496ff137733c7e7fb437943b9aec7b69585454) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix per-turn token usage, duration and completion time missing for scheduled-task and reminder turns after reopening a session — the session total was correct, but each turn's usage pill stayed empty because the turn could not be matched back to its rows.
+
+- [#228](https://github.com/mirri-ai/mirricode/pull/228) [`c7c606b`](https://github.com/mirri-ai/mirricode/commit/c7c606bc7a5d68031624c004cfbe155a105c9dd0) Thanks [@im-bravo](https://github.com/im-bravo)! - Scheduled task runs now appear in the session tree automatically as soon as they start, without refreshing. The sidebar row is identical to the one a manual refresh produces (same title and prompt preview), and the same live announcement covers sessions created by any other path — a new chat, a fork, or a side chat.
+
+- [#226](https://github.com/mirri-ai/mirricode/pull/226) [`219d2bf`](https://github.com/mirri-ai/mirricode/commit/219d2bf5b1de7e0f23582b736b792144f4e5aafc) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Fix the scheduled task edit form rolling back to pre-save values after a save, a saved schedule reopening as the generic "custom" option instead of the option the user picked (an every-minute rule now reads "every minute" on every surface), and confirming a custom schedule rule silently doing nothing.
+
+- [#229](https://github.com/mirri-ai/mirricode/pull/229) [`7e66944`](https://github.com/mirri-ai/mirricode/commit/7e669445c850599f5333f9885f9a92a9ce84618c) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Fix the sidebar refreshing a session's time to "just now" and moving it to the top when you merely open it — opening a session no longer counts as recent use; only sending a message does.
+
 ## 3.2.1
 
 ### Patch Changes
