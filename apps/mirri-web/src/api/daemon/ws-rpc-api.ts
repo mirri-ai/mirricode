@@ -1765,7 +1765,8 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     return { archived: true };
   }
 
-  /** `session.touch` (SDR-014): bump only the recency key `lastUsedAt`. */
+  /** `session.touch` (SDR-014/SDR-019): bump only the recency key
+   *  `lastUsedAt`. No longer called on the session-open path (SDR-019). */
   async touchSession(sessionId: string): Promise<void> {
     await this.client.call('session.touch', { session_id: sessionId });
   }

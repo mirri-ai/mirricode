@@ -95,7 +95,7 @@ web 客户端维护"每会话消费模式"表：
 #### 3.3.1 lastUsedAt 的服务端产生点（W1 批次）
 
 - **用户发送消息**：写在 message 提交 handler 内部（引擎收到用户消息的落点，非客户端事件）。
-- **用户主动打开**：新增显式轻量 RPC `session.touch`——**由前端仅在用户交互路径（点击会话行）调用**。不能复用 `session.restore`/`session.snapshot` 作为产生点：restore-on-demand 会在任意连接首次读面（列表页打开、resync、快照同步）时自动触发，无法区分用户主动与否。
+- **用户主动打开**（**已于 ADR-006 撤销**）：曾新增显式轻量 RPC `session.touch`——由前端仅在用户交互路径（点击会话行）调用。SDR-019 裁定打开不算使用后，前端不再于打开路径调用它；RPC 本身保留为显式能力。不能复用 `session.restore`/`session.snapshot` 作为产生点：restore-on-demand 会在任意连接首次读面（列表页打开、resync、快照同步）时自动触发，无法区分用户主动与否——这一限制在撤销后依然成立（若未来重新引入打开类产生点，仍需显式 RPC）。
 - `lastUsedAt` 持久化进会话记录，进 `session.list` 行与 snapshot 视图（多端一致，与四元组同路——ADR-009 先例）。
 
 ### 3.4 高频热点收敛
@@ -132,6 +132,8 @@ web 客户端维护"每会话消费模式"表：
 
 ### ADR-003 排序键独立为 lastUsedAt，产生点 = 消息提交 handler + session.touch
 
+> **部分已被取代（2026-11-15，ADR-006）**：本条"产生点 = 消息提交 handler + `session.touch`"中的 `session.touch` 打开路径调用由 ADR-006 撤销——会话管理域 SDR-019 裁定打开不算使用，前端不再于打开路径调用 `session.touch`；`lastUsedAt` 字段与持久化/契约形状不变。以下保留原文作为历史记录。
+
 - **编号与日期**：ADR-003 · 2026-10-23
 - **背景与动机**：排序跳动的根因是排序键与内容产出耦合（context §2.5）；SDR-014 收窄了使用口径，服务端需要与之匹配的产生点——且"用户主动打开"在服务端无法从现有 RPC 区分（restore-on-demand 自动触发，快照拉取既可能是用户点击也可能是 resync）。
 - **决策**：§3.3 + §3.3.1。`lastUsedAt` 为服务端持有的会话视图字段，持久化进会话记录，更新点恰为使用清单两项（消息提交 handler、`session.touch` RPC——前端仅在用户点击会话行的路径调用）；进 `session.list` 行与 snapshot 视图。
@@ -154,6 +156,14 @@ web 客户端维护"每会话消费模式"表：
 - **否决的替代**：(a) unsubscribe 无条件置空——多端场景下一个端退订会让另一个端失去审批通道；(b) 保持现状（不清槽位）——显式退订后审批仍打到死连接，维持待修的缺陷；(c) teardown 与 unsubscribe 统一清槽位——直接违反 ADR-008 的 never-attached vs attached-then-broken 约束。
 - **影响面**：`rust/crates/mirri-server/src/ws_rpc.rs`（订阅表携带 callback、`unsubscribe_session` 清理、cursor 重订阅替换路径）；§2.3 的 digest 降级路径不再继承回答能力（digest 落地 W2 时需按此口径设计切换）；`tests/server_group.rs` 新增 `should_clear_reverse_rpc_callback_when_client_unsubscribes`。
 
+### ADR-006 打开路径不再调用 session.touch：lastUsedAt 产生点收窄为消息提交 handler 单点
+
+- **编号与日期**：ADR-006 · 2026-11-15（取代 ADR-003 产生点清单中的 `session.touch` 打开路径调用）
+- **背景与动机**：会话管理域 SDR-019 裁定"打开会话不算使用"——用户点开一个会话只是查看，侧栏该行时间却变成"刚刚"并跳顶，纯浏览行为在改写排序与时间语义。`session.touch` 的唯一内置调用方就是前端打开路径（`selectSession` 的 fire-and-forget touch + 本地乐观 bump），撤销该口径后它在产品内不再有调用方。
+- **决策**：前端 `selectSession` 不再调用 `session.touch`、不再本地 bump `lastUsedAt`——`lastUsedAt` 的产生点收窄为消息提交 handler 单点。`session.touch` RPC 本身保留（wire 契约不动：TSV/registry/embedded 路由五处镜像不变），作为显式 recency 能力供未来调用方使用；其移除若未来确认无外部消费者另行裁决（可能构成 breaking）。
+- **否决的替代**：(a) 保留打开路径调用——维持 SDR-014 原口径，即本条要消除的问题；(b) 随本次一并移除 `session.touch` RPC——动 authoritative-methods.tsv 与 registry 契约镜像，属 breaking 变更，与行为修复捆绑做超出最小变更面；(c) 改为打开时按停留时长/滚动深度计使用——不可观测代理指标，用户无法预期（SDR-019 已否决同类）。
+- **影响面**：`apps/mirri-web/src/composables/useMirriWebClient.ts`（`selectSession` 移除 touch 块）；§3.3.1（产生点清单标注撤销）；ADR-003（部分取代标注）；会话管理域 SDR-019 与 glossary G8（口径来源）；`session.touch` 测试与路由保留（RPC 能力不变）。
+
 ## 6. 与既有契约的边界
 
 | 契约 | 本域动作 |
@@ -161,6 +171,6 @@ web 客户端维护"每会话消费模式"表：
 | 对话渲染 ADR-002（快照+游标+重放） | 不改。digest/full 切换走既有快照重建路径 |
 | 对话渲染 ADR-003（事件双轨） | 不改 durable/volatile 划分；分级是投递面第三维 |
 | 会话管理 SDR-013/ADR-009（work_changed 全局扇出） | 引擎层既有实现是起点；WS 层全局通道（§2.2）是其在连接面的接线，口径不变 |
-| 会话管理 SDR-014（使用口径） | 消费该裁决；lastUsedAt 产生点与之对齐（§3.3.1） |
+| 会话管理 SDR-019（使用口径，取代 SDR-014 的打开子句） | 消费该裁决；lastUsedAt 产生点与之对齐（§3.3.1，ADR-006） |
 | 反向 RPC（last-subscriber-wins） | 不改语义；digest 订阅跳过挂接（防抢答）；显式 unsubscribe 清本连接自己装的槽位（`Arc::ptr_eq` 只清自己的），连接 teardown 仍不清槽位（ADR-008 锚定）——降级路径不再依赖槽位残留，digest 落地（W2）时需按此口径设计切换 |
 | MRU 4 订阅上限（前端止血补丁） | 退役（W3），由分级模型取代 |

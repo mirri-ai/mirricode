@@ -1841,11 +1841,12 @@ export interface MirriWebApi {
   getSessionGoal(sessionId: string): Promise<AppGoal | null>;
   getSessionWarnings(sessionId: string): Promise<AppSessionWarning[]>;
   archiveSession(sessionId: string): Promise<{ archived: true }>;
-  /** SDR-014 recency touch — bump ONLY the session's `lastUsedAt` (the
-   *  sidebar sort key) without refreshing updatedAt. Fire-and-forget from
-   *  user-interaction paths (selecting a session row); snapshot/resync flows
-   * must NOT call it. Optional: only the rust engine implements the
-   * `session.touch` RPC — older engines simply never sort by it. */
+  /** SDR-014/SDR-019 recency touch — bump ONLY the session's `lastUsedAt` (the
+   *  sidebar sort key) without refreshing updatedAt. No longer fired on the
+   *  session-open path (SDR-019: opening is not use); the RPC stays available
+   *  as an explicit recency capability. Optional: only the rust engine
+   *  implements the `session.touch` RPC — older engines simply never sort by
+   *  it. */
   touchSession?(sessionId: string): Promise<void>;
   restoreSession(sessionId: string): Promise<AppSession>;
   // --- Session retention (the archived/compressed management page, v3 rust
