@@ -7,8 +7,6 @@
 
 Mirri Code is an AI coding agent that ships as a desktop app, with a Rust core inside — it can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives. Bring any compatible LLM provider — there is no provider lock-in.
 
-> **Note:** Mirri Code is developed as a fork of [kimi-code](https://github.com/MoonshotAI/kimi-code).
-
 ## Install
 
 The desktop app is the primary distribution. Download the installer for your platform (macOS `.dmg` or `.zip`, Windows `.exe`, Linux `.AppImage` / `.deb`) from [GitHub Releases](https://github.com/mirri-ai/mirricode/releases/latest).
@@ -123,8 +121,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution guide.
 - For security vulnerabilities, see [SECURITY.md](SECURITY.md).
 
 ## Acknowledgements
-
-This project started as a fork of [kimi-code](https://github.com/MoonshotAI/kimi-code) by [Moonshot AI](https://github.com/MoonshotAI). We are grateful to the kimi-code team for their pioneering work in AI-powered coding agents, which laid the foundation for Mirri Code.
 
 The early terminal UI was built on top of [`pi-tui`](https://github.com/earendil-works/pi-mono/tree/main/packages/tui); we thank its authors for their valuable work.
 

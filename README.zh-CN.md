@@ -10,8 +10,6 @@
 
 Mirri Code 是一个 AI 编程 agent，以桌面应用形态分发，内核用 Rust 实现，可以帮你读写代码、执行 shell 命令、检索文件、抓取网页，并根据反馈自主决定下一步动作。可接入任意兼容的 LLM 供应商，不锁定任何厂商。
 
-> **注意：** Mirri Code 基于 [kimi-code](https://github.com/MoonshotAI/kimi-code) 分支开发。
-
 ## 安装
 
 桌面应用是主要分发渠道。请从 [GitHub Releases](https://github.com/mirri-ai/mirricode/releases/latest) 下载对应平台的安装包（macOS `.dmg` 或 `.zip`、Windows `.exe`、Linux `.AppImage` / `.deb`）。
@@ -125,8 +123,6 @@ pnpm build      # 构建所有包
 - 安全漏洞反馈，请见 [SECURITY.md](SECURITY.md)。
 
 ## 致谢
-
-本项目始于 [kimi-code](https://github.com/MoonshotAI/kimi-code) 的分支，由 [Moonshot AI](https://github.com/MoonshotAI) 团队开发。我们感谢 kimi-code 团队在 AI 编程 Agent 领域的开创性工作，为 Mirri Code 奠定了坚实的基础。
 
 我们的 TUI 构建在 [`pi-tui`](https://github.com/earendil-works/pi-mono/tree/main/packages/tui) 之上。我们衷心感谢 `pi-tui` 作者的工作。
 
