@@ -13,7 +13,7 @@
     "dev:web:rust": "MIRRICODE_BACKEND=rust pnpm -C apps/mirri-web run dev",
     "dev:docs": "pnpm -C docs run dev",
     "typecheck": "pnpm run build:packages && pnpm -r --filter './packages/*' run typecheck && pnpm --filter @mirri-ai/mirri-web run typecheck && pnpm --filter @mirri-ai/mirri-desktop run typecheck",
-    "lint": "oxlint --type-aware",
+    "lint": "oxlint --type-aware --max-warnings=218",
     "lint:fix": "pnpm run lint --fix",
     "sherif": "sherif",
     "test": "MIRRICODE_E2E_SKIP_RUST=1 pnpm -C apps/mirri-web run test && pnpm --filter @mirri-ai/mirri-desktop run test",
