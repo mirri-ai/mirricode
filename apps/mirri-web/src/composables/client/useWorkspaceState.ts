@@ -12,7 +12,7 @@ import { getMirriWebApi } from '../../api';
 import { SERVER_AUTH_UNAUTHORIZED_CODE } from '../../api/daemon/http';
 import { isPlaceholderSessionUsage } from '../../api/daemon/mappers';
 import { sortKeyEpoch } from '../../lib/sessionSorting';
-import { DEFAULT_PIN_COLOR } from '../../lib/pinColor';
+import { DEFAULT_PIN_COLOR, pickPinColor } from '../../lib/pinColor';
 import { i18n } from '../../i18n';
 import { useConfirmDialog } from '../useConfirmDialog';
 import {
@@ -3037,30 +3037,51 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
   }
 
+  /** The colour of the most recently pinned row, if any — the "previous" colour
+   *  a new random pick avoids, so two pins in a row never land on the same one
+   *  (identical neighbouring dots read as the same item). */
+  function mostRecentPinColor():
+    | 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray'
+    | undefined {
+    let newest: AppSession | undefined;
+    for (const s of rawState.sessions) {
+      if (!s.pinned) continue;
+      if (!newest) { newest = s; continue; }
+      const a = Date.parse(s.pinnedAt ?? '') || 0;
+      const b = Date.parse(newest.pinnedAt ?? '') || 0;
+      if (a > b) newest = s;
+    }
+    return newest?.pinColor;
+  }
+
   /** Pin a session (SDR-016/017): the engine writes ONLY the pin trio —
    *  the local patch mirrors that posture (no recency keys touched), and
    *  the pinned-first re-order follows from the sort comparator (the
    *  reactive session array re-sorts on the field flip).
-   *  SDR-021: pinning always lands WITH a color (red by default). The
-   *  sidebar marks a pinned row with a filled dot, so a colorless pin would
-   *  leave no visible trace — every entry point (rail, search dialog, mobile
-   *  sheet, header menu) therefore defaults here rather than at each caller. */
+   *  SDR-021: pinning always lands WITH a color. A NEW pin picks a random
+   *  preset colour (avoiding the most recent pin's colour) so consecutive pins
+   *  stay distinguishable at a glance; an explicit colour — the palette's
+   *  re-pin, or the undo of an unpin restoring its old colour — is honoured as
+   *  given. Every entry point (lead indicator, search dialog, mobile sheet,
+   *  header menu) goes through here, so the decision lives in exactly one
+   *  place and callers must NOT pre-pick a colour. */
   async function pinSession(
     id: string,
-    color: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray' = DEFAULT_PIN_COLOR,
+    color?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray',
   ): Promise<void> {
+    const resolved = color ?? pickPinColor(mostRecentPinColor());
     // Read BEFORE the write: a re-pin (the palette's color edit) is not a pin
     // action, and offering "undo" on a recolor would be noise.
     const wasPinned = rawState.sessions.find((s) => s.id === id)?.pinned === true;
     try {
-      await getMirriWebApi().pinSession(id, color);
+      await getMirriWebApi().pinSession(id, resolved);
       updateSession(id, (s) => ({
         ...s,
         pinned: true,
         // Keep the previous pin moment on a re-pin (the engine's own
         // idempotency); only a first pin stamps now.
         pinnedAt: s.pinnedAt ?? new Date().toISOString(),
-        pinColor: color,
+        pinColor: resolved,
       }));
       if (wasPinned) return;
       const title = rawState.sessions.find((s) => s.id === id)?.title ?? id;

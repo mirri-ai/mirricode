@@ -148,11 +148,31 @@ onBeforeUnmount(cancelHoverOpen);
       @contextmenu.prevent.stop="pinned && emit('openPalette', el)"
       @keydown="onKeydown"
     >
-      <span class="orb-dot" aria-hidden="true" />
+      <!-- Running: a proper spinner — a rounded arc over a faint track, both in
+           the same ring colour. This replaces an earlier "ring with a sector cut
+           out" (a conic gradient); at 13px a hard-edged notch reads as a chip
+           missing from the circle rather than motion, and its edges alias badly.
+           A round-capped SVG stroke is crisp at any size and the arc's ends read
+           as intentional. -->
+      <svg
+        v-if="busy"
+        class="orb-ring"
+        viewBox="0 0 13 13"
+        aria-hidden="true"
+        focusable="false"
+      >
+        <circle class="orb-ring-track" cx="6.5" cy="6.5" r="5" />
+        <circle class="orb-ring-arc" cx="6.5" cy="6.5" r="5" />
+      </svg>
+      <span v-else class="orb-dot" aria-hidden="true" />
       <span v-if="showUnread" class="orb-unread" aria-hidden="true" />
     </button>
     <span v-else class="orb" :class="classes" aria-hidden="true">
-      <span class="orb-dot" />
+      <svg v-if="busy" class="orb-ring" viewBox="0 0 13 13" focusable="false">
+        <circle class="orb-ring-track" cx="6.5" cy="6.5" r="5" />
+        <circle class="orb-ring-arc" cx="6.5" cy="6.5" r="5" />
+      </svg>
+      <span v-else class="orb-dot" />
       <span v-if="showUnread" class="orb-unread" />
     </span>
   </Tooltip>
@@ -174,6 +194,13 @@ onBeforeUnmount(cancelHoverOpen);
   border-radius: var(--radius-full);
   background: none;
   cursor: pointer;
+  /* The ring colour, used only while running: the pin colour when pinned, a
+     neutral one when not. ONE property drives both running states, so the
+     sidebar has exactly one "working" language. */
+  --ring-color: color-mix(in srgb, var(--color-text-muted) 70%, transparent);
+}
+.orb.is-pinned {
+  --ring-color: var(--pin-color, var(--pin-red));
 }
 .orb:focus-visible {
   outline: none;
@@ -211,29 +238,45 @@ onBeforeUnmount(cancelHoverOpen);
   background: var(--color-accent);
 }
 
-/* ③ unpinned · running — hollow ring with an arc sweeping around it, the same
-   "working" read the old leading spinner carried. */
-.orb.is-running:not(.is-pinned) .orb-dot {
-  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--color-text-muted) 50%, transparent);
-}
-.orb.is-running:not(.is-pinned)::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  margin: auto;
+/* ③ + ⑥ running — ONE language for both states: the dot becomes a spinner,
+   a rounded arc travelling around a faint track. Only the ring's colour differs
+   (see --ring-color), so a user never has to learn two different "working"
+   readings.
+
+   This replaced two earlier attempts at the same slot: an outer glow (nearly
+   invisible at 13px, it dimmed the pin colour, and glow is already this
+   product's "connected" idiom on the MCP panel) and a conic ring with a sector
+   cut out of it (a hard notch reads as a chip MISSING from the circle rather
+   than as motion, and its edges alias badly at this size). A round-capped stroke
+   is crisp at any size and its two ends read as deliberate. */
+.orb-ring {
   width: 13px;
   height: 13px;
-  border-radius: var(--radius-full);
-  border: 1.5px solid transparent;
-  border-top-color: var(--color-text-muted);
-  animation: orb-sweep 0.9s linear infinite;
+  flex: none;
+  transform-origin: 50% 50%;
+  animation: orb-ring-spin 0.9s linear infinite;
 }
-@keyframes orb-sweep {
+.orb-ring-track,
+.orb-ring-arc {
+  fill: none;
+  stroke: var(--ring-color);
+  stroke-width: 1.8;
+}
+/* A faint full ring: it gives the arc a context to travel around, and keeps the
+   "there is a spinner here" read even at the arc's most contracted frame. */
+.orb-ring-track {
+  opacity: 0.22;
+}
+/* About a third of the circumference, with rounded ends. */
+.orb-ring-arc {
+  stroke-linecap: round;
+  stroke-dasharray: 10.5 21;
+}
+@keyframes orb-ring-spin {
   to {
     transform: rotate(360deg);
   }
 }
-
 /* ④ pinned · idle — filled with the pin colour. The hairline inset ring keeps
    the dot legible on light and dark surfaces. */
 .orb.is-pinned .orb-dot {
@@ -255,38 +298,14 @@ onBeforeUnmount(cancelHoverOpen);
   box-shadow: 0 0 0 2px var(--row-bg, var(--panel));
 }
 
-/* ⑥ pinned · running — the McpServersPanel `glow-pulse` idiom (a halo that
-   swells and fades on a 2s cycle), tinted by the pin's own colour. Motion
-   alone is invisible to reduced-motion users, so that preference keeps a
-   steady halo instead: the dot still reads as active without pulsing. */
-@keyframes orb-breathe {
-  0%,
-  100% {
-    box-shadow:
-      inset 0 0 0 1px color-mix(in srgb, var(--pin-color, var(--pin-red)) 60%, #000),
-      0 0 2px 0 color-mix(in srgb, var(--pin-color, var(--pin-red)) 55%, transparent);
-    opacity: 1;
-  }
-  50% {
-    box-shadow:
-      inset 0 0 0 1px color-mix(in srgb, var(--pin-color, var(--pin-red)) 60%, #000),
-      0 0 8px 3px color-mix(in srgb, var(--pin-color, var(--pin-red)) 45%, transparent);
-    opacity: 0.78;
-  }
-}
-.orb.is-pinned.is-running .orb-dot {
-  animation: orb-breathe 2s var(--ease-in-out) infinite;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .orb.is-running:not(.is-pinned)::after {
-    animation-duration: 1.8s;
-  }
-  .orb.is-pinned.is-running .orb-dot {
-    animation: none;
-    box-shadow:
-      inset 0 0 0 1px color-mix(in srgb, var(--pin-color, var(--pin-red)) 60%, #000),
-      0 0 6px 2px color-mix(in srgb, var(--pin-color, var(--pin-red)) 40%, transparent);
+  /* A spinner still reads as "working" while stationary: the arc stays parked
+     with its rounded ends and the faint track keeps the ring shape, which is
+     distinct from both the solid pinned dot and the hollow idle ring. Slowing
+     it (rather than freezing it dead) also avoids the arc looking like a
+     rendering artefact. */
+  .orb-ring {
+    animation-duration: 2.4s;
   }
 }
 </style>

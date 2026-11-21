@@ -245,13 +245,14 @@ async function togglePalette(anchor?: HTMLElement | null): Promise<void> {
   };
 }
 
-/** The pin rail's single toggle: pin with the default color, or unpin, in
- *  place. Pinning always arrives with a color (red) — a colorless pin has no
- *  visual trace on the rail, so "pinned" would be unreadable. */
+/** The indicator's single toggle: pin or unpin, in place.
+ *  The colour of a NEW pin is decided in `pinSession` (one place, and it can
+ *  avoid the most recently pinned row's colour). Callers must not pre-pick one
+ *  — a colour chosen here would shadow that decision. */
 function togglePin(): void {
   closePalette();
   if (props.session.pinned) emit('unpin', props.session.id);
-  else emit('pin', props.session.id, DEFAULT_PIN_COLOR);
+  else emit('pin', props.session.id);
 }
 
 /** The pointer left the indicator. The palette keeps itself open while the
