@@ -2047,6 +2047,9 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
             type: 'file',
             fileId: att.fileId,
             name: att.name ?? '',
+            // An empty media type is a missing one: fall back to the generic
+            // binary type rather than sending '' to the engine.
+            // eslint-disable-next-line typescript/prefer-nullish-coalescing -- empty mediaType means unknown
             mediaType: att.mediaType || 'application/octet-stream',
             size: att.size ?? 0,
           });

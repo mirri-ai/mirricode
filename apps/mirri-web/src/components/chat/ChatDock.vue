@@ -5,12 +5,29 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { ActivationBadges, ApprovalBlock, ConversationStatus, PermissionMode, QueuedPromptView, TaskItem, TodoView, UIQuestion } from '../../types';
-import type { FilePreviewRequest } from '../../types';
-import type { AppGoal, AppModel, AppSessionUsage, AppSkill, AppWarning, QuestionResponse, ThinkingLevel } from '../../api/types';
-import type { SearchFilesResult } from '../../types';
+import type {
+  ActivationBadges,
+  ApprovalBlock,
+  ConversationStatus,
+  FilePreviewRequest,
+  PermissionMode,
+  QueuedPromptView,
+  SearchFilesResult,
+  TaskItem,
+  TodoView,
+  UIQuestion,
+} from '../../types';
+import type {
+  AppGoal,
+  AppModel,
+  AppSessionUsage,
+  AppSkill,
+  AppWarning,
+  PromptReference,
+  QuestionResponse,
+  ThinkingLevel,
+} from '../../api/types';
 import type { PromptAttachment } from '../../composables/useMirriWebClient';
-import type { PromptReference } from '../../api/types';
 import Composer from './Composer.vue';
 import UsageStatsBar from './UsageStatsBar.vue';
 import TurnFailureBar from './TurnFailureBar.vue';

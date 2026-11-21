@@ -15,6 +15,21 @@
     "eslint/no-control-regex": "off",
     "typescript/no-misused-promises": "error",
     "typescript/return-await": "error",
+    // `() => doThing()` is the idiomatic spelling for "run this and return
+    // nothing", not a confusing value leak. The dangerous shapes — a void call
+    // nested inside a larger expression — are still reported.
+    "typescript/no-confusing-void-expression": [
+      "warn",
+      { "ignoreArrowShorthand": true }
+    ],
+    // A `switch` with a `default:` arm already states "every other member
+    // falls back here" — that is a deliberate contract, not a missed case.
+    // The dangerous shape is a `switch` with NO `default` that also misses a
+    // member: it silently returns `undefined` when the union grows.
+    "typescript/switch-exhaustiveness-check": [
+      "warn",
+      { "considerDefaultExhaustiveForUnions": true }
+    ],
     "typescript/only-throw-error": "error",
     "import/no-cycle": "error",
     "import/no-self-import": "error",
@@ -31,7 +46,7 @@
     "typescript/no-unsafe-member-access": "off",
     "typescript/no-unsafe-return": "off",
 
-    "eslint/no-console": "warn",
+    "eslint/no-console": ["warn", { "allow": ["warn", "error"] }],
     "typescript/no-explicit-any": "off",
     "typescript/no-non-null-assertion": "off",
     "typescript/use-unknown-in-catch-callback-variable": "off",
@@ -51,7 +66,7 @@
     "import/no-mutable-exports": "warn",
     "unicorn/error-message": "warn",
     "unicorn/throw-new-error": "warn",
-    "unicorn/catch-error-name": "warn",
+    "unicorn/catch-error-name": "off",
     "unicorn/prefer-add-event-listener": "off",
     "node/no-new-require": "warn",
     "node/no-path-concat": "warn",
@@ -86,6 +101,20 @@
   "overrides": [
     {
       "files": ["**/examples/**/*.ts", "**/examples/**/*.tsx"],
+      "rules": {
+        "eslint/no-console": "off"
+      }
+    },
+
+    {
+      // CLI tooling and the black-box e2e client: stdout IS the product.
+      // `console.warn` / `console.error` are allowed repo-wide via the rule
+      // option above, so this only exempts `console.log`.
+      "files": [
+        "scripts/**/*.mjs",
+        "rust/scripts/**/*.mjs",
+        "packages/server-e2e/**/*.ts"
+      ],
       "rules": {
         "eslint/no-console": "off"
       }

@@ -100,6 +100,8 @@ import type {
   PageRequest,
   PromptSubmission,
   PromptSubmitResult,
+  ProviderCredentialStatus,
+  ProviderCredentialValue,
   ProviderRefreshResult,
   QuestionResponse,
   SteerSessionResult,
@@ -107,17 +109,14 @@ import type {
   WorkspaceDeletionResult,
   WorkspaceDeleteMode,
 } from '../types';
-import { createAgentProjector, turnUsageForPromptId } from './agentEventProjector';
-import type { AgentProjector } from './agentEventProjector';
+import { createAgentProjector, turnUsageForPromptId, type AgentProjector } from './agentEventProjector';
 import {
   credentialUpdatedProviderId,
   toProviderCredentialInfo,
   type ProviderCredentialInfo,
 } from '../../lib/providerCredentials';
-import type { ProviderCredentialStatus, ProviderCredentialValue } from '../types';
 import { SERVER_AUTH_UNAUTHORIZED_CODE } from './http';
-import { JsonRpcCallError, JsonRpcClient, NOT_FOUND_CODE } from './json-rpc-client';
-import type { RpcEvent } from './json-rpc-client';
+import { JsonRpcCallError, JsonRpcClient, NOT_FOUND_CODE, type RpcEvent } from './json-rpc-client';
 // The shared protocol-part → app-content mapper (mappers.ts toAppMessageContent):
 // the rust `message.list` / `session.snapshot` content parts are the SAME shape
 // contract as WireMessageContent (the protocolMessage.ts union), so the snapshot
@@ -129,9 +128,9 @@ import {
   toAppTask as toAppTaskFromWire,
 } from './mappers';
 import { getCredential, markAuthRequired } from './serverAuth';
-import type { WireBackgroundTask } from './wire';
-import type { WireMessageContent } from './wire';
 import type {
+  WireBackgroundTask,
+  WireMessageContent,
   WireRetentionCompressNowResult,
   WireRetentionDeleteResult,
   WireRetentionDeleteTieredResult,

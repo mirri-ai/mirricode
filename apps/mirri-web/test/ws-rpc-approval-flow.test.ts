@@ -8,11 +8,9 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { JsonRpcCallError, JsonRpcClient } from '../src/api/daemon/json-rpc-client';
-import type { RpcEvent } from '../src/api/daemon/json-rpc-client';
+import { JsonRpcCallError, JsonRpcClient, type RpcEvent } from '../src/api/daemon/json-rpc-client';
 import { WsRpcApi } from '../src/api/daemon/ws-rpc-api';
-import { ParkedAskRegistry } from '../src/api/daemon/ws-rpc-event-bridge';
-import { routeRpcEventToAppEvents } from '../src/api/daemon/ws-rpc-event-bridge';
+import { ParkedAskRegistry, routeRpcEventToAppEvents } from '../src/api/daemon/ws-rpc-event-bridge';
 import { createAgentProjector } from '../src/api/daemon/agentEventProjector';
 import type { MirriEventHandlers } from '../src/api/types';
 

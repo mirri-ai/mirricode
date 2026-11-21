@@ -14,6 +14,7 @@ import type {
   AppAgentSkippedFile,
   AppNotice,
   AppWarning,
+  PromptReference,
   ThinkingLevel,
 } from './api/types';
 import ConversationPane from './components/chat/ConversationPane.vue';
@@ -37,7 +38,6 @@ import MobileTopBar from './components/mobile/MobileTopBar.vue';
 import ResizeHandle from './components/ResizeHandle.vue';
 import { useMirriWebClient } from './composables/useMirriWebClient';
 import type { PromptAttachment } from './composables/useMirriWebClient';
-import type { PromptReference } from './api/types';
 import type { TurnAttachment, FilePreviewRequest, FileData, SessionWorkFacts } from './types';
 import { useSetupGate } from './composables/useSetupGate';
 import { usePageTitle } from './composables/usePageTitle';

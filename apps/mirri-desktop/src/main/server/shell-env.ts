@@ -42,11 +42,16 @@ export function resolveShellEnv(): Promise<Record<string, string> | undefined> {
         if (error !== null) {
           // Fall back to zsh — many users have $SHELL=bash but their PATH
           // config lives in .zshrc (common when using Warp terminal).
+          // tryZshShellEnv() only ever resolves, so `resolve` alone is the
+          // complete handler; this promise cannot reject and the outer
+          // contract is "resolve with undefined on failure".
+          // eslint-disable-next-line promise/no-promise-in-callback -- cannot reject
           void tryZshShellEnv().then(resolve);
           return;
         }
         const env = parseEnvOutput(stdout);
         if (env === undefined) {
+          // eslint-disable-next-line promise/no-promise-in-callback -- cannot reject
           void tryZshShellEnv().then(resolve);
           return;
         }

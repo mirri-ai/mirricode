@@ -294,7 +294,7 @@ function mergeUsageEvents(
   type UsageEvent = Extract<AppEvent, { type: 'sessionUsageUpdated' }>;
   const opt = <K extends 'model' | 'swarmMode' | 'planMode' | 'collaborationMode' | 'thinking'>(
     key: K,
-  ) => (next[key] !== undefined ? next[key] : prev[key]) as UsageEvent[K];
+  ) => (next[key] ?? prev[key]) as UsageEvent[K];
   return {
     ...next,
     model: opt('model'),

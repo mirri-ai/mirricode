@@ -250,6 +250,9 @@ export function draftFromTask(task: AppCronTask, fallbackTimezone = ''): CronCre
     // not pick.
     schedule: scheduleFromTask(task),
     prompt: task.prompt,
+    // Empty string is this form's "unset" spelling: a task with no timezone
+    // inherits the picker's fallback, so `||` (not `??`) is the point.
+    // eslint-disable-next-line typescript/prefer-nullish-coalescing -- empty string means unset
     timezone: task.timezone?.trim() || fallbackTimezone,
     maxFiresText: task.maxFires !== undefined ? String(task.maxFires) : '',
     workspaceId: task.scope?.kind === 'workspace' ? task.scope.workspaceId : '',

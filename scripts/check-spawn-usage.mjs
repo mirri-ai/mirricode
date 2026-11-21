@@ -225,17 +225,19 @@ function blankTestModules(text) {
   let masked = maskCommentsAndStrings(text);
   const cfgTestRe =
     /#\[[^\n]*\b(?:cfg\(\s*(?:all\(\s*)?test|cfg_attr\([^)]*,\s*test)\b[^\n]*\]\s*\n?\s*mod\s+(\w+)/g;
+  // Blank a module body while preserving its newline count, so line numbers in
+  // later diagnostics still line up with the original file.
+  const cutBody = (t, start, end) => {
+    const newlines = (t.slice(start, end).match(/\n/g) ?? []).length;
+    return t.slice(0, start) + '\n'.repeat(newlines) + t.slice(end);
+  };
   let m;
   while ((m = cfgTestRe.exec(masked)) !== null) {
     const afterName = masked.slice(m.index + m[0].length);
     if (/^\s*\{/.test(afterName)) {
       const openBrace = m.index + m[0].length + afterName.match(/^\s*\{/)[0].length - 1;
       const end = findBlockEnd(masked, openBrace);
-      const cut = (t) => {
-        const newlines = (t.slice(m.index, end).match(/\n/g) ?? []).length;
-        return t.slice(0, m.index) + "\n".repeat(newlines) + t.slice(end);
-      };
-      masked = cut(masked);
+      masked = cutBody(masked, m.index, end);
       cfgTestRe.lastIndex = m.index;
     }
   }
