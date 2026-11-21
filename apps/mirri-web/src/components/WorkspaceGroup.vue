@@ -172,20 +172,27 @@ function onHeaderDragStart(event: DragEvent): void {
       :class="{ collapsed: isCollapsed(group.workspace.id) }"
       :inert="isCollapsed(group.workspace.id)"
     >
-      <SessionRow
-        v-for="s in visibleSessions"
-        :key="s.id"
-        :session="s"
-        :active="s.id === activeId"
-        :approval-count="pendingBySession[s.id]?.approvals ?? 0"
-        :question-count="pendingBySession[s.id]?.questions ?? 0"
-        :unread="unreadBySession[s.id] ?? false"
-        @select="emit('selectSession', $event)"
-        @rename="(id, title) => emit('renameSession', id, title)"
-        @archive="emit('archiveSession', $event)"
-        @pin="(id, color) => emit('pinSession', id, color)"
-        @unpin="emit('unpinSession', $event)"
-      />
+      <!-- Pin/unpin also moves a row within this group (a pinned row sits
+           at the head), so the same FLIP treatment applies here: surviving
+           rows glide instead of teleporting. The show-more controls stay
+           OUTSIDE the group — they are not session rows and must not
+           animate with them. -->
+      <TransitionGroup name="session-list" tag="div" class="session-list">
+        <SessionRow
+          v-for="s in visibleSessions"
+          :key="s.id"
+          :session="s"
+          :active="s.id === activeId"
+          :approval-count="pendingBySession[s.id]?.approvals ?? 0"
+          :question-count="pendingBySession[s.id]?.questions ?? 0"
+          :unread="unreadBySession[s.id] ?? false"
+          @select="emit('selectSession', $event)"
+          @rename="(id, title) => emit('renameSession', id, title)"
+          @archive="emit('archiveSession', $event)"
+          @pin="(id, color) => emit('pinSession', id, color)"
+          @unpin="emit('unpinSession', $event)"
+        />
+      </TransitionGroup>
       <button
         v-if="group.hasMore || group.loadingMore"
         class="show-more"
@@ -231,6 +238,43 @@ function onHeaderDragStart(event: DragEvent): void {
 }
 .group-sessions.collapsed {
   height: 0;
+}
+
+/* Pin/unpin FLIP inside one workspace group: the same motion budget as the
+   pinned section so both lists read as one system. The leaving row leaves the
+   flow at once, letting the rows below start closing the gap immediately. */
+.session-list {
+  position: relative;
+}
+.session-list-move,
+.session-list-enter-active,
+.session-list-leave-active {
+  transition:
+    transform var(--duration-base) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out);
+}
+.session-list-leave-active {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}
+.session-list-enter-from,
+.session-list-leave-to {
+  opacity: 0;
+}
+.session-list-enter-from {
+  transform: translateY(-4px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .session-list-move,
+  .session-list-enter-active,
+  .session-list-leave-active {
+    transition: none;
+  }
+  .session-list-enter-from {
+    transform: none;
+  }
 }
 
 /* Workspace header — an inset rounded row that mirrors the session-row inset

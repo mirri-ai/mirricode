@@ -154,6 +154,46 @@ describe('sidebar session pinning', () => {
     pinned.unmount();
   });
 
+  it('should not open the palette when the pointer only passes over the pinned dot', async () => {
+    vi.useFakeTimers();
+    try {
+      const wrapper = mountSidebar([groupOf([row({ pinned: true, pinColor: 'blue' })])]);
+      const pin = pinButton(wrapper);
+
+      // 指针扫过：enter 之后紧接着 mousemove，停顿时长从未攒够。
+      await pin.trigger('mouseenter');
+      await vi.advanceTimersByTimeAsync(120);
+      await pin.trigger('mousemove');
+      await vi.advanceTimersByTimeAsync(120);
+
+      expect(
+        wrapper.find('[data-test-id="session-pin-palette"]').exists(),
+        '快速扫过圆点不应弹出调色板',
+      ).toBe(false);
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('should open the palette when the pointer settles on the pinned dot', async () => {
+    vi.useFakeTimers();
+    try {
+      const wrapper = mountSidebar([groupOf([row({ pinned: true, pinColor: 'blue' })])]);
+
+      await pinButton(wrapper).trigger('mouseenter');
+      await vi.advanceTimersByTimeAsync(700);
+
+      expect(
+        wrapper.find('[data-test-id="session-pin-palette"]').exists(),
+        '指针停留后应弹出调色板',
+      ).toBe(true);
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('should open the color palette when the pinned pin is right-clicked', async () => {
     const wrapper = mountSidebar([groupOf([row({ pinned: true, pinColor: 'blue' })])]);
 

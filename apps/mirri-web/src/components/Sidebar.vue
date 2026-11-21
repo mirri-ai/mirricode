@@ -649,21 +649,28 @@ const showNewWorkspaceButton = false;
             <div class="side-section-label">
               <span class="side-section-title">{{ t('sidebar.pinnedSection') }}</span>
             </div>
-            <SessionRow
-              v-for="s in pinnedSessions"
-              :key="s.id"
-              :session="s"
-              :active="s.id === activeId"
-              :approval-count="pendingBySession[s.id]?.approvals ?? 0"
-              :question-count="pendingBySession[s.id]?.questions ?? 0"
-              :unread="unreadBySession[s.id] ?? false"
-              :workspace-name="s.workspaceName"
-              @select="onSelectSession"
-              @rename="(id, title) => emit('rename', id, title)"
-              @archive="(id) => emit('archive', id)"
-              @pin="(id, color) => emit('pin', id, color)"
-              @unpin="(id) => emit('unpin', id)"
-            />
+            <!-- A plain list would teleport on pin/unpin: TransitionGroup's
+                 `-move` hook animates the surviving rows into their new slots,
+                 so the section re-reads as one block that shifts. The moving
+                 rows are `position: relative` for the duration of the FLIP
+                 transform, and the enter/leave fades keep the boundary soft. -->
+            <TransitionGroup name="pinned" tag="div" class="pinned-list">
+              <SessionRow
+                v-for="s in pinnedSessions"
+                :key="s.id"
+                :session="s"
+                :active="s.id === activeId"
+                :approval-count="pendingBySession[s.id]?.approvals ?? 0"
+                :question-count="pendingBySession[s.id]?.questions ?? 0"
+                :unread="unreadBySession[s.id] ?? false"
+                :workspace-name="s.workspaceName"
+                @select="onSelectSession"
+                @rename="(id, title) => emit('rename', id, title)"
+                @archive="(id) => emit('archive', id)"
+                @pin="(id, color) => emit('pin', id, color)"
+                @unpin="(id) => emit('unpin', id)"
+              />
+            </TransitionGroup>
           </div>
 
           <div class="side-section-label">
@@ -1038,13 +1045,57 @@ const showNewWorkspaceButton = false;
   gap: 2px;
 }
 
-/* SDR-020: the global pinned section above the workspace list. It ends with a
+/* SDR-021: the global pinned section above the workspace list. It ends with a
    hairline so the pinned block reads as its own shelf — the workspace groups
    below start under a second section label. */
 .pinned-section {
   padding-bottom: var(--space-2);
   margin-bottom: var(--space-2);
   border-bottom: 1px solid var(--color-line);
+}
+
+/* Pin/unpin FLIP: the surviving rows glide to their new slots while the
+   entering row fades in above them and the leaving row fades out. The
+   durations stay inside the sidebar's own budget (120–200ms) so a pin feels
+   immediate rather than animated. */
+.pinned-list {
+  position: relative;
+}
+.pinned-move,
+.pinned-enter-active,
+.pinned-leave-active {
+  transition:
+    transform var(--duration-base) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out);
+}
+/* The leaving row leaves the flow immediately so the rows below it start
+   closing the gap at once instead of waiting for the fade to finish. */
+.pinned-leave-active {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}
+.pinned-enter-from,
+.pinned-leave-to {
+  opacity: 0;
+}
+.pinned-enter-from {
+  /* Entering rows rise a touch from the gap they are filling. */
+  transform: translateY(-4px);
+}
+
+/* Honour the OS reduced-motion preference: the rows still end up in the right
+   place, they just get there without the glide. */
+@media (prefers-reduced-motion: reduce) {
+  .pinned-move,
+  .pinned-enter-active,
+  .pinned-leave-active {
+    transition: none;
+  }
+  .pinned-enter-from {
+    transform: none;
+  }
 }
 
 /* Workspace drag-to-reorder: a line at the top (drop-before) or bottom

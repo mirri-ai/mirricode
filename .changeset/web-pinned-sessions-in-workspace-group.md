@@ -2,4 +2,4 @@
 "@mirri-ai/release": minor
 ---
 
-web: Rework the session pin control into a single colored dot at the left edge of each row. Pinning applies a red dot by default, hovering a pinned dot opens the color palette, and clicking it unpins. Pinned sessions also stay visible inside their workspace group instead of only in the "Pinned" section at the top. Pin and unpin now show a toast with an Undo action, and opening a session no longer silently drops its pin.
+web: Animate the session list when pinning or unpinning, so rows glide into their new slots instead of jumping. The color palette on a pinned dot now opens only after the pointer settles on it, so sweeping across the sidebar no longer pops a popover over the list.

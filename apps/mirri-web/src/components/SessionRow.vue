@@ -171,10 +171,14 @@ function onKeydown(e: KeyboardEvent): void {
     if (arming.value) disarm();
   }
 }
-/** Hover dwell before the palette opens on a pinned circle. */
-const PIN_HOVER_OPEN_MS = 320;
-/** Grace period for moving the pointer from the circle into the palette. */
-const PIN_HOVER_CLOSE_MS = 180;
+/** Hover dwell before the palette opens on a pinned circle. Long enough that
+ *  a pointer sweeping across the rail never triggers it — only a deliberate
+ *  stop does. */
+const PIN_HOVER_OPEN_MS = 600;
+/** Grace period for moving the pointer from the circle into the palette. Kept
+ *  short: the palette floats OVER the list, so it must get out of the way
+ *  quickly once the pointer has moved on. */
+const PIN_HOVER_CLOSE_MS = 120;
 
 // The color palette hangs off the pinned row's STATUS pin (next to the
 // title), not the hover action. It renders position:fixed and is anchored
@@ -252,6 +256,11 @@ function togglePin(): void {
  *  click. Delayed so a plain click (pin/unpin) never flashes the palette, and
  *  cancelled by `onPinLeave` — the palette keeps itself open while the pointer
  *  is inside it (its own mouseenter cancels the close). */
+/** Hovering a pinned dot opens the palette — but only after the pointer has
+ *  SETTLED on it. A pointer merely travelling across the rail (on its way to
+ *  the title, the archive button or a row below) must not pop a popover over
+ *  the list. Any motion on the dot restarts the dwell, so only a deliberate
+ *  stop opens it. */
 let hoverOpenTimer: ReturnType<typeof setTimeout> | null = null;
 function cancelHoverOpen(): void {
   if (hoverOpenTimer !== null) {
@@ -261,6 +270,16 @@ function cancelHoverOpen(): void {
 }
 function onPinEnter(): void {
   if (!props.session.pinned || paletteOpen.value) return;
+  cancelHoverOpen();
+  hoverOpenTimer = setTimeout(() => {
+    hoverOpenTimer = null;
+    void togglePalette();
+  }, PIN_HOVER_OPEN_MS);
+}
+/** The pointer moved while over the dot: the user is passing through, not
+ *  stopping. Restart the dwell so a sweep never opens the palette. */
+function onPinMove(): void {
+  if (paletteOpen.value) return;
   cancelHoverOpen();
   hoverOpenTimer = setTimeout(() => {
     hoverOpenTimer = null;
@@ -379,6 +398,7 @@ if (typeof window !== 'undefined') {
             "
             @click.stop="togglePin"
             @mouseenter="onPinEnter"
+            @mousemove="onPinMove"
             @mouseleave="onPinLeave"
             @contextmenu.prevent.stop="togglePalette()"
             @keydown="onPinKeydown"
