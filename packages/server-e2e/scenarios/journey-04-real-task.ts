@@ -276,7 +276,7 @@ async function phase_subagent(
         n.method === 'event.assistant.delta' &&
         n.params['agentId'] !== subagentId &&
         typeof n.params['agentId'] === 'string' &&
-        !String(n.params['agentId']).includes(String(subagentId)),
+        !n.params['agentId'].includes(subagentId),
     )
     .map((n) => (typeof n.params['delta'] === 'string' ? n.params['delta'] : ''))
     .join('');

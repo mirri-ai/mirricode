@@ -141,10 +141,10 @@ describe('i18n en/zh key parity', () => {
       const zhSet = new Set(zhPaths);
       const enSet = new Set(enPaths);
       for (const p of enPaths) {
-        if (!zhSet.has(p) && !isKnownGap(String(ns), p)) missingInZh.push(`${ns}.${p}`);
+        if (!zhSet.has(p) && !isKnownGap(ns, p)) missingInZh.push(`${ns}.${p}`);
       }
       for (const p of zhPaths) {
-        if (!enSet.has(p) && !isKnownGap(String(ns), p)) missingInEn.push(`${ns}.${p}`);
+        if (!enSet.has(p) && !isKnownGap(ns, p)) missingInEn.push(`${ns}.${p}`);
       }
     }
     expect(
