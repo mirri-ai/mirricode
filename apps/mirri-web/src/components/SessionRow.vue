@@ -17,6 +17,7 @@ import IconButton from './ui/IconButton.vue';
 import Icon from './ui/Icon.vue';
 import Tooltip from './ui/Tooltip.vue';
 import { isCompositionKeyEvent } from '../lib/keyboard';
+import { DEFAULT_PIN_COLOR, PIN_COLORS, type PinColor } from '../lib/pinColor';
 
 const { t } = useI18n();
 
@@ -170,9 +171,10 @@ function onKeydown(e: KeyboardEvent): void {
     if (arming.value) disarm();
   }
 }
-// SDR-016/017: the seven-color preset (macOS folder labels).
-const PIN_COLORS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'gray'] as const;
-type PinColor = (typeof PIN_COLORS)[number];
+/** Hover dwell before the palette opens on a pinned circle. */
+const PIN_HOVER_OPEN_MS = 320;
+/** Grace period for moving the pointer from the circle into the palette. */
+const PIN_HOVER_CLOSE_MS = 180;
 
 // The color palette hangs off the pinned row's STATUS pin (next to the
 // title), not the hover action. It renders position:fixed and is anchored
@@ -181,11 +183,12 @@ type PinColor = (typeof PIN_COLORS)[number];
 // window resize, and scroll (the anchor moves with the row).
 const paletteOpen = ref(false);
 const paletteStyle = ref<Record<string, string>>({});
-const statusPinRef = ref<HTMLButtonElement | null>(null);
+const railPinRef = ref<HTMLButtonElement | null>(null);
 const paletteEl = ref<HTMLElement | null>(null);
 
 function closePalette(): void {
   paletteOpen.value = false;
+  cancelPaletteClose();
   document.removeEventListener('mousedown', onPaletteDocClick);
   window.removeEventListener('resize', closePalette);
   window.removeEventListener('scroll', closePalette, true);
@@ -194,8 +197,8 @@ function closePalette(): void {
 function onPaletteDocClick(e: MouseEvent): void {
   const target = e.target as Element;
   // Mousedown on the trigger or inside the palette belongs to the palette
-  // flow (the trigger's click toggles it shut; swatch clicks run inside).
-  if (target.closest('[data-test-id="session-pin-status"]')) return;
+  // flow (the trigger toggles it shut; swatch clicks run inside).
+  if (target.closest('[data-test-id="session-pin-btn"]')) return;
   if (target.closest('[data-test-id="session-pin-palette"]')) return;
   closePalette();
 }
@@ -205,12 +208,15 @@ async function togglePalette(): Promise<void> {
     closePalette();
     return;
   }
+  // Only a pinned row has a palette (its colors); an unpinned pin's plain
+  // click pins, and right-click does nothing there.
+  if (!props.session.pinned) return;
   paletteOpen.value = true;
   document.addEventListener('mousedown', onPaletteDocClick);
   window.addEventListener('resize', closePalette);
   window.addEventListener('scroll', closePalette, true);
   await nextTick();
-  const btn = statusPinRef.value;
+  const btn = railPinRef.value;
   const palette = paletteEl.value;
   if (!btn) return;
   const r = btn.getBoundingClientRect();
@@ -233,17 +239,79 @@ async function togglePalette(): Promise<void> {
   };
 }
 
+/** The pin rail's single toggle: pin with the default color, or unpin, in
+ *  place. Pinning always arrives with a color (red) — a colorless pin has no
+ *  visual trace on the rail, so "pinned" would be unreadable. */
+function togglePin(): void {
+  closePalette();
+  if (props.session.pinned) emit('unpin', props.session.id);
+  else emit('pin', props.session.id, DEFAULT_PIN_COLOR);
+}
+
+/** Hovering a pinned circle opens the color palette, so recoloring costs no
+ *  click. Delayed so a plain click (pin/unpin) never flashes the palette, and
+ *  cancelled by `onPinLeave` — the palette keeps itself open while the pointer
+ *  is inside it (its own mouseenter cancels the close). */
+let hoverOpenTimer: ReturnType<typeof setTimeout> | null = null;
+function cancelHoverOpen(): void {
+  if (hoverOpenTimer !== null) {
+    clearTimeout(hoverOpenTimer);
+    hoverOpenTimer = null;
+  }
+}
+function onPinEnter(): void {
+  if (!props.session.pinned || paletteOpen.value) return;
+  cancelHoverOpen();
+  hoverOpenTimer = setTimeout(() => {
+    hoverOpenTimer = null;
+    void togglePalette();
+  }, PIN_HOVER_OPEN_MS);
+}
+function onPinLeave(): void {
+  cancelHoverOpen();
+  if (paletteOpen.value) schedulePaletteClose();
+}
+
+/** Closing is delayed a beat so the pointer can travel from the circle into the
+ *  palette without it vanishing underneath. */
+let paletteCloseTimer: ReturnType<typeof setTimeout> | null = null;
+function cancelPaletteClose(): void {
+  if (paletteCloseTimer !== null) {
+    clearTimeout(paletteCloseTimer);
+    paletteCloseTimer = null;
+  }
+}
+function schedulePaletteClose(): void {
+  cancelPaletteClose();
+  paletteCloseTimer = setTimeout(() => {
+    paletteCloseTimer = null;
+    closePalette();
+  }, PIN_HOVER_CLOSE_MS);
+}
+
+/** Keyboard path to the palette: Shift+F10 / the ContextMenu key (the standard
+ *  keyboard equivalents of a right-click). Enter/Space keep their native
+ *  button behavior (pin/unpin). */
+function onPinKeydown(e: KeyboardEvent): void {
+  if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+    e.preventDefault();
+    void togglePalette();
+  }
+}
+
+/** Enter on a focused row opens it (the row is Tab-reachable). */
+function onRowEnter(e: KeyboardEvent): void {
+  if (isCompositionKeyEvent(e)) return;
+  // The pin button inside the row handles its own Enter/Space (native button).
+  if ((e.target as Element | null)?.closest?.('[data-test-id="session-pin-btn"]')) return;
+  e.preventDefault();
+  emit('select', props.session.id);
+}
+
 // Pick a color = re-pin with it — no unpin first (the engine's set_pin
 // keeps the pin moment and only follows the latest color).
 function pickColor(color: PinColor): void {
   emit('pin', props.session.id, color);
-  closePalette();
-}
-
-// "No color" = colorless re-pin: clears the color, keeps the session
-// pinned (engine `session.pin` without a color writes a NULL color).
-function clearColor(): void {
-  emit('pin', props.session.id);
   closePalette();
 }
 
@@ -273,56 +341,83 @@ if (typeof window !== 'undefined') {
   <div
     class="se"
     :class="{ on: active }"
+    :tabindex="0"
+    :aria-current="active ? 'true' : undefined"
     @click="emit('select', session.id)"
+    @keydown.enter="onRowEnter"
     @mouseleave="disarm"
   >
-    <div class="row">
-      <!-- Leading status slot (in the gutter left of the title): a spinner
-           while the session runs, otherwise an unread blue dot. Fixed width
-           so the title start never shifts. -->
-      <span class="lead" aria-hidden="true">
-        <Spinner v-if="busy" size="sm" />
-        <span v-else-if="unread" class="unread-dot" />
-      </span>
-
-      <div class="left">
-        <!-- Inline rename input -->
-        <input
-          v-if="renaming"
-          ref="renameInputRef"
-          v-model="renameValue"
-          class="rename-input"
-          @click.stop
-          @keydown="onRenameKeydown"
-          @blur="commitRename"
-        />
-        <!-- SDR-020: outside a workspace group (the global pinned section) the
-             title carries the owning workspace as a hover hint — the section
-             has no per-group header to say where a row belongs. Tooltip's
-             wrapper is `display: contents`, so wrapping the title adds no box:
-             the row's layout is unchanged whether or not the hint is passed. -->
-        <Tooltip v-if="workspaceHint && !renaming" :text="workspaceHint">
-          <span class="t" @dblclick.stop="startRename">{{ session.title }}</span>
-        </Tooltip>
-        <span v-else class="t" @dblclick.stop="startRename">{{ session.title }}</span>
-        <!-- SDR-016/017: the pinned status pin — a persistent pushpin next
-             to the title. It is the state marker AND the palette entry
-             point (click opens the seven-color palette); the hover pin
-             button in the action slot stays the quick pin/unpin toggle. -->
-        <Tooltip v-if="session.pinned" :text="t('sidebar.pinned')">
+      <!-- Pin rail: the 24px slot at the row's far left, a FIXED anchor the
+           tree indent never pushes. The marker is a small filled circle in the
+           pin color (red by default) — deliberately not an icon glyph: the dot
+           reads as state at a glance and keeps one shape in both states.
+           Unpinned rows leave the slot empty; hovering/focusing the row reveals
+           a hollow outline of the same circle as the "pin here" affordance.
+           Clicking the circle pins (default red) or unpins; hovering a PINNED
+           circle opens the color palette, so color editing costs no click.
+           Right-click and Shift+F10 also open the palette (keyboard path). -->
+      <span class="pin-rail">
+        <!-- A pinned circle gets NO tooltip: hovering it opens the color palette,
+             so a bubble would fight the popover (and its aria-label already says
+             "Unpin …" for assistive tech). Only the unpinned affordance needs a
+             hint, since its hollow circle is new. -->
+        <Tooltip v-if="!renaming" :text="session.pinned ? null : t('sidebar.pinToTop')">
           <button
-            ref="statusPinRef"
+            ref="railPinRef"
             type="button"
-            class="pin-status"
-            :class="[`pin-${session.pinColor ?? 'gray'}`]"
-            data-test-id="session-pin-status"
-            :aria-label="t('sidebar.pinColorLabel')"
-            @click.stop="togglePalette()"
+            class="pin-toggle"
+            :class="{
+              'is-pinned': session.pinned,
+              [`pin-${session.pinColor ?? DEFAULT_PIN_COLOR}`]: session.pinned,
+            }"
+            data-test-id="session-pin-btn"
+            :aria-pressed="session.pinned"
+            :aria-label="
+              session.pinned
+                ? t('sidebar.unpinSession', { title: session.title })
+                : t('sidebar.pinSessionToTop', { title: session.title })
+            "
+            @click.stop="togglePin"
+            @mouseenter="onPinEnter"
+            @mouseleave="onPinLeave"
+            @contextmenu.prevent.stop="togglePalette()"
+            @keydown="onPinKeydown"
           >
-            <Icon name="pushpin" size="sm" />
+            <span class="pin-dot" aria-hidden="true" />
           </button>
         </Tooltip>
-      </div>
+      </span>
+
+      <div class="row">
+        <!-- Leading status slot (in the gutter left of the title): a spinner
+             while the session runs, otherwise an unread blue dot. Fixed width
+             so the title start never shifts. -->
+        <span class="lead" aria-hidden="true">
+          <Spinner v-if="busy" size="sm" />
+          <span v-else-if="unread" class="unread-dot" />
+        </span>
+
+        <div class="left">
+          <!-- Inline rename input -->
+          <input
+            v-if="renaming"
+            ref="renameInputRef"
+            v-model="renameValue"
+            class="rename-input"
+            @click.stop
+            @keydown="onRenameKeydown"
+            @blur="commitRename"
+          />
+          <!-- SDR-020: outside a workspace group (the global pinned section) the
+               title carries the owning workspace as a hover hint — the section
+               has no per-group header to say where a row belongs. Tooltip's
+               wrapper is `display: contents`, so wrapping the title adds no box:
+               the row's layout is unchanged whether or not the hint is passed. -->
+          <Tooltip v-if="workspaceHint && !renaming" :text="workspaceHint">
+            <span class="t" @dblclick.stop="startRename">{{ session.title }}</span>
+          </Tooltip>
+          <span v-else class="t" @dblclick.stop="startRename">{{ session.title }}</span>
+        </div>
 
       <!-- Pending tags — coloured per kind, shown even when the row isn't
            active. "Answer" = an askUserQuestion is waiting; "Approve" = a
@@ -429,20 +524,6 @@ if (typeof window !== 'undefined') {
             <Icon name="close" size="sm" />
           </IconButton>
         </Tooltip>
-        <!-- SDR-016/017: the quick pin action — an unpinned row pins
-             colorless in one click; a pinned row unpins. Changing the
-             color lives on the status pin's palette next to the title. -->
-        <Tooltip v-if="!renaming" :text="session.pinned ? t('sidebar.unpin') : t('sidebar.pin')">
-          <IconButton
-            class="pin-btn"
-            size="sm"
-            :label="session.pinned ? t('sidebar.unpin') : t('sidebar.pin')"
-            data-test-id="session-pin-btn"
-            @click.stop="session.pinned ? emit('unpin', session.id) : emit('pin', session.id)"
-          >
-            <Icon name="pushpin" size="sm" />
-          </IconButton>
-        </Tooltip>
         <Tooltip v-if="!renaming" :text="arming ? t('sidebar.archiveConfirmInline') : t('sidebar.archive')">
           <IconButton
             ref="archiveBtnRef"
@@ -458,20 +539,13 @@ if (typeof window !== 'undefined') {
       </span>
     </div>
 
-    <!-- SDR-016/017: the pinned side bar — a 3px rounded strip on the row's
-         left edge carrying the pin color (neutral gray when colorless).
-         Decorative state, so aria-hidden; absolutely positioned inside the
-         row's padding so it never shifts the title start. -->
-    <span
-      v-if="session.pinned"
-      class="pin-bar"
-      :class="[`pin-${session.pinColor ?? 'gray'}`]"
-      data-test-id="session-pin-bar"
-      aria-hidden="true"
-    />
+    <!-- SDR-021: the pin color of a pinned row rides the pin rail's icon — the
+         row carries no side bar. Color is supplementary: the pinned state reads
+         from the pin's direction plus its membership in the pinned section. -->
 
-    <!-- The seven-color palette (plus "no color"), anchored to the status
-         pin via position:fixed so the scrolling list can't clip it. -->
+    <!-- The seven-color palette (plus "no color"), anchored to the pin rail's
+         pin via position:fixed so the scrolling list can't clip it. Opened by
+         right-clicking the pin; a plain click stays pin/unpin. -->
     <div
       v-if="paletteOpen"
       ref="paletteEl"
@@ -480,6 +554,8 @@ if (typeof window !== 'undefined') {
       :style="paletteStyle"
       role="menu"
       @click.stop
+      @mouseenter="cancelPaletteClose"
+      @mouseleave="schedulePaletteClose"
     >
       <button
         v-for="color in PIN_COLORS"
@@ -487,23 +563,11 @@ if (typeof window !== 'undefined') {
         type="button"
         role="menuitemradio"
         class="pin-sw"
-        :class="[`pin-${color}`, { on: session.pinColor === color }]"
-        :aria-checked="session.pinColor === color"
+        :class="[`pin-${color}`, { on: (session.pinColor ?? DEFAULT_PIN_COLOR) === color }]"
+        :aria-checked="(session.pinColor ?? DEFAULT_PIN_COLOR) === color"
         :aria-label="t('sidebar.pinColor', { color })"
         @click.stop="pickColor(color)"
       />
-      <button
-        type="button"
-        role="menuitemradio"
-        class="pin-sw pin-clear"
-        :class="{ on: !session.pinColor }"
-        :aria-checked="!session.pinColor"
-        :aria-label="t('sidebar.pinNoColor')"
-        data-test-id="session-pin-clear"
-        @click.stop="clearColor()"
-      >
-        {{ t('sidebar.pinNoColor') }}
-      </button>
     </div>
   </div>
 </template>
@@ -513,8 +577,12 @@ if (typeof window !== 'undefined') {
   /* --sb-* vars come from .side in Sidebar.vue: the title starts at
      --sb-pad-x + --sb-gutter + --sb-gap, exactly under the workspace name.
      The row is an inset pill: a 6px horizontal margin + 10px padding lands the
-     leading icon at --sb-pad-x (16px), aligned with the workspace header. */
-  display: block;
+     leading icon at --sb-pad-x (16px), aligned with the workspace header.
+     The pin rail is a fixed 24px slot at the row's far left, OUTSIDE that
+     alignment chain: the indent starts to its right, so a deeply nested row
+     never pushes the pin rightward. */
+  display: flex;
+  align-items: center;
   margin: 0;
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-md);
@@ -529,12 +597,86 @@ if (typeof window !== 'undefined') {
   color: var(--color-accent-hover);
   box-shadow: inset 0 0 0 1px var(--color-accent-bd);
 }
+.se:focus-visible { outline: none; box-shadow: var(--p-focus-ring); }
+
+/* The pin rail — 24px, fixed at the row's left edge, never shifted by the tree
+   indent. The slot itself is inert (pointer-events:none) so an empty slot, or
+   any part of the slot that is not the dot, falls through to the row: clicking
+   there OPENS the session and can never pin it by accident. Only the 20×20
+   button re-enables pointer events. */
+.pin-rail {
+  width: 24px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  /* A little breathing room off the sidebar edge: the dot sits 6px in rather
+     than flush against the row's left edge, so it reads as part of the row
+     instead of hugging the panel border. */
+  justify-content: center;
+  padding-left: var(--space-1);
+  box-sizing: border-box;
+  align-self: stretch;
+  pointer-events: none;
+}
+.pin-toggle {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: none;
+  cursor: pointer;
+  pointer-events: auto;
+  /* Unpinned: the hollow "pin here" circle appears only on row hover / focus —
+     the resting state is an empty slot, so the rail reads as quiet state, not
+     a column of buttons. */
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+.se:hover .pin-toggle,
+.se:focus-within .pin-toggle,
+.pin-toggle:focus-visible { opacity: 1; }
+.pin-toggle:focus-visible { outline: none; box-shadow: var(--p-focus-ring); }
+
+/* The marker itself: ONE shape in both states — a 9px circle. Unpinned it is a
+   hollow outline (the affordance); pinned it is filled with the pin color, so
+   the state reads without an icon glyph and without relying on color alone
+   (the fill vs. the outline carries it). */
+.pin-toggle .pin-dot {
+  width: 13px;
+  height: 13px;
+  border-radius: var(--radius-full);
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px currentColor;
+  color: var(--color-text-muted);
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+.pin-toggle:hover .pin-dot { color: var(--color-text); }
+.pin-toggle.is-pinned { opacity: 1; }
+.pin-toggle.is-pinned .pin-dot {
+  background: var(--pin-color, var(--pin-red));
+  /* A hairline ring keeps the dot legible on light and dark surfaces and gives
+     the filled state a slightly larger optical size than the hollow one. */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pin-color, var(--pin-red)) 60%, #000);
+}
+.pin-toggle.is-pinned:hover .pin-dot {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--pin-color, var(--pin-red)) 60%, #000),
+    0 0 0 2px color-mix(in srgb, var(--pin-color, var(--pin-red)) 28%, transparent);
+}
 
 .row {
   display: flex;
   align-items: center;
   gap: var(--sb-gap, 2px);
   min-width: 0;
+  flex: 1;
   /* Floor the row at the hover-archive height (IconButton sm = 26px) so swapping
      the timestamp for the archive icon on hover doesn't grow the row. */
   min-height: 26px;
@@ -627,9 +769,12 @@ if (typeof window !== 'undefined') {
 .sessions .se {
   margin: 0;
   border-radius: var(--radius-md);
-  /* Trim the row padding by the inset margin so the title still starts at the
-     same x as the workspace name (whose header has no inset). */
-  padding: var(--space-1) calc(var(--sb-pad-x, 12px) - var(--space-2));
+  /* SDR-021: the pin rail owns the row's left edge, so the row's own horizontal
+     padding moves to the right side only. The title then starts at
+     --sb-pad-x + --sb-pin-rail + --sb-gutter + --sb-gap — the workspace header
+     and the show-more lead are shifted by the same rail width below, so the
+     title still lines up under the workspace name. */
+  padding: var(--space-1) calc(var(--sb-pad-x, 12px) - var(--space-2)) var(--space-1) 0;
 }
 .sessions .se:hover { background: var(--panel2); }
 .sessions .se.on {
@@ -639,44 +784,14 @@ if (typeof window !== 'undefined') {
 .sessions .se .rename-input { border-radius: var(--radius-sm); font-family: var(--sans); }
 .sessions .se .arc { border-radius: var(--radius-sm); }
 
-/* SDR-016/017: pin visuals. The seven preset colors are global tokens
-   (--pin-* in style.css) surfaced through the `pin-<color>` classes as
-   `--pin-color`, so the status pin, the side bar, and the palette
-   swatches all read one variable per color. */
+/* SDR-016/017 + SDR-021: pin visuals. The seven preset colors are global
+   tokens (--pin-* in style.css) surfaced through the `pin-<color>` classes as
+   `--pin-color`, read directly by the rail's pin icon. There is no side bar
+   and no second pin: the rail pin is the state marker, the toggle and the
+   palette anchor in one control. */
 
-/* The pinned status pin — a persistent pushpin next to the title; its
-   icon carries the pin color and clicking it opens the palette. */
-.sessions .se .pin-status {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  margin-left: 6px;
-  padding: 0;
-  border: none;
-  background: none;
-  cursor: pointer;
-  color: var(--pin-color, var(--pin-gray));
-}
-.sessions .se .pin-status:hover { filter: brightness(1.15); }
-.sessions .se .pin-btn { border-radius: var(--radius-sm); }
-
-/* The pinned side bar — 3px × 14px rounded strip on the row's left edge,
-   inside the row padding so the title start never shifts. */
-.sessions .se .pin-bar {
-  position: absolute;
-  left: 2px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 14px;
-  border-radius: 2px;
-  background: var(--pin-color, var(--pin-gray));
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
-}
-
-/* The seven-color palette popover — position:fixed (anchored to the
-   status pin in script) so the scrolling session list can't clip it. */
+/* The seven-color palette popover — position:fixed (anchored to the rail pin
+   in script) so the scrolling session list can't clip it. */
 .sessions .se .pin-palette {
   position: fixed;
   z-index: var(--z-dropdown);
@@ -699,25 +814,6 @@ if (typeof window !== 'undefined') {
 }
 /* The current choice gets a ring so the active color reads at a glance. */
 .sessions .se .pin-sw.on {
-  box-shadow:
-    0 0 0 2px var(--bg-2, var(--color-bg-2, #2a2a30)),
-    0 0 0 4px var(--color-text);
-}
-/* "No color" — a text chip, not a color dot; neutral surface, same ring
-   treatment when it is the current choice. */
-.sessions .se .pin-sw.pin-clear {
-  width: auto;
-  height: 22px;
-  padding: 0 8px;
-  border-radius: var(--radius-full);
-  background: var(--color-surface-sunken);
-  color: var(--color-text-muted);
-  font-family: var(--font-ui);
-  font-size: var(--text-xs);
-  line-height: 22px;
-}
-.sessions .se .pin-sw.pin-clear.on {
-  color: var(--color-text);
   box-shadow:
     0 0 0 2px var(--bg-2, var(--color-bg-2, #2a2a30)),
     0 0 0 4px var(--color-text);

@@ -2935,11 +2935,11 @@ const workspaceGroups = computed<WorkspaceGroup[]>(() => {
   // times are derived per-row by SessionRow via the work-facts lookup, so
   // this computed is not invalidated by work-facts churn (and the 30s time
   // clock tick no longer recomputes it either).
-  // SDR-020: the groups stay COMPLETE (pinned rows included) — they are also
-  // the mobile switcher's data source. Hiding a pinned row from its desktop
-  // workspace group is that component's presentation decision (it paginates
-  // over the unpinned subset), so the row renders exactly once in the sidebar
-  // (the global section above) while the mobile sheet keeps its inline list.
+  // SDR-021: the groups carry EVERY row (pinned ones included) and render them
+  // all — a pinned row shows in the global section above AND stays under its
+  // workspace group, so browsing by project still finds it. The shared
+  // comparator keeps pinned rows at the group head, which is also the mobile
+  // switcher's inline order.
   for (const row of sortSessionsByUse(sidebarSessionRows.value)) {
     const list = byId.get(row.workspaceId) ?? [];
     list.push(row);
@@ -3063,6 +3063,7 @@ const workspaceState = useWorkspaceState(rawState, {
   sideChat,
   modelProvider,
   pushOperationFailure,
+  pushNotice: (notice) => pushWarning(notice),
   bindEvents: connectEventsIfNeeded,
   activity,
   sessionsKnownEmpty,
@@ -3525,6 +3526,7 @@ export function useMirriWebClient() {
     controlGoal: workspaceState.controlGoal,
     enqueue: workspaceState.enqueue,
     dismissWarning: workspaceState.dismissWarning,
+    runNoticeAction: workspaceState.runNoticeAction,
     /** Push one operation-failure toast on the shared warning path — for
      *  App-level handlers whose errors do not flow through a sub-composable
      *  (the agent-profile settings actions). */

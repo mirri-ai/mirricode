@@ -5,7 +5,9 @@
 // workspace 的「已置顶」分区：
 // - 它位于「工作区」分区之上，聚合所有 workspace 的置顶会话；
 // - 组内按置顶时刻倒序（最后置顶的在最上）；
-// - workspace 分组内不再重复显示置顶行（它们已经上移到全局分区）；
+// - 置顶行同时保留在它所属的 workspace 分组里（SDR-021）——全局分区回答
+//   「什么重要」，工作区分组回答「这个项目下有什么」，用户按项目浏览时仍能
+//   找到置顶会话；两处渲染的是同一行的两个实例，置顶痕迹必须一致；
 // - 无置顶会话时整个分区不渲染；
 // - 置顶行的 select / pin / unpin 行为与普通行一致；时间元素外包 Tooltip
 //   交代它属于哪个 workspace（跨 workspace 后行本身不再自带归属信息）。
@@ -55,6 +57,7 @@ function groupOf(
   id: string,
   name: string,
   rows: SortableSessionRow[],
+  initialCount = 20,
 ): WorkspaceGroupType {
   return {
     workspace: {
@@ -68,7 +71,7 @@ function groupOf(
     sessions: rows,
     hasMore: false,
     loadingMore: false,
-    initialCount: 20,
+    initialCount,
   };
 }
 
@@ -148,7 +151,7 @@ describe('global pinned section (SDR-019)', () => {
     wrapper.unmount();
   });
 
-  it('should not repeat a pinned session inside its workspace group', async () => {
+  it('should keep a pinned session inside its workspace group as well as the pinned section', async () => {
     const wrapper = mountSidebar({
       groups: [
         groupOf('ws-1', '主工作区', [
@@ -161,10 +164,60 @@ describe('global pinned section (SDR-019)', () => {
       ],
     });
 
+    // SDR-021：置顶行在两处都在 —— 全局分区给「重要」，工作区分组给「按项目
+    // 浏览」。用户从工作区下找会话时不能因为置顶而找不到。
     expect(titlesIn(wrapper, '[data-test-id="pinned-section"]')).toEqual(['置顶会话']);
-    expect(titlesIn(wrapper, '.group-sessions'), '置顶行不应在工作区分组里重复出现').toEqual([
+    expect(titlesIn(wrapper, '.group-sessions'), '置顶行应保留在工作区分组里').toEqual([
+      '置顶会话',
       '普通会话',
     ]);
+    wrapper.unmount();
+  });
+
+  it('should render a pinned session even when its group is trimmed to the first page', async () => {
+    // 置顶行排在组头（sortSessionsByUse 的置顶优先），所以「只看首页」的裁剪
+    // 不能把它裁掉 —— 这是组内保留置顶行后最容易回归的地方。
+    const wrapper = mountSidebar({
+      groups: [
+        groupOf(
+          'ws-1',
+          '主工作区',
+          [
+            row({ id: 'pin-1', title: '置顶会话', pinned: true, pinnedAt: '2026-11-01T00:00:00.000Z' }),
+            row({ id: 'plain-1', title: '普通会话一' }),
+            row({ id: 'plain-2', title: '普通会话二' }),
+          ],
+          1,
+        ),
+      ],
+      pinnedSessions: [
+        pinned(row({ id: 'pin-1', title: '置顶会话', pinned: true, pinnedAt: '2026-11-01T00:00:00.000Z' })),
+      ],
+    });
+
+    expect(titlesIn(wrapper, '.group-sessions'), '首页裁剪不应藏掉置顶行').toEqual(['置顶会话']);
+    wrapper.unmount();
+  });
+
+  it('should show the same pinned state on the row in both places', async () => {
+    const wrapper = mountSidebar({
+      groups: [
+        groupOf('ws-1', '主工作区', [
+          row({ id: 'pin-1', title: '置顶会话', pinned: true, pinColor: 'blue', pinnedAt: '2026-11-01T00:00:00.000Z' }),
+        ]),
+      ],
+      pinnedSessions: [
+        pinned(row({ id: 'pin-1', title: '置顶会话', pinned: true, pinColor: 'blue', pinnedAt: '2026-11-01T00:00:00.000Z' })),
+      ],
+    });
+
+    // 两处渲染的是同一行的两个实例，置顶痕迹必须一致：同一条 Pin 轨的横钉 + 同色。
+    for (const scope of ['[data-test-id="pinned-section"]', '.group-sessions']) {
+      const current = wrapper.find(`${scope} .se`);
+      const pin = current.find('[data-test-id="session-pin-btn"]');
+      expect(pin.attributes('aria-pressed'), `${scope} 的钉子是已置顶态`).toBe('true');
+      expect(pin.classes(), `${scope} 的钉子颜色应一致`).toContain('pin-blue');
+    }
     wrapper.unmount();
   });
 
@@ -215,8 +268,8 @@ describe('global pinned section (SDR-019)', () => {
     await quickPin.trigger('click');
     expect(wrapper.emitted('unpin'), '已置顶行的快捷图钉=取消置顶').toEqual([['pin-1']]);
 
-    // 改色：状态图钉打开调色板 → 选红 = 带色 re-pin（不需要先取消置顶）。
-    await pinnedRow.find('[data-test-id="session-pin-status"]').trigger('click');
+    // 改色：右键钉子的调色板 → 选红 = 带色 re-pin（不需要先取消置顶）。
+    await pinnedRow.find('[data-test-id="session-pin-btn"]').trigger('contextmenu');
     const swatch: DOMWrapper<Element> = wrapper.find('[data-test-id="session-pin-palette"] .pin-red');
     expect(swatch.exists(), '置顶行应能打开改色调色板').toBe(true);
     await swatch.trigger('click');

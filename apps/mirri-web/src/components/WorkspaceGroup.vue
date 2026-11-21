@@ -53,14 +53,14 @@ const emit = defineEmits<{
   refreshWorkspace: [workspaceId: string];
 }>();
 
-// SDR-020: a pinned row does NOT render in its workspace group — it renders
-// once, in the sidebar's global pinned section (pinning is a cross-workspace
-// "this matters" statement). The group's DATA stays complete (pinned rows are
-// still in `group.sessions`; they carry the mobile switcher's inline list), so
-// this is purely where the desktop draws the line. Everything below paginates
-// over the unpinned subset, so the show-more counts describe what this group
-// actually renders.
-const groupRows = computed(() => props.group.sessions.filter((s) => !s.pinned));
+// SDR-021: the group renders ALL its sessions, pinned ones included. Pinning
+// is a cross-workspace "this matters" statement, so a pinned row ALSO rides the
+// sidebar's global section above — but the workspace group stays the place the
+// user browses by project, so the row must stay findable under its workspace
+// too. The sort keeps pinned rows at the head of the group (the pinned-first
+// comparator), so they always land inside the first page and the show-more trim
+// below never hides them.
+const groupRows = computed(() => props.group.sessions);
 
 // Sessions to render: all when expanded, otherwise only the first page. The
 // collapse is a pure view-layer trim — data, cursor and hasMore stay intact, so
@@ -241,7 +241,10 @@ function onHeaderDragStart(event: DragEvent): void {
   display: flex;
   align-items: center;
   margin: 0;
-  padding: var(--space-1) var(--space-2);
+  /* SDR-021: reserve the session rows' pin slot on the left so the folder icon
+     (and therefore the workspace name) lines up with the session titles, which
+     now start after that slot. */
+  padding: var(--space-1) var(--space-2) var(--space-1) calc(var(--space-2) + var(--sb-pin-rail));
   border-radius: var(--radius-sm);
   font-family: var(--font-ui);
   font-size: var(--text-xs);
@@ -346,7 +349,7 @@ function onHeaderDragStart(event: DragEvent): void {
 }
 
 .group-empty {
-  padding: var(--space-1) var(--space-2) var(--space-1) calc(var(--sb-pad-x) + var(--sb-gutter) + var(--sb-gap));
+  padding: var(--space-1) var(--space-2) var(--space-1) calc(var(--sb-pad-x) + var(--sb-pin-rail) + var(--sb-gutter) + var(--sb-gap));
   font-size: var(--text-xs);
   color: var(--color-text-faint);
   font-family: var(--font-mono);
@@ -363,7 +366,11 @@ function onHeaderDragStart(event: DragEvent): void {
   width: 100%;
   min-height: 26px;
   margin: 0;
-  padding: var(--space-1) calc(var(--sb-pad-x) - var(--space-2));
+  /* SDR-021: the label must land at the session titles' x. The session row
+     reserves --sb-pin-rail before its lead slot and has no left padding of its
+     own, so this control takes the same rail width as its left inset — the lead
+     slots then line up and so do the labels. */
+  padding: var(--space-1) calc(var(--sb-pad-x) - var(--space-2)) var(--space-1) var(--sb-pin-rail);
   border: none;
   border-radius: var(--radius-md);
   background: transparent;

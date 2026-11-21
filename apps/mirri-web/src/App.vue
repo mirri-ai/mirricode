@@ -1499,6 +1499,7 @@ function openPr(url: string): void {
           )
         "
         @dismiss="client.dismissWarning"
+        @action="client.runNoticeAction"
       />
 
       <!-- Interrupted-task recovery notice (Epic C): non-modal, shown while

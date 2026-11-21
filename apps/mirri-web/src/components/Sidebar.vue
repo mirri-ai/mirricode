@@ -640,9 +640,10 @@ const showNewWorkspaceButton = false;
         </div>
 
         <template v-else>
-          <!-- SDR-020: the global pinned section. Pinning is a cross-workspace
-               "this matters" statement, so pinned sessions leave their
-               workspace group and aggregate here, latest pin on top. Hidden
+          <!-- SDR-021: the global pinned section. Pinning is a cross-workspace
+               "this matters" statement, so pinned sessions ALSO aggregate here,
+               latest pin on top — while still staying visible under their own
+               workspace group below (browsing by project keeps working). Hidden
                entirely when nothing is pinned. -->
           <div v-if="pinnedSessions.length > 0" class="pinned-section" data-test-id="pinned-section">
             <div class="side-section-label">
@@ -816,8 +817,12 @@ const showNewWorkspaceButton = false;
   height: 100%;
   /* Alignment contract, inherited by SessionRow and the de-terminalization
      rules in style.css: text in the workspace header, the path line and session
-     rows all starts at --sb-pad-x + --sb-gutter + --sb-gap from the sidebar edge. */
+     rows all starts at --sb-pad-x + --sb-pin-rail + --sb-gutter + --sb-gap from
+     the sidebar edge. --sb-pin-rail is the session row's fixed pin slot (SDR-021)
+     — the header and the show-more lead reserve the same width so the titles
+     still line up under the workspace name. */
   --sb-pad-x: var(--space-4);  /* row horizontal padding */
+  --sb-pin-rail: 24px;         /* session row's fixed pin slot (SDR-021) */
   --sb-gutter: 20px;           /* leading icon slot (14px folder icon + 6px margin) */
   --sb-gap: var(--space-2);    /* gap between the icon slot and the text */
   /* Sidebar stays one step above compact UI chrome, but still follows the

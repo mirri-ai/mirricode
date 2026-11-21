@@ -145,6 +145,7 @@ function createDeps(): UseWorkspaceStateDeps {
     sideChat: {},
     modelProvider: { resolveThinkingForPrompt: async () => undefined },
     pushOperationFailure: vi.fn(),
+    pushNotice: vi.fn(),
     activity: computed(() => 'running'),
     sessionsKnownEmpty: new Set(),
     setSessions: vi.fn(),
@@ -2980,5 +2981,55 @@ describe('useWorkspaceState — opening a session outside the list', () => {
         title: i18n.global.t('warnings.sessionOpenFailedTitle'),
       }),
     );
+  });
+});
+
+describe('useWorkspaceState — pin undo notices (SDR-021)', () => {
+  it('should offer an undo notice when a session is unpinned', async () => {
+    const state = createState();
+    state.sessions = [{ ...createSession(), pinned: true, pinColor: 'blue' }];
+    const deps = createDeps();
+    const workspace = useWorkspaceState(state, deps);
+    apiMock.unpinSession = vi.fn().mockResolvedValue(undefined);
+    apiMock.pinSession = vi.fn().mockResolvedValue(undefined);
+
+    await workspace.unpinSession('sess_1');
+
+    const notice = (deps.pushNotice as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(notice?.severity, '取消置顶后应给出可撤销的提示').toBe('info');
+    expect(notice?.title, '提示应点名会话').toContain('Session');
+    expect(notice?.action?.label, '提示应带撤销按钮').toBe(i18n.global.t('sidebar.undo'));
+    expect(notice?.message, '提示应说明撤销的真实效果').toBe(
+      i18n.global.t('sidebar.unpinnedToastHint'),
+    );
+  });
+
+  it('should restore the pin with its previous color when undo runs', async () => {
+    const state = createState();
+    state.sessions = [{ ...createSession(), pinned: true, pinColor: 'blue' }];
+    const deps = createDeps();
+    const workspace = useWorkspaceState(state, deps);
+    apiMock.unpinSession = vi.fn().mockResolvedValue(undefined);
+    apiMock.pinSession = vi.fn().mockResolvedValue(undefined);
+
+    await workspace.unpinSession('sess_1');
+    const actionId = (deps.pushNotice as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.action?.id;
+    expect(actionId).toBeTruthy();
+
+    workspace.runNoticeAction(actionId as string);
+    await vi.waitFor(() => expect(apiMock.pinSession).toHaveBeenCalledWith('sess_1', 'blue'));
+  });
+
+  it('should not offer an undo notice when recoloring an already pinned session', async () => {
+    const state = createState();
+    state.sessions = [{ ...createSession(), pinned: true, pinColor: 'blue' }];
+    const deps = createDeps();
+    const workspace = useWorkspaceState(state, deps);
+    apiMock.pinSession = vi.fn().mockResolvedValue(undefined);
+
+    await workspace.pinSession('sess_1', 'green');
+
+    // 改色不是置顶动作：不该弹「已置顶」提示。
+    expect(deps.pushNotice as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 });

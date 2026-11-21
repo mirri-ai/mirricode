@@ -8,7 +8,11 @@ import { copyTextToClipboard } from '../lib/clipboard';
 import Toast from './ui/Toast.vue';
 
 const props = defineProps<{ warnings: AppWarning[] }>();
-const emit = defineEmits<{ dismiss: [index: number] }>();
+const emit = defineEmits<{
+  dismiss: [index: number];
+  /** A notice's inline action was clicked (e.g. "Undo" after an unpin). */
+  action: [id: string];
+}>();
 
 const { t } = useI18n();
 
@@ -26,6 +30,10 @@ function toastMessage(warning: AppWarning): string {
 
 function toastDetails(warning: AppWarning): AppNotice['details'] {
   return isNotice(warning) ? warning.details : undefined;
+}
+
+function toastAction(warning: AppWarning): AppNotice['action'] {
+  return isNotice(warning) ? warning.action : undefined;
 }
 
 function isError(warning: AppWarning): boolean {
@@ -218,11 +226,20 @@ onUnmounted(() => {
       @pointerenter="pauseTimer(toast.id)"
       @pointerleave="resumeTimer(toast.id)"
     >
-      <div v-if="toastDetails(toast.warning)?.length" class="actions">
-        <button class="link" type="button" @click="toggleDetails(toast)">
+      <div class="actions">
+        <button
+          v-if="toastAction(toast.warning)"
+          class="link action"
+          type="button"
+          data-test-id="toast-action"
+          @click="emit('action', toastAction(toast.warning)!.id)"
+        >
+          {{ toastAction(toast.warning)!.label }}
+        </button>
+        <button v-if="toastDetails(toast.warning)?.length" class="link" type="button" @click="toggleDetails(toast)">
           {{ toast.detailsOpen ? t('warnings.hideDetails') : t('warnings.showDetails') }}
         </button>
-        <button class="link" type="button" @click="copyDetails(toast)">
+        <button v-if="toastDetails(toast.warning)?.length" class="link" type="button" @click="copyDetails(toast)">
           {{ toast.copied ? t('warnings.copied') : t('warnings.copyDetails') }}
         </button>
       </div>

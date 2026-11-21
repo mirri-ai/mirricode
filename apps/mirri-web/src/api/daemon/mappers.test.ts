@@ -992,6 +992,33 @@ describe('session lastUsedAt mapping (event-delivery ADR-003)', () => {
     const merged = mergeSnapshotSession(existing, snapshot, true);
     expect(merged.lastUsedAt).toBe('2026-04-01T00:00:00Z');
   });
+
+  it('should keep the pin when a snapshot view carries no pin fields', () => {
+    // The snapshot view has no pin trio, so the mapper degrades it to
+    // `pinned: false`. Spreading it unpinned the record the moment a session was
+    // opened — the row silently left the sidebar's pinned section while the
+    // engine row still said pinned.
+    const existing = {
+      ...toAppSession(makeWireSession()),
+      pinned: true,
+      pinnedAt: '2026-03-01T00:00:00Z',
+      pinColor: 'blue' as const,
+    };
+    const snapshot = toAppSession(makeWireSession());
+
+    const merged = mergeSnapshotSession(existing, snapshot, true);
+
+    expect(merged.pinned, '打开会话不应取消置顶').toBe(true);
+    expect(merged.pinnedAt, '置顶时刻应保留').toBe('2026-03-01T00:00:00Z');
+    expect(merged.pinColor, '置顶颜色应保留').toBe('blue');
+  });
+
+  it('should keep an unpinned session unpinned when a snapshot view carries no pin fields', () => {
+    const existing = toAppSession(makeWireSession());
+    const snapshot = toAppSession(makeWireSession());
+    const merged = mergeSnapshotSession(existing, snapshot, true);
+    expect(merged.pinned).toBe(false);
+  });
 });
 
 describe('v2 session view lastUsedAt mapping (event-delivery ADR-003)', () => {

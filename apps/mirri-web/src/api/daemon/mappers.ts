@@ -131,6 +131,14 @@ export function isPlaceholderSessionUsage(usage: AppSessionUsage): boolean {
  *   session's sidebar title and rendered its row time as "NaNy"
  *   (`formatTime('')` → Invalid Date → NaN). A non-empty snapshot value stays
  *   authoritative.
+ * - the pin trio (`pinned` / `pinnedAt` / `pinColor`) — the snapshot view does
+ *   not carry them at all, so the mapper degrades them to `pinned: false` with
+ *   an absent stamp and color. Spreading the snapshot therefore UNPINS the
+ *   record locally the moment the session is opened, while the engine row still
+ *   says pinned: the row leaves the sidebar's pinned section until the next
+ *   full list load brings the truth back. The record's trio wins here; when the
+ *   engine starts sending the trio on the snapshot, give it the same
+ *   "authoritative when present" treatment the fields above use.
  */
 export function mergeSnapshotSession(
   existing: AppSession,
@@ -152,6 +160,10 @@ export function mergeSnapshotSession(
     // lastUsedAt (older engines omit the field) must not wipe the record's
     // value — same contract as cwd above.
     lastUsedAt: snapshot.lastUsedAt ?? existing.lastUsedAt,
+    // SDR-016/017: the snapshot carries no pin, so the record keeps its trio.
+    pinned: existing.pinned,
+    pinnedAt: existing.pinnedAt,
+    pinColor: existing.pinColor,
   };
 }
 
