@@ -306,7 +306,7 @@ Rust core（`rust/crates/mirri-server`）对外暴露 3 种传输，消息格式
 ### 16.4 编译结构
 
 - **cargo target 实测**：18 个 lib 测试目标 + **84 个集成测试二进制**；`mirri-core` 独占 27 个 `tests/*.rs`（40,082 行，约占集成测试代码的全部重量级部分）。
-- **重复 link**：每个 `tests/*.rs` 独立编译并各自 link 一份 `mirri-core` 依赖图。重依赖为 `image`（0.25.9）、`jsonschema`（0.26，transitive 拉入 `reqwest` 0.12）、`chrono-tz`、`rusqlite`（bundled，经 `mirri-session-index`）；`wiremock`（3 个 crate）与 `proptest`（`mirri-proto`）不在 `mirri-core` 依赖图内。
+- **重复 link**：每个 `tests/*.rs` 独立编译并各自 link 一份 `mirri-core` 依赖图。重依赖为 `image`（0.25.9）、`jsonschema`（0.26，transitive 拉入 `reqwest` 0.12）、`jiff`（内嵌 tzdb）、`rusqlite`（bundled，经 `mirri-session-index`）；`wiremock`（3 个 crate）与 `proptest`（`mirri-proto`）不在 `mirri-core` 依赖图内。
 - **单文件大目标**：`embedded_server/tests.rs` 44,834 行、691 个测试 fn，全部落在单个 lib 测试目标内——编译结构上是最优形态，但 sleep 与 env 竞态最密集（98 处 sleep、31 处 env 写、3 把锁）。
 - **CI 门禁**：单条 `cargo test --workspace --locked`（`.github/workflows/ci.yml:132`）。
 

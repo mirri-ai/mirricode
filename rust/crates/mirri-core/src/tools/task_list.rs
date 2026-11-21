@@ -28,6 +28,23 @@ fn format_task(task: &AgentTask) -> String {
         format!("status: {}", info.status),
         format!("started_at: {}", info.started_at),
     ];
+    let running_for = (task.ended_at.unwrap_or_else(chrono::Utc::now) - task.created_at)
+        .to_std()
+        .unwrap_or_default();
+    lines.push(format!(
+        "running_for: {}",
+        super::task_output::format_duration(running_for)
+    ));
+    if !task.status.is_terminal() {
+        let silent_for = task
+            .last_output_at
+            .map(|at| at.elapsed())
+            .unwrap_or(running_for);
+        lines.push(format!(
+            "silent_for: {}",
+            super::task_output::format_duration(silent_for)
+        ));
+    }
     if let Some(ended_at) = info.ended_at {
         lines.push(format!("ended_at: {ended_at}"));
     }
@@ -351,5 +368,36 @@ mod tests {
         let text = output_text(&result);
         assert!(text.contains("active_background_tasks: 0"), "{text}");
         assert!(text.contains("No background tasks found."), "{text}");
+    }
+
+    #[tokio::test]
+    async fn should_list_running_and_silent_durations_for_each_running_task() {
+        let tasks = Arc::new(TaskManager::new());
+        for name in ["a", "b"] {
+            tasks.register(
+                crate::task::TaskKind::Process {
+                    command: None,
+                    dispatcher: None,
+                },
+                name.into(),
+                "s".into(),
+            );
+        }
+        let done = tasks.register(
+            crate::task::TaskKind::Process {
+                command: None,
+                dispatcher: None,
+            },
+            "done".into(),
+            "s".into(),
+        );
+        tasks.complete(&done, 0);
+        let tool = TaskListTool::new(Arc::clone(&tasks));
+        let text = output_text(&execute_tool_with_input(
+            &tool,
+            serde_json::json!({ "active_only": false }),
+        ));
+        assert_eq!(text.matches("running_for: ").count(), 3, "{text}");
+        assert_eq!(text.matches("silent_for: ").count(), 2, "{text}");
     }
 }

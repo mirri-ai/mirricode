@@ -51,7 +51,7 @@ mirri-persistence = { path = "../mirri-persistence" }
 # exact on-disk shape an existing installation carries.
 rusqlite = { workspace = true }
 # B5 cron semantics tests pin wall-clock expressions in named zones.
-chrono-tz = { workspace = true }
+jiff = { workspace = true }
 # ADR-011 tests capture `tracing` warnings (the shadowed-skill alarm) via a
 # `fmt` subscriber with a shared buffer writer.
 tracing-subscriber = { workspace = true }

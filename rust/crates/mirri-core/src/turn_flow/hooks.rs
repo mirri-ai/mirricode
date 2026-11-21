@@ -1425,6 +1425,10 @@ impl LoopHooks for TurnFlowHooks {
                 (None, None)
             };
 
+            let command_text = match tool_name.as_str() {
+                "Bash" | "PowerShell" => tool_input.get("command").and_then(|v| v.as_str()),
+                _ => None,
+            };
             let policy_ctx = PermissionPolicyContext {
                 tool_name: &tool_name,
                 tool_call_id: &tool_call_id,
@@ -1438,6 +1442,7 @@ impl LoopHooks for TurnFlowHooks {
                 cancel: &cancel,
                 net_class: net_class_info.clone(),
                 turn_origin: turn_origin.clone(),
+                command_text,
             };
 
             // Evaluate the policy chain (sync).
@@ -2813,6 +2818,7 @@ mod tests {
             cancel: &cancel,
             net_class: None,
             turn_origin: Default::default(),
+            command_text: None,
         };
 
         // Evaluate the full policy chain. Without the fix the result would be

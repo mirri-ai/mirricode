@@ -1,4 +1,4 @@
-//! The 21 default permission policies.
+//! The 22 default permission policies.
 //!
 //! Each policy is a zero-sized struct implementing [`PermissionPolicy`] (or
 //! holds an `Arc` to a service it consults). The policies are evaluated in
@@ -22,20 +22,23 @@
 //! 6.  `PrivateNetworkFetchAskPolicy` — FetchURL to a private-network
 //!     target → ask (ADR-010; fires in every mode).
 //! 7.  `AutoModeApprovePolicy` — auto mode → approve.
-//! 8.  `SessionApprovalHistoryPolicy` — "approve for session" memory → approve.
-//! 9.  `UserConfiguredAskPolicy` — user ask rule → ask.
-//! 10. `UserConfiguredAllowPolicy` — user allow rule → approve.
-//! 11. `ExitPlanModeReviewAskPolicy` — ExitPlanMode review → ask.
-//! 12. `GoalStartReviewAskPolicy` — CreateGoal start → ask.
-//! 13. `PlanModeToolApprovePolicy` — EnterPlanMode/ExitPlanMode → approve.
-//! 14. `SensitiveFileAccessAskPolicy` — sensitive file access → ask.
-//! 15. `GitControlPathAccessAskPolicy` — `.git/` access → ask.
-//! 16. `YoloModeApprovePolicy` — yolo mode → approve.
-//! 17. `SwarmModeAgentSwarmApprovePolicy` — swarm mode + AgentSwarm → ask.
-//! 18. `WorkspaceBoundaryPolicy` — outside-sandbox paths → ask / `path:` rules.
-//! 19. `DefaultToolApprovePolicy` — default-approve tool list → approve.
-//! 20. `GitCwdWriteApprovePolicy` — write to `.git/` → ask.
-//! 21. `FallbackAskPolicy` — fallback → ask.
+//! 8.  `BashExecutionDirectoryAskPolicy` — explicit Bash `cwd` / `cd`
+//!     target outside the sandbox → ask (before any approval-based
+//!     auto-grant, US-BH10).
+//! 9.  `SessionApprovalHistoryPolicy` — "approve for session" memory → approve.
+//! 10. `UserConfiguredAskPolicy` — user ask rule → ask.
+//! 11. `UserConfiguredAllowPolicy` — user allow rule → approve.
+//! 12. `ExitPlanModeReviewAskPolicy` — ExitPlanMode review → ask.
+//! 13. `GoalStartReviewAskPolicy` — CreateGoal start → ask.
+//! 14. `PlanModeToolApprovePolicy` — EnterPlanMode/ExitPlanMode → approve.
+//! 15. `SensitiveFileAccessAskPolicy` — sensitive file access → ask.
+//! 16. `GitControlPathAccessAskPolicy` — `.git/` access → ask.
+//! 17. `YoloModeApprovePolicy` — yolo mode → approve.
+//! 18. `SwarmModeAgentSwarmApprovePolicy` — swarm mode + AgentSwarm → ask.
+//! 19. `WorkspaceBoundaryPolicy` — outside-sandbox paths → ask / `path:` rules.
+//! 20. `DefaultToolApprovePolicy` — default-approve tool list → approve.
+//! 21. `GitCwdWriteApprovePolicy` — write to `.git/` → ask.
+//! 22. `FallbackAskPolicy` — fallback → ask.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -279,7 +282,15 @@ impl PermissionPolicy for PlanModeGuardDenyPolicy {
 // Policy 5: user deny rule matches → deny
 // ---------------------------------------------------------------------------
 
-pub struct UserConfiguredDenyPolicy;
+#[derive(Default)]
+pub struct UserConfiguredDenyPolicy {
+    workspace_paths: Option<Arc<WorkspacePaths>>,
+}
+impl UserConfiguredDenyPolicy {
+    pub fn new(workspace_paths: Option<Arc<WorkspacePaths>>) -> Self {
+        Self { workspace_paths }
+    }
+}
 impl PermissionPolicy for UserConfiguredDenyPolicy {
     fn name(&self) -> &str {
         "user-configured-deny"
@@ -293,7 +304,11 @@ impl PermissionPolicy for UserConfiguredDenyPolicy {
             if !user_scopes.contains(&rule.scope) {
                 continue;
             }
-            if match_permission_rule(&rule.pattern, ctx.tool_name, None) {
+            if match_permission_rule(
+                &rule.pattern,
+                ctx.tool_name,
+                command_rule_matcher(ctx, self.workspace_paths.as_deref()).as_deref(),
+            ) {
                 return PermissionPolicyResult::Deny {
                     reason: rule.reason.clone(),
                     message: Some(format!("Denied by rule: {}", rule.pattern)),
@@ -369,6 +384,35 @@ impl PermissionPolicy for PrivateNetworkFetchDenyPolicy {
 /// outcome); parameterized ask rules don't match at all today
 /// (pre-existing DSL limitation).
 pub struct PrivateNetworkFetchAskPolicy;
+
+type CommandRuleMatcher<'a> = Box<dyn Fn(&str) -> bool + 'a>;
+
+/// Matcher for parameterized rules of shell tools: tests the rule's argument
+/// pattern against the call's command text. `None` when the call carries no
+/// command text, so parameterized rules stay unmatched for other tools.
+///
+/// With a wired sandbox, statically resolvable in-workspace `cd` segments are
+/// stripped from the match string (the execution directory is reviewed by
+/// `BashExecutionDirectoryAskPolicy`, so it must not pollute rule matching);
+/// unresolvable targets stay as ordinary segments. The literal command is
+/// tried first, then the stripped form — literal-first is deliberate
+/// back-compat: rules written with `cd` prefixes (deny/ask rules mentioning
+/// `cd` among them) keep firing.
+fn command_rule_matcher<'a>(
+    ctx: &'a PermissionPolicyContext,
+    workspace: Option<&WorkspacePaths>,
+) -> Option<CommandRuleMatcher<'a>> {
+    let command = ctx.command_text?;
+    let stripped = workspace
+        .map(|ws| super::command_facet::strip_resolved_dir_segments(command, ws))
+        .filter(|s| !s.is_empty() && s != command);
+    Some(Box::new(move |pattern: &str| {
+        super::command_facet::command_matches_pattern(command, pattern)
+            || stripped
+                .as_deref()
+                .is_some_and(|s| super::command_facet::command_matches_pattern(s, pattern))
+    }))
+}
 
 /// Extract the host from a `FetchURL(host:<host>)` facet string; when the
 /// approval rule is not that shape, fall back to the `url` argument.
@@ -610,14 +654,26 @@ impl PermissionPolicy for AutoModeApprovePolicy {
 // Policy 7: session-approval memory matches → approve
 // ---------------------------------------------------------------------------
 
-pub struct SessionApprovalHistoryPolicy;
+#[derive(Default)]
+pub struct SessionApprovalHistoryPolicy {
+    workspace_paths: Option<Arc<WorkspacePaths>>,
+}
+impl SessionApprovalHistoryPolicy {
+    pub fn new(workspace_paths: Option<Arc<WorkspacePaths>>) -> Self {
+        Self { workspace_paths }
+    }
+}
 impl PermissionPolicy for SessionApprovalHistoryPolicy {
     fn name(&self) -> &str {
         "session-approval-history"
     }
     fn evaluate(&self, ctx: &PermissionPolicyContext) -> PermissionPolicyResult {
         for pattern in ctx.session_approvals {
-            if match_permission_rule(pattern, ctx.tool_name, None) {
+            if match_permission_rule(
+                pattern,
+                ctx.tool_name,
+                command_rule_matcher(ctx, self.workspace_paths.as_deref()).as_deref(),
+            ) {
                 return PermissionPolicyResult::Approve {
                     reason: Some("approve for session".into()),
                 };
@@ -631,7 +687,15 @@ impl PermissionPolicy for SessionApprovalHistoryPolicy {
 // Policy 8: user ask rule matches → ask
 // ---------------------------------------------------------------------------
 
-pub struct UserConfiguredAskPolicy;
+#[derive(Default)]
+pub struct UserConfiguredAskPolicy {
+    workspace_paths: Option<Arc<WorkspacePaths>>,
+}
+impl UserConfiguredAskPolicy {
+    pub fn new(workspace_paths: Option<Arc<WorkspacePaths>>) -> Self {
+        Self { workspace_paths }
+    }
+}
 impl PermissionPolicy for UserConfiguredAskPolicy {
     fn name(&self) -> &str {
         "user-configured-ask"
@@ -645,7 +709,11 @@ impl PermissionPolicy for UserConfiguredAskPolicy {
             if !user_scopes.contains(&rule.scope) {
                 continue;
             }
-            if match_permission_rule(&rule.pattern, ctx.tool_name, None) {
+            if match_permission_rule(
+                &rule.pattern,
+                ctx.tool_name,
+                command_rule_matcher(ctx, self.workspace_paths.as_deref()).as_deref(),
+            ) {
                 return PermissionPolicyResult::Ask {
                     reason: rule
                         .reason
@@ -665,7 +733,15 @@ impl PermissionPolicy for UserConfiguredAskPolicy {
 // Policy 9: user allow rule matches → approve
 // ---------------------------------------------------------------------------
 
-pub struct UserConfiguredAllowPolicy;
+#[derive(Default)]
+pub struct UserConfiguredAllowPolicy {
+    workspace_paths: Option<Arc<WorkspacePaths>>,
+}
+impl UserConfiguredAllowPolicy {
+    pub fn new(workspace_paths: Option<Arc<WorkspacePaths>>) -> Self {
+        Self { workspace_paths }
+    }
+}
 impl PermissionPolicy for UserConfiguredAllowPolicy {
     fn name(&self) -> &str {
         "user-configured-allow"
@@ -679,7 +755,11 @@ impl PermissionPolicy for UserConfiguredAllowPolicy {
             if !user_scopes.contains(&rule.scope) {
                 continue;
             }
-            if match_permission_rule(&rule.pattern, ctx.tool_name, None) {
+            if match_permission_rule(
+                &rule.pattern,
+                ctx.tool_name,
+                command_rule_matcher(ctx, self.workspace_paths.as_deref()).as_deref(),
+            ) {
                 return PermissionPolicyResult::Approve {
                     reason: rule.reason.clone(),
                 };
@@ -888,6 +968,269 @@ impl PermissionPolicy for SwarmModeAgentSwarmApprovePolicy {
 /// workspace sandbox boundary (plan D1 — the same six tools `classify_tool_path`
 /// migrates).
 const BOUNDARY_TOOLS: &[&str] = &["Read", "Write", "Edit", "Glob", "Grep", "ReadMediaFile"];
+
+/// The macOS TCC protected home-directory categories (US-BH11 / B-ADR-17):
+/// touching any of these from a sandboxed process can trigger a system
+/// authorization popup (TCC). Kept minimal and defensible — the three
+/// categories every macOS install gates with a user-visible prompt on
+/// first access by an unsandboxed-but-unentitled process. `~/Pictures`,
+/// `~/Music`, `~/Movies` etc. are NOT listed: they stay behind the same
+/// conservative unclassified-`~` ask rather than this (stronger) list.
+pub const PROTECTED_HOME_CATEGORIES: &[&str] = &["Desktop", "Documents", "Downloads"];
+
+/// The user-facing ask reason when a command touches a protected
+/// home directory (English, matching the sentence-form reasons of the
+/// sibling policies in this file).
+pub const PROTECTED_DIR_ASK_REASON: &str =
+    "the command touches a system-protected home directory (this may trigger a system authorization prompt)";
+
+/// The user-facing ask reason when a `~`-rooted target cannot be
+/// statically classified as protected or not.
+pub const UNCLASSIFIED_HOME_ASK_REASON: &str = "the home-directory target cannot be statically classified";
+
+/// The Bash execution-directory review (US-BH10, layers 2+3): the explicit
+/// `cwd` argument and every statically known `cd`-style target in the command
+/// are classified against the sandbox like file-tool paths. Any `Outside`
+/// directory asks, carrying the canonical directory as `grant_dir` so the
+/// existing grant pipeline applies. An `Escape` shape (a relative `..` chain
+/// pushed out of the sandbox) also asks, but without a `grant_dir`: unlike
+/// the file tools there is no Bash tool-layer cwd validation to refuse it
+/// ([`WorkspaceBoundaryPolicy`] lets Escape through on the same assumption),
+/// so the permission chain is the only line of defense — and a relative
+/// escape has no canonical outside path to grant anyway. The tool's default
+/// `cwd` never takes part (only model-supplied values are reviewed). Sits
+/// before
+/// [`SessionApprovalHistoryPolicy`] and the ask/allow rule policies: the
+/// directory review must precede any approval-based auto-grant, so a
+/// previously approved command re-run with an outside directory still asks
+/// (it still precedes [`WorkspaceBoundaryPolicy`] transitively). Segments
+/// with substitutions (`Unparsed`) are not reviewed as directories — their
+/// targets are statically unresolvable, so they stay ordinary command
+/// segments for rule matching (conservative).
+///
+/// US-BH11 (B-ADR-17): with `os_home` wired, `~`-prefixed candidates are no
+/// longer silently skipped. They expand against the OS user home and are
+/// classified — the sandbox verdict first (a granted category directory is
+/// `Inside` and must not re-ask), then the protected home categories. A
+/// protected category (`~/Desktop`, `~/Documents`, `~/Downloads` and their
+/// home-absolute expanded forms, case-insensitive — see
+/// [`PROTECTED_HOME_CATEGORIES`]) asks with the protected-dir reason and
+/// the category directory as `grant_dir` (one grant covers the whole
+/// category); every other `~`-rooted target (including bare `~`) asks
+/// conservatively, carrying the expanded target as `grant_dir` so the
+/// same grant pipeline applies (one session grant ends the re-asking). The
+/// whole command text is also scanned for protected patterns as plain
+/// arguments (`cp a ~/Desktop/b`), matched as full path segments to avoid
+/// prose false positives. With `os_home` unwired (`None`, legacy hosts) the
+/// `~` candidates keep the legacy silent skip.
+pub struct BashExecutionDirectoryAskPolicy {
+    workspace_paths: Option<Arc<WorkspacePaths>>,
+    os_home: Option<Arc<PathBuf>>,
+}
+
+impl BashExecutionDirectoryAskPolicy {
+    pub fn new(
+        workspace_paths: Option<Arc<WorkspacePaths>>,
+        os_home: Option<Arc<PathBuf>>,
+    ) -> Self {
+        Self {
+            workspace_paths,
+            os_home,
+        }
+    }
+}
+
+impl BashExecutionDirectoryAskPolicy {
+    /// Expand a `~`-rooted target against the wired OS home. `None` when
+    /// `os_home` is unwired (the legacy skip) or the text is not
+    /// `~`-rooted. Bare `~` expands to the home itself.
+    fn expand_home_rooted(&self, text: &str) -> Option<PathBuf> {
+        let home = self.os_home.as_deref()?;
+        let rest = text.strip_prefix('~')?;
+        Some(if rest.is_empty() {
+            home.to_path_buf()
+        } else {
+            home.join(rest.strip_prefix('/').unwrap_or(rest))
+        })
+    }
+
+    /// Whether the given home-absolute path hits a protected category as
+    /// its first segment under the OS home — the `/Users/<name>/Desktop`
+    /// form written out in the command text (case-insensitive). Returns
+    /// the category directory in the category constant's own spelling
+    /// (the grant target — one grant covers the whole category, and the
+    /// recorded grant must not depend on the casing the command used).
+    fn protected_category_of(&self, path: &Path) -> Option<PathBuf> {
+        let home = self.os_home.as_deref()?;
+        let rest = path.strip_prefix(home).ok()?;
+        let head = rest.components().next()?.as_os_str().to_string_lossy();
+        PROTECTED_HOME_CATEGORIES
+            .iter()
+            .find(|category| head.eq_ignore_ascii_case(category))
+            .map(|category| home.join(category))
+    }
+
+    /// The string-level scan of the whole command text for protected
+    /// patterns as plain arguments (`cp a ~/Desktop/b`): the `~`-form
+    /// (`~/Desktop`, case-insensitive head) and the home-absolute expanded
+    /// form (`/Users/<name>/Desktop/...`). Only full path segments count
+    /// — a bare "Desktop" substring in prose must not hit. Returns the
+    /// expanded token (for the sandbox containment check) and the
+    /// category directory (the grant target).
+    fn protected_hit_in_command_text(&self, command: &str) -> Option<(PathBuf, PathBuf)> {
+        let home = self.os_home.as_deref()?;
+        let home_prefix = format!("{}/", home.display());
+        for token in command.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`')) {
+            if token.is_empty() || token == "~" {
+                continue; // bare `~` folds into the candidate-loop arm
+            }
+            let expanded = if let Some(rest) = token.strip_prefix("~/") {
+                home.join(rest)
+            } else if token.starts_with(&home_prefix) {
+                PathBuf::from(token)
+            } else {
+                continue;
+            };
+            if let Some(category) = self.protected_category_of(&expanded) {
+                return Some((expanded, category));
+            }
+        }
+        None
+    }
+}
+
+impl PermissionPolicy for BashExecutionDirectoryAskPolicy {
+    fn name(&self) -> &str {
+        "bash-execution-directory"
+    }
+    fn evaluate(&self, ctx: &PermissionPolicyContext) -> PermissionPolicyResult {
+        use super::command_facet::{
+            CommandSegment, extract_directory_switch, split_command_segments,
+        };
+        let Some(workspace_paths) = &self.workspace_paths else {
+            return PermissionPolicyResult::Pass;
+        };
+        if ctx.tool_name != "Bash" {
+            return PermissionPolicyResult::Pass;
+        }
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        if let Some(cwd) = ctx.args.get("cwd").and_then(|v| v.as_str())
+            && !cwd.is_empty()
+        {
+            candidates.push(PathBuf::from(cwd));
+        }
+        if let Some(command) = ctx.command_text {
+            for segment in split_command_segments(command) {
+                if let CommandSegment::Resolved(text) = segment
+                    && let Some(target) = extract_directory_switch(&text)
+                {
+                    candidates.push(target);
+                }
+            }
+        }
+        for candidate in candidates {
+            // US-BH11 (B-ADR-17): `~`-prefixed targets are expanded against
+            // the wired OS home and classified — first against the sandbox
+            // (a granted category directory is `Inside` and must not
+            // re-ask), then against the protected home categories. A
+            // protected hit asks with the category directory as grant_dir
+            // (one grant covers the whole category); every other
+            // home-rooted target (incl. bare `~`) asks conservatively,
+            // carrying the expanded target as grant_dir so the same grant
+            // pipeline applies. Unwired (`None`, legacy hosts) keeps the
+            // historical skip: the segment stays in the rule match string
+            // (see `command_rule_matcher`) and is never covered by a
+            // narrow allow rule for the trailing command.
+            let candidate_text = candidate.to_string_lossy();
+            if candidate_text.starts_with('~') {
+                let Some(expanded) = self.expand_home_rooted(&candidate_text) else {
+                    continue; // os_home unwired — the legacy silent skip
+                };
+                match workspace_paths.classify(&expanded) {
+                    PathClassification::Inside(_) => continue,
+                    PathClassification::Escape { .. } | PathClassification::Outside(_) => {
+                        if let Some(category) = self.protected_category_of(&expanded) {
+                            return PermissionPolicyResult::Ask {
+                                reason: Some(PROTECTED_DIR_ASK_REASON.into()),
+                                grant_dir: Some(category),
+                                deny_when_unattended: false,
+                                never_auto_approve: false,
+                            };
+                        }
+                        return PermissionPolicyResult::Ask {
+                            reason: Some(UNCLASSIFIED_HOME_ASK_REASON.into()),
+                            grant_dir: Some(expanded),
+                            deny_when_unattended: false,
+                            never_auto_approve: false,
+                        };
+                    }
+                }
+            }
+            // A home-absolute expanded form written out explicitly
+            // (`cd /Users/<name>/Desktop`) — the path sits outside the
+            // sandbox either way, but when it names a protected home
+            // category the protected-dir reason is the honest one for the
+            // user (`protected_category_of` returns `None` when `os_home`
+            // is unwired, keeping the legacy verdicts untouched).
+            let protected_category = self.protected_category_of(&candidate);
+            match workspace_paths.classify(&candidate) {
+                PathClassification::Outside(canonical) => {
+                    if let Some(category) = protected_category {
+                        return PermissionPolicyResult::Ask {
+                            reason: Some(PROTECTED_DIR_ASK_REASON.into()),
+                            grant_dir: Some(category),
+                            deny_when_unattended: false,
+                            never_auto_approve: false,
+                        };
+                    }
+                    return PermissionPolicyResult::Ask {
+                        reason: Some(
+                            "the execution directory is outside the workspace sandbox".into(),
+                        ),
+                        grant_dir: Some(canonical),
+                        deny_when_unattended: false,
+                        never_auto_approve: false,
+                    };
+                }
+                // A relative `..` escape has no canonical outside path to
+                // grant, and the Bash tool layer performs no cwd validation
+                // of its own — the ask is the only review it ever gets.
+                PathClassification::Escape { .. } => {
+                    return PermissionPolicyResult::Ask {
+                        reason: Some(
+                            "the execution directory escapes the workspace sandbox".into(),
+                        ),
+                        grant_dir: None,
+                        deny_when_unattended: false,
+                        never_auto_approve: false,
+                    };
+                }
+                PathClassification::Inside(_) => {}
+            }
+        }
+        // US-BH11: the command text is also scanned as a whole — a
+        // protected home directory appearing as a plain argument (`cp a
+        // ~/Desktop/b`) must hit, not only cwd/cd segments. The scan only
+        // counts full path segments (see `protected_hit_in_command_text`)
+        // so prose mentions of "Desktop" never hit. A hit inside the
+        // sandbox (a granted category) does not ask.
+        if let Some(command) = ctx.command_text
+            && let Some((expanded, category)) = self.protected_hit_in_command_text(command)
+            && !matches!(
+                workspace_paths.classify(&expanded),
+                PathClassification::Inside(_)
+            )
+        {
+            return PermissionPolicyResult::Ask {
+                reason: Some(PROTECTED_DIR_ASK_REASON.into()),
+                grant_dir: Some(category),
+                deny_when_unattended: false,
+                never_auto_approve: false,
+            };
+        }
+        PermissionPolicyResult::Pass
+    }
+}
 
 /// Route clean outside-sandbox paths through the permission chain.
 ///
@@ -1173,6 +1516,7 @@ mod tests {
             cancel: &bundle.cancel,
             net_class: None,
             turn_origin,
+            command_text: None,
         }
     }
 
@@ -1306,6 +1650,7 @@ mod tests {
             cancel: &cancel,
             net_class: None,
             turn_origin: crate::permission::TurnOriginContext::Interactive,
+            command_text: None,
         };
 
         assert!(matches!(
@@ -1418,6 +1763,7 @@ mod tests {
             cancel: &cancel,
             net_class: None,
             turn_origin: Default::default(),
+            command_text: None,
         };
         policy.evaluate(&ctx)
     }
@@ -1462,6 +1808,7 @@ mod tests {
             cancel: &cancel,
             net_class,
             turn_origin: Default::default(),
+            command_text: None,
         };
         policy.evaluate(&ctx)
     }
@@ -1968,6 +2315,7 @@ mod tests {
             cancel: &cancel,
             net_class: None,
             turn_origin: Default::default(),
+            command_text: None,
         };
         assert!(matches!(
             manager.evaluate(&ctx),
@@ -2006,6 +2354,7 @@ mod tests {
             cancel: &cancel,
             net_class: None,
             turn_origin: Default::default(),
+            command_text: None,
         };
 
         match manager.evaluate(&ctx) {
@@ -2050,6 +2399,7 @@ mod tests {
             cancel: &cancel,
             net_class: None,
             turn_origin: Default::default(),
+            command_text: None,
         };
 
         match manager.evaluate(&ctx) {
@@ -2089,6 +2439,7 @@ mod tests {
             cancel: &cancel,
             net_class: None,
             turn_origin: Default::default(),
+            command_text: None,
         };
         // The plan-mode guard passes for read tools; DefaultToolApprovePolicy
         // then approves.
@@ -2132,6 +2483,7 @@ mod tests {
             cancel: &cancel,
             net_class: None,
             turn_origin: Default::default(),
+            command_text: None,
         };
         assert!(matches!(
             manager.evaluate(&ctx),
@@ -2167,6 +2519,7 @@ mod tests {
             cancel: &cancel,
             net_class: None,
             turn_origin: Default::default(),
+            command_text: None,
         };
         policy.evaluate(&ctx)
     }
@@ -2511,6 +2864,609 @@ mod tests {
                 !OUTSIDE_SANDBOX_DENIAL_CONTRACT.contains(banned),
                 "the NEVER-bypass contract must not name '{banned}': \
                  {OUTSIDE_SANDBOX_DENIAL_CONTRACT}"
+            );
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Bash command-text rules (BH1)
+    // ------------------------------------------------------------------
+
+    fn rule(decision: RuleDecision, pattern: &str) -> PermissionRule {
+        PermissionRule {
+            decision,
+            scope: RuleScope::User,
+            pattern: pattern.to_string(),
+            reason: None,
+        }
+    }
+
+    fn eval_bash(
+        policy: &dyn PermissionPolicy,
+        command: &str,
+        rules: &[PermissionRule],
+        approvals: &[&str],
+    ) -> PermissionPolicyResult {
+        let args = serde_json::json!({ "command": command });
+        let display = ToolInputDisplay::Command {
+            command: command.to_string(),
+        };
+        let cancel = CancelToken::new();
+        let approvals: HashSet<String> = approvals.iter().map(|s| s.to_string()).collect();
+        let ctx = PermissionPolicyContext {
+            tool_name: "Bash",
+            tool_call_id: "c1",
+            args: &args,
+            approval_rule: "Bash",
+            display: &display,
+            accesses: &[],
+            mode: PermissionMode::Manual,
+            rules,
+            session_approvals: &approvals,
+            cancel: &cancel,
+            net_class: None,
+            turn_origin: Default::default(),
+            command_text: Some(command),
+        };
+        policy.evaluate(&ctx)
+    }
+
+    #[test]
+    fn should_deny_a_command_matching_a_user_deny_rule() {
+        let rules = [rule(RuleDecision::Deny, "Bash(rm *)")];
+        let r = eval_bash(&UserConfiguredDenyPolicy::default(), "rm -rf /tmp/x", &rules, &[]);
+        assert!(matches!(r, PermissionPolicyResult::Deny { .. }));
+    }
+
+    #[test]
+    fn should_approve_a_command_matching_a_user_allow_rule() {
+        let rules = [rule(RuleDecision::Allow, "Bash(git status)")];
+        let r = eval_bash(&UserConfiguredAllowPolicy::default(), "git status", &rules, &[]);
+        assert!(matches!(r, PermissionPolicyResult::Approve { .. }));
+    }
+
+    #[test]
+    fn should_not_approve_a_different_command_of_the_same_tool() {
+        let rules = [rule(RuleDecision::Allow, "Bash(git status)")];
+        let r = eval_bash(&UserConfiguredAllowPolicy::default(), "git push", &rules, &[]);
+        assert!(matches!(r, PermissionPolicyResult::Pass));
+    }
+
+    #[test]
+    fn should_ask_when_a_user_ask_rule_matches_the_command() {
+        let rules = [rule(RuleDecision::Ask, "Bash(git push*)")];
+        let r = eval_bash(&UserConfiguredAskPolicy::default(), "git push origin x", &rules, &[]);
+        assert!(matches!(r, PermissionPolicyResult::Ask { .. }));
+    }
+
+    #[test]
+    fn should_not_ask_again_when_the_same_command_was_approved_for_the_session() {
+        let r = eval_bash(
+            &SessionApprovalHistoryPolicy::default(),
+            "git status",
+            &[],
+            &["Bash(git status)"],
+        );
+        assert!(matches!(r, PermissionPolicyResult::Approve { .. }));
+    }
+
+    #[test]
+    fn should_ask_again_when_only_the_arguments_differ() {
+        let r = eval_bash(
+            &SessionApprovalHistoryPolicy::default(),
+            "git status --short",
+            &[],
+            &["Bash(git status)"],
+        );
+        assert!(matches!(r, PermissionPolicyResult::Pass));
+    }
+
+    #[test]
+    fn should_still_match_a_legacy_bare_bash_session_approval() {
+        let r = eval_bash(
+            &SessionApprovalHistoryPolicy::default(),
+            "anything",
+            &[],
+            &["Bash"],
+        );
+        assert!(matches!(r, PermissionPolicyResult::Approve { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // BashExecutionDirectoryAskPolicy (US-BH10)
+    // -----------------------------------------------------------------------
+
+    fn eval_dir(
+        policy: &dyn PermissionPolicy,
+        args: serde_json::Value,
+        command: &str,
+    ) -> PermissionPolicyResult {
+        let display = ToolInputDisplay::Command {
+            command: command.to_string(),
+        };
+        let cancel = CancelToken::new();
+        let ctx = PermissionPolicyContext {
+            tool_name: "Bash",
+            tool_call_id: "c1",
+            args: &args,
+            approval_rule: "Bash",
+            display: &display,
+            accesses: &[],
+            mode: PermissionMode::Manual,
+            rules: &[],
+            session_approvals: &HashSet::new(),
+            cancel: &cancel,
+            net_class: None,
+            turn_origin: Default::default(),
+            command_text: Some(command),
+        };
+        policy.evaluate(&ctx)
+    }
+
+    fn dir_policy(root: &tempfile::TempDir) -> BashExecutionDirectoryAskPolicy {
+        BashExecutionDirectoryAskPolicy::new(
+            Some(Arc::new(WorkspacePaths::new(root.path().into()))),
+            None,
+        )
+    }
+
+    /// A home-fixture bundle for the protected-directory review: a tempdir
+    /// standing in for the OS user home, with `Desktop` / `Documents` /
+    /// `Downloads` created under it, and a policy wired with both the
+    /// sandbox and that home.
+    #[allow(clippy::type_complexity)]
+    fn home_fixture() -> (
+        tempfile::TempDir,
+        BashExecutionDirectoryAskPolicy,
+        Arc<PathBuf>,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        for category in PROTECTED_HOME_CATEGORIES {
+            std::fs::create_dir(home.path().join(category)).unwrap();
+        }
+        let os_home: Arc<PathBuf> = Arc::new(home.path().to_path_buf());
+        let policy = BashExecutionDirectoryAskPolicy::new(
+            Some(Arc::new(WorkspacePaths::new(root.path().into()))),
+            Some(Arc::clone(&os_home)),
+        );
+        (home, policy, os_home)
+    }
+
+    #[test]
+    fn should_ask_when_the_explicit_cwd_lies_outside_the_workspace() {
+        let (root, outside, _f) = outside_file_fixture();
+        let args = serde_json::json!({ "command": "ls", "cwd": outside.path() });
+        let r = eval_dir(&dir_policy(&root), args, "ls");
+        assert!(matches!(r, PermissionPolicyResult::Ask { .. }));
+    }
+
+    #[test]
+    fn should_ask_when_a_directory_switch_target_lies_outside_the_workspace() {
+        let (root, outside, _f) = outside_file_fixture();
+        let cmd = format!("cd {} && ls", outside.path().display());
+        let r = eval_dir(
+            &dir_policy(&root),
+            serde_json::json!({ "command": cmd }),
+            &cmd,
+        );
+        assert!(matches!(r, PermissionPolicyResult::Ask { .. }));
+    }
+
+    #[test]
+    fn should_pass_when_the_cwd_and_every_switch_target_lie_inside() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("src")).unwrap();
+        let args = serde_json::json!({ "command": "cd src && ls", "cwd": root.path() });
+        let r = eval_dir(&dir_policy(&root), args, "cd src && ls");
+        assert!(matches!(r, PermissionPolicyResult::Pass));
+        let r = eval_dir(
+            &dir_policy(&root),
+            serde_json::json!({ "command": "ls" }),
+            "ls",
+        );
+        assert!(matches!(r, PermissionPolicyResult::Pass));
+    }
+
+    #[test]
+    fn should_pass_when_workspace_paths_are_not_wired_for_directory_review() {
+        let args = serde_json::json!({ "command": "ls", "cwd": "/etc" });
+        let r = eval_dir(
+            &BashExecutionDirectoryAskPolicy::new(None, None),
+            args,
+            "cd /etc",
+        );
+        assert!(matches!(r, PermissionPolicyResult::Pass));
+    }
+
+    #[test]
+    fn should_carry_the_outside_directory_as_the_grant_dir() {
+        let (root, outside, _f) = outside_file_fixture();
+        let args = serde_json::json!({ "command": "ls", "cwd": outside.path() });
+        let r = eval_dir(&dir_policy(&root), args, "ls");
+        let PermissionPolicyResult::Ask { grant_dir, .. } = r else {
+            panic!("expected Ask");
+        };
+        assert_eq!(grant_dir, Some(outside.path().canonicalize().unwrap()));
+    }
+
+    /// Given a wired sandbox and a relative `cwd` whose `..` chain pushes out
+    /// of the workspace, When the Bash execution-directory review runs, Then
+    /// it asks instead of passing — the Bash tool layer has no cwd validation
+    /// of its own, so the escape shape would otherwise run unreviewed (and
+    /// with no `grant_dir`, since a relative escape has no canonical outside
+    /// path to authorize).
+    #[test]
+    fn should_ask_when_the_explicit_cwd_escapes_the_workspace_via_parent_segments() {
+        let root = tempfile::tempdir().unwrap();
+        let args = serde_json::json!({ "command": "ls", "cwd": "../../outside" });
+        let r = eval_dir(&dir_policy(&root), args, "ls");
+        let PermissionPolicyResult::Ask {
+            reason,
+            grant_dir,
+            ..
+        } = r
+        else {
+            panic!("a relative parent-segment cwd must ask, got {r:?}");
+        };
+        assert!(grant_dir.is_none(), "a relative escape carries no grant dir");
+        assert!(
+            reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("escapes the workspace sandbox")),
+            "reason names the escape: {reason:?}"
+        );
+    }
+
+    #[test]
+    fn should_keep_an_unresolvable_directory_switch_in_the_match_string() {
+        let root = tempfile::tempdir().unwrap();
+        let ws = WorkspacePaths::new(root.path().into());
+        let allow = [rule(RuleDecision::Allow, "Bash(git status)")];
+        let policy = UserConfiguredAllowPolicy::new(Some(Arc::new(ws)));
+        // resolvable in-workspace cd is stripped → rule matches
+        std::fs::create_dir(root.path().join("src")).unwrap();
+        let r = eval_bash(&policy, "cd src && git status", &allow, &[]);
+        assert!(matches!(r, PermissionPolicyResult::Approve { .. }));
+        // variable target stays a segment → rule must not match
+        let r = eval_bash(&policy, "cd $X && git status", &allow, &[]);
+        assert!(matches!(r, PermissionPolicyResult::Pass));
+    }
+
+    /// Given a wired sandbox and a `~`-prefixed directory switch, When the
+    /// directory review runs (US-BH11: os_home wired), Then a narrow allow
+    /// rule still does not auto-grant it AND the review itself no longer
+    /// silently skips — an unclassified home target (`~/x`) asks
+    /// conservatively. (Flipped from the pre-BH11 silent-skip semantics.)
+    #[test]
+    fn should_not_cover_a_home_prefixed_directory_switch_with_a_narrow_allow_rule() {
+        // Given a wired sandbox and a narrow allow rule for the trailing command
+        let root = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let ws = WorkspacePaths::new(root.path().into());
+        let allow = [rule(RuleDecision::Allow, "Bash(ls)")];
+        let policy = UserConfiguredAllowPolicy::new(Some(Arc::new(ws)));
+        let r = eval_bash(&policy, "cd ~/x && ls", &allow, &[]);
+        // Then the rule does not match — the `~` target is not statically
+        // resolvable, so the segment stays in the match string (it is never
+        // auto-granted; the directory review below takes over instead of
+        // silently skipping).
+        assert!(
+            matches!(r, PermissionPolicyResult::Pass),
+            "a narrow allow rule must not cover a home-prefixed directory switch"
+        );
+        let dir_policy = BashExecutionDirectoryAskPolicy::new(
+            Some(Arc::new(WorkspacePaths::new(root.path().into()))),
+            Some(Arc::new(home.path().to_path_buf())),
+        );
+        let r = eval_dir(
+            &dir_policy,
+            serde_json::json!({ "command": "cd ~/x && ls" }),
+            "cd ~/x && ls",
+        );
+        // US-BH11 behavior change: the `~` target now asks conservatively
+        // (it cannot be statically classified), it is no longer skipped.
+        let PermissionPolicyResult::Ask { reason, grant_dir, .. } = r else {
+            panic!("an unclassified home-prefixed switch must Ask, got {r:?}");
+        };
+        assert_eq!(grant_dir, Some(home.path().join("x")));
+        assert!(
+            reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("cannot be statically classified")),
+            "reason names the unclassified home target: {reason:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Protected home directories (US-BH11 / B-ADR-17)
+    // ------------------------------------------------------------------
+
+    /// Given an os_home wired policy and a `cd ~/Desktop` switch, When the
+    /// directory review runs, Then it asks with the protected-dir reason
+    /// and the expanded Desktop directory as the grant_dir.
+    #[test]
+    fn should_ask_before_touching_a_protected_desktop_directory() {
+        let (home, policy, os_home) = home_fixture();
+        let r = eval_dir(
+            &policy,
+            serde_json::json!({ "command": "ls ~/Desktop" }),
+            "ls ~/Desktop",
+        );
+        let PermissionPolicyResult::Ask {
+            reason,
+            grant_dir,
+            ..
+        } = r
+        else {
+            panic!("a protected Desktop target must Ask, got {r:?}");
+        };
+        assert_eq!(grant_dir, Some(os_home.join("Desktop")));
+        assert_eq!(reason.as_deref(), Some(PROTECTED_DIR_ASK_REASON));
+        let _ = home; // fixture owns the tempdir lifetime
+    }
+
+    /// Given a command whose plain argument mentions a protected home
+    /// directory (`cp x ~/Downloads/y`), When the directory review runs,
+    /// Then it asks — the scan is not limited to cwd/cd segments.
+    #[test]
+    fn should_ask_when_the_command_argument_mentions_a_protected_directory() {
+        let (_home, policy, os_home) = home_fixture();
+        let r = eval_dir(
+            &policy,
+            serde_json::json!({ "command": "cp x ~/Downloads/y" }),
+            "cp x ~/Downloads/y",
+        );
+        let PermissionPolicyResult::Ask {
+            reason,
+            grant_dir,
+            ..
+        } = r
+        else {
+            panic!("a protected Downloads argument must Ask, got {r:?}");
+        };
+        assert_eq!(grant_dir, Some(os_home.join("Downloads")));
+        assert_eq!(reason.as_deref(), Some(PROTECTED_DIR_ASK_REASON));
+    }
+
+    /// Given a command that writes the home-absolute expanded form
+    /// (`/Users/<home>/Desktop`) instead of the `~` shorthand, When the
+    /// review runs, Then it still asks with the expanded dir as grant_dir.
+    #[test]
+    fn should_ask_via_the_expanded_absolute_form() {
+        let (_home, policy, os_home) = home_fixture();
+        let cmd = format!("cp x {}/Desktop/y", os_home.display());
+        let r = eval_dir(
+            &policy,
+            serde_json::json!({ "command": &cmd }),
+            &cmd,
+        );
+        let PermissionPolicyResult::Ask {
+            reason,
+            grant_dir,
+            ..
+        } = r
+        else {
+            panic!("an expanded-form protected target must Ask, got {r:?}");
+        };
+        assert_eq!(grant_dir, Some(os_home.join("Desktop")));
+        assert_eq!(reason.as_deref(), Some(PROTECTED_DIR_ASK_REASON));
+    }
+
+    /// Given the sandbox has been widened with the granted protected dir
+    /// (the grant pipeline applied), When the same command is re-run within
+    /// the session, Then the review no longer asks — the granted dir is now
+    /// inside the sandbox, so a fresh `classify` returns `Inside`.
+    #[test]
+    fn should_not_re_ask_after_the_directory_was_granted_this_session() {
+        let (root, _outside, _f) = outside_file_fixture();
+        let home = tempfile::tempdir().unwrap();
+        let desktop = home.path().join("Desktop");
+        std::fs::create_dir(&desktop).unwrap();
+        let paths = Arc::new(WorkspacePaths::new(root.path().into()));
+        let policy = BashExecutionDirectoryAskPolicy::new(
+            Some(Arc::clone(&paths)),
+            Some(Arc::new(home.path().to_path_buf())),
+        );
+        let r = eval_dir(
+            &policy,
+            serde_json::json!({ "command": "ls ~/Desktop" }),
+            "ls ~/Desktop",
+        );
+        assert!(
+            matches!(r, PermissionPolicyResult::Ask { .. }),
+            "the first touch must Ask"
+        );
+        // The user grants the directory (session scope) — the grant sink
+        // widens the shared sandbox, exactly what the hooks.rs pipeline does.
+        paths.add_additional(desktop.clone());
+        let r = eval_dir(
+            &policy,
+            serde_json::json!({ "command": "ls ~/Desktop" }),
+            "ls ~/Desktop",
+        );
+        assert!(
+            matches!(r, PermissionPolicyResult::Pass),
+            "the granted directory must not re-ask, got {r:?}"
+        );
+    }
+
+    /// Given an os_home wired policy and a `~` target that matches no
+    /// protected category (`cd ~/somewhere`), When the review runs, Then it
+    /// still asks conservatively — home targets are no longer silently
+    /// skipped (behavior change).
+    #[test]
+    fn should_still_ask_conservatively_for_an_unclassified_home_target() {
+        let (_home, policy, os_home) = home_fixture();
+        let r = eval_dir(
+            &policy,
+            serde_json::json!({ "command": "cd ~/somewhere && ls" }),
+            "cd ~/somewhere && ls",
+        );
+        let PermissionPolicyResult::Ask {
+            reason,
+            grant_dir,
+            ..
+        } = r
+        else {
+            panic!("an unclassified home target must Ask conservatively, got {r:?}");
+        };
+        assert_eq!(
+            grant_dir,
+            Some(os_home.join("somewhere")),
+            "the conservative ask carries the expanded target as grant_dir"
+        );
+        assert_eq!(reason.as_deref(), Some(UNCLASSIFIED_HOME_ASK_REASON));
+    }
+
+    /// Given os_home is not wired (legacy hosts), When a `~`-prefixed
+    /// command runs, Then the review keeps the legacy silent skip — it
+    /// passes, adding no new behavior.
+    #[test]
+    fn should_keep_the_legacy_skip_when_os_home_is_not_wired() {
+        let root = tempfile::tempdir().unwrap();
+        let policy = BashExecutionDirectoryAskPolicy::new(
+            Some(Arc::new(WorkspacePaths::new(root.path().into()))),
+            None,
+        );
+        for cmd in [
+            "ls ~/Desktop",
+            "cp x ~/Downloads/y",
+            "cd ~/somewhere && ls",
+        ] {
+            let r = eval_dir(
+                &policy,
+                serde_json::json!({ "command": cmd }),
+                cmd,
+            );
+            assert!(
+                matches!(r, PermissionPolicyResult::Pass),
+                "unwired os_home must keep the legacy skip for '{cmd}', got {r:?}"
+            );
+        }
+    }
+
+    /// Given a command whose prose mentions "Desktop" as a bare word (not as
+    /// a path segment), When the review runs, Then it does not hit — the
+    /// string-level scan only matches full path segments.
+    #[test]
+    fn should_not_flag_a_desktop_substring_in_prose() {
+        let (_home, policy, _os_home) = home_fixture();
+        for cmd in [
+            "echo 'the Desktop folder is where files land'",
+            "echo MyDesktop notes",
+            "echo desktop-case-style",
+        ] {
+            let r = eval_dir(
+                &policy,
+                serde_json::json!({ "command": cmd }),
+                cmd,
+            );
+            assert!(
+                matches!(r, PermissionPolicyResult::Pass),
+                "prose mention must not hit the protected scan: '{cmd}' → {r:?}"
+            );
+        }
+    }
+
+    /// Given a `cd` segment written in the home-absolute expanded form
+    /// (`cd <home>/Desktop`), When the directory review runs, Then it asks
+    /// through the candidate-loop arm (not the command-text scan that
+    /// plain-argument hits like `cp` exercise) with the protected-dir
+    /// reason and the category directory as grant_dir.
+    #[test]
+    fn should_ask_when_a_cd_segment_targets_the_home_absolute_desktop() {
+        // The workspace root must outlive the evaluation (a dropped root
+        // canonicalizes to nothing and every classify degrades to Escape).
+        let root = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join("Desktop")).unwrap();
+        let policy = BashExecutionDirectoryAskPolicy::new(
+            Some(Arc::new(WorkspacePaths::new(root.path().into()))),
+            Some(Arc::new(home.path().to_path_buf())),
+        );
+        let os_home = home.path().to_path_buf();
+        let cmd = format!("cd {}/Desktop && ls", os_home.display());
+        let r = eval_dir(
+            &policy,
+            serde_json::json!({ "command": &cmd }),
+            &cmd,
+        );
+        let PermissionPolicyResult::Ask {
+            reason,
+            grant_dir,
+            ..
+        } = r
+        else {
+            panic!("a home-absolute cd target must Ask, got {r:?}");
+        };
+        assert_eq!(grant_dir, Some(os_home.join("Desktop")));
+        assert_eq!(reason.as_deref(), Some(PROTECTED_DIR_ASK_REASON));
+    }
+
+    /// Given a lowercase `~/desktop` spelling, When the review asks, Then
+    /// the grant_dir carries the category constant's spelling
+    /// (`<home>/Desktop`), not the input's original casing — a grant
+    /// recorded from any casing must cover every casing of the category,
+    /// on case-sensitive and case-insensitive filesystems alike.
+    #[test]
+    fn should_normalize_the_grant_dir_to_the_category_spelling_for_a_lowercase_hit() {
+        let (_home, policy, os_home) = home_fixture();
+        let r = eval_dir(
+            &policy,
+            serde_json::json!({ "command": "ls ~/desktop" }),
+            "ls ~/desktop",
+        );
+        let PermissionPolicyResult::Ask { grant_dir, .. } = r else {
+            panic!("a lowercase protected target must Ask, got {r:?}");
+        };
+        assert_eq!(
+            grant_dir,
+            Some(os_home.join("Desktop")),
+            "the grant must use the category spelling, not the input's"
+        );
+    }
+
+    /// Given the session granted the Desktop category through the
+    /// lowercase spelling's ask, When the same category is hit again — in
+    /// the lowercase and in the canonical casing — Then the review does not
+    /// re-ask: on a case-insensitive filesystem (macOS, the TCC-motivated
+    /// host) one grant covers every casing of the category. On
+    /// case-sensitive hosts the canonicalize of a non-canonical spelling
+    /// never matches the granted base, so the non-canonical casing
+    /// re-asks — the conservative direction (an extra ask, never a miss).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn should_not_re_ask_for_either_casing_after_a_lowercase_category_grant() {
+        let (root, _outside, _f) = outside_file_fixture();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join("Desktop")).unwrap();
+        let paths = Arc::new(WorkspacePaths::new(root.path().into()));
+        let policy = BashExecutionDirectoryAskPolicy::new(
+            Some(Arc::clone(&paths)),
+            Some(Arc::new(home.path().to_path_buf())),
+        );
+        let r = eval_dir(
+            &policy,
+            serde_json::json!({ "command": "ls ~/desktop" }),
+            "ls ~/desktop",
+        );
+        let PermissionPolicyResult::Ask { grant_dir, .. } = r else {
+            panic!("the first lowercase touch must Ask, got {r:?}");
+        };
+        // The user grants the directory the ask carried (session scope) —
+        // the grant sink widens the shared sandbox, exactly what the
+        // hooks.rs pipeline does.
+        paths.add_additional(grant_dir.unwrap());
+        for cmd in ["ls ~/desktop", "ls ~/Desktop"] {
+            let r = eval_dir(
+                &policy,
+                serde_json::json!({ "command": cmd }),
+                cmd,
+            );
+            assert!(
+                matches!(r, PermissionPolicyResult::Pass),
+                "a granted category must not re-ask for '{cmd}', got {r:?}"
             );
         }
     }

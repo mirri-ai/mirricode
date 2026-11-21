@@ -11,9 +11,20 @@
 use std::sync::Arc;
 
 use crate::error::EngineResult;
-use crate::task::{MAX_TASK_OUTPUT_BYTES, TaskManager, TaskStatus};
+use crate::task::{MAX_TASK_OUTPUT_BYTES, TaskManager, TaskOutputCoordinates, TaskStatus};
 use crate::tool::{ExecutionPlan, Tool, ToolExecution, ToolInputDisplay, ToolResult};
 use crate::tools::tool_execution_error;
+
+/// B-ADR-18 coordinate declarations, emitted in the paged header right
+/// after the `window:` line so the model knows which byte space the
+/// offsets address. One finalized wording per serving path.
+/// The persisted-log path: offsets address the full on-disk log.
+const LOG_ABSOLUTE_DECLARATION: &str =
+    "coordinates: log-absolute (offsets address the full on-disk output log)";
+/// The retained-buffer fallback: offsets address the in-memory tail
+/// window, so after a head drop offset 0 is the retained head, not the
+/// log's first byte.
+const BUFFER_RELATIVE_DECLARATION: &str = "coordinates: buffer-relative (offsets address the retained in-memory buffer, which keeps only the tail window of the produced output)";
 
 /// Format a [`TaskStatus`] as a lowercase label for plain-text output.
 fn status_label(status: &TaskStatus) -> String {
@@ -22,6 +33,19 @@ fn status_label(status: &TaskStatus) -> String {
         TaskStatus::Completed { exit_code } => format!("completed (exit_code: {exit_code})"),
         TaskStatus::Failed(detail) => format!("failed: {detail}"),
         TaskStatus::Stopped => "stopped".to_string(),
+    }
+}
+
+/// Compact whole-second duration label (`1h2m3s`, `4m5s`, `6s`).
+pub(crate) fn format_duration(duration: std::time::Duration) -> String {
+    let secs = duration.as_secs();
+    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    if h > 0 {
+        format!("{h}h{m}m{s}s")
+    } else if m > 0 {
+        format!("{m}m{s}s")
+    } else {
+        format!("{s}s")
     }
 }
 
@@ -44,10 +68,12 @@ impl Tool for TaskOutputTool {
     }
 
     fn description(&self) -> &str {
-        "Read the accumulated output of a background task by id. Use TaskList \
+        "Read the accumulated output of a background task by id — including \
+         while the task is still running (output lands incrementally, so a \
+         poll mid-run returns the latest tail). Use TaskList \
          to discover task ids. The inline view is capped at 1 MiB; larger \
-         outputs are served as the tail plus the full log path, which can be \
-         paged through with the Read tool."
+         outputs are served as the tail plus the full log path. Pass \
+         offset_bytes / max_bytes to page an arbitrary window of the log."
     }
 
     fn parameters(&self) -> &serde_json::Value {
@@ -71,6 +97,19 @@ impl Tool for TaskOutputTool {
                         "minimum": 0,
                         "maximum": 3600,
                         "description": "Maximum seconds to wait when block is true (0-3600, default 30)."
+                    },
+                    "offset_bytes": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "default": 0,
+                        "description": "Byte offset into the full output log to start a paged read at. Giving offset_bytes or max_bytes switches to paged mode; omit both for the tail snapshot."
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 256000,
+                        "default": 50000,
+                        "description": "Maximum bytes to return in paged mode (1-256000, default 50000)."
                     }
                 },
                 "required": ["task_id"],
@@ -101,6 +140,32 @@ impl Tool for TaskOutputTool {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(30)
             .min(3600);
+
+        let offset_arg = input.get("offset_bytes");
+        let max_arg = input.get("max_bytes");
+        let paged = offset_arg.is_some() || max_arg.is_some();
+        let offset_bytes = match offset_arg {
+            None => 0,
+            Some(v) => match v.as_u64() {
+                Some(n) => n,
+                None => {
+                    return Ok(tool_execution_error(
+                        "TaskOutput 'offset_bytes' must be an integer >= 0",
+                    ));
+                }
+            },
+        };
+        let max_bytes = match max_arg {
+            None => 50_000usize,
+            Some(v) => match v.as_u64() {
+                Some(n) if (1..=256_000).contains(&n) => n as usize,
+                _ => {
+                    return Ok(tool_execution_error(
+                        "TaskOutput 'max_bytes' must be an integer between 1 and 256000",
+                    ));
+                }
+            },
+        };
 
         let tasks = Arc::clone(&self.tasks);
         let plan = ExecutionPlan {
@@ -198,8 +263,12 @@ impl Tool for TaskOutputTool {
                     // exist above, but it could vanish between that check
                     // and this read (e.g. a future cleanup/eviction) —
                     // fail gracefully instead of panicking.
-                    let Some(snapshot) = tasks.output_snapshot(&task_id, MAX_TASK_OUTPUT_BYTES)
-                    else {
+                    let snapshot = if paged {
+                        tasks.output_window(&task_id, offset_bytes, max_bytes)
+                    } else {
+                        tasks.output_snapshot(&task_id, MAX_TASK_OUTPUT_BYTES)
+                    };
+                    let Some(snapshot) = snapshot else {
                         return ToolResult::error(format!(
                             "TaskOutput failed: task '{task_id}' not found"
                         ));
@@ -225,14 +294,53 @@ impl Tool for TaskOutputTool {
                     let mut lines: Vec<String> = Vec::new();
                     lines.push(format!("task_id: {task_id}"));
                     lines.push(format!("status: {status_str}"));
+                    if let Some(task) = &task {
+                        let running_for = (task.ended_at.unwrap_or_else(chrono::Utc::now)
+                            - task.created_at)
+                            .to_std()
+                            .unwrap_or_default();
+                        let silent_for = task
+                            .last_output_at
+                            .map(|at| at.elapsed())
+                            .unwrap_or(running_for);
+                        lines.push(format!("running_for: {}", format_duration(running_for)));
+                        if !task.status.is_terminal() {
+                            lines.push(format!("silent_for: {}", format_duration(silent_for)));
+                        }
+                    }
                     lines.push(format!("output_bytes: {}", snapshot.output_size_bytes));
+                    if let Some((start, end)) = snapshot.window {
+                        lines.push(format!(
+                            "window: {start}..{end} of {}",
+                            snapshot.output_size_bytes
+                        ));
+                        // B-ADR-18: which coordinate system the window and
+                        // the caller's offset_bytes address — the two
+                        // serving paths must not be confusable.
+                        lines.push(match snapshot.coordinates {
+                            TaskOutputCoordinates::LogAbsolute => {
+                                LOG_ABSOLUTE_DECLARATION.to_string()
+                            }
+                            TaskOutputCoordinates::BufferRelative => {
+                                BUFFER_RELATIVE_DECLARATION.to_string()
+                            }
+                        });
+                    }
                     lines.push(format!("output_truncated: {truncated}"));
                     if still_running {
                         lines.push("message: task still running; partial output shown".to_string());
                     }
                     lines.push(String::new()); // blank line
 
-                    if truncated {
+                    // The truncation banner and the "tail" wording belong
+                    // to the default tail-snapshot read, where the preview
+                    // really is the log's tail with its head dropped. A
+                    // paged read (window == Some) serves the requested
+                    // window — which may sit in the middle of the log — so
+                    // describing it as the tail (or as "truncated") would
+                    // contradict the window: line right above.
+                    let paged_read = snapshot.window.is_some();
+                    if truncated && !paged_read {
                         if let Some(path) = &snapshot.output_path {
                             lines.push(format!("[Truncated. Full output: {}]", path.display()));
                         } else {
@@ -245,7 +353,12 @@ impl Tool for TaskOutputTool {
                     if snapshot.full_output_available
                         && let Some(path) = &snapshot.output_path
                     {
-                        if truncated {
+                        if truncated && paged_read {
+                            lines.push(format!(
+                                    "Only the requested window (see the window: line) is shown above. Use the Read tool with this output_path to page through the full log (parameters: path, line_offset, n_lines; read about 300 lines per page): {}",
+                                    path.display()
+                                ));
+                        } else if truncated {
                             lines.push(format!(
                                     "Only the tail is shown above. Use the Read tool with this output_path to page through the full log (parameters: path, line_offset, n_lines; read about 300 lines per page): {}",
                                     path.display()
@@ -258,7 +371,16 @@ impl Tool for TaskOutputTool {
                         }
                     }
                     lines.push("[output]".to_string());
-                    let preview = if snapshot.preview.is_empty() {
+                    let past_end = paged
+                        && snapshot.output_size_bytes > 0
+                        && offset_bytes >= snapshot.output_size_bytes
+                        && snapshot.preview.is_empty();
+                    let preview = if past_end {
+                        format!(
+                            "offset_bytes {offset_bytes} is past the end of the log ({} bytes)",
+                            snapshot.output_size_bytes
+                        )
+                    } else if snapshot.preview.is_empty() {
                         "[no output available]".to_string()
                     } else {
                         snapshot.preview
@@ -300,6 +422,20 @@ mod tests {
             turn_origin: Default::default(),
         };
         futures::executor::block_on(execute(ctx))
+    }
+
+    #[test]
+    fn should_advertise_mid_run_reads_in_the_description() {
+        let tasks = std::sync::Arc::new(crate::task::TaskManager::new());
+        let tool = TaskOutputTool::new(tasks);
+        let description = tool.description();
+
+        // The model must learn from the description alone that reads are
+        // valid while the task is still running (batch 2's BH4 landing).
+        assert!(
+            description.contains("including while the task is still running"),
+            "the description must name the mid-run read affordance: {description}"
+        );
     }
 
     /// Async variant of [`execute_tool`] — needed for tests that exercise the
@@ -772,5 +908,286 @@ mod tests {
                 .get(&task_id)
                 .is_some_and(|t| t.status == TaskStatus::Running)
         );
+    }
+
+    fn persisted_manager() -> (tempfile::TempDir, Arc<TaskManager>) {
+        let tmp = tempfile::tempdir().expect("tasks tempdir");
+        let persistence = Arc::new(crate::task_persist::TaskPersistence::new(
+            tmp.path().join("tasks"),
+            std::sync::Arc::new(mirri_os::LocalSyncFs::new()),
+        ));
+        (tmp, Arc::new(TaskManager::with_persistence(persistence)))
+    }
+
+    fn register_process(tasks: &TaskManager) -> String {
+        tasks.register(
+            TaskKind::Process {
+                command: None,
+                dispatcher: None,
+            },
+            "build".to_string(),
+            "session-1".to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn should_report_running_and_silent_durations_for_a_running_task() {
+        let tasks = Arc::new(TaskManager::new());
+        let id = register_process(&tasks);
+        tasks.append_output(&id, "x\n");
+        let tool = TaskOutputTool::new(Arc::clone(&tasks));
+        let text = output_text(&execute_tool(&tool, serde_json::json!({ "task_id": id })));
+        assert!(text.contains("running_for: "), "{text}");
+        assert!(text.contains("silent_for: "), "{text}");
+        assert!(text.contains("output_bytes: 2"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn should_page_an_arbitrary_window_when_offset_and_max_bytes_are_given() {
+        let (_tmp, tasks) = persisted_manager();
+        let id = register_process(&tasks);
+        tasks.append_output(&id, "0123456789ABCDEF");
+        let tool = TaskOutputTool::new(Arc::clone(&tasks));
+        let text = output_text(&execute_tool(
+            &tool,
+            serde_json::json!({ "task_id": id, "offset_bytes": 4, "max_bytes": 6 }),
+        ));
+        assert!(text.ends_with("[output]\n456789"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn should_report_total_bytes_and_window_range_in_the_paged_header() {
+        let (_tmp, tasks) = persisted_manager();
+        let id = register_process(&tasks);
+        tasks.append_output(&id, "0123456789");
+        let tool = TaskOutputTool::new(Arc::clone(&tasks));
+        let text = output_text(&execute_tool(
+            &tool,
+            serde_json::json!({ "task_id": id, "offset_bytes": 2, "max_bytes": 3 }),
+        ));
+        assert!(text.contains("output_bytes: 10"), "{text}");
+        assert!(text.contains("window: 2..5 of 10"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn should_tell_the_caller_the_offset_is_past_the_end_when_it_exceeds_the_log() {
+        let (_tmp, tasks) = persisted_manager();
+        let id = register_process(&tasks);
+        tasks.append_output(&id, "short");
+        let tool = TaskOutputTool::new(Arc::clone(&tasks));
+        let text = output_text(&execute_tool(
+            &tool,
+            serde_json::json!({ "task_id": id, "offset_bytes": 99 }),
+        ));
+        assert!(
+            text.contains("offset_bytes 99 is past the end of the log (5 bytes)"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn should_start_the_window_on_a_character_boundary_when_the_offset_lands_mid_character() {
+        let (_tmp, tasks) = persisted_manager();
+        let id = register_process(&tasks);
+        // "a" + "é"(2 bytes: offsets 1..3) + "b"
+        tasks.append_output(&id, "aéb");
+        let tool = TaskOutputTool::new(Arc::clone(&tasks));
+        let text = output_text(&execute_tool(
+            &tool,
+            serde_json::json!({ "task_id": id, "offset_bytes": 2, "max_bytes": 10 }),
+        ));
+        assert!(text.ends_with("[output]\néb"), "{text}");
+        assert!(text.contains("window: 1..4 of 4"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn should_serve_the_same_window_from_the_in_memory_buffer_when_no_log_exists() {
+        let (_tmp, persisted) = persisted_manager();
+        let memory = Arc::new(TaskManager::new());
+        let pid = register_process(&persisted);
+        let mid = register_process(&memory);
+        for tasks_id in [(&persisted, &pid), (&memory, &mid)] {
+            tasks_id.0.append_output(tasks_id.1, "aéb0123456789");
+        }
+        let input =
+            |id: &str| serde_json::json!({ "task_id": id, "offset_bytes": 2, "max_bytes": 5 });
+        let p = output_text(&execute_tool(&TaskOutputTool::new(persisted), input(&pid)));
+        let m = output_text(&execute_tool(&TaskOutputTool::new(memory), input(&mid)));
+        let window = |t: &str| {
+            t.lines()
+                .find(|l| l.starts_with("window:"))
+                .expect("window line")
+                .to_string()
+        };
+        // B-ADR-18: the served window interval is the same on both paths,
+        // but the coordinate systems differ — each header declares its own.
+        assert_eq!(window(&p), window(&m), "{p}\n{m}");
+        let coord = |t: &str| {
+            t.lines()
+                .find(|l| l.starts_with("coordinates:"))
+                .expect("coordinates line")
+                .to_string()
+        };
+        assert_eq!(
+            coord(&p),
+            "coordinates: log-absolute (offsets address the full on-disk output log)",
+            "{p}"
+        );
+        assert_eq!(
+            coord(&m),
+            "coordinates: buffer-relative (offsets address the retained in-memory buffer, which keeps only the tail window of the produced output)",
+            "{m}"
+        );
+        assert_ne!(coord(&p), coord(&m), "{p}\n{m}");
+        let body = |t: &str| t[t.find("[output]").unwrap()..].to_string();
+        assert_eq!(body(&p), body(&m), "{p}\n{m}");
+        assert!(body(&m).ends_with("éb01"), "{m}");
+    }
+
+    #[tokio::test]
+    async fn should_declare_log_absolute_coordinates_when_a_log_exists() {
+        let (_tmp, tasks) = persisted_manager();
+        let id = register_process(&tasks);
+        tasks.append_output(&id, "0123456789");
+        let tool = TaskOutputTool::new(Arc::clone(&tasks));
+        let text = output_text(&execute_tool(
+            &tool,
+            serde_json::json!({ "task_id": id, "offset_bytes": 2, "max_bytes": 3 }),
+        ));
+        assert!(
+            text.contains(
+                "coordinates: log-absolute (offsets address the full on-disk output log)"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("buffer-relative"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn should_declare_buffer_relative_coordinates_when_only_the_memory_buffer_exists() {
+        let tasks = Arc::new(TaskManager::new());
+        let id = register_process(&tasks);
+        tasks.append_output(&id, "0123456789");
+        let tool = TaskOutputTool::new(Arc::clone(&tasks));
+        let text = output_text(&execute_tool(
+            &tool,
+            serde_json::json!({ "task_id": id, "offset_bytes": 2, "max_bytes": 3 }),
+        ));
+        assert!(
+            text.contains("coordinates: buffer-relative (offsets address the retained in-memory buffer, which keeps only the tail window of the produced output)"),
+            "{text}"
+        );
+        assert!(!text.contains("log-absolute"), "{text}");
+    }
+
+    /// D4 blind spot: once the retained buffer exceeded the 1 MiB cap and
+    /// dropped its head, a paged read must still declare buffer-relative
+    /// coordinates — and the window interval must be self-consistent with
+    /// the retained buffer, not the total produced.
+    #[tokio::test]
+    async fn should_declare_buffer_relative_coordinates_after_the_buffer_dropped_its_head() {
+        let tasks = Arc::new(TaskManager::new());
+        let id = register_process(&tasks);
+        // 1.2 MB total: the second append pushes past the 1 MiB cap, so the
+        // retained buffer keeps only 448_576 head bytes + the 600_000 tail.
+        tasks.append_output(&id, &"H".repeat(600_000));
+        tasks.append_output(&id, &"T".repeat(600_000));
+        let tool = TaskOutputTool::new(Arc::clone(&tasks));
+        let text = output_text(&execute_tool(
+            &tool,
+            serde_json::json!({ "task_id": id, "offset_bytes": 0, "max_bytes": 8 }),
+        ));
+        assert!(
+            text.contains("coordinates: buffer-relative (offsets address the retained in-memory buffer, which keeps only the tail window of the produced output)"),
+            "{text}"
+        );
+        assert!(!text.contains("coordinates: log-absolute"), "{text}");
+        // The interval is anchored to the retained 1 MiB window, not the
+        // 1_200_000 produced bytes.
+        assert!(text.contains("output_bytes: 1048576"), "{text}");
+        assert!(text.contains("window: 0..8 of 1048576"), "{text}");
+        assert!(text.contains("output_truncated: true"), "{text}");
+        // Buffer-relative offset 0 addresses the retained window's head —
+        // the surviving 'H' prefix — not the log's byte 0.
+        assert!(text.ends_with("[output]\nHHHHHHHH"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn should_tell_the_caller_the_offset_is_past_the_end_when_it_equals_the_log_size() {
+        let (_tmp, tasks) = persisted_manager();
+        let id = register_process(&tasks);
+        tasks.append_output(&id, "short");
+        let tool = TaskOutputTool::new(Arc::clone(&tasks));
+        let text = output_text(&execute_tool(
+            &tool,
+            serde_json::json!({ "task_id": id, "offset_bytes": 5 }),
+        ));
+        assert!(
+            text.contains("offset_bytes 5 is past the end of the log (5 bytes)"),
+            "{text}"
+        );
+    }
+
+    /// Given a task with a persisted log, when TaskOutput pages a middle
+    /// window of it (the window is neither the head nor the tail of the
+    /// log), then the hint must describe the served window — not claim
+    /// "only the tail" — and must not print the head-drop truncation
+    /// banner that belongs to the default tail snapshot.
+    #[tokio::test]
+    async fn should_describe_the_paged_window_instead_of_claiming_a_tail_when_paging_a_middle_window() {
+        let (_tmp, tasks) = persisted_manager();
+        let id = register_process(&tasks);
+        tasks.append_output(&id, &"0123456789".repeat(100));
+        let tool = TaskOutputTool::new(Arc::clone(&tasks));
+        let text = output_text(&execute_tool(
+            &tool,
+            serde_json::json!({ "task_id": id, "offset_bytes": 100, "max_bytes": 50 }),
+        ));
+        assert!(text.contains("window: 100..150 of 1000"), "{text}");
+        assert!(
+            !text.contains("Only the tail is shown above"),
+            "a middle window must not be described as the tail: {text}"
+        );
+        assert!(
+            !text.contains("[Truncated. Full output:"),
+            "the head-drop banner belongs to the tail snapshot, not a paged window: {text}"
+        );
+        assert!(
+            text.contains("requested window"),
+            "the hint must describe the requested window: {text}"
+        );
+        assert!(text.contains("Read tool"), "{text}");
+    }
+
+    /// Given a task whose persisted log exceeds the inline preview window,
+    /// when TaskOutput takes the default tail snapshot, then the hint
+    /// keeps the tail wording and the head-drop truncation banner — the
+    /// preview really is the tail there.
+    #[tokio::test]
+    async fn should_keep_the_tail_wording_when_the_default_snapshot_dropped_the_head() {
+        let (_tmp, tasks) = persisted_manager();
+        let id = register_process(&tasks);
+        tasks.append_output(&id, &"x".repeat(1_200_000));
+        tasks.append_output(&id, "TAIL_MARKER\n");
+        tasks.complete(&id, 0);
+
+        let tool = TaskOutputTool::new(Arc::clone(&tasks));
+        let text = output_text(&execute_tool(&tool, serde_json::json!({ "task_id": id })));
+
+        assert!(text.contains("output_truncated: true"), "{text}");
+        assert!(text.contains("Only the tail is shown above"), "{text}");
+        assert!(text.contains("[Truncated. Full output:"), "{text}");
+        assert!(text.contains("TAIL_MARKER\n"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn should_not_report_silence_when_the_task_is_terminal() {
+        let tasks = Arc::new(TaskManager::new());
+        let id = register_process(&tasks);
+        tasks.complete(&id, 0);
+        let tool = TaskOutputTool::new(Arc::clone(&tasks));
+        let text = output_text(&execute_tool(&tool, serde_json::json!({ "task_id": id })));
+        assert!(text.contains("running_for: "), "{text}");
+        assert!(!text.contains("silent_for"), "{text}");
     }
 }

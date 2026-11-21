@@ -374,10 +374,11 @@ async fn run_windows_shell(
     let opts = ExecOptions {
         cwd,
         env: bash::noninteractive_env(),
+        env_remove: Vec::new(),
         timeout_ms: timeout_secs.map(|secs| secs * 1000),
     };
 
-    let (exit_code, stdout, stderr, timed_out) = match bash::run_external_command(
+    let (exit_code, stdout, stderr, end_state) = match bash::run_external_command(
         process.as_ref(),
         &shell,
         &argv,
@@ -385,6 +386,7 @@ async fn run_windows_shell(
         timeout_secs.map(Duration::from_secs),
         Some(&cancel),
         Some(&progress),
+        None,
         None,
     )
     .await
@@ -396,7 +398,7 @@ async fn run_windows_shell(
         }
     };
 
-    if timed_out {
+    if end_state == bash::ExternalEndState::TimedOut {
         // The Bash foreground semantics convert a timed-out run to a
         // background task (ADR-4); this first PS version cannot re-arm a
         // background deadline, so the child was killed by the skeleton and
@@ -415,16 +417,36 @@ async fn run_windows_shell(
         // manager's stop path — the same mechanism the Bash foreground
         // runner's cancel arm uses — instead of Completed{-1}.
         tasks.stop(&task_id);
-        return bash::format_external_result(-1, stdout, stderr);
+        return bash::format_external_result(-1, stderr);
     }
     tasks.append_output(&task_id, &stdout);
     tasks.append_output(&task_id, &stderr);
     tasks.complete(&task_id, exit_code);
-    bash::format_external_result(exit_code, stdout, stderr)
+    bash::format_external_result(exit_code, merge_streams(&stdout, &stderr))
+}
+
+/// Join separately captured stdout/stderr (the shared skeleton reads them
+/// apart): stdout, then stderr, newline-separated when both are non-empty.
+#[cfg(windows)]
+fn merge_streams(stdout: &str, stderr: &str) -> String {
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (false, false) if !stdout.ends_with('\n') => format!("{stdout}\n{stderr}"),
+        _ => format!("{stdout}{stderr}"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn should_keep_the_powershell_environment_unchanged() {
+        // PowerShell keeps the original `noninteractive_env()` — no removal set.
+        let env = crate::tools::bash::noninteractive_env();
+        assert_eq!(env.get("NO_COLOR").map(String::as_str), Some("1"));
+        assert_eq!(env.get("TERM").map(String::as_str), Some("dumb"));
+        assert!(env.contains_key("GIT_TERMINAL_PROMPT"));
+        assert!(env.keys().all(|k| matches!(k.as_str(), "NO_COLOR" | "TERM" | "GIT_TERMINAL_PROMPT" | "SHELL")));
+    }
+
     use super::{build_ps_command_payload, PowerShellTool};
     use crate::task::TaskManager;
     use crate::tool::Tool;

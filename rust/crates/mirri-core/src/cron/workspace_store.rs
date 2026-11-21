@@ -656,8 +656,8 @@ fn restored_tables(
             // B1 / SDR-110: a restored task whose schedule already ran
             // past its end date restores dormant (its runs and records
             // survive; nothing fires again).
-            match super::CronManager::compute_schedule_next_fire_pub(&schedule, base, tz) {
-                Ok(ideal) if super::occurrence_past_ends_at(&task, ideal, tz) => None,
+            match super::CronManager::compute_schedule_next_fire_pub(&schedule, base, tz.clone()) {
+                Ok(ideal) if super::occurrence_past_ends_at(&task, ideal, tz.clone()) => None,
                 Ok(ideal) => Some(
                     super::CronManager::schedule_occurrence_for(
                         &schedule,
@@ -938,8 +938,8 @@ impl WorkspaceCronManager {
                 None => super::ScheduleSpec::Cron(&cron),
             };
             let first =
-                super::CronManager::compute_schedule_next_fire_pub(&schedule, Utc::now(), tz)?;
-            let first_day = first.with_timezone(&tz).date_naive();
+                super::CronManager::compute_schedule_next_fire_pub(&schedule, Utc::now(), tz.clone())?;
+            let first_day = super::local_date(first, &tz);
             if ends_at < first_day {
                 return Err(super::CronError::InvalidExpression(
                     "结束日期不能早于首次运行日".to_string(),
@@ -1489,19 +1489,19 @@ impl WorkspaceCronManager {
         }
         let tz = super::CronTimezone::parse(edited.timezone.as_deref())?.resolve();
         let schedule = super::task_schedule(&edited);
-        let first = super::CronManager::compute_schedule_next_fire_pub(&schedule, now, tz)?;
+        let first = super::CronManager::compute_schedule_next_fire_pub(&schedule, now, tz.clone())?;
         if let Some(ends_at) = edited.ends_at
-            && ends_at < first.with_timezone(&tz).date_naive()
+            && ends_at < super::local_date(first, &tz)
         {
             return Err(super::CronError::InvalidExpression(
                 "结束日期不能早于首次运行日".to_string(),
             ));
         }
-        let ideal = super::CronManager::compute_schedule_next_fire_pub(&schedule, now, tz)?;
+        let ideal = super::CronManager::compute_schedule_next_fire_pub(&schedule, now, tz.clone())?;
         edited.next_fire_at = if edited.paused {
             // A paused task keeps no live schedule; resuming recomputes.
             None
-        } else if super::occurrence_past_ends_at(&edited, ideal, tz) {
+        } else if super::occurrence_past_ends_at(&edited, ideal, tz.clone()) {
             None
         } else {
             Some(
@@ -1556,11 +1556,12 @@ impl WorkspaceCronManager {
             }
         };
         let schedule = super::task_schedule(task);
-        let Ok(ideal) = super::CronManager::compute_schedule_next_fire_pub(&schedule, now, tz)
+        let Ok(ideal) =
+            super::CronManager::compute_schedule_next_fire_pub(&schedule, now, tz.clone())
         else {
             return Ok(None);
         };
-        if super::occurrence_past_ends_at(task, ideal, tz) {
+        if super::occurrence_past_ends_at(task, ideal, tz.clone()) {
             return Ok(None);
         }
         Ok(Some(
@@ -2141,17 +2142,19 @@ impl WorkspaceCronManager {
                 .unwrap_or(task.created_at);
             let mut cursor = base;
             while count < super::MAX_COALESCE_ITERATIONS {
-                let ideal =
-                    match super::CronManager::compute_schedule_next_fire_pub(&schedule, cursor, tz)
-                    {
-                        Ok(ideal) => ideal,
-                        Err(_) => break,
-                    };
+                let ideal = match super::CronManager::compute_schedule_next_fire_pub(
+                    &schedule,
+                    cursor,
+                    tz.clone(),
+                ) {
+                    Ok(ideal) => ideal,
+                    Err(_) => break,
+                };
                 // Review Major 2: the walk never crosses the end date — an
                 // occurrence past `ends_at`'s local day stops the coalesce
                 // walk without counting it (a recovered backlog must not
                 // coalesce occurrences the schedule had already ended on).
-                if super::occurrence_past_ends_at(task, ideal, tz) {
+                if super::occurrence_past_ends_at(task, ideal, tz.clone()) {
                     break;
                 }
                 let jittered = super::CronManager::schedule_occurrence_for(
@@ -2160,7 +2163,7 @@ impl WorkspaceCronManager {
                     ideal,
                     task.recurring,
                     task.created_at,
-                    tz,
+                    tz.clone(),
                     self.options,
                 )
                 .unwrap_or(ideal);
@@ -2177,11 +2180,11 @@ impl WorkspaceCronManager {
         // B1 / SDR-110: the end-date finale (the max_fires finale's
         // sibling) — the delivery whose NEXT occurrence would fall past
         // `ends_at`'s local day is the task's last.
-        let ended = super::ends_past_schedule(task, &schedule, advanced, tz);
+        let ended = super::ends_past_schedule(task, &schedule, advanced, tz.clone());
         let next_fire_at = if task.recurring && !stale && !maxed_out && !ended {
-            super::CronManager::compute_schedule_next_fire_pub(&schedule, advanced, tz)
+            super::CronManager::compute_schedule_next_fire_pub(&schedule, advanced, tz.clone())
                 .ok()
-                .filter(|ideal| !super::occurrence_past_ends_at(task, *ideal, tz))
+                .filter(|ideal| !super::occurrence_past_ends_at(task, *ideal, tz.clone()))
                 .map(|ideal| {
                     super::CronManager::schedule_occurrence_for(
                         &schedule,
@@ -2189,7 +2192,7 @@ impl WorkspaceCronManager {
                         ideal,
                         task.recurring,
                         task.created_at,
-                        tz,
+                        tz.clone(),
                         self.options,
                     )
                     .unwrap_or(ideal)

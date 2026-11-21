@@ -543,6 +543,7 @@ pub async fn fire_notification_hook(
 mod tests {
     use super::*;
     use crate::message::ContentPart;
+    use crate::task::TaskOutputCoordinates;
     use chrono::TimeZone;
 
     fn task(kind: TaskKind, status: TaskStatus) -> AgentTask {
@@ -561,6 +562,7 @@ mod tests {
             notification_delivered_at: None,
             fingerprint: None,
             lifetime_exempt: false,
+            last_output_at: None,
         }
     }
 
@@ -711,6 +713,8 @@ mod tests {
             truncated: false,
             full_output_available: true,
             preview: String::new(),
+            window: None,
+            coordinates: TaskOutputCoordinates::LogAbsolute,
         };
         let children = build_notification_children(&t.id, Some(&snapshot)).unwrap();
         assert_eq!(children.len(), 1);
@@ -741,6 +745,8 @@ mod tests {
             truncated: true,
             full_output_available: false,
             preview: long,
+            window: None,
+            coordinates: TaskOutputCoordinates::BufferRelative,
         };
         let children = build_notification_children(&t.id, Some(&snapshot)).unwrap();
         assert!(

@@ -23,7 +23,7 @@
 //! [`CronOptions`](crate::cron::CronOptions), not here — these functions
 //! are pure.
 
-use chrono::{DateTime, Duration, Timelike, Utc};
+use chrono::{DateTime, Duration, Utc};
 
 /// The knobs of the two jitter algorithms (the TS `JitterConfig`).
 #[derive(Debug, Clone, Copy)]
@@ -104,13 +104,13 @@ pub fn one_shot_jittered_next(
     task_id: &str,
     ideal: DateTime<Utc>,
     created_at: DateTime<Utc>,
-    tz: chrono_tz::Tz,
+    tz: jiff::tz::TimeZone,
     config: &JitterConfig,
 ) -> DateTime<Utc> {
     if ideal.timestamp_millis() % 60_000 != 0 {
         return ideal;
     }
-    let minute_of_hour = ideal.with_timezone(&tz).minute();
+    let minute_of_hour = super::tz::to_local_datetime(ideal, &tz).minute();
     if minute_of_hour != 0 && minute_of_hour != 30 {
         return ideal;
     }
@@ -218,7 +218,7 @@ mod tests {
             "80000000",
             ideal,
             created,
-            chrono_tz::UTC,
+            jiff::tz::TimeZone::UTC,
             &DEFAULT_CRON_JITTER_CONFIG,
         );
 
@@ -234,7 +234,7 @@ mod tests {
             "80000000",
             ideal,
             ideal - Duration::hours(1),
-            chrono_tz::UTC,
+            jiff::tz::TimeZone::UTC,
             &DEFAULT_CRON_JITTER_CONFIG,
         );
         assert_eq!(jittered, ideal);
@@ -248,7 +248,7 @@ mod tests {
             "80000000",
             ideal,
             ideal - Duration::hours(1),
-            chrono_tz::UTC,
+            jiff::tz::TimeZone::UTC,
             &DEFAULT_CRON_JITTER_CONFIG,
         );
         assert!(ideal - jittered <= Duration::seconds(90));
@@ -265,7 +265,7 @@ mod tests {
             "ffffffff",
             ideal,
             created,
-            chrono_tz::UTC,
+            jiff::tz::TimeZone::UTC,
             &DEFAULT_CRON_JITTER_CONFIG,
         );
 
@@ -285,7 +285,7 @@ mod tests {
             "80000000",
             ideal,
             ideal - Duration::hours(1),
-            chrono_tz::Asia::Shanghai,
+            jiff::tz::TimeZone::get("Asia/Shanghai").expect("bundled tzdb"),
             &DEFAULT_CRON_JITTER_CONFIG,
         );
 
@@ -303,7 +303,7 @@ mod tests {
             "80000000",
             ideal,
             ideal - Duration::hours(1),
-            chrono_tz::Asia::Kolkata,
+            jiff::tz::TimeZone::get("Asia/Kolkata").expect("bundled tzdb"),
             &DEFAULT_CRON_JITTER_CONFIG,
         );
         assert_eq!(jittered, ideal, "23:37 local is not a round minute");

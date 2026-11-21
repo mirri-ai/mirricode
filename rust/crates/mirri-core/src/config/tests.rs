@@ -3533,6 +3533,77 @@ fn should_flow_the_task_heartbeat_interval_into_the_session_scope_config() {
     );
 }
 
+/// Given a `[task]` silenceWarnSecs, when the session scope config is
+/// built and the manager seeded, then the silence-warning threshold
+/// flows through `session_scope_config_from` into the task-lifecycle
+/// settings and onto the task manager (0 disables; absent keeps the
+/// 300s default) — the knob must be real and spellable in both casings
+/// (B-ADR-16 ① / BH8).
+#[test]
+fn should_flow_the_task_silence_warn_secs_into_the_session_scope_config() {
+    let camel = ServerConfig::from_toml("[task]\nsilenceWarnSecs = 45\n").unwrap();
+    let scope = crate::session_scope_config_from(&camel);
+    assert_eq!(
+        scope.task_lifecycle.silence_warn_secs,
+        Some(std::time::Duration::from_secs(45))
+    );
+    let snake = ServerConfig::from_toml("[task]\nsilence_warn_secs = 90\n").unwrap();
+    let scope = crate::session_scope_config_from(&snake);
+    assert_eq!(
+        scope.task_lifecycle.silence_warn_secs,
+        Some(std::time::Duration::from_secs(90))
+    );
+    let zero = ServerConfig::from_toml("[task]\nsilenceWarnSecs = 0\n").unwrap();
+    let scope = crate::session_scope_config_from(&zero);
+    assert_eq!(
+        scope.task_lifecycle.silence_warn_secs, None,
+        "0 disables the silence warning entirely"
+    );
+    let unset = crate::session_scope_config_from(&ServerConfig::from_toml("").unwrap());
+    assert_eq!(
+        unset.task_lifecycle.silence_warn_secs,
+        Some(std::time::Duration::from_secs(300)),
+        "absent keeps the 5-minute default"
+    );
+}
+
+/// Given a `[task]` silenceWarnSecs, when the config is saved and
+/// reloaded (the `config.set` wire round-trip), then the value survives
+/// typed camelCase on the wire and the patch key round-trips — the
+/// doctor's known-key registry must also list both spellings (B-ADR-16 ①).
+#[test]
+fn should_round_trip_silence_warn_secs_through_the_config_wire() {
+    let mut config = ServerConfig::from_toml("[task]\nsilenceWarnSecs = 120\n").unwrap();
+
+    // The wire emits the typed camelCase key
+    let wire = config.to_mirri_config_wire();
+    assert_eq!(wire["task"]["silenceWarnSecs"], 120);
+
+    // And a `config.set` patch round-trips through the same key
+    config
+        .merge_wire_patch(&serde_json::json!({
+            "task": { "silenceWarnSecs": 240 }
+        }))
+        .expect("silenceWarnSecs must be a known task key");
+    let wire = config.to_mirri_config_wire();
+    assert_eq!(wire["task"]["silenceWarnSecs"], 240);
+
+    // And the resolved threshold follows the patch
+    assert_eq!(
+        config.resolve_silence_warn_secs(),
+        Some(std::time::Duration::from_secs(240))
+    );
+
+    // And the doctor's known-key registry lists both spellings
+    let (_, keys) = KNOWN_SECTION_KEYS
+        .iter()
+        .find(|(name, _)| *name == "task")
+        .expect("task section entry");
+    for key in ["silence_warn_secs", "silenceWarnSecs"] {
+        assert!(keys.contains(&key), "expected task key {key}");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Doctor key inventories (Task 1: config/wire.rs)
 // ---------------------------------------------------------------------------
@@ -4553,4 +4624,28 @@ max_context_size = 128000
         "headers must be cleared: {:?}",
         wire["p"]["customHeaders"]
     );
+}
+
+#[test]
+fn should_round_trip_the_bash_env_allowlist_through_the_config_wire() {
+    // Given a config file with a [bash] env_allowlist
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(&path, "[bash]\nenv_allowlist = [\"MY_API_KEY\", \"X_TOKEN\"]\n").unwrap();
+    let config = ServerConfig::load_without_env(&path, &LocalSyncFs).expect("should load");
+
+    // When saved, reloaded, and projected on the wire
+    config.save_to(&path).expect("should save");
+    let reloaded = ServerConfig::load_without_env(&path, &LocalSyncFs).expect("should reload");
+
+    // Then the list survives and the wire carries camelCase key
+    assert_eq!(
+        reloaded.bash.as_ref().unwrap().env_allowlist,
+        vec!["MY_API_KEY".to_string(), "X_TOKEN".to_string()]
+    );
+    assert_eq!(
+        reloaded.to_mirri_config_wire()["bash"]["envAllowlist"],
+        json!(["MY_API_KEY", "X_TOKEN"])
+    );
+    assert!(!validate_config_str("[bash]\nenv_allowlist = []\n", "config.toml", &[]).has_errors());
 }

@@ -39,11 +39,18 @@ tracing-appender = "0.2"
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "blocking", "charset", "http2", "system-proxy", "multipart", "form"] }
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
-# B5 (DEC-3): cron timezone semantics. chrono-tz embeds the tzdb at compile
-# time (pure computation, no runtime IO); iana-time-zone resolves the host's
-# local zone (it was already in the lock as chrono's transitive dep).
-chrono-tz = "0.10"
-iana-time-zone = "0.1"
+# B5 (DEC-3): cron timezone semantics. jiff replaces chrono-tz (unmaintained,
+# RUSTSEC-2026-0555) at the cron boundary; the main time types stay chrono.
+# Zero-IO contract: `tzdb-bundle-always` embeds the tzdb at compile time —
+# jiff's default `tzdb-zoneinfo` (runtime `/usr/share/zoneinfo` reads) MUST
+# stay off. `tz-system` is the host-local probe (replaces iana-time-zone).
+jiff = { version = "1.0", default-features = false, features = [
+  "std",
+  "tzdb-bundle-always",
+  "tz-system",
+  "tz-fat",
+  "perf-inline",
+] }
 uuid = { version = "1", features = ["v4", "serde"] }
 # B4 T3 (SDR-B4-01): the ToolManager lock is parking_lot so a read guard is
 # Send and can be held across `.await` — the precondition for the subagent

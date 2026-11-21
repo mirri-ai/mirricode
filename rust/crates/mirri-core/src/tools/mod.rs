@@ -255,6 +255,8 @@ pub struct BuiltinToolServices {
     /// `MIRRI_AGENT_SWARM_MAX_ITEMS` env override at call time on top of
     /// this value.
     pub max_swarm_items: Option<u32>,
+    /// `[bash] env_allowlist`: names exempt from the Bash credential filter.
+    pub env_allowlist: Vec<String>,
     /// The workspace id the session's `CreateScheduledTask` tool binds its
     /// drafts to (ADR-014: the proposing session's runtime workspace — the host
     /// binds it, the model never chooses). `None` (core-only agents,
@@ -313,6 +315,7 @@ pub fn register_builtin_tools(tool_manager: &mut ToolManager, services: &Builtin
         services.agent_id.clone(),
         services.session_id.clone(),
         Arc::clone(&services.io.process),
+        services.env_allowlist.clone(),
         // The session's workDir is the default command directory (audit
         // P0-1): the command runs there unless the model supplies `cwd`.
         services

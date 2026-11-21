@@ -4841,6 +4841,7 @@ async fn should_kill_the_real_process_when_a_background_bash_task_is_stopped() {
         Arc::clone(&tasks),
         "session-1".into(),
         "agent-main".into(),
+        Vec::new(),
     )
     .await;
     let started_text = match &started.output {

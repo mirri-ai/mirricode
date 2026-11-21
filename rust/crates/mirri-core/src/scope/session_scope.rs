@@ -796,6 +796,16 @@ fn apply_task_lifecycle(manager: &mut TaskManager, config: &SessionScopeConfig) 
     if let Some(interval) = config.task_lifecycle.heartbeat_interval {
         manager.set_heartbeat_interval(interval);
     }
+    match config.task_lifecycle.silence_warn_secs {
+        Some(threshold) => manager.set_silence_warn_secs(threshold),
+        // `silenceWarnSecs = 0` — the explicit off arm. The scope layer
+        // folds `0` to `None`, and this arm translates it to the
+        // manager's `Some(ZERO)` off sentinel (NOT a plain `None`, which
+        // reads as "unconfigured" and would let the driver's scanner
+        // fall back to its 300s default — the user disabled, not
+        // ignored).
+        None => manager.disable_silence_warning(),
+    }
 }
 
 /// The session-level pending skill-catalog reminder state (ADR-010
@@ -1663,6 +1673,7 @@ impl SessionScope {
         // spawned subagents — dispatches its own swarms under the same
         // `[subagent] maxSwarmItems` limit (env overrides resolve per call).
         config.max_swarm_items = self.config.task_lifecycle.max_swarm_items;
+        config.bash_env_allowlist = self.config.bash_env_allowlist.clone();
         // Stamp the session's reverse-RPC slot onto every agent (the late
         // subscribe fix): the `AskUserQuestion` tool resolves the slot's
         // CURRENT callback per call, so an agent created before any client

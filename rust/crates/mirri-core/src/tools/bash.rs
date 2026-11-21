@@ -8,7 +8,7 @@
 //! command that hits its timeout is NOT killed — it is moved to a background
 //! task (ADR-4) that re-arms the background timeout and kills the process
 //! group only if that second deadline elapses (SIGTERM, then SIGKILL after
-//! 5s), settling the task as failed with the timeout reason (ADR-013: results
+//! 5s), settling the task as failed with the timeout reason (results
 //! are plain text, never a JSON envelope).
 //!
 //! Commands run with a non-interactive environment (`NO_COLOR=1`,
@@ -92,6 +92,8 @@ pub struct BashTool {
     /// The session's workDir used when the model omits `cwd`
     /// (TS parity: `effectiveCwd = args.cwd ?? this.cwd`, bash.ts:322).
     default_cwd: Option<PathBuf>,
+    /// `[bash] env_allowlist`: names exempt from the credential filter.
+    env_allowlist: Vec<String>,
 }
 
 impl BashTool {
@@ -104,6 +106,7 @@ impl BashTool {
         agent_id: String,
         session_id: String,
         process: Arc<dyn DynOsProcess>,
+        env_allowlist: Vec<String>,
         default_cwd: Option<PathBuf>,
     ) -> Self {
         Self {
@@ -112,6 +115,7 @@ impl BashTool {
             session_id,
             process,
             default_cwd,
+            env_allowlist,
         }
     }
 }
@@ -168,15 +172,19 @@ impl Tool for BashTool {
         "Execute a shell command and return its stdout and stderr as plain \
          text, with a status line for failures and timeouts. \
          The command runs in the session's working directory unless 'cwd' is given. \
+         When another directory is needed, pass the 'cwd' parameter instead of prefixing the command with `cd` — the parameter is the entry point the workspace boundary and authorization rules can see. \
          'timeout' is in seconds (foreground: default 60, max 300 — clamped; \
          background: default 600, max 86400 — over-cap rejected); a foreground \
          command that hits its timeout is moved to the background instead of being \
          killed, and you will be automatically notified when it completes. Commands run non-interactively \
          (closed stdin, no color or prompts). Set 'run_in_background' to true to \
          start the command as a background task and return its task id \
-         immediately; 'disable_timeout' removes the timeout (the background task \
+         immediately; a background task's output lands incrementally — poll the \
+         running task's latest tail with TaskOutput at any time instead of waiting \
+         for completion. 'disable_timeout' removes the timeout (the background task \
          is still bounded by the global lifetime ceiling unless 'exempt_lifetime' \
-         exempts it), and 'description' labels the background task.\n\n\
+         exempts it), and 'description' labels the background task. \
+         Credentials-bearing environment variables are filtered from command environments; allowlist via config if a build genuinely needs one.\n\n\
          Translate these shell idioms to the dedicated tool instead — plain \
          shell file access is not the supported path:\n\
          - `cat` / `head` / `tail` on a known file -> `Read`\n\
@@ -269,7 +277,10 @@ impl Tool for BashTool {
             display: ToolInputDisplay::Command {
                 command: input.command.clone(),
             },
-            approval_rule: "Bash".to_string(),
+            approval_rule: format!(
+                "Bash({})",
+                crate::permission::command_facet::escape_facet(&input.command)
+            ),
             stop_batch_after_this: false,
         };
 
@@ -305,6 +316,7 @@ impl Tool for BashTool {
             let session_id = self.session_id.clone();
             let process = Arc::clone(&self.process);
             let agent_id = self.agent_id.clone();
+            let env_allowlist = self.env_allowlist.clone();
             return Ok(ToolExecution::Runnable {
                 plan,
                 execute: Box::new(move |_ctx| {
@@ -318,6 +330,7 @@ impl Tool for BashTool {
                         tasks,
                         session_id,
                         agent_id,
+                        env_allowlist,
                     ))
                 }),
             });
@@ -327,6 +340,7 @@ impl Tool for BashTool {
         let tasks = Arc::clone(&self.tasks);
         let session_id = self.session_id.clone();
         let agent_id = self.agent_id.clone();
+        let env_allowlist = self.env_allowlist.clone();
         Ok(ToolExecution::Runnable {
             plan,
             execute: Box::new(move |ctx| {
@@ -345,6 +359,7 @@ impl Tool for BashTool {
                     session_id,
                     agent_id,
                     ctx.tool_call_id,
+                    env_allowlist,
                 ))
             }),
         })
@@ -406,7 +421,49 @@ fn default_task_description(command: &str) -> String {
 /// stream. Mirrors the TS engine: `NO_COLOR=1`, `TERM=dumb`,
 /// `GIT_TERMINAL_PROMPT=0` (honouring an explicit ambient value), and the
 /// parent's `SHELL` preserved.
+#[cfg_attr(not(windows), allow(dead_code))] // PowerShell (Windows) keeps the unfiltered env
 pub(crate) fn noninteractive_env() -> HashMap<String, String> {
+    managed_env()
+}
+
+/// Name fragments (matched case-insensitively) that mark a variable as
+/// credential-bearing.
+const SENSITIVE_NAME_FRAGMENTS: [&str; 4] = ["KEY", "TOKEN", "SECRET", "PASSWORD"];
+
+/// [`noninteractive_env`] plus the set of inherited variable names to strip.
+///
+/// Removal set = parent variables whose name looks sensitive, minus the
+/// engine-managed injected names, minus the user's `[bash] env_allowlist`.
+pub(crate) fn noninteractive_env_with(
+    allowlist: &[String],
+) -> (HashMap<String, String>, Vec<String>) {
+    let env = managed_env();
+    let vars: Vec<String> = std::env::vars_os()
+        .filter_map(|(name, _)| name.into_string().ok())
+        .collect();
+    let remove = build_remove_set(&env, &vars, allowlist);
+    (env, remove)
+}
+
+/// Pure remove-set computation: sensitive names in `vars`, minus names the
+/// engine injects (`managed_env`), minus the user allowlist. Callers must not
+/// rely on `envs`/`env_remove` call order — the subtraction happens here.
+fn build_remove_set(
+    managed_env: &HashMap<String, String>,
+    vars: &[String],
+    allowlist: &[String],
+) -> Vec<String> {
+    vars.iter()
+        .filter(|name| {
+            let upper = name.to_uppercase();
+            SENSITIVE_NAME_FRAGMENTS.iter().any(|f| upper.contains(f))
+        })
+        .filter(|name| !managed_env.contains_key(*name) && !allowlist.contains(name))
+        .cloned()
+        .collect()
+}
+
+fn managed_env() -> HashMap<String, String> {
     let git_prompt = std::env::var("GIT_TERMINAL_PROMPT").unwrap_or_else(|_| "0".to_string());
     let mut env = HashMap::new();
     env.insert("NO_COLOR".to_string(), "1".to_string());
@@ -431,8 +488,33 @@ enum CommandOutcome {
     Cancelled,
 }
 
+/// How `run_external_command` ended, beyond the payload itself: whether the
+/// real streams were drained to EOF, or the run was cut short by the
+/// timeout / cancel race and the returned stderr carries the skeleton's
+/// synthetic reason (never stream content).
+///
+/// The distinction matters only to callers that land output per-chunk
+/// (BH4's background runner): on a genuine finish they must NOT re-land the
+/// returned payloads (the chunks already did), while the synthetic reason
+/// never rode a chunk and must still be appended — by the caller, because
+/// the skeleton knows nothing about task rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExternalEndState {
+    /// The streams were drained to EOF — the returned stdout/stderr are the
+    /// real payloads (already forwarded chunk-by-chunk when sinks were
+    /// given).
+    Streamed,
+    /// The timeout fired; the returned stderr is the skeleton's synthetic
+    /// `command timed out after {n}s` message.
+    TimedOut,
+    /// The cancel token fired; the returned stderr is the skeleton's
+    /// synthetic `command cancelled` message.
+    Cancelled,
+}
+
 /// Read one output stream to EOF, forwarding each incrementally-decoded
-/// chunk through the progress handle while accumulating the raw bytes for
+/// chunk through the progress handle (when given) and the per-chunk
+/// output-append sink (when given), while accumulating the raw bytes for
 /// the final output.
 ///
 /// UTF-8 characters can straddle read-chunk boundaries; the forwarding keeps
@@ -444,6 +526,7 @@ async fn read_and_forward<R: tokio::io::AsyncRead + Unpin>(
     stream: Option<R>,
     kind: ToolUpdateKind,
     progress: Option<ToolProgressHandle>,
+    output_sink: Option<(&str, &TaskManager)>,
 ) -> anyhow::Result<String> {
     use tokio::io::AsyncReadExt;
 
@@ -479,6 +562,15 @@ async fn read_and_forward<R: tokio::io::AsyncRead + Unpin>(
                     custom_data: None,
                 });
             }
+            // The per-chunk output-append sink (BH4, B-ADR-15): the
+            // directly-backgrounded read path lands every merged chunk on
+            // the task row as it arrives — the task's output surface while
+            // the run is live, matching the post-detach continuation loops.
+            // The foreground paths pass `None` (their output lands through
+            // the tool result / detach handover instead).
+            if let Some((task_id, tasks)) = output_sink {
+                tasks.append_output(task_id, chunk);
+            }
             forwarded += valid_up_to;
         }
     }
@@ -494,12 +586,21 @@ async fn read_and_forward<R: tokio::io::AsyncRead + Unpin>(
 /// When `progress` is given, each stdout/stderr chunk is streamed live as a
 /// `ToolUpdate` (mirroring the TS engine's foreground `onProcessOutput`:
 /// emitter-side, no throttling); the full output is still accumulated for the
-/// returned triple.
+/// returned triple. When `output_sink` is given, each merged chunk is also
+/// appended to the addressed task row as it arrives (BH4, B-ADR-15 — the
+/// directly-backgrounded read path's live-output surface; foreground runs
+/// pass `None`).
 ///
-/// Returns `Ok((exit_code, stdout, stderr, timed_out))`; `timed_out` is
-/// `true` when the timeout fired and the child was killed. When `cancel` is
-/// `Some`, a fired cancel token kills the child and returns `exit_code: -1`
-/// with a "cancelled" message.
+/// Returns `Ok((exit_code, stdout, stderr, end_state))`; `end_state`
+/// ([`ExternalEndState`]) says whether the real streams were drained
+/// ([`ExternalEndState::Streamed`]) or the run was cut short with a
+/// synthetic reason in stderr. When `cancel` is `Some`, a fired cancel
+/// token kills the child and returns `exit_code: -1` with the skeleton's
+/// "cancelled" message.
+// The eight parameters preserve the Bash call sites' shapes (the skeleton is
+// extracted verbatim from `run_shell_command`, ADR-WO3-3, and the output
+// sink joined per BH4) — the same allowance the tracked runners carry.
+#[allow(clippy::too_many_arguments)]
 async fn run_shell_command(
     process: &dyn DynOsProcess,
     command: &str,
@@ -508,13 +609,21 @@ async fn run_shell_command(
     cancel: Option<&CancelToken>,
     progress: Option<&ToolProgressHandle>,
     fingerprint_sink: Option<(&str, &TaskManager)>,
-) -> anyhow::Result<(i32, String, String, bool)> {
+    output_sink: Option<(&str, &TaskManager)>,
+) -> anyhow::Result<(i32, String, String, ExternalEndState)> {
     #[cfg(unix)]
     {
         let (shell, shell_flag) = ("sh", "-c");
         run_external_command(
-            process, shell, &[shell_flag, command], opts, timeout, cancel, progress,
+            process,
+            shell,
+            &[shell_flag, command],
+            opts,
+            timeout,
+            cancel,
+            progress,
             fingerprint_sink,
+            output_sink,
         )
         .await
     }
@@ -523,8 +632,15 @@ async fn run_shell_command(
         let bash = mirri_os::shell::git_bash_for_bash_tool()
             .map_err(|e| anyhow::anyhow!("Bash tool: {e}"))?;
         run_external_command(
-            process, bash.as_str(), &["-c", command], opts, timeout, cancel, progress,
+            process,
+            bash.as_str(),
+            &["-c", command],
+            opts,
+            timeout,
+            cancel,
+            progress,
             fingerprint_sink,
+            output_sink,
         )
         .await
     }
@@ -540,13 +656,15 @@ async fn run_shell_command(
 /// the losing branch's future is dropped, releasing its borrow of the child,
 /// so the child can be killed afterwards.
 ///
-/// Returns `Ok((exit_code, stdout, stderr, timed_out))`; `timed_out` is
-/// `true` when the timeout fired and the child was killed. When `cancel` is
-/// `Some`, a fired cancel token kills the child and returns `exit_code: -1`
-/// with a "cancelled" message.
-// The eight parameters preserve the Bash call sites' shapes (the skeleton is
-// extracted verbatim from `run_shell_command`, ADR-WO3-3) — the same
-// allowance the tracked runners carry.
+/// Returns `Ok((exit_code, stdout, stderr, end_state))`; `end_state`
+/// ([`ExternalEndState`]) says whether the real streams were drained
+/// ([`ExternalEndState::Streamed`]) or the run was cut short with a
+/// synthetic reason in stderr. When `cancel` is `Some`, a fired cancel
+/// token kills the child and returns `exit_code: -1` with the skeleton's
+/// "cancelled" message.
+// The nine parameters preserve the Bash call sites' shapes (the skeleton is
+// extracted verbatim from `run_shell_command`, ADR-WO3-3, and the output
+// sink joined per BH4) — the same allowance the tracked runners carry.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_external_command(
     process: &dyn DynOsProcess,
@@ -557,7 +675,8 @@ pub(crate) async fn run_external_command(
     cancel: Option<&CancelToken>,
     progress: Option<&ToolProgressHandle>,
     fingerprint_sink: Option<(&str, &TaskManager)>,
-) -> anyhow::Result<(i32, String, String, bool)> {
+    output_sink: Option<(&str, &TaskManager)>,
+) -> anyhow::Result<(i32, String, String, ExternalEndState)> {
     let mut child = process.exec(program, argv, opts).await?;
 
     // Attach the process identity fingerprint to the registered task row
@@ -586,8 +705,18 @@ pub(crate) async fn run_external_command(
 
     let run = async {
         let (stdout, stderr) = tokio::try_join!(
-            read_and_forward(stdout_handle, ToolUpdateKind::Stdout, stdout_progress),
-            read_and_forward(stderr_handle, ToolUpdateKind::Stderr, stderr_progress),
+            read_and_forward(
+                stdout_handle,
+                ToolUpdateKind::Stdout,
+                stdout_progress,
+                output_sink,
+            ),
+            read_and_forward(
+                stderr_handle,
+                ToolUpdateKind::Stderr,
+                stderr_progress,
+                output_sink,
+            ),
         )?;
         let exit_code = child.wait().await?;
         Ok::<_, anyhow::Error>((exit_code, stdout, stderr))
@@ -606,7 +735,7 @@ pub(crate) async fn run_external_command(
 
     match outcome {
         CommandOutcome::Finished(Ok((exit_code, stdout, stderr))) => {
-            Ok((exit_code, stdout, stderr, false))
+            Ok((exit_code, stdout, stderr, ExternalEndState::Streamed))
         }
         CommandOutcome::Finished(Err(error)) => Err(error),
         CommandOutcome::TimedOut { timeout_secs } => {
@@ -618,12 +747,17 @@ pub(crate) async fn run_external_command(
                 -1,
                 String::new(),
                 format!("command timed out after {timeout_secs}s"),
-                true,
+                ExternalEndState::TimedOut,
             ))
         }
         CommandOutcome::Cancelled => {
             child.kill().await?;
-            Ok((-1, String::new(), "command cancelled".to_string(), false))
+            Ok((
+                -1,
+                String::new(),
+                "command cancelled".to_string(),
+                ExternalEndState::Cancelled,
+            ))
         }
     }
 }
@@ -644,20 +778,50 @@ async fn with_timeout(
     }
 }
 
-/// Combine the separately captured stdout/stderr strings into the text the
-/// model sees.
-///
-/// TS streams both pipes interleaved into one builder (bash.ts:345-355); Rust
-/// captures two `String`s. Design decision (ADR-013): stdout first, then
-/// stderr, with a newline boundary between them when both are non-empty (no
-/// extra blank line when stdout already ends with a newline).
-fn combine_captured_output(stdout: &str, stderr: &str) -> String {
-    match (stdout.is_empty(), stderr.is_empty()) {
-        (true, true) => String::new(),
-        (true, false) => stderr.to_string(),
-        (false, true) => stdout.to_string(),
-        (false, false) if stdout.ends_with('\n') => format!("{stdout}{stderr}"),
-        (false, false) => format!("{stdout}\n{stderr}"),
+/// Cap on the foreground output retained in memory (1 MiB). Same value as
+/// [`crate::task::MAX_TASK_OUTPUT_BYTES`], the cap of the task row the output
+/// is mirrored into; keep the two in step.
+const MAX_FOREGROUND_OUTPUT_BYTES: usize = 1024 * 1024;
+
+/// The foreground output as one stream in chunk-arrival order (stdout and
+/// stderr interleaved, no separator markers), capped at
+/// [`MAX_FOREGROUND_OUTPUT_BYTES`]: once exceeded the head is dropped and the
+/// dropped byte count accumulated so the loss can be disclosed.
+#[derive(Default)]
+struct MergedOutput {
+    text: String,
+    dropped_bytes: usize,
+}
+
+impl MergedOutput {
+    fn push(&mut self, chunk: &str) {
+        // A single oversized chunk is first reduced to its own tail.
+        let kept = crate::task::tail_bytes(chunk, MAX_FOREGROUND_OUTPUT_BYTES);
+        self.dropped_bytes += chunk.len() - kept.len();
+        self.text.push_str(kept);
+        if self.text.len() > MAX_FOREGROUND_OUTPUT_BYTES {
+            let mut cut = self.text.len() - MAX_FOREGROUND_OUTPUT_BYTES;
+            // Round up to a char boundary so the retained text stays valid.
+            while !self.text.is_char_boundary(cut) {
+                cut += 1;
+            }
+            self.text.drain(..cut);
+            self.dropped_bytes += cut;
+        }
+    }
+
+    /// The model-visible text: the retained output, led by a disclosure line
+    /// when bytes were dropped. Unchanged output is returned byte-for-byte.
+    fn into_disclosed_text(self) -> String {
+        if self.dropped_bytes == 0 {
+            return self.text;
+        }
+        format!(
+            "[Output truncated: kept the last {} bytes, dropped {} bytes from the start]\n{}",
+            self.text.len(),
+            self.dropped_bytes,
+            self.text
+        )
     }
 }
 
@@ -678,7 +842,7 @@ fn append_status_line(body: &str, message: &str) -> String {
 /// Format a settled foreground result for the model as plain text — the TS
 /// `foregroundCompletionResult` semantics (bash.ts:454-484 +
 /// `ToolResultBuilder`, result-builder.ts:100-152): the captured stdout/stderr
-/// text plus a status line, never a JSON envelope (ADR-013; audit P2-2 —
+/// text plus a status line, never a JSON envelope (audit P2-2 —
 /// the record shape of `tool.result` is unchanged, only how its text part is
 /// produced).
 ///
@@ -691,15 +855,15 @@ fn append_status_line(body: &str, message: &str) -> String {
 /// A foreground timeout never reaches this formatter — the run converts to a
 /// background task instead (ADR-4); the re-armed deadline settles through the
 /// task lifecycle, not the tool result.
-fn format_bash_result(exit_code: i32, stdout: String, stderr: String) -> ToolResult {
-    format_external_result(exit_code, stdout, stderr)
+fn format_bash_result(exit_code: i32, merged: String) -> ToolResult {
+    format_external_result(exit_code, merged)
 }
 
 /// Format a settled foreground run of an external shell command (shared by
 /// the Bash and PowerShell tools) as plain text — the TS
 /// `foregroundCompletionResult` semantics (bash.ts:454-484 +
 /// `ToolResultBuilder`, result-builder.ts:100-152): the captured stdout/stderr
-/// text plus a status line, never a JSON envelope (ADR-013; audit P2-2 —
+/// text plus a status line, never a JSON envelope (audit P2-2 —
 /// the record shape of `tool.result` is unchanged, only how its text part is
 /// produced).
 ///
@@ -712,12 +876,7 @@ fn format_bash_result(exit_code: i32, stdout: String, stderr: String) -> ToolRes
 /// A foreground timeout never reaches this formatter — the run converts to a
 /// background task instead (ADR-4); the re-armed deadline settles through the
 /// task lifecycle, not the tool result.
-pub(crate) fn format_external_result(
-    exit_code: i32,
-    stdout: String,
-    stderr: String,
-) -> ToolResult {
-    let captured = combine_captured_output(&stdout, &stderr);
+pub(crate) fn format_external_result(exit_code: i32, captured: String) -> ToolResult {
     let (output, is_error) = if exit_code == 0 {
         if captured.is_empty() {
             ("Command executed successfully.".to_string(), false)
@@ -803,6 +962,7 @@ async fn run_foreground_tracked(
     session_id: String,
     agent_id: String,
     tool_call_id: String,
+    env_allowlist: Vec<String>,
 ) -> ToolResult {
     let description = default_task_description(&command);
     let reg = tasks.register_foreground(
@@ -823,9 +983,11 @@ async fn run_foreground_tracked(
         tasks.set_lifetime_exempt(&task_id);
     }
 
+    let (env, env_remove) = noninteractive_env_with(&env_allowlist);
     let opts = ExecOptions {
         cwd,
-        env: noninteractive_env(),
+        env,
+        env_remove,
         timeout_ms: foreground_timeout_secs.map(|secs| secs * 1000),
     };
     #[cfg(unix)]
@@ -870,8 +1032,7 @@ async fn run_foreground_tracked(
         chunk_tx,
     ));
 
-    let mut stdout = String::new();
-    let mut stderr = String::new();
+    let mut merged = MergedOutput::default();
     // First-wins guard (ADR-4 约束②): the foreground-timeout arm and the
     // `task.detach` release arm race on the same still-running child — exactly
     // one may hand it over. The compare_exchange must succeed BEFORE
@@ -902,7 +1063,7 @@ async fn run_foreground_tracked(
                     // The `task.detach` release arm already handed the child to
                     // the background continuation — answer without touching the
                     // (now continuation-owned) child.
-                    return format_bash_result(-1, String::new(), "command cancelled".to_string());
+                    return format_bash_result(-1, "command cancelled".to_string());
                 }
                 tasks.detach_foreground(&task_id);
                 return hand_over_to_background(
@@ -911,8 +1072,7 @@ async fn run_foreground_tracked(
                     tasks,
                     task_id,
                     description,
-                    stdout,
-                    stderr,
+                    merged,
                     rearmed_deadline(background_rearm_secs),
                     Some("exceeded the foreground limit — automatically moved to background"),
                 )
@@ -923,12 +1083,13 @@ async fn run_foreground_tracked(
                 let _ = child.kill().await;
                 stdout_pump.abort();
                 stderr_pump.abort();
+                // The accumulated output rides the task row before the
+                // settle (BH9) — the post-cancel TaskOutput snapshot must
+                // read what the command printed before the cut, the same
+                // append→settle order as the natural-completion arm.
+                tasks.append_output(&task_id, &merged.text);
                 tasks.stop(&task_id);
-                return format_bash_result(
-                    -1,
-                    String::new(),
-                    "command cancelled".to_string(),
-                );
+                return format_bash_result(-1, "command cancelled".to_string());
             }
             // The foreground release fired — `task.detach` (Detached) or an
             // external terminal settle of the row (Terminal).
@@ -950,11 +1111,7 @@ async fn run_foreground_tracked(
                         )
                         .is_err()
                     {
-                        return format_bash_result(
-                            -1,
-                            String::new(),
-                            "command cancelled".to_string(),
-                        );
+                        return format_bash_result(-1, "command cancelled".to_string());
                     }
                     return hand_over_to_background(
                         child,
@@ -962,8 +1119,7 @@ async fn run_foreground_tracked(
                         tasks,
                         task_id,
                         description,
-                        stdout,
-                        stderr,
+                        merged,
                         rearmed_deadline(background_rearm_secs),
                         None,
                     )
@@ -978,12 +1134,13 @@ async fn run_foreground_tracked(
                 let _ = child.kill().await;
                 stdout_pump.abort();
                 stderr_pump.abort();
+                // The accumulated output rides the task row before the
+                // belt-and-braces settle (BH9) — the external stop must not
+                // discard what the command printed before it landed, the
+                // same append→settle order as the natural-completion arm.
+                tasks.append_output(&task_id, &merged.text);
                 tasks.stop(&task_id);
-                return format_bash_result(
-                    -1,
-                    String::new(),
-                    "command cancelled".to_string(),
-                );
+                return format_bash_result(-1, "command cancelled".to_string());
             }
             chunk = chunk_rx.recv() => {
                 let Some(ShellChunk { kind, text }) = chunk else {
@@ -996,15 +1153,14 @@ async fn run_foreground_tracked(
                     // already-exited child to the continuation, which
                     // settles with the same exit code.)
                     let exit_code = child.wait().await.unwrap_or(-1);
-                    tasks.append_output(&task_id, &stdout);
-                    tasks.append_output(&task_id, &stderr);
+                    tasks.append_output(&task_id, &merged.text);
                     tasks.complete(&task_id, exit_code);
-                    return format_bash_result(exit_code, stdout, stderr);
+                    return format_bash_result(exit_code, merged.into_disclosed_text());
                 };
-                match kind {
-                    ToolUpdateKind::Stdout => stdout.push_str(&text),
-                    ToolUpdateKind::Stderr => stderr.push_str(&text),
-                    _ => {}
+                // `kind` only routes the live progress update; the retained
+                // text is one arrival-ordered stream.
+                if matches!(kind, ToolUpdateKind::Stdout | ToolUpdateKind::Stderr) {
+                    merged.push(&text);
                 }
                 progress.send(ToolUpdate {
                     kind,
@@ -1039,8 +1195,7 @@ async fn hand_over_to_background(
     tasks: Arc<TaskManager>,
     task_id: String,
     description: String,
-    foreground_stdout: String,
-    foreground_stderr: String,
+    foreground: MergedOutput,
     rearm: Option<Duration>,
     reason: Option<&str>,
 ) -> ToolResult {
@@ -1049,8 +1204,7 @@ async fn hand_over_to_background(
     // the background continuation (the `!` runner's finish_detached shape,
     // plus the kill signal the detached run needs so a TaskStop really kills
     // the OS process — D-63).
-    tasks.append_output(&task_id, &foreground_stdout);
-    tasks.append_output(&task_id, &foreground_stderr);
+    tasks.append_output(&task_id, &foreground.text);
     let signal = CancelToken::new();
     tasks.attach_signal(&task_id, signal.clone());
     let tasks_for_run = Arc::clone(&tasks);
@@ -1158,8 +1312,7 @@ async fn hand_over_to_background(
             &task_id,
             &description,
             reason,
-            &foreground_stdout,
-            &foreground_stderr,
+            &foreground.into_disclosed_text(),
         )),
         is_error: false,
         note: None,
@@ -1254,6 +1407,7 @@ pub async fn start_background_command(
     tasks: Arc<TaskManager>,
     session_id: String,
     dispatcher: String,
+    env_allowlist: Vec<String>,
 ) -> ToolResult {
     let command_for_info = command.clone();
     // The manager clone rides the runner closure (the spawn call itself
@@ -1278,6 +1432,7 @@ pub async fn start_background_command(
                     cancel,
                     &tasks_for_run,
                     &task_id,
+                    &env_allowlist,
                 )
                 .await
             })
@@ -1319,6 +1474,16 @@ pub async fn start_background_command(
 
 /// Run a command to completion for a background task.
 ///
+/// Every merged output chunk lands on the task row as it arrives (BH4,
+/// B-ADR-15: the per-chunk output-append sink), so a running task's row
+/// shows the latest tail without waiting for the settlement. The returned
+/// stdout/stderr are therefore always empty — the settlement's append
+/// ([`TaskManager::settle_background_run`]) is a strict no-op on every
+/// path, the same empty-triple shape the post-detach continuation settles
+/// with (`hand_over_to_background`); the timeout/cancel arms' synthetic
+/// reasons (never stream content) are landed on the row HERE, by the
+/// runner, so a cut-short task row still carries why it ended.
+///
 /// Collects stdout/stderr for the task's accumulated output and applies the
 /// same optional timeout (killing the process group on timeout). The turn's
 /// cancel token deliberately does not propagate — a background task outlives
@@ -1332,6 +1497,7 @@ pub async fn start_background_command(
 /// start. `task_id` is the pre-registered row id
 /// ([`TaskManager::spawn_background_with_signal`] registers before invoking
 /// this runner).
+#[allow(clippy::too_many_arguments)]
 async fn run_bash_background(
     process: Arc<dyn DynOsProcess>,
     command: &str,
@@ -1340,26 +1506,42 @@ async fn run_bash_background(
     cancel: CancelToken,
     tasks: &TaskManager,
     task_id: &str,
+    env_allowlist: &[String],
 ) -> anyhow::Result<(i32, String, String)> {
+    let (env, env_remove) = noninteractive_env_with(env_allowlist);
     let opts = ExecOptions {
         cwd,
-        env: noninteractive_env(),
+        env,
+        env_remove,
         timeout_ms: timeout_secs.map(|secs| secs * 1000),
     };
-    let (exit_code, stdout, stderr, _timed_out) = run_shell_command(
+    let (exit_code, _stdout, stderr, end_state) = run_shell_command(
         process.as_ref(),
         command,
         &opts,
         timeout_secs.map(Duration::from_secs),
         Some(&cancel),
-        // Background tasks do not stream live output — their output surface
-        // is the TaskManager's persisted log (mirroring the TS engine, which
-        // only wires `onProcessOutput` for foreground runs).
+        // The live-output surface of a background task is the task row
+        // itself: every merged chunk appends to it as it arrives (BH4,
+        // B-ADR-15) — NOT the foreground progress channel (that is
+        // turn-scoped, and a background task outlives the turn).
         None,
+        Some((task_id, tasks)),
         Some((task_id, tasks)),
     )
     .await?;
-    Ok((exit_code, stdout, stderr))
+    // The chunks already landed per-append; the settlement's append must be
+    // a strict no-op on every path. A timeout/cancel cut the streams short,
+    // so their synthetic reason (never stream content) is landed HERE by the
+    // runner instead; the skeleton owns the strings, the landing owns the
+    // task row — the row never learns a message twice and never misses one.
+    match end_state {
+        ExternalEndState::Streamed => Ok((exit_code, String::new(), String::new())),
+        ExternalEndState::TimedOut | ExternalEndState::Cancelled => {
+            tasks.append_output(task_id, &stderr);
+            Ok((exit_code, String::new(), String::new()))
+        }
+    }
 }
 
 /// The model-visible message returned when a background task is started.
@@ -1369,8 +1551,11 @@ fn background_started_output(task_id: &str, description: &str) -> String {
          description: {description}\n\
          status: running\n\
          next_step: The task runs in the background — you will be automatically \
-         notified when it completes; do NOT wait, poll, or call TaskOutput on it, \
-         continue with your current work.\n\
+         notified when it completes — that notification is the only completion \
+         signal. Continue with your current work. A single non-blocking \
+         TaskOutput snapshot is allowed only with a reason (unusual silence, the \
+         user asks, a suspected hang), at most once every few minutes; never wait \
+         on it with block=true.\n\
          next_step: Use TaskStop only if the task must be cancelled."
     )
 }
@@ -1388,8 +1573,7 @@ fn moved_to_background_output(
     task_id: &str,
     description: &str,
     reason: Option<&str>,
-    stdout: &str,
-    stderr: &str,
+    foreground_output: &str,
 ) -> String {
     let reason_head = reason
         .map(|reason| format!("reason: {reason}\n"))
@@ -1401,12 +1585,14 @@ fn moved_to_background_output(
          status: running\n\
          automatic_notification: true\n\
          next_step: The task now runs in the background. You will be automatically \
-         notified when it completes — do NOT wait, poll, or call TaskOutput on it; \
-         continue with your current work.\n\
+         notified when it completes — that notification is the only completion \
+         signal. Continue with your current work. A single non-blocking \
+         TaskOutput snapshot is allowed only with a reason (unusual silence, the \
+         user asks, a suspected hang), at most once every few minutes; never wait \
+         on it with block=true.\n\
          human_shell_hint: Tell the human to run /tasks to open the interactive \
          background-task panel."
     );
-    let foreground_output = format!("{stdout}{stderr}");
     if foreground_output.is_empty() {
         metadata
     } else {
@@ -1416,6 +1602,73 @@ fn moved_to_background_output(
 
 #[cfg(test)]
 mod tests {
+    /// Strings helper for the pure remove-set tests.
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn should_not_pass_a_token_variable_to_the_child_when_the_parent_exports_one() {
+        // Given the parent exports a token variable (guard restores on drop)
+        let mut guard = mirri_test_support::env::async_lock().await;
+        guard.set("FOO_API_TOKEN", "s3cret");
+        let process: Arc<dyn DynOsProcess> = Arc::new(mirri_os::LocalProcess::new());
+        let (env, env_remove) = noninteractive_env_with(&[]);
+        let opts = ExecOptions {
+            env,
+            env_remove,
+            ..Default::default()
+        };
+
+        // When a child prints its environment
+        let (_, stdout, _, _) =
+            run_shell_command(process.as_ref(), "env", &opts, None, None, None, None, None)
+                .await
+                .unwrap();
+
+        // Then the token is absent while managed variables are present
+        assert!(!stdout.contains("FOO_API_TOKEN"), "leaked: {stdout}");
+        assert!(stdout.contains("NO_COLOR=1"));
+    }
+
+    #[test]
+    fn should_pass_an_allowlisted_variable_when_it_matches_the_sensitive_pattern() {
+        // Given a sensitive-looking variable that is allowlisted
+        let managed = HashMap::new();
+        let vars = names(&["BH_ALLOWED_SECRET", "OTHER_SECRET"]);
+
+        // When the remove set is built
+        let remove = build_remove_set(&managed, &vars, &names(&["BH_ALLOWED_SECRET"]));
+
+        // Then only the non-allowlisted one is removed
+        assert_eq!(remove, names(&["OTHER_SECRET"]));
+    }
+
+    #[test]
+    fn should_keep_engine_injected_variables_even_when_their_names_look_sensitive() {
+        // Given a managed (engine-injected) name that matches the pattern
+        let managed = HashMap::from([("MY_TOKEN_SHELL".to_string(), "x".to_string())]);
+        let vars = names(&["MY_TOKEN_SHELL", "PLAIN_TOKEN", "HOME"]);
+
+        // When the remove set is built
+        let remove = build_remove_set(&managed, &vars, &[]);
+
+        // Then the managed name is kept out of the remove set
+        assert_eq!(remove, names(&["PLAIN_TOKEN"]));
+    }
+
+    #[test]
+    fn should_match_sensitive_names_case_insensitively_when_building_the_remove_set() {
+        // Given mixed-case sensitive names and a clean one
+        let vars = names(&["my_api_key", "MY_api_KEY", "Db_PassWord", "PATH"]);
+
+        // When the remove set is built
+        let remove = build_remove_set(&HashMap::new(), &vars, &[]);
+
+        // Then every sensitive spelling is caught, the clean one is not
+        assert_eq!(remove, names(&["my_api_key", "MY_api_KEY", "Db_PassWord"]));
+    }
+
     use super::*;
 
     use crate::task::{TaskStatus, WaitResult};
@@ -1498,8 +1751,8 @@ mod tests {
         assert!(updates.iter().all(|u| u.percent.is_none()));
 
         let text = output_text(&result);
-        // stdout first, then stderr, with a newline boundary between them.
-        assert_eq!(text, "out\nerr");
+        // One arrival-ordered stream: no synthetic separator between chunks.
+        assert_eq!(text, "outerr");
     }
 
     #[tokio::test]
@@ -1544,6 +1797,7 @@ mod tests {
             }),
             ToolUpdateKind::Stdout,
             Some(progress),
+            None,
         )
         .await
         .expect("read");
@@ -1573,6 +1827,7 @@ mod tests {
             }),
             ToolUpdateKind::Stdout,
             Some(progress),
+            None,
         )
         .await;
 
@@ -1598,6 +1853,7 @@ mod tests {
             }),
             ToolUpdateKind::Stdout,
             Some(progress),
+            None,
         )
         .await;
 
@@ -1668,9 +1924,24 @@ mod tests {
             "agent-main".to_string(),
             "session-1".to_string(),
             local_process(),
+            Vec::new(),
             None,
         );
         (tasks, tool)
+    }
+
+    #[test]
+    fn should_memorize_the_command_text_rather_than_the_bare_tool_name() {
+        let (_tasks, tool) = test_tool();
+        let execution = tool
+            .resolve_execution(serde_json::json!({ "command": "git status" }))
+            .expect("resolve");
+        match execution {
+            ToolExecution::Runnable { plan, .. } => {
+                assert_eq!(plan.approval_rule, "Bash(git status)");
+            }
+            ToolExecution::Error(e) => panic!("unexpected error: {}", e.message),
+        }
     }
 
     #[test]
@@ -1701,6 +1972,20 @@ mod tests {
                 "description must contain {needle:?}: {description}"
             );
         }
+    }
+
+    #[test]
+    fn should_advertise_incremental_background_output_polling_in_the_description() {
+        let (_tasks, tool) = test_tool();
+        let description = tool.description();
+
+        // The model must learn from the description alone that a running
+        // background task's output can be polled mid-run — the capability is
+        // invisible otherwise (batch 2's BH4 landing).
+        assert!(
+            description.contains("poll the running task's latest tail with TaskOutput"),
+            "the description must name the mid-run polling affordance: {description}"
+        );
     }
 
     #[tokio::test]
@@ -1793,6 +2078,7 @@ mod tests {
             "session-1".to_string(),
             "agent-main".to_string(),
             "toolu-bg-hb".to_string(),
+            Vec::new(),
         )
         .await;
         assert!(!result.is_error);
@@ -1837,11 +2123,162 @@ mod tests {
         tasks.stop(&task_id);
     }
 
+    /// Run a script through the tracked foreground runner under `sh -c`.
+    async fn run_script(script: &str, timeout: Option<u64>) -> (ToolResult, Arc<TaskManager>) {
+        run_tracked(
+            local_process(),
+            script,
+            timeout,
+            CancelToken::new(),
+            ToolProgressHandle::default(),
+        )
+        .await
+    }
+
+    /// 1.5 MB of 'a' (finite, instant) followed by a marker line.
+    const BIG_OUTPUT_SCRIPT: &str = "head -c 1500000 /dev/zero | tr '\\0' 'a'; echo END";
+
+    #[tokio::test]
+    async fn should_keep_the_last_bytes_and_disclose_the_dropped_count_when_output_exceeds_the_cap() {
+        // Given a command printing 1,500,004 bytes
+        let (result, _tasks) = run_script(BIG_OUTPUT_SCRIPT, Some(30)).await;
+
+        // When it settles
+        let text = output_text(&result);
+
+        // Then the head is dropped, the tail kept, and the loss disclosed
+        let (head, body) = text.split_once('\n').expect("disclosure line");
+        let total = 1_500_004usize;
+        let kept = MAX_FOREGROUND_OUTPUT_BYTES;
+        assert_eq!(
+            head,
+            format!(
+                "[Output truncated: kept the last {kept} bytes, dropped {} bytes from the start]",
+                total - kept
+            )
+        );
+        assert_eq!(body.len(), kept);
+        assert!(body.ends_with("aaaEND\n"));
+    }
+
+    #[tokio::test]
+    async fn should_leave_the_output_untouched_when_it_stays_under_the_cap() {
+        // Given a command printing well under the cap
+        let (result, _tasks) = run_script("head -c 100000 /dev/zero | tr '\\0' 'b'", Some(30)).await;
+
+        // Then the output is exactly the bytes written, no disclosure
+        assert_eq!(output_text(&result), "b".repeat(100_000));
+    }
+
+    #[tokio::test]
+    async fn should_order_stdout_and_stderr_by_arrival_when_both_streams_write() {
+        // Given a command alternating streams with gaps longer than pipe latency
+        let (result, _tasks) =
+            run_script("echo one; sleep 0.3; echo two >&2; sleep 0.3; echo three", Some(30)).await;
+
+        // Then the merged text follows arrival order with no markers
+        assert_eq!(output_text(&result), "one\ntwo\nthree\n");
+    }
+
+    #[tokio::test]
+    async fn should_match_the_previous_output_byte_for_byte_when_only_one_stream_writes() {
+        // Given commands writing a single stream (with and without trailing newline)
+        for (script, expected) in [
+            ("printf 'out-no-newline'", "out-no-newline"),
+            ("printf 'out\\n'", "out\n"),
+            ("printf 'err-no-newline' >&2", "err-no-newline"),
+            ("printf 'err\\n' >&2", "err\n"),
+        ] {
+            let (result, _tasks) = run_script(script, Some(30)).await;
+
+            // Then the output is exactly the written bytes: no separator, no marker
+            assert_eq!(output_text(&result), expected, "script: {script}");
+        }
+    }
+
+    /// Given a command whose output overflows the cap and is fully consumed
+    /// by the foreground window before the timeout fires, when the run then
+    /// outlives the foreground limit and converts to a background task, then
+    /// the moved-to-background result's `foreground_output` section carries
+    /// the truncation disclosure. The overflow data comes from the test's own
+    /// writer half (an in-memory duplex, not a real `head -c` pipeline) and
+    /// the conversion only fires after the progress stream confirms every
+    /// byte was consumed — under a loaded CI this stays as fast as the real
+    /// output path, instead of racing a real process's 1.5 MB inside 2 s.
+    #[tokio::test]
+    async fn should_disclose_dropped_bytes_in_the_moved_to_background_result() {
+        use tokio::io::AsyncWriteExt;
+
+        // Given a blocking process whose stdout the test feeds by hand
+        let (process, mut writer) = BlockingProcess::with_stdout();
+        let (progress, updates) = record_progress();
+        let tasks = Arc::new(TaskManager::new());
+        let run = tokio::spawn(run_foreground_tracked(
+            Arc::clone(&process) as Arc<dyn DynOsProcess>,
+            "big build".to_string(),
+            None,
+            Some(2),
+            Some(600),
+            false,
+            CancelToken::new(),
+            progress,
+            Arc::clone(&tasks),
+            "session-1".to_string(),
+            "agent-main".to_string(),
+            "toolu-big-bg".to_string(),
+            Vec::new(),
+        ));
+
+        // When the test writes 1.5 MB of 'a' plus a marker line — the same
+        // byte count the settled-path truncation test pins — then waits
+        // until the progress stream has carried ALL of it, every byte is
+        // already inside the foreground window's MergedOutput (the loop
+        // pushes to it before sending progress, on the same task).
+        let data = "a".repeat(1_500_000);
+        let marker = "END\n";
+        writer.write_all(data.as_bytes()).await.unwrap();
+        writer.write_all(marker.as_bytes()).await.unwrap();
+        let mut seen = 0;
+        let all_consumed = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                seen = updates
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|update| update.text.as_deref().map_or(0, str::len))
+                    .sum::<usize>();
+                (seen >= data.len() + marker.len()).then_some(())
+            },
+        )
+        .await;
+        assert!(
+            all_consumed.is_ok(),
+            "the foreground window must consume the full overflow before the \
+             conversion; consumed {seen} of {} bytes",
+            data.len() + marker.len()
+        );
+
+        // And the 2s foreground timeout converts the still-running run to a
+        // background task whose result discloses the dropped bytes.
+        let result = run.await.unwrap();
+        let text = output_text(&result);
+
+        assert!(text.contains("automatically moved to background"), "got: {text}");
+        assert!(
+            text.contains("foreground_output:\n[Output truncated: kept the last"),
+            "got head: {}",
+            &text[..text.len().min(600)]
+        );
+        tasks.stop(&extract_task_id(&text));
+    }
+
     /// Given a successful command with stdout, When it settles, Then the
     /// model sees the captured stdout as plain text — no JSON envelope
     /// (TS `foregroundCompletionResult` → `builder.ok`, bash.ts:475-476:
     /// with captured output the ok message is not appended,
-    /// result-builder.ts:110-121; audit P2-2, ADR-013).
+    /// result-builder.ts:110-121; audit P2-2).
     #[tokio::test]
     async fn should_return_plain_text_output_when_the_command_succeeds() {
         let (result, _tasks) = run_tracked(
@@ -1918,6 +2355,7 @@ mod tests {
             "session-1".to_string(),
             "agent-main".to_string(),
             "toolu-cwd".to_string(),
+            Vec::new(),
         )
         .await;
         assert!(!result.is_error);
@@ -1944,6 +2382,7 @@ mod tests {
             "agent-main".to_string(),
             "session-1".to_string(),
             local_process(),
+            Vec::new(),
             Some(tmp.path().to_path_buf()),
         );
 
@@ -1972,6 +2411,7 @@ mod tests {
             "agent-main".to_string(),
             "session-1".to_string(),
             local_process(),
+            Vec::new(),
             Some(tmp_default.path().to_path_buf()),
         );
 
@@ -2170,6 +2610,153 @@ mod tests {
         tasks.stop(&task_id);
     }
 
+    /// Given a directly backgrounded command that keeps producing output,
+    /// when the task is still Running, then the task row already carries the
+    /// latest tail — every merged chunk lands while the run is live (BH4,
+    /// B-ADR-15), not only at settlement. The data comes from the test's own
+    /// writer half (an in-memory duplex, not a real process) so the chunks
+    /// arrive deterministically without racing a real producer.
+    #[tokio::test]
+    async fn should_show_tail_output_while_a_directly_started_background_task_is_running() {
+        use tokio::io::AsyncWriteExt;
+
+        // Given a blocking process whose stdout the test feeds by hand
+        let (process, mut writer) = BlockingProcess::with_stdout();
+        let tasks = Arc::new(TaskManager::new());
+        let result = start_background_command(
+            Arc::clone(&process) as Arc<dyn DynOsProcess>,
+            "big build".to_string(),
+            None,
+            None,
+            false,
+            "tail while running".to_string(),
+            Arc::clone(&tasks),
+            "session-1".to_string(),
+            "agent-main".to_string(),
+            Vec::new(),
+        )
+        .await;
+
+        assert!(!result.is_error);
+        let task_id = extract_task_id(&output_text(&result));
+
+        // When the test writes a first chunk, then the running row must
+        // consume it — no settlement exists yet (the child is still alive
+        // and the stream is still open).
+        writer.write_all(b"chunk-one\n").await.unwrap();
+        let saw_first = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                tasks
+                    .output(&task_id)
+                    .filter(|output| output.full_output.contains("chunk-one"))
+                    .map(|_| ())
+            },
+        )
+        .await;
+        assert!(
+            saw_first.is_ok(),
+            "the running row must carry the first chunk, was: {:?}",
+            tasks.output(&task_id).map(|output| output.full_output)
+        );
+
+        // And a later chunk keeps landing while the task is STILL Running —
+        // the row's tail advances without waiting for the settle.
+        writer.write_all(b"chunk-two\n").await.unwrap();
+        let saw_tail = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                tasks
+                    .output(&task_id)
+                    .filter(|output| output.full_output.contains("chunk-one\nchunk-two"))
+                    .map(|_| ())
+            },
+        )
+        .await;
+        assert!(
+            saw_tail.is_ok(),
+            "the running row must carry the latest tail, was: {:?}",
+            tasks.output(&task_id).map(|output| output.full_output)
+        );
+        assert_eq!(
+            tasks.get(&task_id).unwrap().status,
+            TaskStatus::Running,
+            "the tail must be visible BEFORE the settlement"
+        );
+
+        // Cleanup: finish the process, end the stream, let the row settle.
+        process.finish(0);
+        drop(writer);
+        assert_eq!(
+            tasks.wait_for_completion(&task_id, 5).await,
+            WaitResult::Completed
+        );
+    }
+
+    /// Given a directly backgrounded command whose output already landed
+    /// per-chunk while it ran, when the run settles, then the task row's
+    /// output is not duplicated — the background runner returns empty
+    /// stdout/stderr after streaming (BH4's narrow de-dup fix, the settled
+    /// Bash-tool counterpart of the post-detach continuation's empty triple),
+    /// so the settlement append is a no-op.
+    #[tokio::test]
+    async fn should_not_duplicate_output_when_a_background_task_settles() {
+        use tokio::io::AsyncWriteExt;
+
+        // Given a blocking process whose stdout the test feeds by hand
+        let (process, mut writer) = BlockingProcess::with_stdout();
+        let tasks = Arc::new(TaskManager::new());
+        let result = start_background_command(
+            Arc::clone(&process) as Arc<dyn DynOsProcess>,
+            "settling build".to_string(),
+            None,
+            None,
+            false,
+            "settle without duplicates".to_string(),
+            Arc::clone(&tasks),
+            "session-1".to_string(),
+            "agent-main".to_string(),
+            Vec::new(),
+        )
+        .await;
+
+        assert!(!result.is_error);
+        let task_id = extract_task_id(&output_text(&result));
+
+        // And the whole payload has already landed on the running row.
+        writer.write_all(b"unique-payload\n").await.unwrap();
+        let landed = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                tasks
+                    .output(&task_id)
+                    .filter(|output| output.full_output.contains("unique-payload"))
+                    .map(|_| ())
+            },
+        )
+        .await;
+        assert!(
+            landed.is_ok(),
+            "the payload must land before the settle, was: {:?}",
+            tasks.output(&task_id).map(|output| output.full_output)
+        );
+
+        // When the run settles (the child exits 0, the stream ends)
+        process.finish(0);
+        drop(writer);
+        assert_eq!(
+            tasks.wait_for_completion(&task_id, 10).await,
+            WaitResult::Completed
+        );
+
+        // Then the settled row's output carries the payload exactly once.
+        let output = tasks.output(&task_id).unwrap().full_output;
+        assert_eq!(output, "unique-payload\n", "no duplication at settle");
+    }
+
     #[tokio::test]
     async fn should_fall_back_to_command_preview_description_when_background_description_missing() {
         let (tasks, tool) = test_tool();
@@ -2232,8 +2819,8 @@ mod tests {
             "message should explain the reason, got: {text}"
         );
         assert!(
-            text.contains("do NOT wait, poll"),
-            "message should keep the no-polling guidance, got: {text}"
+            text.contains("only completion signal") && text.contains("never wait"),
+            "message should keep the no-blocking-wait guidance, got: {text}"
         );
         // The task row is detached (a real background task), still running.
         let task = tasks.get(&task_id).expect("task registered");
@@ -2475,6 +3062,7 @@ mod tests {
             "session-1".to_string(),
             "agent-main".to_string(),
             "toolu-1".to_string(),
+            Vec::new(),
         ));
 
         // Cancel only once the run has provably registered its foreground
@@ -2714,6 +3302,7 @@ mod tests {
             "agent-main".to_string(),
             "session-1".to_string(),
             Arc::clone(&process) as Arc<dyn DynOsProcess>,
+            Vec::new(),
             None,
         );
 
@@ -2772,6 +3361,7 @@ mod tests {
             "session-1".to_string(),
             "agent-main".to_string(),
             "toolu-test".to_string(),
+            Vec::new(),
         )
         .await;
         (result, tasks)
@@ -2932,6 +3522,7 @@ mod tests {
             "session-1".to_string(),
             "agent-main".to_string(),
             "toolu-1".to_string(),
+            Vec::new(),
         ));
 
         // Poll until the manager holds the running foreground task.
@@ -3033,6 +3624,7 @@ mod tests {
             "session-1".to_string(),
             "agent-main".to_string(),
             "toolu-1".to_string(),
+            Vec::new(),
         ));
 
         let task_id = mirri_test_support::wait_for::wait_for_async(
@@ -3085,6 +3677,7 @@ mod tests {
             "session-1".to_string(),
             "agent-main".to_string(),
             "toolu-1".to_string(),
+            Vec::new(),
         ));
 
         let task_id = mirri_test_support::wait_for::wait_for_async(
@@ -3118,6 +3711,361 @@ mod tests {
         );
     }
 
+    /// Given a foreground Bash run that has already streamed partial output,
+    /// when the turn's cancel token fires, then the accumulated output is
+    /// preserved on the task row (BH9) — the post-cancel TaskOutput snapshot
+    /// reads what the command printed before the cut, not an empty log.
+    #[tokio::test]
+    async fn should_preserve_accumulated_output_when_the_turn_cancels_the_foreground_run() {
+        use tokio::io::AsyncWriteExt;
+
+        // The held-open stdout keeps the select loop in the run phase (see
+        // the settle-on-cancel test).
+        let (process, mut writer) = BlockingProcess::with_stdout();
+        let tasks = Arc::new(TaskManager::new());
+        let cancel = CancelToken::new();
+        let cancel_handle = cancel.clone();
+        let (progress, updates) = record_progress();
+        let run = tokio::spawn(run_foreground_tracked(
+            Arc::clone(&process) as Arc<dyn DynOsProcess>,
+            "sleep 30".to_string(),
+            None,
+            Some(60),
+            Some(600),
+            false,
+            cancel,
+            progress,
+            Arc::clone(&tasks),
+            "session-1".to_string(),
+            "agent-main".to_string(),
+            "toolu-1".to_string(),
+            Vec::new(),
+        ));
+
+        let task_id = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                tasks
+                    .list()
+                    .into_iter()
+                    .find(|task| task.status == TaskStatus::Running)
+                    .map(|task| task.id)
+            },
+        )
+        .await
+        .expect("the running foreground row registers before the dispatch");
+
+        // Write a partial chunk and confirm the run consumed it (the progress
+        // stream is the observable face) — only then is it safely part of the
+        // foreground window the cancel is about to cut short. Cancelling a
+        // run that wrote nothing produces an always-empty row, which cannot
+        // distinguish red from green.
+        writer.write_all(b"partial\n").await.unwrap();
+        let saw_partial = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                updates
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|update| update.text.as_deref() == Some("partial\n"))
+                    .then_some(())
+            },
+        )
+        .await;
+        assert!(
+            saw_partial.is_ok(),
+            "the progress stream carries the partial chunk"
+        );
+        cancel_handle.cancel();
+        let result = run.await.unwrap();
+        drop(writer);
+
+        let text = output_text(&result);
+        assert!(text.contains("command cancelled"), "got: {text}");
+        assert_eq!(
+            tasks.get(&task_id).unwrap().status,
+            TaskStatus::Stopped,
+            "the cancelled run must not leave a dangling Running row"
+        );
+        assert!(
+            tasks
+                .output(&task_id)
+                .unwrap()
+                .full_output
+                .contains("partial\n"),
+            "the pre-cancel output must ride the task row (BH9), was: {:?}",
+            tasks.output(&task_id).map(|output| output.full_output)
+        );
+    }
+
+    /// Given a foreground Bash run that has already streamed partial output,
+    /// when an external stop (`task.cancel` / session close, the Terminal
+    /// release) settles the row mid-run, then the accumulated output is
+    /// preserved on the task row (BH9) — the same append-before-settle order
+    /// as the natural-completion path.
+    #[tokio::test]
+    async fn should_preserve_accumulated_output_when_an_external_stop_ends_the_foreground_run() {
+        use tokio::io::AsyncWriteExt;
+
+        let (process, mut writer) = BlockingProcess::with_stdout();
+        let tasks = Arc::new(TaskManager::new());
+        let (progress, updates) = record_progress();
+        let run = tokio::spawn(run_foreground_tracked(
+            Arc::clone(&process) as Arc<dyn DynOsProcess>,
+            "sleep 30".to_string(),
+            None,
+            Some(60),
+            Some(600),
+            false,
+            CancelToken::new(),
+            progress,
+            Arc::clone(&tasks),
+            "session-1".to_string(),
+            "agent-main".to_string(),
+            "toolu-1".to_string(),
+            Vec::new(),
+        ));
+
+        let task_id = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                tasks
+                    .list()
+                    .into_iter()
+                    .find(|task| task.status == TaskStatus::Running)
+                    .map(|task| task.id)
+            },
+        )
+        .await
+        .expect("the running foreground row registers before the dispatch");
+
+        // The partial chunk must be consumed by the run before the external
+        // stop cuts it short (an unconsumed write cannot distinguish red from
+        // green — the row would be empty either way).
+        writer.write_all(b"partial\n").await.unwrap();
+        let saw_partial = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                updates
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|update| update.text.as_deref() == Some("partial\n"))
+                    .then_some(())
+            },
+        )
+        .await;
+        assert!(
+            saw_partial.is_ok(),
+            "the progress stream carries the partial chunk"
+        );
+        // The same transition the task.cancel dispatch performs.
+        tasks.stop(&task_id);
+        let result = run.await.unwrap();
+        drop(writer);
+
+        let text = output_text(&result);
+        assert!(text.contains("command cancelled"), "got: {text}");
+        assert_eq!(
+            tasks.get(&task_id).unwrap().status,
+            TaskStatus::Stopped,
+            "the row keeps its first-terminal status"
+        );
+        assert!(
+            process.killed(),
+            "the external stop must kill the child, not only flip the row"
+        );
+        assert!(
+            tasks
+                .output(&task_id)
+                .unwrap()
+                .full_output
+                .contains("partial\n"),
+            "the pre-stop output must ride the task row (BH9), was: {:?}",
+            tasks.output(&task_id).map(|output| output.full_output)
+        );
+    }
+
+    /// Given a foreground Bash run under a persisting task manager that has
+    /// already streamed partial output, when the turn cancels, then the
+    /// preserved output is already on disk (`output.log`) — a resumed
+    /// session keeps the pre-cancel history (BH9's durability face).
+    #[tokio::test]
+    async fn should_persist_the_preserved_output_when_the_turn_cancels_the_foreground_run() {
+        use tokio::io::AsyncWriteExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let persistence = Arc::new(crate::task_persist::TaskPersistence::new(
+            tmp.path().join("tasks"),
+            Arc::new(mirri_os::LocalSyncFs::new()),
+        ));
+        let tasks = Arc::new(TaskManager::with_persistence(Arc::clone(&persistence)));
+        let cancel = CancelToken::new();
+        let cancel_handle = cancel.clone();
+        let (progress, updates) = record_progress();
+        let (process, mut writer) = BlockingProcess::with_stdout();
+        let run = tokio::spawn(run_foreground_tracked(
+            Arc::clone(&process) as Arc<dyn DynOsProcess>,
+            "sleep 30".to_string(),
+            None,
+            Some(60),
+            Some(600),
+            false,
+            cancel,
+            progress,
+            Arc::clone(&tasks),
+            "session-1".to_string(),
+            "agent-main".to_string(),
+            "toolu-1".to_string(),
+            Vec::new(),
+        ));
+
+        let task_id = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                tasks
+                    .list()
+                    .into_iter()
+                    .find(|task| task.status == TaskStatus::Running)
+                    .map(|task| task.id)
+            },
+        )
+        .await
+        .expect("the running foreground row registers before the dispatch");
+
+        // The partial chunk must be consumed by the run before the cancel.
+        writer.write_all(b"partial\n").await.unwrap();
+        let saw_partial = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                updates
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|update| update.text.as_deref() == Some("partial\n"))
+                    .then_some(())
+            },
+        )
+        .await;
+        assert!(
+            saw_partial.is_ok(),
+            "the progress stream carries the partial chunk"
+        );
+        cancel_handle.cancel();
+        let result = run.await.unwrap();
+        drop(writer);
+
+        assert!(
+            output_text(&result).contains("command cancelled"),
+            "got: {}",
+            output_text(&result)
+        );
+        assert_eq!(
+            tasks.get(&task_id).unwrap().status,
+            TaskStatus::Stopped,
+            "the cancelled run settles Stopped under persistence too"
+        );
+        let on_disk = persistence.read_output(&task_id, 0, 1024).unwrap();
+        assert!(
+            on_disk.contains("partial\n"),
+            "the pre-cancel output must already be on disk, was: {on_disk:?}"
+        );
+    }
+
+    /// Given a directly backgrounded command that has already streamed
+    /// output, when the task is stopped (task.cancel on a running background
+    /// row), then the row's output carries the synthetic cancel reason
+    /// exactly once — the chunks already landed per-append (BH4) and the
+    /// runner lands the cut-short reason itself (the
+    /// ExternalEndState::Cancelled arm), so the settlement must not
+    /// re-land it.
+    #[tokio::test]
+    async fn should_land_the_synthetic_cancel_reason_once_when_a_background_task_is_stopped() {
+        use tokio::io::AsyncWriteExt;
+
+        // Given a directly backgrounded run whose stdout the test feeds.
+        let (process, mut writer) = BlockingProcess::with_stdout();
+        let tasks = Arc::new(TaskManager::new());
+        let result = start_background_command(
+            Arc::clone(&process) as Arc<dyn DynOsProcess>,
+            "long build".to_string(),
+            None,
+            None,
+            false,
+            "cancel a background run".to_string(),
+            Arc::clone(&tasks),
+            "session-1".to_string(),
+            "agent-main".to_string(),
+            Vec::new(),
+        )
+        .await;
+
+        assert!(!result.is_error);
+        let task_id = extract_task_id(&output_text(&result));
+
+        // And the streamed chunk has landed on the running row.
+        writer.write_all(b"streamed\n").await.unwrap();
+        let landed = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                tasks
+                    .output(&task_id)
+                    .filter(|output| output.full_output.contains("streamed\n"))
+                    .map(|_| ())
+            },
+        )
+        .await;
+        assert!(
+            landed.is_ok(),
+            "the streamed chunk must land before the stop, was: {:?}",
+            tasks.output(&task_id).map(|output| output.full_output)
+        );
+
+        // …then the row settles Stopped and the synthetic cancel reason
+        // lands (the runner appends it asynchronously after the signal
+        // fires, so poll for it rather than racing the append).
+        tasks.stop(&task_id);
+        let settled = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                (tasks.get(&task_id).unwrap().status == TaskStatus::Stopped
+                    && tasks
+                        .output(&task_id)
+                        .is_some_and(|output| output.full_output.contains("command cancelled")))
+                .then_some(())
+            },
+        )
+        .await;
+        drop(writer);
+        assert!(
+            settled.is_ok(),
+            "the stopped background run must settle Stopped with the synthetic reason, was: {:?}",
+            tasks.output(&task_id).map(|output| output.full_output)
+        );
+
+        // …and the output carries the stream plus the synthetic cancel
+        // reason exactly once.
+        let output = tasks.output(&task_id).unwrap().full_output;
+        assert!(
+            output.contains("streamed\n"),
+            "the streamed output rides the row, was: {output:?}"
+        );
+        let reason_count = output.matches("command cancelled").count();
+        assert_eq!(
+            reason_count, 1,
+            "the synthetic cancel reason lands exactly once, was: {output:?}"
+        );
+    }
+
     /// Given a foreground command the user detaches mid-run, when the run
     /// hands over to the background continuation, then the converted task's
     /// archive keeps the fingerprint the foreground capture attached (US14.1:
@@ -3139,6 +4087,7 @@ mod tests {
             "session-1".to_string(),
             "agent-main".to_string(),
             "toolu-detach".to_string(),
+            Vec::new(),
         ));
 
         // Wait for the foreground row, then fire the user detach (the same
@@ -3237,6 +4186,7 @@ mod tests {
             "session-1".to_string(),
             "agent-main".to_string(),
             "toolu-1".to_string(),
+            Vec::new(),
         ));
 
         let task_id = mirri_test_support::wait_for::wait_for_async(
@@ -3273,5 +4223,35 @@ mod tests {
             "the stopped row settles Stopped"
         );
         drop(writer);
+    }
+
+    #[test]
+    fn should_allow_a_diagnostic_snapshot_when_the_task_was_moved_to_background() {
+        let text = moved_to_background_output("task-1", "d", None, "");
+        assert!(text.contains("single non-blocking"), "{text}");
+        assert!(text.contains("only completion"), "{text}");
+        let started = background_started_output("task-1", "d");
+        assert!(started.contains("single non-blocking"), "{started}");
+    }
+
+    #[test]
+    fn should_still_forbid_blocking_wait_in_that_copy() {
+        let text = moved_to_background_output("task-1", "d", None, "");
+        assert!(text.contains("never wait on it with block=true"), "{text}");
+        let started = background_started_output("task-1", "d");
+        assert!(
+            started.contains("never wait on it with block=true"),
+            "{started}"
+        );
+    }
+
+    #[test]
+    fn should_guide_away_from_prefixing_cd_in_the_tool_description() {
+        let (_tasks, tool) = test_tool();
+        let description = tool.description();
+        assert!(
+            description
+                .contains("pass the 'cwd' parameter instead of prefixing the command with `cd`")
+        );
     }
 }

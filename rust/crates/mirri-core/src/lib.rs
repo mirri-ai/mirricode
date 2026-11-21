@@ -116,6 +116,7 @@ pub mod swarm;
 pub mod system_reminder_wire;
 pub mod task;
 pub mod task_notification;
+pub mod task_silence_warning;
 pub mod task_persist;
 pub mod telemetry;
 pub mod terminal_pool;
@@ -259,7 +260,7 @@ pub use subagent::{
 pub use swarm::{SwarmModeService, SwarmModeTrigger};
 pub use task::{
     AgentTask, BackgroundTaskInfo, MAX_TASK_OUTPUT_BYTES, TASK_OUTPUT_PREVIEW_CHARS, TaskKind,
-    TaskManager, TaskOutput, TaskOutputSnapshot, TaskStatus,
+    TaskManager, TaskOutput, TaskOutputCoordinates, TaskOutputSnapshot, TaskStatus,
 };
 pub use task_persist::TaskPersistence;
 pub use telemetry::{

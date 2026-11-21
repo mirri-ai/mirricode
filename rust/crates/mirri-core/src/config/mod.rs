@@ -146,6 +146,9 @@ pub struct ServerConfig {
     /// [`Self::resolve_retention`]).
     #[serde(default)]
     pub retention: Option<RetentionConfig>,
+    /// Typed `[bash]` section — the Bash tool's environment hygiene knobs.
+    #[serde(default)]
+    pub bash: Option<BashConfig>,
     #[serde(default)]
     pub telemetry: Option<bool>,
 
@@ -443,6 +446,15 @@ pub struct TaskConfig {
     /// timeout (schema-only; consumed by the Bash batch).
     #[serde(default, alias = "bashTaskTimeoutS")]
     pub bash_task_timeout_s: Option<u64>,
+    /// Silence-warning threshold (seconds) for the task driver's warning
+    /// scanner (B-ADR-16 ① / BH8): how long a running process-kind
+    /// background task may go without producing output before a synthetic
+    /// user message warns the model. `0` disables the warning entirely;
+    /// absent keeps the 300s default (resolved on the consumer side, the
+    /// `heartbeatIntervalMs` pattern — deliberately NOT in `validate()`'s
+    /// `>= 1` family).
+    #[serde(default, alias = "silenceWarnSecs")]
+    pub silence_warn_secs: Option<u64>,
     /// Grace window before an escalated stop lands `stopped` (`>= 0`).
     #[serde(default, alias = "killGracePeriodMs")]
     pub kill_grace_period_ms: Option<u64>,
@@ -587,6 +599,16 @@ pub struct RetentionConfig {
     /// The background check's interval in hours (US1.2, ≥ 1).
     #[serde(default = "default_interval_hours", alias = "intervalHours")]
     pub interval_hours: u32,
+}
+
+/// The `[bash]` section: Bash tool settings.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BashConfig {
+    /// Environment variable names exempt from the credential filter: a
+    /// variable whose name looks sensitive (`KEY`/`TOKEN`/`SECRET`/`PASSWORD`)
+    /// is stripped from spawned commands unless listed here.
+    #[serde(default, alias = "envAllowlist")]
+    pub env_allowlist: Vec<String>,
 }
 
 /// Default for [`RetentionConfig::archive_grace_days`] (§3.2).
@@ -933,6 +955,7 @@ impl ServerConfig {
                 &task.bash_auto_background_on_timeout,
             );
             override_if_set(&mut resolved.bash_task_timeout_s, &task.bash_task_timeout_s);
+            override_if_set(&mut resolved.silence_warn_secs, &task.silence_warn_secs);
             override_if_set(
                 &mut resolved.kill_grace_period_ms,
                 &task.kill_grace_period_ms,
@@ -1036,6 +1059,25 @@ impl ServerConfig {
                 .max_task_lifetime_s
                 .unwrap_or(DEFAULT_TASK_MAX_LIFETIME_S),
         )
+    }
+
+    /// The resolved silence-warning threshold for the task driver's warning
+    /// scanner (B-ADR-16 ① / BH8): the `[task]` `silenceWarnSecs` when set,
+    /// else the 300s default. `0` disables the warning entirely — this
+    /// returns `None` for it (the `heartbeatIntervalMs` three-arm family).
+    ///
+    /// LAYER CONTRACT — `None` here means "off" (this resolver fully
+    /// resolves, so it has no "unset" arm). Do NOT confuse it with the
+    /// task manager's `silence_warn_secs()` field, whose `None` means
+    /// "unset" (the driver's own 300s fallback) while `Some(ZERO)` is
+    /// the explicit off sentinel: the manager layer needs the extra
+    /// state because it is also constructed without any config.
+    pub fn resolve_silence_warn_secs(&self) -> Option<std::time::Duration> {
+        match self.resolve_task_config().silence_warn_secs {
+            Some(0) => None,
+            Some(secs) => Some(std::time::Duration::from_secs(secs)),
+            None => Some(std::time::Duration::from_secs(300)),
+        }
     }
 
     /// The deprecation notice for a config still carrying a non-empty

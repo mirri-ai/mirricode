@@ -449,6 +449,7 @@ mod tests {
             notification_delivered_at: None,
             fingerprint,
             lifetime_exempt,
+            last_output_at: None,
         };
         TaskPersistence::new(tasks_dir.clone(), Arc::new(LocalSyncFs::new()))
             .save_task(&task)

@@ -768,6 +768,7 @@ async fn should_read_file_when_created_by_process_execution() {
     // in the temp directory.
     let process = LocalProcess::new();
     let opts = ExecOptions {
+        env_remove: Vec::new(),
         cwd: Some(temp.path().to_path_buf()),
         ..Default::default()
     };
@@ -1165,6 +1166,7 @@ async fn should_run_in_correct_directory_when_cwd_is_set() {
     let tmp = TempDir::new().unwrap();
     let process = LocalProcess::new();
     let opts = ExecOptions {
+        env_remove: Vec::new(),
         cwd: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };

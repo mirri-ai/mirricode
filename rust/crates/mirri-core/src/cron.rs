@@ -51,7 +51,8 @@ pub use workspace_store::{
     WorkspaceCronDocument, WorkspaceCronManager, WorkspaceCronStore,
 };
 
-use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, Utc};
+use jiff::ToSpan;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -62,7 +63,7 @@ pub mod tz;
 pub use jitter::{
     DEFAULT_CRON_JITTER_CONFIG, JitterConfig, jittered_next_run, one_shot_jittered_next,
 };
-pub use tz::{CronTimezone, format_local_iso_with_offset};
+pub use tz::{CronTimezone, format_local_iso_with_offset, to_local_datetime};
 
 use crate::scope::SessionWireLog;
 use mirri_proto::WireOp;
@@ -1191,8 +1192,8 @@ impl CronManager {
                 Some(interval) => ScheduleSpec::Interval(interval),
                 None => ScheduleSpec::Cron(&cron),
             };
-            let first = Self::compute_schedule_next_fire(&schedule, Utc::now(), tz)?;
-            let first_day = first.with_timezone(&tz).date_naive();
+            let first = Self::compute_schedule_next_fire(&schedule, Utc::now(), tz.clone())?;
+            let first_day = local_date(first, &tz);
             if ends_at < first_day {
                 return Err(CronError::InvalidExpression(
                     "结束日期不能早于首次运行日".to_string(),
@@ -1604,8 +1605,8 @@ impl CronManager {
                 // B1 / SDR-110: a restored task whose schedule already ran
                 // past its end date never reschedules — it restores dormant
                 // (its records stay listed until the next mutation).
-                match Self::compute_schedule_next_fire(&schedule, base, tz) {
-                    Ok(ideal) if occurrence_past_ends_at(&task, ideal, tz) => None,
+                match Self::compute_schedule_next_fire(&schedule, base, tz.clone()) {
+                    Ok(ideal) if occurrence_past_ends_at(&task, ideal, tz.clone()) => None,
                     Ok(ideal) => Some(
                         Self::schedule_occurrence_for(
                             &schedule,
@@ -1716,7 +1717,7 @@ impl CronManager {
         let mut fires = Vec::with_capacity(count.min(64));
         let mut cursor = anchor;
         for _ in 0..count {
-            match Self::compute_schedule_next_fire(schedule, cursor, tz) {
+            match Self::compute_schedule_next_fire(schedule, cursor, tz.clone()) {
                 Ok(next) => {
                     fires.push(next);
                     cursor = next;
@@ -1768,7 +1769,11 @@ impl CronManager {
 
     /// The cron arm of [`Self::prev_fire_for`]: the bounded backward
     /// DAY-walk judged by the forward kernel (see the caller's docs).
-    fn prev_cron_fire(cron: &str, now: DateTime<Utc>, tz: chrono_tz::Tz) -> Option<DateTime<Utc>> {
+    fn prev_cron_fire(
+        cron: &str,
+        now: DateTime<Utc>,
+        tz: jiff::tz::TimeZone,
+    ) -> Option<DateTime<Utc>> {
         let spec = CronSpec::parse(cron).ok()?;
         // Resolve candidates nearest-first: days step back from today's
         // LOCAL date (the expression's fields mean what they say on the
@@ -1777,19 +1782,18 @@ impl CronManager {
         // `to_instant` the forward walk uses — a slot inside a
         // spring-forward gap resolves to that walk's shifted instant, and
         // a candidate past `now` is not an occurrence yet.
-        let now_local = now.with_timezone(&tz).naive_local();
         let mut hours = spec.hour.values.clone();
         hours.sort_unstable_by(|a, b| b.cmp(a));
         let mut minutes = spec.minute.values.clone();
         minutes.sort_unstable_by(|a, b| b.cmp(a));
-        let mut day = now_local.date();
+        let mut day = local_datetime(now, &tz).date();
         for _ in 0..=SEARCH_HORIZON_DAYS {
-            if spec.month.values.contains(&(day.month() as i32)) {
-                let day_of_month_matches = spec.day_of_month.values.contains(&(day.day() as i32));
+            if spec.month.values.contains(&i32::from(day.month())) {
+                let day_of_month_matches = spec.day_of_month.values.contains(&i32::from(day.day()));
                 let day_of_week_matches = spec
                     .day_of_week
                     .values
-                    .contains(&(day.weekday().num_days_from_sunday() as i32));
+                    .contains(&i32::from(day.weekday().to_sunday_zero_offset()));
                 let day_matches = match (spec.day_of_month.restricted, spec.day_of_week.restricted)
                 {
                     (true, true) => day_of_month_matches || day_of_week_matches,
@@ -1798,10 +1802,12 @@ impl CronManager {
                 if day_matches {
                     for &hour in &hours {
                         for &minute in &minutes {
-                            let Some(naive) = day.and_hms_opt(hour as u32, minute as u32, 0) else {
+                            // Parsing range-checks both fields, so the wall
+                            // time below is always constructible.
+                            let Some(naive) = local_wall_time(day, hour as u8, minute as u8) else {
                                 continue;
                             };
-                            if let Some(instant) = to_instant(tz, naive)
+                            if let Some(instant) = to_instant(&tz, naive)
                                 && instant <= now
                             {
                                 return Some(instant);
@@ -1810,7 +1816,7 @@ impl CronManager {
                     }
                 }
             }
-            day = day.checked_sub_days(chrono::Days::new(1))?;
+            day = day.yesterday().ok()?;
         }
         None
     }
@@ -1820,22 +1826,21 @@ impl CronManager {
     fn prev_interval_fire(
         interval: &IntervalSpec,
         now: DateTime<Utc>,
-        tz: chrono_tz::Tz,
+        tz: jiff::tz::TimeZone,
     ) -> Option<DateTime<Utc>> {
         // The anchor's local midnight is the floor of the walk — an
         // occurrence before the anchor does not exist by definition.
-        let start = interval
-            .anchor_date
-            .and_hms_opt(0, 0, 0)
-            .and_then(|naive| to_instant(tz, naive))?
-            - Duration::minutes(1);
+        let start = chrono_local_date(interval.anchor_date)
+            .ok()?
+            .to_datetime(jiff::civil::Time::midnight());
+        let start = to_instant(&tz, start)? - Duration::minutes(1);
         let mut cursor = start;
         let mut last: Option<DateTime<Utc>> = None;
         // The same horizon the forward walk uses, plus the month-clamp
         // slack (identical bound to `interval_next_fire`).
         let horizon = SEARCH_HORIZON_DAYS + 366;
         for _ in 0..horizon {
-            let Ok(next) = interval_next_fire(interval, cursor, tz) else {
+            let Ok(next) = interval_next_fire(interval, cursor, tz.clone()) else {
                 break;
             };
             if next > now {
@@ -2129,7 +2134,7 @@ impl CronManager {
         } else {
             ScheduleSpec::Cron(&cron)
         };
-        let ideal = Self::compute_schedule_next_fire(&schedule, created_at, tz)?;
+        let ideal = Self::compute_schedule_next_fire(&schedule, created_at, tz.clone())?;
         let next_fire_at = Self::schedule_occurrence_for(
             &schedule,
             &id,
@@ -2181,7 +2186,7 @@ impl CronManager {
         ideal: DateTime<Utc>,
         recurring: bool,
         created_at: DateTime<Utc>,
-        tz: chrono_tz::Tz,
+        tz: jiff::tz::TimeZone,
         options: CronOptions,
     ) -> Result<DateTime<Utc>, CronError> {
         if !options.jitter {
@@ -2217,7 +2222,7 @@ impl CronManager {
     fn compute_schedule_next_fire(
         schedule: &ScheduleSpec<'_>,
         from: DateTime<Utc>,
-        tz: chrono_tz::Tz,
+        tz: jiff::tz::TimeZone,
     ) -> Result<DateTime<Utc>, CronError> {
         match schedule {
             ScheduleSpec::Cron(cron) => Self::compute_next_fire(cron, from, tz),
@@ -2231,7 +2236,7 @@ impl CronManager {
     pub(crate) fn compute_schedule_next_fire_pub(
         schedule: &ScheduleSpec<'_>,
         from: DateTime<Utc>,
-        tz: chrono_tz::Tz,
+        tz: jiff::tz::TimeZone,
     ) -> Result<DateTime<Utc>, CronError> {
         Self::compute_schedule_next_fire(schedule, from, tz)
     }
@@ -2267,7 +2272,7 @@ impl CronManager {
                 .unwrap_or(task.created_at);
             let mut cursor = base;
             while count < MAX_COALESCE_ITERATIONS {
-                let ideal = match Self::compute_schedule_next_fire(&schedule, cursor, tz) {
+                let ideal = match Self::compute_schedule_next_fire(&schedule, cursor, tz.clone()) {
                     Ok(ideal) => ideal,
                     Err(_) => break,
                 };
@@ -2275,7 +2280,7 @@ impl CronManager {
                 // occurrence past `ends_at`'s local day stops the coalesce
                 // walk without counting it (a recovered backlog must not
                 // coalesce occurrences the schedule had already ended on).
-                if occurrence_past_ends_at(task, ideal, tz) {
+                if occurrence_past_ends_at(task, ideal, tz.clone()) {
                     break;
                 }
                 let jittered = Self::schedule_occurrence_for(
@@ -2284,7 +2289,7 @@ impl CronManager {
                     ideal,
                     task.recurring,
                     task.created_at,
-                    tz,
+                    tz.clone(),
                     self.options,
                 )
                 .unwrap_or(ideal);
@@ -2304,14 +2309,14 @@ impl CronManager {
         // carries the `ended` mark (the max_fires finale's sibling).
         let ended = task
             .ends_at
-            .is_some_and(|_| ends_past_schedule(task, &schedule, advanced, tz));
+            .is_some_and(|_| ends_past_schedule(task, &schedule, advanced, tz.clone()));
         // The post-fire schedule: recurring survivors reschedule from the
         // advanced cursor (jittered), clamped at the end date; one-shots,
         // stale, ended, and maxed-out tasks need none.
         let next_fire_at = if task.recurring && !stale && !maxed_out && !ended {
-            Self::compute_schedule_next_fire(&schedule, advanced, tz)
+            Self::compute_schedule_next_fire(&schedule, advanced, tz.clone())
                 .ok()
-                .filter(|ideal| !occurrence_past_ends_at(task, *ideal, tz))
+                .filter(|ideal| !occurrence_past_ends_at(task, *ideal, tz.clone()))
                 .map(|ideal| {
                     Self::schedule_occurrence_for(
                         &schedule,
@@ -2319,7 +2324,7 @@ impl CronManager {
                         ideal,
                         task.recurring,
                         task.created_at,
-                        tz,
+                        tz.clone(),
                         self.options,
                     )
                     .unwrap_or(ideal)
@@ -2349,19 +2354,26 @@ impl CronManager {
     fn compute_next_fire(
         cron: &str,
         from: DateTime<Utc>,
-        tz: chrono_tz::Tz,
+        tz: jiff::tz::TimeZone,
     ) -> Result<DateTime<Utc>, CronError> {
         let spec = CronSpec::parse(cron)?;
         // The candidate search runs on the zone's local wall clock: the
         // start is the next local minute boundary strictly after `from`
         // (a fire time must always be in the future).
-        let start = (from.with_timezone(&tz).naive_local() + Duration::minutes(1))
-            .with_second(0)
-            .and_then(|moment| moment.with_nanosecond(0))
-            .ok_or_else(|| {
-                CronError::InvalidExpression(format!("timestamp out of range: {from}"))
+        let start = local_datetime(from, &tz)
+            .round(
+                jiff::civil::DateTimeRound::new()
+                    .smallest(jiff::Unit::Minute)
+                    .mode(jiff::RoundMode::Ceil),
+            )
+            .map_err(|error| {
+                CronError::InvalidExpression(format!("timestamp out of range: {from}: {error}"))
             })?;
-        let horizon = start + Duration::days(SEARCH_HORIZON_DAYS);
+        let horizon = start
+            .checked_add(SEARCH_HORIZON_DAYS.days())
+            .map_err(|error| {
+                CronError::InvalidExpression(format!("timestamp out of range: {from}: {error}"))
+            })?;
 
         // Search day by day: at most one midnight iteration per day, so the
         // full horizon costs only a few thousand iterations even for
@@ -2369,17 +2381,15 @@ impl CronManager {
         // local calendar (dom/dow mean what they say in `tz`); each
         // candidate wall time is then mapped back to an instant under the
         // DST edge rules of [`to_instant`].
-        let first_day = start.date().and_hms_opt(0, 0, 0).ok_or_else(|| {
-            CronError::InvalidExpression(format!("timestamp out of range: {from}"))
-        })?;
+        let first_day = start.date();
         let mut day = first_day;
-        while day <= horizon {
-            let month_matches = spec.month.values.contains(&(day.month() as i32));
-            let day_of_month_matches = spec.day_of_month.values.contains(&(day.day() as i32));
+        while day <= horizon.date() {
+            let month_matches = spec.month.values.contains(&i32::from(day.month()));
+            let day_of_month_matches = spec.day_of_month.values.contains(&i32::from(day.day()));
             let day_of_week_matches = spec
                 .day_of_week
                 .values
-                .contains(&(day.weekday().num_days_from_sunday() as i32));
+                .contains(&i32::from(day.weekday().to_sunday_zero_offset()));
             let day_matches = match (spec.day_of_month.restricted, spec.day_of_week.restricted) {
                 // Standard cron: when both fields are restricted, either may
                 // satisfy the day.
@@ -2388,10 +2398,14 @@ impl CronManager {
             };
             if month_matches && day_matches {
                 let is_first_day = day == first_day;
-                let hour_floor = if is_first_day { start.hour() as i32 } else { 0 };
+                let hour_floor = if is_first_day {
+                    i32::from(start.hour())
+                } else {
+                    0
+                };
                 for &hour in spec.hour.values.iter().filter(|hour| **hour >= hour_floor) {
                     let minute_floor = if is_first_day && hour == hour_floor {
-                        start.minute() as i32
+                        i32::from(start.minute())
                     } else {
                         0
                     };
@@ -2401,9 +2415,7 @@ impl CronManager {
                         .iter()
                         .filter(|minute| **minute >= minute_floor)
                     {
-                        let naive = day
-                            .date()
-                            .and_hms_opt(hour as u32, minute as u32, 0)
+                        let naive = local_wall_time(day, hour as u8, minute as u8)
                             // Values were range-checked during parsing, so both
                             // setters are total.
                             .expect("validated cron field values are always settable");
@@ -2411,13 +2423,15 @@ impl CronManager {
                         // earliest instant is still at or before `from` (the
                         // fold of a fall-back transition, seen from its second
                         // pass) — keep scanning the following candidates.
-                        if let Some(fire) = to_instant(tz, naive).filter(|fire| *fire > from) {
+                        if let Some(fire) = to_instant(&tz, naive).filter(|fire| *fire > from) {
                             return Ok(fire);
                         }
                     }
                 }
             }
-            day += Duration::days(1);
+            day = day.tomorrow().map_err(|error| {
+                CronError::InvalidExpression(format!("timestamp out of range: {from}: {error}"))
+            })?;
         }
         Err(CronError::NoNextFire(cron.to_string()))
     }
@@ -2449,7 +2463,7 @@ impl CronManager {
 fn interval_next_fire(
     interval: &IntervalSpec,
     from: DateTime<Utc>,
-    tz: chrono_tz::Tz,
+    tz: jiff::tz::TimeZone,
 ) -> Result<DateTime<Utc>, CronError> {
     let (hour, minute) = parse_hhmm(&interval.time).ok_or_else(|| {
         CronError::InvalidExpression(format!(
@@ -2466,12 +2480,12 @@ fn interval_next_fire(
     // The anchor's local midnight is step k = 0; walk k = 0, 1, 2, ...
     // and return the first mapped instant strictly after `from`.
     let mut k: i64 = 0;
-    let mut last_date = interval.anchor_date;
+    let mut last_date = chrono_local_date(interval.anchor_date)?;
     loop {
-        let naive = last_date.and_hms_opt(hour, minute, 0).ok_or_else(|| {
+        let naive = local_wall_time(last_date, hour as u8, minute as u8).ok_or_else(|| {
             CronError::InvalidExpression("interval time out of range".to_string())
         })?;
-        if let Some(fire) = to_instant(tz, naive).filter(|fire| *fire > from) {
+        if let Some(fire) = to_instant(&tz, naive).filter(|fire| *fire > from) {
             return Ok(fire);
         }
         k += 1;
@@ -2481,12 +2495,15 @@ fn interval_next_fire(
                 interval.every, interval.unit, interval.anchor_date
             )));
         }
+        let step = interval.every as i64;
         last_date = match interval.unit {
             IntervalUnit::Day => last_date
-                .checked_add_signed(chrono::Duration::days(interval.every as i64))
+                .checked_add(step.days())
+                .ok()
                 .ok_or_else(|| CronError::NoNextFire(String::new()))?,
             IntervalUnit::Week => last_date
-                .checked_add_signed(chrono::Duration::weeks(interval.every as i64))
+                .checked_add((step * 7).days())
+                .ok()
                 .ok_or_else(|| CronError::NoNextFire(String::new()))?,
             IntervalUnit::Month => {
                 // Review Blocker 1: the month arm anchors every step on the
@@ -2495,42 +2512,28 @@ fn interval_next_fire(
                 // months ((2k-1) × every, skipping occurrences). Computing
                 // from the original anchor also keeps the walk O(k) total
                 // (one month addition per step, not one per prior step).
-                interval
-                    .anchor_date
-                    .with_day(1)
-                    .and_then(|first| {
-                        first.checked_add_months(chrono::Months::new(
-                            (k * interval.every as i64) as u32,
-                        ))
-                    })
-                    .and_then(|shifted| {
-                        // Restore the anchor's day-of-month when it
-                        // exists in the target month, else clamp to the
-                        // month's last day (Jan 31 → Feb 28).
-                        let day = interval
-                            .anchor_date
-                            .day()
-                            .min(days_in_month(shifted.year(), shifted.month()));
-                        shifted.with_day(day)
-                    })
+                let anchor = chrono_local_date(interval.anchor_date)?;
+                let first_of_anchor = anchor.with().day(1).build().map_err(|_| {
+                    CronError::NoNextFire(format!("interval anchor {anchor} is out of range"))
+                })?;
+                let shifted = first_of_anchor
+                    .checked_add((k * step).months())
+                    .ok()
+                    .ok_or_else(|| CronError::NoNextFire(String::new()))?;
+                // Restore the anchor's day-of-month when it exists in the
+                // target month, else clamp to the month's last day
+                // (Jan 31 → Feb 28) — the `chrono` `checked_add_months`
+                // semantics the pre-jiff walk relied on.
+                let day = anchor.day().min(shifted.days_in_month());
+                shifted
+                    .with()
+                    .day(day)
+                    .build()
+                    .ok()
                     .ok_or_else(|| CronError::NoNextFire(String::new()))?
             }
         };
     }
-}
-
-/// How many days a month carries (the interval month-clamp's bound).
-fn days_in_month(year: i32, month: u32) -> u32 {
-    let (next_year, next_month) = if month == 12 {
-        (year + 1, 1)
-    } else {
-        (year, month + 1)
-    };
-    let first_of_next =
-        chrono::NaiveDate::from_ymd_opt(next_year, next_month, 1).expect("a valid first-of-month");
-    let first_of_this =
-        chrono::NaiveDate::from_ymd_opt(year, month, 1).expect("a valid first-of-month");
-    (first_of_next - first_of_this).num_days() as u32
 }
 
 /// The task's schedule shape (ADR-017): an interval task evaluates
@@ -2551,10 +2554,10 @@ pub(crate) fn task_schedule(task: &CronTask) -> ScheduleSpec<'_> {
 pub(crate) fn occurrence_past_ends_at(
     task: &CronTask,
     occurrence: DateTime<Utc>,
-    tz: chrono_tz::Tz,
+    tz: jiff::tz::TimeZone,
 ) -> bool {
     task.ends_at
-        .is_some_and(|ends_at| occurrence.with_timezone(&tz).date_naive() > ends_at)
+        .is_some_and(|ends_at| local_date(occurrence, &tz) > ends_at)
 }
 
 /// Whether the task's schedule has run past its `ends_at` (the finale
@@ -2565,19 +2568,19 @@ pub(crate) fn ends_past_schedule(
     task: &CronTask,
     schedule: &ScheduleSpec<'_>,
     advanced: DateTime<Utc>,
-    tz: chrono_tz::Tz,
+    tz: jiff::tz::TimeZone,
 ) -> bool {
     let Some(ends_at) = task.ends_at else {
         return false;
     };
     // The advanced cursor's own day already past the end: no question.
-    if advanced.with_timezone(&tz).date_naive() > ends_at {
+    if local_date(advanced, &tz) > ends_at {
         return true;
     }
     // Otherwise the finale arrives when the NEXT occurrence would fall
     // past the end date (the current delivery is the last legal one).
-    match CronManager::compute_schedule_next_fire_pub(schedule, advanced, tz) {
-        Ok(next) => next.with_timezone(&tz).date_naive() > ends_at,
+    match CronManager::compute_schedule_next_fire_pub(schedule, advanced, tz.clone()) {
+        Ok(next) => local_date(next, &tz) > ends_at,
         Err(_) => true, // no next occurrence at all: the schedule is over
     }
 }
@@ -2593,32 +2596,59 @@ pub(crate) fn ends_past_schedule(
 /// - a non-existent local time (the spring-forward gap) is interpreted
 ///   with the offset in force one minute before the gap: `02:30` on a
 ///   2→3 jump lands on the instant the wall clock shows `03:30`.
-fn to_instant(tz: chrono_tz::Tz, naive: NaiveDateTime) -> Option<DateTime<Utc>> {
-    use chrono::{Offset, TimeZone};
-    match tz.from_local_datetime(&naive) {
-        chrono::LocalResult::Single(moment) => Some(moment.with_timezone(&Utc)),
-        chrono::LocalResult::Ambiguous(earliest, _) => Some(earliest.with_timezone(&Utc)),
-        chrono::LocalResult::None => {
-            // A non-existent local time (the spring-forward gap): interpret
-            // it with the offset in force just *before* the gap began — the
-            // JS `new Date(...)` normalization (`02:30` on a 2->3 jump lands
-            // on the instant the wall clock shows `03:30`). The candidate may
-            // sit deeper into the gap than its first minute, so walk back
-            // minute by minute (gaps are at most a few hours) to the last
-            // wall minute that exists.
-            let mut pre_gap = naive - Duration::minutes(1);
-            for _ in 0..(24 * 60) {
-                match tz.offset_from_local_datetime(&pre_gap) {
-                    chrono::LocalResult::Single(offset)
-                    | chrono::LocalResult::Ambiguous(offset, _) => {
-                        return Some(Utc.from_utc_datetime(&(naive - offset.fix())));
-                    }
-                    chrono::LocalResult::None => pre_gap -= Duration::minutes(1),
-                }
-            }
-            None
-        }
-    }
+pub(crate) fn to_instant(
+    tz: &jiff::tz::TimeZone,
+    naive: jiff::civil::DateTime,
+) -> Option<chrono::DateTime<Utc>> {
+    use jiff::tz::AmbiguousOffset;
+    let ambiguous = tz.to_ambiguous_zoned_datetime(naive);
+    let timestamp = match ambiguous.offset() {
+        AmbiguousOffset::Unambiguous { .. } => ambiguous.unambiguous().ok()?.timestamp(),
+        // The fall-back fold: the *earliest* instant wins.
+        AmbiguousOffset::Fold { .. } => ambiguous.earlier().ok()?.timestamp(),
+        // A non-existent local time (the spring-forward gap): interpret it
+        // with the offset in force just *before* the gap began — the JS
+        // `new Date(...)` normalization (`02:30` on a 2->3 jump lands on the
+        // instant the wall clock shows `03:30`). Unlike chrono, jiff reports
+        // that pre-gap offset directly (`Gap::before`), so the old
+        // minute-by-minute walk back to the last existing wall minute
+        // collapses into one subtraction.
+        AmbiguousOffset::Gap { before, .. } => before.to_timestamp(naive).ok()?,
+    };
+    chrono::DateTime::from_timestamp_millis(timestamp.as_millisecond())
+}
+
+/// The wall-clock reading of `instant` on `tz`'s calendar, as a civil
+/// (zone-free) datetime.
+fn local_datetime(instant: DateTime<Utc>, tz: &jiff::tz::TimeZone) -> jiff::civil::DateTime {
+    tz::to_local_datetime(instant, tz).datetime()
+}
+
+/// The local calendar DATE `instant` falls on under `tz` — the unit the
+/// `ends_at` comparisons are made in.
+fn local_date(instant: DateTime<Utc>, tz: &jiff::tz::TimeZone) -> chrono::NaiveDate {
+    let date = local_datetime(instant, tz).date();
+    chrono::NaiveDate::from_ymd_opt(
+        i32::from(date.year()),
+        date.month() as u32,
+        date.day() as u32,
+    )
+    .expect("a jiff civil date is always a valid chrono date")
+}
+
+/// A civil date as a wall-clock datetime at `hour:minute:00` (the cron and
+/// interval candidates' shape). `None` only when the field values are out
+/// of range — the callers guarantee they are not.
+fn local_wall_time(date: jiff::civil::Date, hour: u8, minute: u8) -> Option<jiff::civil::DateTime> {
+    let time = jiff::civil::Time::new(hour as i8, minute as i8, 0, 0).ok()?;
+    Some(date.to_datetime(time))
+}
+
+/// The engine's `chrono` calendar dates (interval anchors, end dates)
+/// converted to the `jiff` civil dates the calendar walks run on.
+fn chrono_local_date(date: chrono::NaiveDate) -> Result<jiff::civil::Date, CronError> {
+    jiff::civil::Date::new(date.year() as i16, date.month() as i8, date.day() as i8)
+        .map_err(|error| CronError::InvalidExpression(error.to_string()))
 }
 
 /// The set of values a single cron field may take, plus whether the field was
@@ -2763,7 +2793,7 @@ fn parse_value(text: &str, field_name: &str, atom: &str) -> Result<i32, CronErro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use chrono::{TimeZone, Timelike};
     use mirri_persistence::{AppendLogStore, JsonlAppendLog};
 
     // -----------------------------------------------------------------------
@@ -2834,7 +2864,8 @@ mod tests {
         let mut expected = anchor;
         for fire in &fires {
             expected =
-                CronManager::compute_next_fire("* * * * *", expected, chrono_tz::UTC).unwrap();
+                CronManager::compute_next_fire("* * * * *", expected, jiff::tz::TimeZone::UTC)
+                    .unwrap();
             assert_eq!(*fire, expected);
         }
     }
@@ -2854,7 +2885,7 @@ mod tests {
         );
         let days: Vec<chrono::NaiveDate> = fires
             .iter()
-            .map(|fire| fire.with_timezone(&chrono_tz::UTC).date_naive())
+            .map(|fire| local_civil(*fire, "UTC").date())
             .collect();
         assert_eq!(
             days,
@@ -2868,12 +2899,8 @@ mod tests {
             ]
         );
         // Every occurrence lands at the spec's time of day.
-        assert!(
-            fires
-                .iter()
-                .all(|fire| fire.with_timezone(&chrono_tz::UTC).time()
-                    == chrono::NaiveTime::from_hms_opt(9, 30, 0).unwrap())
-        );
+        assert!(fires.iter().all(|fire| local_civil(*fire, "UTC").time()
+            == chrono::NaiveTime::from_hms_opt(9, 30, 0).unwrap()));
     }
 
     /// Given a time inside a spring-forward gap, when the interval walks,
@@ -2892,7 +2919,7 @@ mod tests {
         assert_eq!(fires.len(), 1);
         // The wall clock reads 03:30 after the shift (the JS Date
         // normalization both engines align with).
-        let local = fires[0].with_timezone(&chrono_tz::America::New_York);
+        let local = local_civil(fires[0], "America/New_York");
         assert_eq!(
             local.time(),
             chrono::NaiveTime::from_hms_opt(3, 30, 0).unwrap()
@@ -3006,7 +3033,7 @@ mod tests {
         let expected = forward.iter().copied().rfind(|fire| *fire <= now);
         assert_eq!(prev, expected);
         assert_eq!(
-            prev.map(|at| at.with_timezone(&chrono_tz::Asia::Tokyo).date_naive()),
+            prev.map(|at| local_civil(at, "Asia/Tokyo").date()),
             Some(chrono::NaiveDate::from_ymd_opt(2026, 3, 31).unwrap()),
         );
     }
@@ -3041,9 +3068,9 @@ mod tests {
             utc(2026, 10, 26, 3, 0), // Monday 12:00 Tokyo
         );
         let prev = prev.expect("last Monday exists");
-        let local = prev.with_timezone(&chrono_tz::Asia::Tokyo);
+        let local = local_civil(prev, "Asia/Tokyo");
         assert_eq!(
-            local.date_naive(),
+            local.date(),
             chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap()
         );
         assert_eq!(
@@ -3165,7 +3192,7 @@ mod tests {
         );
         let days: Vec<chrono::NaiveDate> = fires
             .iter()
-            .map(|fire| fire.with_timezone(&chrono_tz::UTC).date_naive())
+            .map(|fire| local_civil(*fire, "UTC").date())
             .collect();
         assert_eq!(
             days,
@@ -3195,7 +3222,7 @@ mod tests {
         );
         let days: Vec<chrono::NaiveDate> = fires
             .iter()
-            .map(|fire| fire.with_timezone(&chrono_tz::UTC).date_naive())
+            .map(|fire| local_civil(*fire, "UTC").date())
             .collect();
         assert_eq!(
             days,
@@ -3435,7 +3462,7 @@ mod tests {
             occurrence_past_ends_at(
                 &task,
                 utc(today.year(), today.month(), today.day(), 9, 0),
-                chrono_tz::UTC
+                jiff::tz::TimeZone::UTC
             ),
             "an occurrence after the end date never passes the clamp"
         );
@@ -3524,7 +3551,8 @@ mod tests {
     fn should_return_next_minute_boundary_when_compute_next_fire_with_every_minute_cron() {
         let from = utc(2025, 1, 15, 10, 30).with_second(45).unwrap();
 
-        let next = CronManager::compute_next_fire("* * * * *", from, chrono_tz::UTC).unwrap();
+        let next =
+            CronManager::compute_next_fire("* * * * *", from, jiff::tz::TimeZone::UTC).unwrap();
 
         assert_eq!(next, utc(2025, 1, 15, 10, 31));
         assert!(next > from);
@@ -3537,7 +3565,8 @@ mod tests {
         // following occurrence, never the current one.
         let from = utc(2025, 1, 15, 10, 30);
 
-        let next = CronManager::compute_next_fire("* * * * *", from, chrono_tz::UTC).unwrap();
+        let next =
+            CronManager::compute_next_fire("* * * * *", from, jiff::tz::TimeZone::UTC).unwrap();
 
         assert_eq!(next, utc(2025, 1, 15, 10, 31));
     }
@@ -3546,7 +3575,8 @@ mod tests {
     fn should_return_matching_minute_when_compute_next_fire_with_specific_minute_cron() {
         let from = utc(2025, 1, 15, 9, 45);
 
-        let next = CronManager::compute_next_fire("30 10 * * *", from, chrono_tz::UTC).unwrap();
+        let next =
+            CronManager::compute_next_fire("30 10 * * *", from, jiff::tz::TimeZone::UTC).unwrap();
 
         assert_eq!(next, utc(2025, 1, 15, 10, 30));
     }
@@ -3555,7 +3585,8 @@ mod tests {
     fn should_return_tomorrow_when_compute_next_fire_after_specific_minute_already_passed_today() {
         let from = utc(2025, 1, 15, 10, 31);
 
-        let next = CronManager::compute_next_fire("30 10 * * *", from, chrono_tz::UTC).unwrap();
+        let next =
+            CronManager::compute_next_fire("30 10 * * *", from, jiff::tz::TimeZone::UTC).unwrap();
 
         assert_eq!(next, utc(2025, 1, 16, 10, 30));
     }
@@ -3564,7 +3595,8 @@ mod tests {
     fn should_return_next_value_in_range_when_compute_next_fire_with_range_cron() {
         let from = utc(2025, 1, 15, 17, 0);
 
-        let next = CronManager::compute_next_fire("0 9-17 * * *", from, chrono_tz::UTC).unwrap();
+        let next =
+            CronManager::compute_next_fire("0 9-17 * * *", from, jiff::tz::TimeZone::UTC).unwrap();
 
         assert_eq!(next, utc(2025, 1, 16, 9, 0));
     }
@@ -3574,7 +3606,8 @@ mod tests {
         let from = utc(2025, 1, 15, 10, 31);
 
         let next =
-            CronManager::compute_next_fire("0,15,30,45 * * * *", from, chrono_tz::UTC).unwrap();
+            CronManager::compute_next_fire("0,15,30,45 * * * *", from, jiff::tz::TimeZone::UTC)
+                .unwrap();
 
         assert_eq!(next, utc(2025, 1, 15, 10, 45));
     }
@@ -3583,7 +3616,8 @@ mod tests {
     fn should_return_next_step_value_when_compute_next_fire_with_wildcard_step_cron() {
         let from = utc(2025, 1, 15, 10, 32);
 
-        let next = CronManager::compute_next_fire("*/5 * * * *", from, chrono_tz::UTC).unwrap();
+        let next =
+            CronManager::compute_next_fire("*/5 * * * *", from, jiff::tz::TimeZone::UTC).unwrap();
 
         assert_eq!(next, utc(2025, 1, 15, 10, 35));
     }
@@ -3593,7 +3627,8 @@ mod tests {
         // `5/15` means minutes 5, 20, 35, 50.
         let from = utc(2025, 1, 15, 10, 0);
 
-        let next = CronManager::compute_next_fire("5/15 * * * *", from, chrono_tz::UTC).unwrap();
+        let next =
+            CronManager::compute_next_fire("5/15 * * * *", from, jiff::tz::TimeZone::UTC).unwrap();
 
         assert_eq!(next, utc(2025, 1, 15, 10, 5));
     }
@@ -3602,7 +3637,8 @@ mod tests {
     fn should_respect_step_when_compute_next_fire_with_range_step_cron() {
         let from = utc(2025, 1, 15, 10, 0);
 
-        let next = CronManager::compute_next_fire("1-10/3 * * * *", from, chrono_tz::UTC).unwrap();
+        let next = CronManager::compute_next_fire("1-10/3 * * * *", from, jiff::tz::TimeZone::UTC)
+            .unwrap();
 
         assert_eq!(next, utc(2025, 1, 15, 10, 1));
     }
@@ -3612,7 +3648,8 @@ mod tests {
         // 10:45 has passed; the next fire must be 11:30 today, not tomorrow.
         let from = utc(2025, 1, 15, 10, 45);
 
-        let next = CronManager::compute_next_fire("30 10,11 * * *", from, chrono_tz::UTC).unwrap();
+        let next = CronManager::compute_next_fire("30 10,11 * * *", from, jiff::tz::TimeZone::UTC)
+            .unwrap();
 
         assert_eq!(next, utc(2025, 1, 15, 11, 30));
     }
@@ -3622,7 +3659,8 @@ mod tests {
         // 2025-01-17 is a Friday; the next Monday is 2025-01-20.
         let from = utc(2025, 1, 17, 10, 0);
 
-        let next = CronManager::compute_next_fire("0 9 * * 1", from, chrono_tz::UTC).unwrap();
+        let next =
+            CronManager::compute_next_fire("0 9 * * 1", from, jiff::tz::TimeZone::UTC).unwrap();
 
         assert_eq!(next, utc(2025, 1, 20, 9, 0));
     }
@@ -3632,7 +3670,8 @@ mod tests {
         // 2025-01-17 is a Friday; the next Sunday is 2025-01-19.
         let from = utc(2025, 1, 17, 10, 0);
 
-        let next = CronManager::compute_next_fire("0 0 * * 7", from, chrono_tz::UTC).unwrap();
+        let next =
+            CronManager::compute_next_fire("0 0 * * 7", from, jiff::tz::TimeZone::UTC).unwrap();
 
         assert_eq!(next, utc(2025, 1, 19, 0, 0));
     }
@@ -3642,7 +3681,8 @@ mod tests {
         // 2025-01-20 is a Monday; the next Sunday is 2025-01-26.
         let from = utc(2025, 1, 20, 10, 0);
 
-        let next = CronManager::compute_next_fire("0 0 * * 0", from, chrono_tz::UTC).unwrap();
+        let next =
+            CronManager::compute_next_fire("0 0 * * 0", from, jiff::tz::TimeZone::UTC).unwrap();
 
         assert_eq!(next, utc(2025, 1, 26, 0, 0));
     }
@@ -3653,7 +3693,8 @@ mod tests {
         // 2025-01-16, the first match is Friday 2025-01-17.
         let from = utc(2025, 1, 16, 12, 0);
 
-        let next = CronManager::compute_next_fire("0 0 13 * 5", from, chrono_tz::UTC).unwrap();
+        let next =
+            CronManager::compute_next_fire("0 0 13 * 5", from, jiff::tz::TimeZone::UTC).unwrap();
 
         assert_eq!(next, utc(2025, 1, 17, 0, 0));
     }
@@ -3664,7 +3705,8 @@ mod tests {
         // the next Friday.
         let from = utc(2025, 1, 10, 0, 1);
 
-        let next = CronManager::compute_next_fire("0 0 13 * 5", from, chrono_tz::UTC).unwrap();
+        let next =
+            CronManager::compute_next_fire("0 0 13 * 5", from, jiff::tz::TimeZone::UTC).unwrap();
 
         assert_eq!(next, utc(2025, 1, 13, 0, 0));
     }
@@ -3673,7 +3715,8 @@ mod tests {
     fn should_skip_other_months_when_compute_next_fire_with_restricted_month_cron() {
         let from = utc(2025, 1, 15, 0, 0);
 
-        let next = CronManager::compute_next_fire("0 0 1 3 *", from, chrono_tz::UTC).unwrap();
+        let next =
+            CronManager::compute_next_fire("0 0 1 3 *", from, jiff::tz::TimeZone::UTC).unwrap();
 
         assert_eq!(next, utc(2025, 3, 1, 0, 0));
     }
@@ -3682,7 +3725,8 @@ mod tests {
     fn should_skip_non_leap_years_when_compute_next_fire_with_leap_day_cron() {
         let from = utc(2024, 3, 1, 0, 0);
 
-        let next = CronManager::compute_next_fire("0 0 29 2 *", from, chrono_tz::UTC).unwrap();
+        let next =
+            CronManager::compute_next_fire("0 0 29 2 *", from, jiff::tz::TimeZone::UTC).unwrap();
 
         assert_eq!(next, utc(2028, 2, 29, 0, 0));
     }
@@ -3691,7 +3735,8 @@ mod tests {
     fn should_advance_date_when_compute_next_fire_at_midnight_rollover() {
         let from = utc(2025, 1, 31, 23, 59);
 
-        let next = CronManager::compute_next_fire("0 0 * * *", from, chrono_tz::UTC).unwrap();
+        let next =
+            CronManager::compute_next_fire("0 0 * * *", from, jiff::tz::TimeZone::UTC).unwrap();
 
         assert_eq!(next, utc(2025, 2, 1, 0, 0));
     }
@@ -3700,11 +3745,35 @@ mod tests {
     // compute_next_fire — timezone-aware evaluation (B5 / DEC-3)
     // -----------------------------------------------------------------------
 
-    fn sh() -> chrono_tz::Tz {
-        chrono_tz::Asia::Shanghai
+    fn sh() -> jiff::tz::TimeZone {
+        jiff::tz::TimeZone::get("Asia/Shanghai").expect("bundled tzdb")
     }
-    fn ny() -> chrono_tz::Tz {
-        chrono_tz::America::New_York
+    fn ny() -> jiff::tz::TimeZone {
+        jiff::tz::TimeZone::get("America/New_York").expect("bundled tzdb")
+    }
+
+    /// A named zone from the bundled tzdb (the tests' calendar fixtures).
+    fn zone(name: &str) -> jiff::tz::TimeZone {
+        jiff::tz::TimeZone::get(name).expect("bundled tzdb")
+    }
+
+    /// The local wall-clock reading of an instant on a named zone, in the
+    /// `chrono` shapes the suite's assertions are written in.
+    fn local_civil(at: DateTime<Utc>, name: &str) -> chrono::NaiveDateTime {
+        let civil = crate::cron::to_local_datetime(at, &zone(name)).datetime();
+        chrono::NaiveDate::from_ymd_opt(
+            i32::from(civil.year()),
+            civil.month() as u32,
+            civil.day() as u32,
+        )
+        .and_then(|date| {
+            date.and_hms_opt(
+                i32::from(civil.hour()) as u32,
+                i32::from(civil.minute()) as u32,
+                i32::from(civil.second()) as u32,
+            )
+        })
+        .expect("a jiff civil datetime maps to a chrono naive datetime")
     }
 
     #[test]
@@ -3795,7 +3864,8 @@ mod tests {
         let from = chrono::Utc
             .with_ymd_and_hms(2025, 1, 15, 10, 31, 0)
             .unwrap();
-        let next = CronManager::compute_next_fire("30 10 * * *", from, chrono_tz::UTC).unwrap();
+        let next =
+            CronManager::compute_next_fire("30 10 * * *", from, jiff::tz::TimeZone::UTC).unwrap();
         assert_eq!(
             next,
             chrono::Utc
@@ -3810,9 +3880,12 @@ mod tests {
 
     #[test]
     fn should_return_invalid_expression_when_compute_next_fire_with_too_few_fields() {
-        let error =
-            CronManager::compute_next_fire("0 0 * *", utc(2025, 1, 15, 0, 0), chrono_tz::UTC)
-                .unwrap_err();
+        let error = CronManager::compute_next_fire(
+            "0 0 * *",
+            utc(2025, 1, 15, 0, 0),
+            jiff::tz::TimeZone::UTC,
+        )
+        .unwrap_err();
         assert!(
             matches!(error, CronError::InvalidExpression(message) if message.contains("5 fields"))
         );
@@ -3821,32 +3894,55 @@ mod tests {
     #[test]
     fn should_return_invalid_expression_when_compute_next_fire_with_out_of_range_field_values() {
         assert!(
-            CronManager::compute_next_fire("60 * * * *", utc(2025, 1, 15, 0, 0), chrono_tz::UTC)
-                .is_err()
+            CronManager::compute_next_fire(
+                "60 * * * *",
+                utc(2025, 1, 15, 0, 0),
+                jiff::tz::TimeZone::UTC
+            )
+            .is_err()
         );
         assert!(
-            CronManager::compute_next_fire("* 24 * * *", utc(2025, 1, 15, 0, 0), chrono_tz::UTC)
-                .is_err()
+            CronManager::compute_next_fire(
+                "* 24 * * *",
+                utc(2025, 1, 15, 0, 0),
+                jiff::tz::TimeZone::UTC
+            )
+            .is_err()
         );
         assert!(
-            CronManager::compute_next_fire("* * 0 * *", utc(2025, 1, 15, 0, 0), chrono_tz::UTC)
-                .is_err()
+            CronManager::compute_next_fire(
+                "* * 0 * *",
+                utc(2025, 1, 15, 0, 0),
+                jiff::tz::TimeZone::UTC
+            )
+            .is_err()
         );
         assert!(
-            CronManager::compute_next_fire("* * * 13 *", utc(2025, 1, 15, 0, 0), chrono_tz::UTC)
-                .is_err()
+            CronManager::compute_next_fire(
+                "* * * 13 *",
+                utc(2025, 1, 15, 0, 0),
+                jiff::tz::TimeZone::UTC
+            )
+            .is_err()
         );
         assert!(
-            CronManager::compute_next_fire("* * * * 8", utc(2025, 1, 15, 0, 0), chrono_tz::UTC)
-                .is_err()
+            CronManager::compute_next_fire(
+                "* * * * 8",
+                utc(2025, 1, 15, 0, 0),
+                jiff::tz::TimeZone::UTC
+            )
+            .is_err()
         );
     }
 
     #[test]
     fn should_return_invalid_expression_when_compute_next_fire_with_non_numeric_field() {
-        let error =
-            CronManager::compute_next_fire("mon * * * *", utc(2025, 1, 15, 0, 0), chrono_tz::UTC)
-                .unwrap_err();
+        let error = CronManager::compute_next_fire(
+            "mon * * * *",
+            utc(2025, 1, 15, 0, 0),
+            jiff::tz::TimeZone::UTC,
+        )
+        .unwrap_err();
         assert!(
             matches!(error, CronError::InvalidExpression(message) if message.contains("minute"))
         );
@@ -3854,26 +3950,36 @@ mod tests {
 
     #[test]
     fn should_return_invalid_expression_when_compute_next_fire_with_zero_step() {
-        let error =
-            CronManager::compute_next_fire("*/0 * * * *", utc(2025, 1, 15, 0, 0), chrono_tz::UTC)
-                .unwrap_err();
+        let error = CronManager::compute_next_fire(
+            "*/0 * * * *",
+            utc(2025, 1, 15, 0, 0),
+            jiff::tz::TimeZone::UTC,
+        )
+        .unwrap_err();
         assert!(matches!(error, CronError::InvalidExpression(message) if message.contains("step")));
     }
 
     #[test]
     fn should_return_invalid_expression_when_compute_next_fire_with_inverted_range() {
         assert!(
-            CronManager::compute_next_fire("10-1 * * * *", utc(2025, 1, 15, 0, 0), chrono_tz::UTC)
-                .is_err()
+            CronManager::compute_next_fire(
+                "10-1 * * * *",
+                utc(2025, 1, 15, 0, 0),
+                jiff::tz::TimeZone::UTC
+            )
+            .is_err()
         );
     }
 
     #[test]
     fn should_return_no_next_fire_when_compute_next_fire_with_never_firing_cron() {
         // February never has a 30th.
-        let error =
-            CronManager::compute_next_fire("0 0 30 2 *", utc(2025, 1, 15, 0, 0), chrono_tz::UTC)
-                .unwrap_err();
+        let error = CronManager::compute_next_fire(
+            "0 0 30 2 *",
+            utc(2025, 1, 15, 0, 0),
+            jiff::tz::TimeZone::UTC,
+        )
+        .unwrap_err();
         assert!(matches!(error, CronError::NoNextFire(_)));
     }
 
@@ -4424,8 +4530,7 @@ mod tests {
         assert_eq!(task.timezone.as_deref(), Some("Asia/Shanghai"));
         // next fire is 9am Shanghai = 01:00 UTC on some future day
         let next = task.next_fire_at.unwrap();
-        let sh = chrono_tz::Asia::Shanghai;
-        let local = next.with_timezone(&sh);
+        let local = crate::cron::to_local_datetime(next, &sh());
         assert_eq!((local.hour(), local.minute()), (9, 0));
     }
 
@@ -4560,10 +4665,7 @@ mod tests {
         manager.restore_tasks([task]);
 
         let restored = manager.get("cron-1").unwrap();
-        let local = restored
-            .next_fire_at
-            .unwrap()
-            .with_timezone(&chrono_tz::Asia::Shanghai);
+        let local = crate::cron::to_local_datetime(restored.next_fire_at.unwrap(), &sh());
         assert_eq!((local.hour(), local.minute()), (9, 0));
     }
 
@@ -4743,7 +4845,7 @@ mod tests {
         let tz = CronTimezone::Local.resolve();
         let shifted = next + Duration::seconds(30); // jitter tolerance for lattice alignment
         assert_eq!(
-            shifted.with_timezone(&tz).minute() % 5,
+            crate::cron::to_local_datetime(shifted, &tz).minute() % 5,
             0,
             "cadence keeps its phase"
         );

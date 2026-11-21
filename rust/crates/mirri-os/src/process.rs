@@ -24,9 +24,14 @@ pub struct ExecOptions {
     /// Additional environment variables merged on top of the parent process
     /// environment (later keys win). Note: a key with an *empty* value is set
     /// to an empty string in the child's environment — it does NOT unset the
-    /// variable (that would require an explicit env_remove, which the current
-    /// merge does not do).
+    /// variable (use `env_remove` for that).
     pub env: HashMap<String, String>,
+    /// Variable names removed from the child's inherited environment.
+    ///
+    /// Callers MUST subtract any name they inject via `env` from this set
+    /// before building it; the implementation does not rely on the relative
+    /// order of `command.envs()` and `command.env_remove()` calls.
+    pub env_remove: Vec<String>,
     /// Timeout in milliseconds. `None` means no timeout.
     ///
     /// Note: the timeout is not enforced by [`OsProcess::exec`] itself; callers
@@ -284,6 +289,9 @@ impl LocalProcess {
         // We do NOT call env_clear() — the child inherits the parent env and
         // opts.env overrides individual entries.
         command.envs(&opts.env);
+        for name in &opts.env_remove {
+            command.env_remove(name);
+        }
 
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
@@ -343,6 +351,7 @@ impl OsProcess for LocalProcess {
         let merged_opts = ExecOptions {
             cwd: opts.cwd.clone(),
             env: merged,
+            env_remove: Vec::new(),
             timeout_ms: opts.timeout_ms,
         };
         // Disambiguate from `DynOsProcess::exec` (LocalProcess implements
@@ -934,6 +943,7 @@ pub trait DynOsProcess: Send + Sync {
             let merged_opts = ExecOptions {
                 cwd: opts.cwd.clone(),
                 env: merged,
+            env_remove: Vec::new(),
                 timeout_ms: opts.timeout_ms,
             };
             self.exec(cmd, args, &merged_opts).await
@@ -1028,6 +1038,7 @@ mod tests {
         let opts = super::ExecOptions {
             cwd: None,
             env: std::collections::HashMap::new(),
+            env_remove: Vec::new(),
             timeout_ms: None,
         };
         let mut child: ChildProcess = OsProcess::exec(&process, "true", &[], &opts)

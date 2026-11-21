@@ -146,6 +146,9 @@ pub struct SessionScopeConfig {
     /// (the embedded server's assembly entry); directly-constructed test
     /// scopes keep the TS defaults.
     pub task_lifecycle: TaskLifecycleSettings,
+    /// `[bash] env_allowlist`: variable names exempt from the Bash tool's
+    /// credential filter. Seeded into every agent the session creates.
+    pub bash_env_allowlist: Vec<String>,
     /// The interactive-channel knobs (ADR-008): the question-delivery wait
     /// ceiling the session's `AskUserQuestion` tools run with. Seeded at
     /// construction by [`session_scope_config_from`]
@@ -255,6 +258,12 @@ pub struct TaskLifecycleSettings {
     /// Liveness heartbeat window for stale detection. `None` disables
     /// staleness entirely.
     pub heartbeat_interval: Option<std::time::Duration>,
+    /// Silence-warning threshold for the task driver's warning scanner
+    /// (B-ADR-16 ① / BH8): how long a running process-kind task may go
+    /// without producing output before the model gets a warning injection.
+    /// `None` disables the warning entirely (the `silenceWarnSecs = 0`
+    /// arm); absent keeps the 300s default.
+    pub silence_warn_secs: Option<std::time::Duration>,
 }
 
 impl Default for TaskLifecycleSettings {
@@ -271,6 +280,9 @@ impl Default for TaskLifecycleSettings {
             keep_alive_on_exit: false,
             // TS default: 5-minute stale window.
             heartbeat_interval: Some(std::time::Duration::from_secs(300)),
+            // BH8: 5-minute silence-warning default (mirrors the heartbeat
+            // default; the scanner lives in the embedded task driver).
+            silence_warn_secs: Some(std::time::Duration::from_secs(300)),
         }
     }
 }
@@ -283,6 +295,7 @@ impl Default for SessionScopeConfig {
             hooks: Vec::new(),
             load_project_agents_md: true,
             task_lifecycle: TaskLifecycleSettings::default(),
+            bash_env_allowlist: Vec::new(),
             interaction: InteractionSettings::default(),
             user_permission_rules: Vec::new(),
             max_nesting_depth: crate::subagent::DEFAULT_MAX_NESTING_DEPTH,
@@ -464,6 +477,8 @@ pub struct AgentScopeConfig {
     /// from the session's [`TaskLifecycleSettings`] — the session is the
     /// source of truth; directly-constructed agent scopes keep the default.
     pub max_swarm_items: Option<u32>,
+    /// `[bash] env_allowlist` seed (see [`SessionScopeConfig::bash_env_allowlist`]).
+    pub bash_env_allowlist: Vec<String>,
     /// Session-scoped shared approval store (SDR-003 / D-07). `None` = the
     /// agent's [`PermissionManager`](crate::permission::PermissionManager)
     /// owns a private store (directly-constructed test scopes);
@@ -520,6 +535,7 @@ impl Default for AgentScopeConfig {
             tool_io: crate::tools::ToolIo::default(),
             subagent_timeout: None,
             max_swarm_items: None,
+            bash_env_allowlist: Vec::new(),
             session_approvals: None,
             permission_rules: Vec::new(),
             workspace_id: None,
