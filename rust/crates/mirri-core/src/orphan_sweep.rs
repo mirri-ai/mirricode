@@ -1079,6 +1079,7 @@ mod tests {
             notification_delivered_at: None,
             fingerprint,
             lifetime_exempt: false,
+            last_output_at: None,
         }
     }
 

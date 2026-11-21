@@ -500,6 +500,7 @@ async fn should_restore_session_approvals_when_resuming_session() {
         cancel: &cancel,
         net_class: None,
         turn_origin: Default::default(),
+        command_text: None,
     };
     match pm.evaluate(&ctx) {
         crate::permission::PermissionPolicyResult::Approve { .. } => {}

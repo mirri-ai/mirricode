@@ -279,6 +279,29 @@ impl WorkspaceScope {
             .await
     }
 
+    /// [`Self::create_session_with_config`] with the session's readiness
+    /// decided at registration — see
+    /// [`Self::create_session_with_root_readiness`]. The resume path
+    /// registers with `ready: false`.
+    pub async fn create_session_with_config_readiness(
+        &self,
+        id: SessionId,
+        metadata: SessionMetadata,
+        config: SessionScopeConfig,
+        tasks_dir: Option<PathBuf>,
+        ready: bool,
+    ) -> EngineResult<Arc<SessionScope>> {
+        self.create_session_with_root_readiness(
+            id,
+            metadata,
+            config,
+            tasks_dir,
+            self.cwd.clone(),
+            ready,
+        )
+        .await
+    }
+
     /// The [`Self::create_session_with_config`] variant that roots the
     /// session's file-tool sandbox at an explicit directory instead of the
     /// workspace cwd (the workspace cron run spawner's task-workdir face,
@@ -288,9 +311,40 @@ impl WorkspaceScope {
         &self,
         id: SessionId,
         metadata: SessionMetadata,
+        config: SessionScopeConfig,
+        tasks_dir: Option<PathBuf>,
+        workspace_root: PathBuf,
+    ) -> EngineResult<Arc<SessionScope>> {
+        self.create_session_with_root_readiness(
+            id,
+            metadata,
+            config,
+            tasks_dir,
+            workspace_root,
+            true,
+        )
+        .await
+    }
+
+    /// [`Self::create_session_with_root`] with the session's readiness
+    /// decided at registration.
+    ///
+    /// `ready: false` is the RESUME path's registration: the scope enters the
+    /// live table with its turn gate closed, so a concurrent cron pass or
+    /// `message.send` defers instead of acting on a session whose wire log
+    /// has no writer yet. Marking it ready is the restore path's own job
+    /// ([`SessionScope::mark_ready`]). Deciding readiness HERE — inside the
+    /// same `sessions` write lock that publishes the session — is the point:
+    /// a post-insert [`SessionScope::mark_restoring`] would leave a window
+    /// where the session is resolvable and already looks runnable.
+    pub async fn create_session_with_root_readiness(
+        &self,
+        id: SessionId,
+        metadata: SessionMetadata,
         mut config: SessionScopeConfig,
         tasks_dir: Option<PathBuf>,
         workspace_root: PathBuf,
+        ready: bool,
     ) -> EngineResult<Arc<SessionScope>> {
         let mut sessions = self.sessions.write().await;
         if sessions.contains_key(&id) {
@@ -325,6 +379,9 @@ impl WorkspaceScope {
             Some(workspace_root),
             tasks_dir,
         ));
+        if !ready {
+            session.mark_restoring();
+        }
         sessions.insert(id, Arc::clone(&session));
         Ok(session)
     }

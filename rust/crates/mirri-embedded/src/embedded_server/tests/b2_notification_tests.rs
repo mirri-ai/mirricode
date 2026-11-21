@@ -52,7 +52,7 @@ fn b2_server(mock: Arc<ScriptedLlm>, tick: Duration) -> (EmbeddedServer, tempfil
 }
 
 /// Serialize every recorded LLM call's messages (the assertion substrate).
-fn recorded_all(mock: &ScriptedLlm) -> serde_json::Value {
+pub(super) fn recorded_all(mock: &ScriptedLlm) -> serde_json::Value {
     let messages = mock
         .recorded_messages
         .lock()

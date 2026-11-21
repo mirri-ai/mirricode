@@ -164,6 +164,24 @@ impl TaskPersistence {
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
+    /// Raw-byte variant of [`Self::read_output`] — lets a caller align a
+    /// window to a UTF-8 boundary before decoding. Empty when no log exists.
+    pub fn read_range_bytes(
+        &self,
+        task_id: &str,
+        offset: u64,
+        max_bytes: usize,
+    ) -> EngineResult<Vec<u8>> {
+        Self::validate_task_id(task_id)?;
+        let path = self.tasks_dir.join(task_id).join("output.log");
+        if !self.fs.exists(&path) {
+            return Ok(Vec::new());
+        }
+        self.fs
+            .read_range(&path, offset, max_bytes)
+            .map_err(io_to_engine)
+    }
+
     /// Get the total size of the task's output log in bytes, or `0` when the
     /// task has no output log.
     pub fn output_size(&self, task_id: &str) -> EngineResult<u64> {
@@ -173,6 +191,25 @@ impl TaskPersistence {
             return Ok(0);
         }
         Ok(self.fs.stat(&path).map(|stat| stat.size).unwrap_or(0))
+    }
+
+    /// The last modification time of the task's output log as a
+    /// `SystemTime`, or `None` when the task has no output log. The restore
+    /// path reads this as the last honest witness of output activity when
+    /// back-deriving a task's silence anchor (B-ADR-16 ②). A stat failure
+    /// is propagated as `Err` — the caller warns and falls back to the
+    /// restore moment rather than silently treating a failed probe as "no
+    /// output ever".
+    pub fn output_mtime(&self, task_id: &str) -> EngineResult<Option<std::time::SystemTime>> {
+        Self::validate_task_id(task_id)?;
+        let path = self.tasks_dir.join(task_id).join("output.log");
+        if !self.fs.exists(&path) {
+            return Ok(None);
+        }
+        let stat = self.fs.stat(&path).map_err(io_to_engine)?;
+        Ok(Some(
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(stat.mtime),
+        ))
     }
 
     /// Whether the task's output log exists on disk — the authoritative
@@ -241,6 +278,7 @@ mod tests {
             notification_delivered_at: None,
             fingerprint: None,
             lifetime_exempt: false,
+            last_output_at: None,
         }
     }
 

@@ -2,7 +2,7 @@
 //!
 //! The permission system evaluates an ordered chain of policies for every tool
 //! call. The first policy that returns a non-`Pass` result wins. This mirrors
-//! the TypeScript `PermissionManager` with its 21-policy chain.
+//! the TypeScript `PermissionManager` with its 22-policy chain.
 //!
 //! Three permission modes control the overall behavior:
 //! - [`PermissionMode::Manual`] — ask the user for anything not explicitly
@@ -22,6 +22,7 @@ use crate::hooks::AuthorizeToolResult;
 use crate::plan::PlanManager;
 use crate::tool::{ToolAccess, ToolInputDisplay};
 
+pub mod command_facet;
 mod policies;
 mod rule_match;
 
@@ -209,6 +210,14 @@ pub struct PermissionServices {
     /// 2026-10-10-sandbox-path-permission, D2); `None` disables boundary
     /// evaluation (policies pass, legacy behavior preserved).
     pub workspace_paths: Option<Arc<crate::tools::WorkspacePaths>>,
+    /// The OS user home directory (US-BH11 / B-ADR-17), consulted by
+    /// `BashExecutionDirectoryAskPolicy` to expand `~`-rooted targets and
+    /// detect protected home directories (`~/Desktop`, `~/Documents`,
+    /// `~/Downloads`). The session scope injects `mirri_os::os_home_dir()`
+    /// — the user's home, NOT the product data home. `None` (legacy
+    /// hosts, tests) skips the classification: `~`-prefixed candidates
+    /// keep the legacy silent skip.
+    pub os_home: Option<Arc<PathBuf>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +295,10 @@ pub struct PermissionPolicyContext<'a> {
     /// (the same plumb-through pattern `net_class` uses). Policies that
     /// do not read it are unaffected.
     pub turn_origin: crate::permission::TurnOriginContext,
+    /// The raw command text of a shell tool call, `None` for every other
+    /// tool. Policies match parameterized rules against this instead of
+    /// parsing `args` themselves.
+    pub command_text: Option<&'a str>,
 }
 
 /// Policy evaluation result.
@@ -714,7 +727,7 @@ impl PermissionManager {
 // Default policy chain
 // ---------------------------------------------------------------------------
 
-/// Create the default ordered policy chain (21 policies).
+/// Create the default ordered policy chain (22 policies).
 ///
 /// Order matters — the first non-`Pass` result wins. The `services` provide
 /// optional engine state (plan mode, hooks, swarm mode) to the policies that
@@ -739,7 +752,9 @@ fn create_default_policies(services: &PermissionServices) -> Vec<Box<dyn Permiss
         Box::new(policies::PlanModeGuardDenyPolicy::new(
             services.plan.clone(),
         )),
-        Box::new(policies::UserConfiguredDenyPolicy),
+        Box::new(policies::UserConfiguredDenyPolicy::new(
+            services.workspace_paths.clone(),
+        )),
         // ADR-010: the private-network fetch gates sit ahead of the
         // auto/yolo approve policies — the user, not the mode, decides on a
         // private-network fetch, and no mode can approve a metadata endpoint.
@@ -750,9 +765,24 @@ fn create_default_policies(services: &PermissionServices) -> Vec<Box<dyn Permiss
         // silently approve an over-gate (or uncapped) cron creation.
         Box::new(policies::AgentCronBudgetGatePolicy),
         Box::new(policies::AutoModeApprovePolicy),
-        Box::new(policies::SessionApprovalHistoryPolicy),
-        Box::new(policies::UserConfiguredAskPolicy),
-        Box::new(policies::UserConfiguredAllowPolicy),
+        // The Bash execution-directory review must run before any
+        // approval-based auto-grant (session history, ask/allow rules):
+        // a previously approved command re-run with an outside `cwd` or
+        // `cd` target still needs the directory reviewed. It still precedes
+        // WorkspaceBoundaryPolicy transitively.
+        Box::new(policies::BashExecutionDirectoryAskPolicy::new(
+            services.workspace_paths.clone(),
+            services.os_home.clone(),
+        )),
+        Box::new(policies::SessionApprovalHistoryPolicy::new(
+            services.workspace_paths.clone(),
+        )),
+        Box::new(policies::UserConfiguredAskPolicy::new(
+            services.workspace_paths.clone(),
+        )),
+        Box::new(policies::UserConfiguredAllowPolicy::new(
+            services.workspace_paths.clone(),
+        )),
         Box::new(policies::ExitPlanModeReviewAskPolicy),
         Box::new(policies::GoalStartReviewAskPolicy),
         Box::new(policies::PlanModeToolApprovePolicy),
@@ -819,6 +849,7 @@ pub(super) mod tests {
                 cancel: &self.cancel,
                 net_class: None,
                 turn_origin: Default::default(),
+                command_text: None,
             }
         }
     }
@@ -829,6 +860,73 @@ pub(super) mod tests {
             scope: RuleScope::User,
             pattern: pattern.to_string(),
             reason: None,
+        }
+    }
+
+    /// Given a manager wired with the workspace sandbox whose session approved
+    /// `Bash(ls)` (or whose allow rules cover `Bash(ls)`), when the same
+    /// command is re-run with an explicit `cwd` outside the sandbox, then the
+    /// chain asks with the execution-directory reason — the directory review
+    /// runs before the session-approval and allow-rule policies, so an
+    /// approval granted for the command text never covers an outside
+    /// execution directory.
+    #[test]
+    fn should_ask_for_an_outside_cwd_even_when_the_command_was_already_approved() {
+        for rules in [
+            // session-approval memory form
+            vec![],
+            // user-configured allow-rule form
+            vec![user_rule(RuleDecision::Allow, "Bash(ls)")],
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            let workspace_paths =
+                Arc::new(crate::tools::WorkspacePaths::new(root.path().to_path_buf()));
+            let manager = PermissionManager::with_services(
+                PermissionMode::Manual,
+                rules,
+                PermissionServices {
+                    workspace_paths: Some(workspace_paths),
+                    ..Default::default()
+                },
+            );
+            // The manager owns the rules; `evaluate` reads them from the
+            // context, so the ctx must reference the same set (an empty slice
+            // here would make the allow-rule arm a no-op).
+            let ctx_rules = manager.effective_rules();
+            let ctx_rules: &[PermissionRule] = &ctx_rules;
+            manager.record_approval("Bash(ls)".to_string());
+            let approvals: HashSet<String> =
+                manager.all_session_approvals().into_iter().collect();
+            let bundle = CtxBundle::new();
+            let args = serde_json::json!({ "command": "ls", "cwd": outside.path() });
+            let display = crate::tool::ToolInputDisplay::Command {
+                command: "ls".to_string(),
+            };
+            let ctx = PermissionPolicyContext {
+                tool_name: "Bash",
+                tool_call_id: "call-outside-cwd-ls",
+                args: &args,
+                approval_rule: "Bash(ls)",
+                display: &display,
+                accesses: &[],
+                mode: PermissionMode::Manual,
+                rules: ctx_rules,
+                session_approvals: &approvals,
+                cancel: &bundle.cancel,
+                net_class: None,
+                turn_origin: Default::default(),
+                command_text: Some("ls"),
+            };
+            match manager.evaluate(&ctx) {
+                PermissionPolicyResult::Ask { reason, .. } => {
+                    assert_eq!(
+                        reason.as_deref(),
+                        Some("the execution directory is outside the workspace sandbox")
+                    );
+                }
+                other => panic!("an approved command with an outside cwd must Ask, got {other:?}"),
+            }
         }
     }
 
@@ -954,6 +1052,7 @@ pub(super) mod tests {
             cancel: &bundle.cancel,
             net_class: None,
             turn_origin: Default::default(),
+            command_text: None,
         }
     }
 
@@ -1078,6 +1177,7 @@ pub(super) mod tests {
                 cancel: &bundle.cancel,
                 net_class: None,
                 turn_origin: Default::default(),
+                command_text: None,
             };
             match manager.evaluate(&ctx) {
                 PermissionPolicyResult::Ask {
@@ -1159,6 +1259,7 @@ pub(super) mod tests {
                 cancel: &bundle.cancel,
                 net_class,
                 turn_origin: Default::default(),
+                command_text: None,
             }
         }
     }
@@ -1293,6 +1394,7 @@ pub(super) mod tests {
             cancel: &bundle.cancel,
             net_class: Some((NetClass::Askable, vec![ip("10.0.0.1")])),
             turn_origin: Default::default(),
+            command_text: None,
         };
         assert!(matches!(
             manager.evaluate(&ctx),
@@ -1348,6 +1450,7 @@ pub(super) mod tests {
             cancel: &bundle.cancel,
             net_class: Some((NetClass::Askable, vec![ip("10.0.0.1")])),
             turn_origin: Default::default(),
+            command_text: None,
         };
         assert!(matches!(
             manager.evaluate(&ctx),
@@ -1385,6 +1488,7 @@ pub(super) mod tests {
                 cancel: &bundle.cancel,
                 net_class: None,
                 turn_origin: TurnOriginContext::Interactive,
+                command_text: None,
             };
             match manager.evaluate(&ctx) {
                 PermissionPolicyResult::Ask {
@@ -1437,6 +1541,7 @@ pub(super) mod tests {
             cancel: &bundle.cancel,
             net_class: None,
             turn_origin: TurnOriginContext::Interactive,
+            command_text: None,
         };
         match manager.before_tool_call(&ctx) {
             AuthorizeToolResult::Blocked { reason } => assert!(
@@ -1511,6 +1616,7 @@ mod never_auto_approve_matrix_tests {
             cancel: &bundle.cancel,
             net_class: None,
             turn_origin,
+            command_text: None,
         };
         let policy = manager.evaluate(&ctx);
         let translated = manager.before_tool_call(&ctx);
@@ -1633,6 +1739,7 @@ mod never_auto_approve_matrix_tests {
             cancel: &bundle.cancel,
             net_class: None,
             turn_origin: TurnOriginContext::Interactive,
+            command_text: None,
         };
         assert!(matches!(
             manager.before_tool_call(&ctx),

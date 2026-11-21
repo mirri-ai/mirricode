@@ -161,12 +161,13 @@ echo ""
 
 # Step 11: Install the all-in-one CLI binary (serve / web / print / acp)
 # into the user's Mirri bin directory, mirroring the packaged CLI layout.
-echo "=== Step 11: Install CLI binary to ~/.mirri-code/bin ==="
-MIRRI_BACKEND_DIR="apps/mirri-desktop/build/backend/$(node -e "process.stdout.write(process.platform + '-' + process.arch)")"
-mkdir -p ~/.mirri-code/bin
-cp "$MIRRI_BACKEND_DIR/mirri" ~/.mirri-code/bin/mirri
-chmod +x ~/.mirri-code/bin/mirri
-echo "Installed: ~/.mirri-code/bin/mirri"
+# --skip-build reuses the `target/dist` binary Step 9 already produced; the
+# script owns the install details this block used to duplicate — honoring
+# MIRRICODE_HOME, backing up the previous binary, ad-hoc re-signing on macOS
+# (a stale `com.apple.provenance` xattr gets the new binary killed at exec),
+# and smoke-testing `mirri --version`.
+echo "=== Step 11: Install CLI binary into <MIRRICODE_HOME|~/.mirri-code>/bin ==="
+./rust/scripts/replace-local-cli.sh --skip-build
 echo ""
 
 echo "=========================================="

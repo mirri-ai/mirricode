@@ -21,11 +21,15 @@
 
 use std::sync::Arc;
 
-use chrono::{Datelike, Timelike};
+use jiff::ToSpan;
 
-use crate::cron::{CronManager, CronTimezone, TaskOrigin, format_local_iso_with_offset};
+use crate::cron::{
+    CronManager, CronTimezone, TaskOrigin, format_local_iso_with_offset, to_instant,
+};
 use crate::error::EngineResult;
-use crate::tool::{ExecutionPlan, Tool, ToolErrorResult, ToolExecution, ToolInputDisplay, ToolResult};
+use crate::tool::{
+    ExecutionPlan, Tool, ToolErrorResult, ToolExecution, ToolInputDisplay, ToolResult,
+};
 
 /// `SetTimer` — a one-shot delayed reminder that injects a message into
 /// the current session.
@@ -71,33 +75,60 @@ impl SetTimerTool {
 /// The day-of-week field stays `*`: the day-of-month pin alone identifies
 /// the date, whereas pinning both triggers cron's OR semantics and would
 /// widen the day window.
-fn timer_cron_expression(
+///
+/// The target is a wall-clock minute on `calendar`: a target that lands in
+/// a spring-forward gap resolves through the same DST edge rules the cron
+/// walk applies (the wall clock after the jump), so the pinned expression
+/// and the registered task agree on the instant.
+fn timer_cron_expression(delay_minutes: i64, calendar: &jiff::tz::TimeZone) -> String {
+    pin_cron_expression(chrono::Utc::now(), delay_minutes, calendar)
+}
+
+/// [`timer_cron_expression`]'s body with the clock injected — the seam the
+/// DST-gap test needs to pin a target inside a spring-forward gap.
+fn pin_cron_expression(
+    now: chrono::DateTime<chrono::Utc>,
     delay_minutes: i64,
-    calendar: chrono_tz::Tz,
-) -> (String, chrono::DateTime<chrono::Utc>) {
-    let now = chrono::Utc::now();
-    let target = (now + chrono::Duration::minutes(delay_minutes.max(1))).with_timezone(&calendar);
-    let mut target = target
-        .with_second(0)
-        .and_then(|t| t.with_nanosecond(0))
-        .unwrap_or(target);
+    calendar: &jiff::tz::TimeZone,
+) -> String {
+    let local = crate::cron::to_local_datetime(
+        now + chrono::Duration::minutes(delay_minutes.max(1)),
+        calendar,
+    )
+    .datetime()
+    .with()
+    .subsec_nanosecond(0)
+    .build()
+    .expect("truncating the sub-second part never fails");
+    let target_instant =
+        to_instant(calendar, local).expect("a wall-clock candidate always maps to an instant");
+    let mut target = crate::cron::to_local_datetime(target_instant, calendar);
     // A sub-minute delay (rounded to the same minute as now) must still
     // land in the FUTURE: bump to the next minute when the truncation
     // collapsed the delay away.
-    if target.with_timezone(&chrono::Utc) <= now {
-        target += chrono::Duration::minutes(1);
+    if target.timestamp()
+        <= jiff::Timestamp::from_millisecond(now.timestamp_millis())
+            .expect("the current instant always fits jiff's range")
+    {
+        let bumped = target
+            .checked_add(1.minute())
+            .map(|next| next.datetime())
+            .expect("a minute ahead always exists");
+        target = crate::cron::to_local_datetime(
+            to_instant(calendar, bumped).expect("a wall-clock candidate always maps to an instant"),
+            calendar,
+        );
     }
     // Day-of-week stays `*` (the day-of-month pin alone identifies the
     // date; pinning both fields triggers cron's OR semantics and could
     // double the day window).
-    let expression = format!(
+    format!(
         "{} {} {} {} *",
         target.minute(),
         target.hour(),
         target.day(),
         target.month()
-    );
-    (expression, target.with_timezone(&chrono::Utc))
+    )
 }
 
 impl Tool for SetTimerTool {
@@ -153,7 +184,10 @@ impl Tool for SetTimerTool {
                 message: "定时任务已禁用（MIRRICODE_DISABLE_CRON）".to_string(),
             }));
         }
-        let Some(delay) = input.get("delay_minutes").and_then(serde_json::Value::as_i64) else {
+        let Some(delay) = input
+            .get("delay_minutes")
+            .and_then(serde_json::Value::as_i64)
+        else {
             return Ok(ToolExecution::Error(ToolErrorResult {
                 message: "SetTimer requires an integer 'delay_minutes' argument".to_string(),
             }));
@@ -189,7 +223,7 @@ impl Tool for SetTimerTool {
                     // calendar (SetTimer has no timezone parameter — "in N
                     // minutes" is calendar-agnostic).
                     let calendar = CronTimezone::Local.resolve();
-                    let (expression, _target) = timer_cron_expression(delay, calendar);
+                    let expression = timer_cron_expression(delay, &calendar);
                     // The lineage arm (A.6b): a cron-fired turn setting
                     // another timer rides the capped one-shot chain; an
                     // interactive turn takes the plain add. Both are
@@ -481,22 +515,70 @@ mod tests {
     }
 
     /// Given the timer expression builder, when a sub-minute delay is
-    /// requested, then the target rounds UP to the next whole minute
-    /// (still strictly in the future).
+    /// requested, then it rounds UP to the next whole minute — five fields
+    /// pinning a `:00`-second target strictly in the future.
     #[test]
     fn should_round_a_sub_minute_delay_up_to_the_next_whole_minute() {
         let calendar = CronTimezone::Local.resolve();
-        let before = chrono::Utc::now();
-        let (expression, target) = timer_cron_expression(0, calendar);
-        assert!(target > before, "the rounded target stays in the future");
-        assert_eq!(target.timestamp_subsec_micros(), 0);
+        // The wall clock right before the build: a target that stays at or
+        // below this minute's start would have collapsed the delay away.
+        let floor = crate::cron::to_local_datetime(chrono::Utc::now(), &calendar)
+            .datetime()
+            .with()
+            .subsec_nanosecond(0)
+            .build()
+            .expect("truncating the sub-second part never fails");
+
+        let expression = timer_cron_expression(0, &calendar);
+
         let fields: Vec<&str> = expression.split_whitespace().collect();
         assert_eq!(fields.len(), 5);
         assert_eq!(fields[4], "*");
-        let local = target.with_timezone(&calendar);
-        assert_eq!(fields[0].parse::<u32>().unwrap(), local.minute());
-        assert_eq!(fields[1].parse::<u32>().unwrap(), local.hour());
-        assert_eq!(fields[2].parse::<u32>().unwrap(), local.day());
-        assert_eq!(fields[3].parse::<u32>().unwrap(), local.month());
+        let (minute, hour, day, month): (i8, i8, i8, i8) = (
+            fields[0].parse().expect("minute field"),
+            fields[1].parse().expect("hour field"),
+            fields[2].parse().expect("day field"),
+            fields[3].parse().expect("month field"),
+        );
+        // The pinned minute is strictly after the truncation floor: either
+        // a later minute of the hour, or a different hour onward.
+        let target = jiff::civil::Date::new(floor.year(), month, day)
+            .expect("the printed fields form a valid civil date")
+            .to_datetime(
+                jiff::civil::Time::new(hour, minute, 0, 0)
+                    .expect("the printed fields form a valid civil time"),
+            );
+        assert!(
+            (month, day, hour, minute) > (floor.month(), floor.day(), floor.hour(), floor.minute()),
+            "the rounded target stays in the future: target={target} floor={floor}"
+        );
+    }
+
+    /// Given a target wall clock that falls inside a spring-forward gap in
+    /// the task's zone, when the timer expression is pinned, then it carries
+    /// the post-gap minute the cron walk will actually fire at (02:30 on the
+    /// 2→3 jump pins 03:30), never the non-existent 02:30.
+    #[test]
+    fn should_pin_the_post_gap_minute_when_the_delay_targets_inside_a_dst_gap() {
+        // Given 2025-03-09 06:30 UTC == 01:30 EST in America/New_York, and a
+        // 60-minute delay whose wall-clock target (02:30) does not exist —
+        // the clocks jump 02:00 → 03:00 that morning.
+        let calendar =
+            jiff::tz::TimeZone::get("America/New_York").expect("America/New_York is in the tzdb");
+        let now = chrono::DateTime::from_timestamp_millis(
+            jiff::civil::date(2025, 3, 9)
+                .at(6, 30, 0, 0)
+                .in_tz("UTC")
+                .expect("UTC is a valid zone")
+                .timestamp()
+                .as_millisecond(),
+        )
+        .expect("a real instant");
+
+        // When the target minute is pinned on the zone's calendar
+        let expression = pin_cron_expression(now, 60, &calendar);
+
+        // Then it names 03:30, the post-gap wall clock — not the gap's 02:30.
+        assert_eq!(expression, "30 3 9 3 *");
     }
 }

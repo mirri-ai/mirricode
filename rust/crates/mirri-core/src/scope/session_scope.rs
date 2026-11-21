@@ -778,6 +778,26 @@ pub struct SessionScope {
     /// never install a callback — their agents' asks fail fast with a
     /// plain-text fallback directive.
     reverse_rpc_slot: ReverseRpcSlot,
+    /// Whether the session is READY to run turns.
+    ///
+    /// A fresh session is ready at construction (the create path registers a
+    /// fully built scope). The RESUME path is the exception: it registers the
+    /// scope in the workspace's live table before the wire-log replay and the
+    /// agent rebuild have finished, so for that window a session is
+    /// resolvable but cannot yet record durably (its wire-log slot has no
+    /// writer) or run a turn. Turn-driving faces consult this gate and defer
+    /// instead of acting on a half-restored session:
+    ///
+    /// - a cron pass returns without draining (the held fires stay durable
+    ///   and redeliver on the next tick after the restore completes);
+    /// - a `message.send` answers a retryable conflict instead of writing a
+    ///   prompt whose `turn.prompt` opener would be discarded;
+    /// - the goal / task drivers return until the next tick.
+    ///
+    /// The flag is monotonic in practice (false → true once per resume), but
+    /// it is an atomic rather than a one-shot latch so a test can drive the
+    /// not-ready state directly.
+    ready: Arc<AtomicBool>,
 }
 
 /// Apply the session's [`TaskLifecycleSettings`] onto a fresh
@@ -795,6 +815,16 @@ fn apply_task_lifecycle(manager: &mut TaskManager, config: &SessionScopeConfig) 
     }
     if let Some(interval) = config.task_lifecycle.heartbeat_interval {
         manager.set_heartbeat_interval(interval);
+    }
+    match config.task_lifecycle.silence_warn_secs {
+        Some(threshold) => manager.set_silence_warn_secs(threshold),
+        // `silenceWarnSecs = 0` — the explicit off arm. The scope layer
+        // folds `0` to `None`, and this arm translates it to the
+        // manager's `Some(ZERO)` off sentinel (NOT a plain `None`, which
+        // reads as "unconfigured" and would let the driver's scanner
+        // fall back to its 300s default — the user disabled, not
+        // ignored).
+        None => manager.disable_silence_warning(),
     }
 }
 
@@ -925,7 +955,31 @@ impl SessionScope {
             subagent_registry: RwLock::new(HashMap::new()),
             subagent_hydrator: Mutex::new(None),
             reverse_rpc_slot: Arc::new(std::sync::RwLock::new(None)),
+            ready: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// Whether the session is ready to run turns — see [`Self::ready`].
+    ///
+    /// Turn-driving faces (`message.send`, the cron / goal / task drivers)
+    /// consult this before starting a turn: a resumed session is resolvable
+    /// from its registration in the live table, but is only runnable once
+    /// its wire log is installed and its agents rebuilt.
+    pub fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+    }
+
+    /// Mark this session as not yet ready to run turns — the resume path
+    /// calls this at creation, before the wire-log replay begins, and pairs
+    /// it with [`Self::mark_ready`] when the restore has finished.
+    pub fn mark_restoring(&self) {
+        self.ready.store(false, Ordering::Release);
+    }
+
+    /// Mark this session ready to run turns — the end of the resume path,
+    /// after the wire log is installed and the agents are rebuilt.
+    pub fn mark_ready(&self) {
+        self.ready.store(true, Ordering::Release);
     }
 
     /// This session's unique identifier.
@@ -1663,6 +1717,7 @@ impl SessionScope {
         // spawned subagents — dispatches its own swarms under the same
         // `[subagent] maxSwarmItems` limit (env overrides resolve per call).
         config.max_swarm_items = self.config.task_lifecycle.max_swarm_items;
+        config.bash_env_allowlist = self.config.bash_env_allowlist.clone();
         // Stamp the session's reverse-RPC slot onto every agent (the late
         // subscribe fix): the `AskUserQuestion` tool resolves the slot's
         // CURRENT callback per call, so an agent created before any client

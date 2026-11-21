@@ -261,6 +261,7 @@ disable_model_prompts = true
 | `print_wait_ceiling_s` | `integer` | `315360000` | drain/steer 等待循环的墙钟上限（秒） |
 | `print_max_turns` | `integer` | `100000` | steer 模式下由后台任务完成触发的新 turn 最大数量 |
 | `heartbeat_interval_ms` | `integer` | `300000` | 运行中的任务多久（毫秒）没有活动会被标记为 stale；`0` 表示关闭假死检测 |
+| `silenceWarnSecs` | `integer` | `300` | 后台进程类任务多久（秒）没有输出会向 agent 发出静默预警；`0` 表示关闭；仅作用于后台进程类任务 |
 
 ## `subagent`
 

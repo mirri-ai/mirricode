@@ -1491,6 +1491,7 @@ impl ProfileManager {
             tool_io: crate::tools::ToolIo::default(),
             subagent_timeout: None,
             max_swarm_items: None,
+            bash_env_allowlist: Vec::new(),
             session_approvals: None,
             permission_rules: Vec::new(),
         })

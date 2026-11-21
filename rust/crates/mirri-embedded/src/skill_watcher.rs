@@ -34,10 +34,12 @@
 //! the registry drop actually releases the task.
 
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::FutureExt as _;
 use notify::Watcher;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -419,7 +421,24 @@ pub async fn spawn_skill_watcher(
                     // Shutdown may have landed during the quiet window —
                     // do not fire a trailing reload at a workspace whose
                     // handle (and possibly runtime) is already gone.
-                    if shutdown_rx.try_recv().is_ok() {
+                    //
+                    // The check must observe the channel WITHOUT consuming
+                    // it: the old `try_recv` consumed the receiver's inner
+                    // state even on `Err`, and the next select poll of a
+                    // consumed receiver panicked with "called after
+                    // complete" — the release build's panic-abort then
+                    // killed the whole engine on workspace deletion.
+                    // Polling exactly once here is safe in both outcomes:
+                    // Pending leaves the receiver fully pollable for the
+                    // select below; Ready (the sender dropped) terminates
+                    // the channel, and the `break` exits WITHOUT ever
+                    // polling it again.
+                    let shutdown_landed = std::future::poll_fn(|cx| {
+                        Pin::new(&mut shutdown_rx).poll(cx).map(|_| ())
+                    })
+                    .now_or_never()
+                    .is_some();
+                    if shutdown_landed {
                         break;
                     }
                     // Re-derive the inputs before the rescan: a config
@@ -970,6 +989,64 @@ mod tests {
             })
             .await,
             "a skill created under a parent-watched candidate root must still hot-reload"
+        );
+    }
+
+    /// Given a watcher whose handle is dropped while an event burst is
+    /// still settling, when the quiet period ends and the task returns to
+    /// its select loop, then the task must exit cleanly — never panic on
+    /// re-polling the shutdown receiver (the 2026-11-21 engine crash:
+    /// `try_recv` consumed the receiver, the next select poll hit tokio's
+    /// "called after complete" panic, and the release build aborted the
+    /// whole process on workspace deletion).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn should_exit_cleanly_when_the_handle_drops_during_a_pending_event_quiet_window() {
+        let workspace_root = tempfile::tempdir().expect("workspace tempdir");
+        let home = tempfile::tempdir().expect("home tempdir");
+        let isolated_home = tempfile::tempdir().expect("isolated $HOME tempdir");
+        let skills_root = workspace_root.path().join(".agents/skills");
+        write_skill(&skills_root, "alpha", "first");
+
+        let (_pin, _isolated) = pinned_home_guard(isolated_home.path());
+        let runtime = built_runtime(&workspace_root, &home, "ws-quiet-drop");
+
+        let orchestrator = Arc::new(SkillReloadOrchestrator::new());
+        let watcher = spawn_skill_watcher(&runtime, &orchestrator, inputs(&home))
+            .await
+            .expect("watcher spawn");
+        let exited = Arc::clone(&watcher.exited);
+
+        // When an event lands (arming the quiet period) and the handle
+        // drops BEFORE the quiet window closes — the task is inside
+        // `wait_for_quiet_period` when the shutdown signal arrives.
+        write_skill(&skills_root, "beta", "second");
+        // Give the event a moment to reach the task's quiet wait (the
+        // notify bridge is asynchronous) — short enough to stay inside the
+        // 1 s quiet period. On a much slower machine the drop simply wins
+        // the select instead and the task still exits cleanly, so the
+        // assertions hold regardless of where in this window the drop
+        // lands.
+        tokio::time::sleep(Duration::from_millis(200)).await; // hygiene-allow: pacing the FSEvents delivery before the drop
+        drop(watcher);
+
+        // Then the quiet period ends and the task exits through its
+        // shutdown path — the exited flag flips (a task that panicked on
+        // re-polling the consumed receiver would die with the flag still
+        // false, and its death is silent: the JoinHandle is dropped).
+        assert!(
+            wait_until(Duration::from_secs(5), || {
+                exited.load(std::sync::atomic::Ordering::SeqCst)
+            })
+            .await,
+            "the watcher task must exit cleanly after a drop inside the quiet window"
+        );
+
+        // And no trailing reload fired at the dropped workspace — the
+        // post-quiet shutdown check must actually work (the old
+        // `try_recv().is_ok()` could never observe a closed channel).
+        assert!(
+            runtime.scope.skills().get("beta").is_none(),
+            "a drop during the quiet window must not fire a trailing reload"
         );
     }
 

@@ -391,7 +391,24 @@ pub fn session_scope_config_from(server_config: &ServerConfig) -> SessionScopeCo
                 Some(ms) => Some(std::time::Duration::from_millis(ms)),
                 None => Some(std::time::Duration::from_secs(300)),
             },
+            // The `[task]` `silenceWarnSecs` (B-ADR-16 ① / BH8): the
+            // silence-warning threshold the driver's scanner resolves.
+            // `0` disables the warning (this layer folds it to `None`;
+            // `apply_task_lifecycle` translates `None` to the manager's
+            // `Some(ZERO)` off sentinel — never a plain "unset" `None`,
+            // which the driver would resolve to the 300s default);
+            // absent keeps the 300s default.
+            silence_warn_secs: match task.silence_warn_secs {
+                Some(0) => None,
+                Some(secs) => Some(std::time::Duration::from_secs(secs)),
+                None => Some(std::time::Duration::from_secs(300)),
+            },
         },
+        bash_env_allowlist: server_config
+            .bash
+            .as_ref()
+            .map(|bash| bash.env_allowlist.clone())
+            .unwrap_or_default(),
         // D-34: the user-level `[[permission.rules]]` ride the session from
         // construction — every agent the session creates is stamped with
         // them (see SessionScope::create_agent).

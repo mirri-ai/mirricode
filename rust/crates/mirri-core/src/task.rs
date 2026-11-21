@@ -32,7 +32,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
@@ -58,6 +58,39 @@ pub const TASK_TIMEOUT_MESSAGE: &str = "task exceeded its configured timeout";
 
 /// Capacity rejection message (TS `assertCanRegister`, `taskService.ts:939`).
 pub const TASK_CAPACITY_MESSAGE: &str = "Too many background tasks are already running.";
+
+/// The process-level monotonic reference for the silence-anchor clamp
+/// (B-ADR-16 ②): first touched when the first [`TaskManager`] is restored
+/// over a session, and thereafter a fixed anchor for the process's whole
+/// life.
+///
+/// **Why process-level, not per-manager:** the manager is born *inside*
+/// [`TaskManager::with_persistence`] and the anchor is minted in that same
+/// constructor, so a per-manager `started_at` clamps every derivation to
+/// ≈ the construction time (ms-level) — the mtime back-derivation would
+/// degenerate to the restore moment on every path. A process-level
+/// reference keeps the derivation honest for the main path, where the
+/// server restores the session at startup (first touch ≈ process start).
+///
+/// **The approximation, documented:** for a session restored *later* in a
+/// long-running process's life, the bound is the whole elapsed process
+/// runtime, not the time since the restore — an upper bound that is still
+/// safe (it never underflows) and only looser than ideal by the distance
+/// between process start and the restore moment. Seeding from the binary
+/// entry point would be exact, at the cost of coupling every backend
+/// (`mirri web` / `serve` / `acp` / the embedded desktop server) to this
+/// module; the approximation was chosen deliberately.
+static PROCESS_START: OnceLock<Instant> = OnceLock::new();
+
+/// The elapsed monotonic runtime of this process, as measured from
+/// [`PROCESS_START`] (first touch; see its doc comment for the
+/// approximation). The silence-anchor clamp: a back-derived anchor can
+/// never read older than the process itself.
+fn process_runtime() -> Duration {
+    PROCESS_START
+        .get_or_init(Instant::now)
+        .elapsed()
+}
 
 /// Status of a background task.
 ///
@@ -300,6 +333,20 @@ impl ForegroundRegistration {
     }
 }
 
+/// Given `data` beginning at absolute `raw_start` (up to 3 bytes before the
+/// requested `at`), return the window start aligned backward to a UTF-8
+/// character boundary at or before `at`, and the window bytes (at most
+/// `max_bytes`). The end is not aligned: it may split a multibyte character,
+/// which the lossy decode then renders as a trailing replacement char.
+fn align_window(raw_start: u64, data: &[u8], at: u64, max_bytes: usize) -> (u64, &[u8]) {
+    let mut idx = (at - raw_start) as usize;
+    while idx > 0 && idx < data.len() && (data[idx] & 0xC0) == 0x80 {
+        idx -= 1;
+    }
+    let end = (idx + max_bytes).min(data.len());
+    (raw_start + idx as u64, &data[idx..end])
+}
+
 /// A background task tracked by the agent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentTask {
@@ -367,6 +414,16 @@ pub struct AgentTask {
     /// archives non-exempt.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lifetime_exempt: bool,
+    /// When the task last produced non-empty output (in-memory only — never
+    /// persisted). Drives the `silent_for` observability signal; orthogonal
+    /// to the heartbeat (alive) judgement. `None` = nothing observed yet,
+    /// which reads as silent since start. Restored non-terminal tasks
+    /// always carry a back-derived anchor (B-ADR-16 ②): the output log's
+    /// mtime is the last honest witness, clamped to the process runtime,
+    /// with the restore moment as the fallback — so `None` after a restore
+    /// means only "no log existed at all".
+    #[serde(skip)]
+    pub last_output_at: Option<Instant>,
 }
 
 /// The `detached` default for legacy persistence files (pre-B2 records
@@ -426,6 +483,20 @@ pub struct TaskOutput {
     pub truncated: bool,
 }
 
+/// The coordinate system a snapshot's byte offsets address (B-ADR-18): the
+/// persisted log is log-absolute; the retained in-memory buffer is
+/// buffer-relative — once its head was dropped (cap exceeded) its offsets
+/// address the retained tail window, not the produced stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskOutputCoordinates {
+    /// Offsets address the full on-disk output log.
+    LogAbsolute,
+    /// Offsets address the retained in-memory buffer — the tail window of
+    /// the produced output the cap kept, so offset 0 is the retained head,
+    /// not the log's first byte.
+    BufferRelative,
+}
+
 /// The output snapshot the `TaskOutput` tool serves (the TS
 /// `getOutputSnapshot` counterpart): the persisted log is the
 /// authoritative, never-truncated source when one exists; the retained
@@ -446,6 +517,13 @@ pub struct TaskOutputSnapshot {
     pub full_output_available: bool,
     /// The preview text served inline.
     pub preview: String,
+    /// Byte range `(start, end)` served when this is a paged window read;
+    /// `None` for the default tail snapshot.
+    pub window: Option<(u64, u64)>,
+    /// The coordinate system `window` and the paging offsets address —
+    /// log-absolute when this snapshot read the persisted log,
+    /// buffer-relative when it read the retained in-memory buffer.
+    pub coordinates: TaskOutputCoordinates,
 }
 
 impl TaskOutputSnapshot {
@@ -458,6 +536,8 @@ impl TaskOutputSnapshot {
             truncated: retained.truncated,
             full_output_available: false,
             preview: retained.preview.clone(),
+            window: None,
+            coordinates: TaskOutputCoordinates::BufferRelative,
         }
     }
 }
@@ -484,6 +564,12 @@ pub struct TaskManager {
     /// [`Self::heartbeat`] is older than this interval are stale per
     /// [`Self::is_stale`]. `None` disables stale detection entirely.
     heartbeat_interval: Option<Duration>,
+    /// The silence-warning threshold (B-ADR-16 ① / BH8): how long a
+    /// running process-kind task may go without output before the task
+    /// driver's scanner warns the model. `None` disables the warning
+    /// (the `silenceWarnSecs = 0` arm); the session assembly seeds the
+    /// resolved `[task]` value, and the scanner's own fallback is 300s.
+    silence_warn_secs: Option<Duration>,
     /// Last heartbeat instant per task — used by [`Self::is_stale`]. Seeded
     /// at registration; purely in-memory (never persisted).
     last_heartbeat: Mutex<HashMap<String, Instant>>,
@@ -556,6 +642,7 @@ impl TaskManager {
             truncated: Mutex::new(HashSet::new()),
             persistence: None,
             heartbeat_interval: None,
+            silence_warn_secs: None,
             last_heartbeat: Mutex::new(HashMap::new()),
             liveness_listener: Mutex::new(None),
             agent_timeout: None,
@@ -640,6 +727,33 @@ impl TaskManager {
         self.heartbeat_interval = Some(interval);
     }
 
+    /// The silence-warning threshold the driver's scanner resolves
+    /// (B-ADR-16 ① / BH8). `None` means UNSET — the scanner falls back to
+    /// its 300s default; `Some(Duration::ZERO)` means EXPLICITLY OFF (the
+    /// `silenceWarnSecs = 0` arm — the sentinel distinguishes "user said
+    /// off" from "nobody configured anything"); `Some(d)` is the
+    /// threshold.
+    pub fn silence_warn_secs(&self) -> Option<Duration> {
+        self.silence_warn_secs
+    }
+
+    /// Disable the silence warning entirely (`silenceWarnSecs = 0`).
+    /// Sets the `Some(Duration::ZERO)` sentinel — deliberately distinct
+    /// from the constructor's `None` (unset), because the driver resolves
+    /// unset to the 300s default: a plain `None` here would make an
+    /// explicit disable indistinguishable from "never configured" and
+    /// the warning would fire anyway.
+    pub fn disable_silence_warning(&mut self) {
+        self.silence_warn_secs = Some(Duration::ZERO);
+    }
+
+    /// In-place silence-warning threshold setter (the session-assembly
+    /// counterpart of the heartbeat pattern: `apply_task_lifecycle`
+    /// seeds it from the session's task config).
+    pub fn set_silence_warn_secs(&mut self, threshold: Duration) {
+        self.silence_warn_secs = Some(threshold);
+    }
+
     /// Wire the liveness listener invoked by
     /// [`Self::wait_for_completion_with`] when the waited-on task's
     /// heartbeat advances (ADR-004 batch a — the stall watchdog's activity
@@ -662,7 +776,27 @@ impl TaskManager {
     /// Running tasks WITH a process fingerprint are kept Running — the
     /// startup orphan sweep (ADR-012 c) probes the live process and owns
     /// their verdict.
+    ///
+    /// Restored non-terminal tasks get a silence anchor derived from their
+    /// output log's mtime, clamped to this process's runtime (B-ADR-16 ②;
+    /// see [`Self::with_persistence_and_clamp`] for the clamp's exact
+    /// meaning and the test seam).
     pub fn with_persistence(persistence: Arc<TaskPersistence>) -> Self {
+        Self::with_persistence_and_clamp(persistence, process_runtime())
+    }
+
+    /// The [`Self::with_persistence`] entry with an explicit silence-anchor
+    /// clamp bound (B-ADR-16 ②). The bound is the *monotonic runtime the
+    /// wall-clock log age is clamped to* — on the real path, the elapsed
+    /// time since [`PROCESS_START`] (first touch, see its doc comment for
+    /// the approximation): a back-derived anchor can never read older than
+    /// this process. A bound minted from the manager's own construction
+    /// time instead (the bug this seam exists to pin) degenerates every
+    /// derivation to the restore moment.
+    fn with_persistence_and_clamp(
+        persistence: Arc<TaskPersistence>,
+        process_runtime: Duration,
+    ) -> Self {
         let mut manager = Self::new();
         manager.persistence = Some(Arc::clone(&persistence));
         match persistence.load_tasks() {
@@ -703,6 +837,40 @@ impl TaskManager {
                     } else {
                         task
                     };
+                    // B-ADR-16 ②: mint the silence anchor for restored
+                    // tasks. `last_output_at` is an in-memory `Instant` that
+                    // the archive cannot carry, so without this fallback a
+                    // restored task's `silent_for` reads as "silent since
+                    // creation" — an arbitrarily inflated age. The log's
+                    // mtime is the last honest witness of output activity;
+                    // no log (or a failed conversion) falls back to the
+                    // restore moment. The wall-clock age is clamped to this
+                    // process's runtime before the monotonic subtraction,
+                    // because a restored log routinely predates the process
+                    // (bare `Instant::now() − huge` underflows).
+                    let mut task = task;
+                    if !task.status.is_terminal()
+                        && let Some(mtime) = persistence
+                            .output_mtime(&task.id)
+                            .unwrap_or_else(|error| {
+                                tracing::warn!(
+                                    task_id = %task.id,
+                                    %error,
+                                    "failed to stat the output log for the silence anchor"
+                                );
+                                None
+                            })
+                    {
+                        task.last_output_at = back_derive_silence_anchor(
+                            mtime,
+                            std::time::SystemTime::now(),
+                            Instant::now(),
+                            process_runtime,
+                        );
+                    }
+                    if !task.status.is_terminal() && task.last_output_at.is_none() {
+                        task.last_output_at = Some(Instant::now());
+                    }
                     tasks.insert(task.id.clone(), task);
                 }
             }
@@ -972,6 +1140,7 @@ impl TaskManager {
             notification_delivered_at: None,
             fingerprint: None,
             lifetime_exempt: false,
+            last_output_at: None,
         };
         (id, task)
     }
@@ -1008,6 +1177,7 @@ impl TaskManager {
             notification_delivered_at: None,
             fingerprint: None,
             lifetime_exempt: false,
+            last_output_at: None,
         };
         self.insert(id, task.clone(), true);
         task
@@ -1298,6 +1468,7 @@ impl TaskManager {
             tracing::warn!(task_id, "append_output called for unknown task");
             return;
         };
+        task.last_output_at = Some(Instant::now());
         if task.output.len() + output.len() <= MAX_TASK_OUTPUT_BYTES {
             task.output.push_str(output);
         } else {
@@ -1862,6 +2033,8 @@ impl TaskManager {
                         truncated: offset > 0,
                         full_output_available: true,
                         preview,
+                        window: None,
+                        coordinates: TaskOutputCoordinates::LogAbsolute,
                     });
                 }
                 Err(error) => tracing::warn!(
@@ -1877,6 +2050,66 @@ impl TaskManager {
             );
         }
         Some(TaskOutputSnapshot::from_retained(&retained))
+    }
+
+    /// A paged window over the task's output: bytes `[offset, offset +
+    /// max_bytes)` of the persisted log when one exists, else of the
+    /// retained in-memory buffer; either way the start is aligned backward
+    /// to a UTF-8 character boundary. The persisted log is authoritative and
+    /// preferred whenever it exists. The in-memory fallback is only the
+    /// retained tail: once its head was dropped (cap exceeded) its offsets
+    /// are tail-relative, not log-relative. An offset at
+    /// or past the end yields an empty preview with `window == (total,
+    /// total)`; the caller reports that explicitly. `None` for unknown ids.
+    pub fn output_window(
+        &self,
+        task_id: &str,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Option<TaskOutputSnapshot> {
+        let retained = self.output(task_id)?;
+        if let Some(persistence) = &self.persistence
+            && matches!(persistence.has_output_log(task_id), Ok(true))
+            && let Ok(total) = persistence.output_size(task_id)
+        {
+            // Back up to a character boundary: read up to 3 extra leading
+            // bytes, then skip continuation bytes.
+            let back = offset.min(3);
+            let raw_start = offset.min(total) - offset.min(total).min(back);
+            let want = max_bytes + (offset.min(total) - raw_start) as usize;
+            if let Ok(window) = persistence.read_range_bytes(task_id, raw_start, want) {
+                let (start, bytes) = align_window(raw_start, &window, offset.min(total), max_bytes);
+                let end = start + bytes.len() as u64;
+                return Some(TaskOutputSnapshot {
+                    output_path: persistence.output_log_path(task_id).ok(),
+                    output_size_bytes: total,
+                    truncated: start > 0 || end < total,
+                    full_output_available: true,
+                    preview: String::from_utf8_lossy(bytes).into_owned(),
+                    window: Some((start, end)),
+                    coordinates: TaskOutputCoordinates::LogAbsolute,
+                });
+            }
+        }
+        let buffer = retained.full_output.as_bytes();
+        let total = buffer.len() as u64;
+        let at = offset.min(total);
+        let raw_start = at - at.min(3);
+        let (start, bytes) = align_window(raw_start, &buffer[raw_start as usize..], at, max_bytes);
+        let end = start + bytes.len() as u64;
+        Some(TaskOutputSnapshot {
+            output_path: None,
+            output_size_bytes: total,
+            truncated: start > 0 || end < total,
+            full_output_available: false,
+            preview: String::from_utf8_lossy(bytes).into_owned(),
+            window: Some((start, end)),
+            // Buffer-relative even after the head was dropped: `offset`
+            // (and the returned window) addresses the retained tail, not
+            // the produced stream — exactly what the declared hint tells
+            // the model.
+            coordinates: TaskOutputCoordinates::BufferRelative,
+        })
     }
 
     /// Refresh a task's heartbeat, extending its liveness window.
@@ -2337,7 +2570,7 @@ impl TaskManager {
 
 /// Return the trailing `max` bytes of `s`, always on a UTF-8 character
 /// boundary. Returns `s` unchanged when it already fits.
-fn tail_bytes(s: &str, max: usize) -> &str {
+pub fn tail_bytes(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;
     }
@@ -2346,6 +2579,29 @@ fn tail_bytes(s: &str, max: usize) -> &str {
         cut -= 1;
     }
     &s[cut..]
+}
+
+/// Back-derive a monotonic [`Instant`] silence anchor from a log mtime
+/// observed on the wall clock (B-ADR-16 ②).
+///
+/// `last_output_at` is an `Instant` (monotonic, epoch = this boot) while the
+/// log's mtime is a `SystemTime`; the two clocks share no origin, so the
+/// wall-clock age `now_system − mtime` is re-anchored onto the monotonic
+/// clock via `now − duration`. The duration is **clamped** to
+/// `process_runtime` first: a restored session's log routinely predates
+/// this process's start (the previous writer died with the previous run),
+/// and a bare `now − huge_duration` underflows (or wraps on some
+/// platforms). Returns `None` when the monotonic subtraction cannot be
+/// represented — callers then fall back to the restore moment.
+fn back_derive_silence_anchor(
+    mtime: std::time::SystemTime,
+    now_system: std::time::SystemTime,
+    now: Instant,
+    process_runtime: Duration,
+) -> Option<Instant> {
+    let wall_age = now_system.duration_since(mtime).ok()?;
+    let duration = wall_age.min(process_runtime);
+    now.checked_sub(duration)
 }
 
 /// Build the preview string for a task's retained output.
@@ -2370,6 +2626,50 @@ fn build_preview(full_output: &str, truncated: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn should_leave_last_output_at_unset_when_an_empty_string_is_appended() {
+        let tasks = TaskManager::new();
+        let id = tasks.register(
+            TaskKind::Process {
+                command: None,
+                dispatcher: None,
+            },
+            "t".to_string(),
+            "s".to_string(),
+        );
+        tasks.append_output(&id, "");
+        assert!(tasks.get(&id).unwrap().last_output_at.is_none());
+        tasks.append_output(&id, "x");
+        assert!(tasks.get(&id).unwrap().last_output_at.is_some());
+    }
+
+    /// Given the manager's silence-warning threshold states, when the
+    /// driver resolves them, then the three arms stay distinguishable:
+    /// unset (`None`, the constructor default — the driver's 300s
+    /// fallback), explicitly off (`Some(ZERO)` — `silenceWarnSecs = 0`),
+    /// and a real threshold (`Some(d)`) (B-ADR-16 ① / BH8). A plain
+    /// `None` from `disable_silence_warning` would make an explicit
+    /// disable indistinguishable from "never configured" and the user's
+    /// `0` would warn after 5 minutes anyway.
+    #[test]
+    fn should_keep_the_silence_warning_off_sentinel_distinct_from_unset() {
+        // Given a freshly constructed manager
+        let mut tasks = TaskManager::new();
+
+        // Then its threshold is UNSET (the driver's 300s fallback arm)
+        assert_eq!(tasks.silence_warn_secs(), None);
+
+        // And when the session assembly seeds a threshold, then the
+        // manager carries it
+        tasks.set_silence_warn_secs(Duration::from_secs(45));
+        assert_eq!(tasks.silence_warn_secs(), Some(Duration::from_secs(45)));
+
+        // And when the assembly disables the warning, then the OFF
+        // sentinel lands — NOT the constructor's unset `None`
+        tasks.disable_silence_warning();
+        assert_eq!(tasks.silence_warn_secs(), Some(Duration::ZERO));
+    }
+
     use super::*;
 
     const SESSION: &str = "session-1";
@@ -3064,6 +3364,7 @@ mod tests {
             notification_delivered_at: None,
             fingerprint: None,
             lifetime_exempt: false,
+            last_output_at: None,
         };
 
         let json = serde_json::to_string(&task).unwrap();
@@ -4068,6 +4369,7 @@ mod tests {
             notification_delivered_at: None,
             fingerprint: None,
             lifetime_exempt: false,
+            last_output_at: None,
         }
     }
 
@@ -4757,5 +5059,258 @@ mod tests {
         // `driver.await` alone is enough — the wrapper converges once stopped.
         manager.stop(&task_id);
         let _ = driver.await;
+    }
+
+    // ===== B-ADR-16 ②: silence anchor restore fallback =====
+
+    /// Given a persisted running task with a fingerprint whose output log
+    /// was last written a short, pinned distance ago, when the archive is
+    /// restored, then the restored silence anchor reads as now − mtime
+    /// (the log is the last honest witness of output activity). The clamp
+    /// bound is injected at 1h — a long-lived process's runtime — so the
+    /// 2s-pinned log age survives the clamp intact.
+    #[test]
+    fn should_derive_silent_for_from_the_log_mtime_when_a_session_is_restored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("tasks");
+        let persistence = Arc::new(TaskPersistence::new(
+            dir.clone(),
+            Arc::new(mirri_os::LocalSyncFs::new()),
+        ));
+        let mut task = running_process_task("task-silence");
+        task.fingerprint = Some(mirri_os::process::ProcessFingerprint {
+            pid: 1,
+            pgid: 1,
+            start_ticks: 1,
+        });
+        persistence.save_task(&task).unwrap();
+        persistence.append_output("task-silence", "hello\n").unwrap();
+        // Pin the log's mtime 2s into the past (the pinned-mtime technique
+        // the session-index backup tests use): the distance predates the
+        // restore call but is well within the injected clamp bound, so the
+        // anchor genuinely reads as now − mtime.
+        let age_secs: u64 = 2;
+        set_log_mtime(&dir.join("task-silence").join("output.log"), age_secs);
+
+        let manager = TaskManager::with_persistence_and_clamp(
+            persistence,
+            Duration::from_secs(3_600),
+        );
+        let restored = manager.get("task-silence").expect("task restored");
+
+        let silent_for = restored
+            .last_output_at
+            .expect("a restored task with a log carries a silence anchor")
+            .elapsed();
+        // The distinguishing bounds of the mtime back-derivation: the
+        // correct path reads the pinned wall-clock age (≥1s even after
+        // second-granularity rounding), while the degenerate clamp (a
+        // zero-ish clamp bound, e.g. one minted from the manager's own
+        // construction time) collapses the anchor to the restore moment
+        // (<1s). Without the lower bound both pass — the assertion would
+        // be vacuous.
+        assert!(
+            silent_for >= Duration::from_secs(1),
+            "silent_for must read the pinned wall-clock age (~{age_secs}s), got {silent_for:?} — \
+             a degenerate clamp collapsed it to the restore moment"
+        );
+        assert!(
+            silent_for <= Duration::from_secs(4),
+            "silent_for overshoots the pinned age (~{age_secs}s): got {silent_for:?}"
+        );
+    }
+
+    /// Given the same restore with a clamp bound minted from the manager's
+    /// own construction time (ms-level — the reviewed bug's exact shape),
+    /// when the archive is restored, then the derivation degenerates to the
+    /// restore moment — the regression pin: the tightened lower bound of
+    /// the main test fails against this bound, which is exactly how the
+    /// bug was caught.
+    #[test]
+    fn should_collapse_to_the_restore_moment_when_the_clamp_bound_is_the_construction_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("tasks");
+        let persistence = Arc::new(TaskPersistence::new(
+            dir.clone(),
+            Arc::new(mirri_os::LocalSyncFs::new()),
+        ));
+        let mut task = running_process_task("task-degenerate");
+        task.fingerprint = Some(mirri_os::process::ProcessFingerprint {
+            pid: 1,
+            pgid: 1,
+            start_ticks: 1,
+        });
+        persistence.save_task(&task).unwrap();
+        persistence.append_output("task-degenerate", "hello\n").unwrap();
+        set_log_mtime(&dir.join("task-degenerate").join("output.log"), 2);
+
+        // The degenerate bound: a per-manager `started_at.elapsed()` minted
+        // inside the constructor is ms-level, clamping every wall age
+        // down to ≈ 0.
+        let manager = TaskManager::with_persistence_and_clamp(
+            persistence,
+            Duration::from_millis(1),
+        );
+        let restored = manager.get("task-degenerate").expect("task restored");
+
+        let silent_for = restored
+            .last_output_at
+            .expect("an anchor is still minted")
+            .elapsed();
+        assert!(
+            silent_for < Duration::from_secs(1),
+            "a construction-time clamp collapses the anchor to the restore \
+             moment, got {silent_for:?}"
+        );
+    }
+
+    /// Given a persisted running task whose output log was pinned to a time
+    /// long before this process started (the session-restore normal case:
+    /// the previous writer died with the previous run), when the archive is
+    /// restored, then the derived duration is clamped to the process
+    /// runtime — the silence age never exceeds the process's own
+    /// lifetime, and the back-derivation never underflows or panics.
+    #[test]
+    fn should_not_underflow_when_the_log_mtime_predates_process_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("tasks");
+        let persistence = Arc::new(TaskPersistence::new(
+            dir.clone(),
+            Arc::new(mirri_os::LocalSyncFs::new()),
+        ));
+        let mut task = running_process_task("task-clamp");
+        task.fingerprint = Some(mirri_os::process::ProcessFingerprint {
+            pid: 1,
+            pgid: 1,
+            start_ticks: 1,
+        });
+        persistence.save_task(&task).unwrap();
+        persistence.append_output("task-clamp", "old output\n").unwrap();
+        // Pin the log's mtime 56 years into the past — unambiguously
+        // before this process started (the restore normal case: the
+        // previous writer died with the previous run).
+        set_log_mtime(&dir.join("task-clamp").join("output.log"), 56 * 365 * 86400);
+
+        // A long-lived process's runtime as the clamp bound (the real
+        // path's shape): the ~56-year wall age must clamp down to it.
+        let manager = TaskManager::with_persistence_and_clamp(
+            persistence,
+            Duration::from_secs(3_600),
+        );
+        let restored = manager.get("task-clamp").expect("task restored");
+
+        // No panic happened above; the anchor must exist and read as
+        // exactly the clamped bound (the 56-year-old mtime's wall age far
+        // exceeds it) — not as the wall-clock age itself.
+        let silent_for = restored
+            .last_output_at
+            .expect("the clamped path still mints an anchor")
+            .elapsed();
+        assert!(
+            silent_for >= Duration::from_secs(3_599)
+                && silent_for <= Duration::from_secs(3_601),
+            "the clamped anchor must read as the 3600s process runtime, got {silent_for:?}"
+        );
+    }
+
+    /// Given a persisted running task whose output log does not exist, when
+    /// the archive is restored, then the restore moment itself is the
+    /// silence baseline — the anchor reads as ~0, not as `None` (the
+    /// pre-fallback behavior read such tasks as silent since their
+    /// creation, an arbitrarily inflated age). Uses the injectable-clamp
+    /// entry (the public one behaves identically for the no-log path).
+    #[test]
+    fn should_treat_the_restore_moment_as_the_silence_baseline_when_no_log_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let persistence = Arc::new(TaskPersistence::new(
+            tmp.path().join("tasks"),
+            Arc::new(mirri_os::LocalSyncFs::new()),
+        ));
+        let mut task = running_process_task("task-nolog");
+        task.fingerprint = Some(mirri_os::process::ProcessFingerprint {
+            pid: 1,
+            pgid: 1,
+            start_ticks: 1,
+        });
+        persistence.save_task(&task).unwrap();
+        // No append_output: the task never wrote a log.
+
+        let manager = TaskManager::with_persistence_and_clamp(
+            persistence,
+            Duration::from_secs(3_600),
+        );
+
+        // The restore-moment anchor reads as freshly minted (~0s elapsed).
+        let silent_for = manager
+            .get("task-nolog")
+            .unwrap()
+            .last_output_at
+            .expect("the restore moment mints the baseline anchor")
+            .elapsed();
+        assert!(
+            silent_for < Duration::from_secs(5),
+            "the restore-moment baseline must read as fresh, got {silent_for:?}"
+        );
+    }
+
+    /// Given the pure back-derivation inputs, when the log mtime is within
+    /// this process's lifetime, then the derived instant sits exactly
+    /// `now_system − mtime` before `now` — the formula itself, isolated
+    /// from the restore path.
+    #[test]
+    fn should_back_derive_the_anchor_to_the_wall_clock_age_when_the_log_is_young() {
+        let now_system = std::time::SystemTime::now();
+        let mtime = now_system - Duration::from_secs(7);
+        let now = Instant::now();
+        let process_runtime = Duration::from_secs(3_600);
+
+        let anchor = back_derive_silence_anchor(mtime, now_system, now, process_runtime)
+            .expect("a young log always derives");
+
+        let age = anchor.elapsed();
+        assert!(
+            age >= Duration::from_secs(7) && age <= Duration::from_secs(7) + Duration::from_secs(2),
+            "a young log derives its wall-clock age, got {age:?}"
+        );
+    }
+
+    /// Given the pure back-derivation inputs, when the log mtime predates
+    /// this process's start, then the derived duration is clamped to the
+    /// process runtime — the monotonic subtraction stays in range and the
+    /// anchor cannot read older than the process itself.
+    #[test]
+    fn should_clamp_the_back_derivation_to_the_process_runtime_when_the_log_is_older() {
+        let now_system = std::time::SystemTime::now();
+        // A log mtime 56 years in the past — far beyond any process.
+        let mtime = now_system - Duration::from_secs(56 * 365 * 86400);
+        let now = Instant::now();
+        let process_runtime = Duration::from_secs(10);
+
+        let anchor = back_derive_silence_anchor(mtime, now_system, now, process_runtime)
+            .expect("the clamped subtraction is always representable");
+
+        let age = anchor.elapsed();
+        // The wall-clock distance is ~56 years; the clamp must pin the age
+        // to the 10s process runtime (± tolerance for the elapsed call).
+        assert!(
+            age >= Duration::from_secs(10) && age <= Duration::from_secs(10) + Duration::from_secs(2),
+            "an old log is clamped to the process runtime, got {age:?}"
+        );
+    }
+
+    /// Pin `path`'s modification time to `age_secs` before now — explicit
+    /// mtimes make the silence-anchor assertions deterministic without
+    /// sleeping (the pinned-mtime technique from the session-index backup
+    /// tests). Pinned relative to `SystemTime::now()`, NOT the Unix epoch:
+    /// the clamp under test bounds the wall-clock age, so the pin must be a
+    /// realistic recent timestamp.
+    fn set_log_mtime(path: &std::path::Path, age_secs: u64) {
+        let file = std::fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("open log for mtime pinning");
+        let mtime = std::time::SystemTime::now() - Duration::from_secs(age_secs);
+        file.set_times(std::fs::FileTimes::new().set_modified(mtime))
+            .expect("pin the log mtime");
     }
 }

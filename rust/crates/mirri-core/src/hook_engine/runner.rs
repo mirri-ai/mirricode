@@ -76,6 +76,7 @@ pub async fn run_hook(
     let opts = ExecOptions {
         cwd: hook.cwd.as_ref().map(std::path::PathBuf::from),
         env,
+        env_remove: Vec::new(),
         timeout_ms: None,
     };
 

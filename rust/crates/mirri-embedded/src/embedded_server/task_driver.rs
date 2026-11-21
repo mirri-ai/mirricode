@@ -45,28 +45,28 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mirri_core::{
-    AgentId, CancelToken, InteractionKernel, PromptOrigin, SessionEvent, SteerBuffer,
     event_projection::turn_stop_reason_wire,
     task_notification::{
-        NotificationDue, delivered_keys, due_notifications, fire_notification_hook, parked_keys,
-        sweep_mark_delivered,
+        delivered_keys, due_notifications, fire_notification_hook, parked_keys,
+        sweep_mark_delivered, NotificationDue,
     },
+    AgentId, CancelToken, InteractionKernel, PromptOrigin, SessionEvent, SteerBuffer,
 };
 use mirri_proto::WireOp;
 use serde_json::json;
 
 use super::additional_dirs::session_grant_sink;
 use super::goal_driver::{
-    TurnOutcome, maybe_launch_goal_chain, settle_goal_after_turn, turn_outcome,
+    maybe_launch_goal_chain, settle_goal_after_turn, turn_outcome, TurnOutcome,
 };
-use super::message_handlers::{EngineTurnError, run_engine_turn};
+use super::message_handlers::{run_engine_turn, EngineTurnError};
 use super::session_index::note_turn_settled;
 use super::session_routing::{resolve_artifacts_via, resolve_session_via};
 use super::{
-    EmbeddedServer, InFlightTurn, InFlightTurnsMap, WaitTurnGuard, coerce_aborted_if_cancelled,
+    coerce_aborted_if_cancelled, EmbeddedServer, InFlightTurn, InFlightTurnsMap, WaitTurnGuard,
 };
-use crate::LlmFactory;
 use crate::workspace_registry::WorkspaceRegistry;
+use crate::LlmFactory;
 use mirri_session_index::SessionIndex;
 
 /// The embedded server's per-agent turn-flow map (the same shape
@@ -153,6 +153,15 @@ impl EmbeddedServer {
             // the set only ever grows by the live task count).
             let mut stale_warned: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
+            // BH8 episode dedup + snapshot memory: a warned task id is
+            // re-armed only when its `last_output_at` advances against
+            // the previous tick's snapshot (output resumed = new episode).
+            // The snapshot also supplies the fresh-registration fallback
+            // anchor (`last_output_at = None` reads as silent since the
+            // first time the scanner saw the task).
+            let mut silence_warned: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            let mut silence_snapshots: HashMap<String, std::time::Instant> = HashMap::new();
             loop {
                 interval.tick().await;
                 let Ok(session) = resolve_session_via(&registry, &sid).await else {
@@ -211,6 +220,36 @@ impl EmbeddedServer {
                     tool_result_home.clone(),
                     &session,
                     &sid,
+                )
+                .await;
+                // The silence-warning scan (B-ADR-16 ① / BH8) rides the same
+                // tick, after the terminal notifications — an INDEPENDENT
+                // path (never inside `deliver_due_notifications`'s
+                // terminal+detached candidate filter): its own dedup state,
+                // its own episode reset, the same busy/idle injection
+                // mechanics.
+                deliver_due_silence_warnings(
+                    settle_index.clone(),
+                    &registry,
+                    &turn_flows,
+                    &activity_trackers,
+                    &steer_buffers,
+                    &compaction_handles,
+                    &usage_model_key_handles,
+                    &llm_factory,
+                    &server_config,
+                    &flag_registry,
+                    turn_stall_timeout,
+                    turn_backstop_timeout,
+                    &in_flight_turns,
+                    &goal_chain_states,
+                    &goal_chain_resources,
+                    &provider_auth_failures,
+                    tool_result_home.clone(),
+                    &session,
+                    &sid,
+                    &mut silence_warned,
+                    &mut silence_snapshots,
                 )
                 .await;
             }
@@ -561,6 +600,18 @@ struct NotificationDelivery {
     xml: String,
 }
 
+/// The generic injection turn's payload: the prompt text, its prompt
+/// origin, and the origin's wire JSON (the `turn.prompt` /
+/// `context.append_message` records carry both). Shared by the terminal
+/// notification turns and the silence-warning turns (B-ADR-16 ① — the
+/// warning reuses the turn machinery's shape but NOT its candidate
+/// selection or dedup state).
+struct InjectionPrompt {
+    text: String,
+    origin: PromptOrigin,
+    origin_wire: serde_json::Value,
+}
+
 /// The key of a parked notification origin (None for anything else —
 /// only reachable for BackgroundTask by construction).
 fn origin_key(origin: &PromptOrigin) -> mirri_core::task_notification::NotificationKey {
@@ -692,7 +743,7 @@ fn content_text(content: &[mirri_core::ContentPart]) -> String {
 /// itself. The message landing in context is the delivery (durable even if
 /// the turn then fails — the turn bracket reports the failure, the
 /// notification debt is paid).
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 async fn run_notification_turn(
     index: Option<Arc<SessionIndex>>,
     registry: &Arc<WorkspaceRegistry>,
@@ -720,9 +771,88 @@ async fn run_notification_turn(
     artifacts: &mirri_core::SessionArtifacts,
     delivery: NotificationDelivery,
 ) {
-    let prompt = delivery.xml;
-    let origin = delivery.key.origin();
-    let origin_wire = delivery.key.wire();
+    // The terminal notification's durable delivery marker (SDR-B2-01,
+    // task 2): the task record carries the fact so a rebuilt context
+    // never re-arms the debt.
+    let marker_task_id = delivery.key.task_id.clone();
+    let delivery = InjectionPrompt {
+        text: delivery.xml,
+        origin: delivery.key.origin(),
+        origin_wire: delivery.key.wire(),
+    };
+    run_injection_turn(
+        index,
+        registry,
+        turn_flows,
+        activity_trackers,
+        steer_buffers,
+        compaction_handles,
+        usage_model_key_handles,
+        server_config,
+        flag_registry,
+        turn_stall_timeout,
+        turn_backstop_timeout,
+        in_flight_turns,
+        goal_chain_states,
+        goal_chain_resources,
+        provider_auth_failures,
+        tool_result_home,
+        session,
+        session_id,
+        agent_key,
+        addressee_id,
+        agent,
+        llm,
+        model_alias,
+        artifacts,
+        delivery,
+        // The terminal notification's durable delivery marker: the task
+        // record carries the fact so a rebuilt context never re-arms the
+        // debt (SDR-B2-01, task 2).
+        Some(&marker_task_id),
+    )
+    .await;
+}
+
+/// Run one injected message as its own engine turn — the shared body of
+/// the terminal-notification turns and the silence-warning turns
+/// (B-ADR-16 ①): the durable `turn.prompt` + `context.append_message`
+/// records with the given origin, the turn bracket events, and the engine
+/// turn itself. `task_id_marker` names the task whose durable delivery
+/// marker lands after the message (terminal notifications only — the
+/// silence warning carries no durable debt and passes `None`).
+#[expect(clippy::too_many_arguments)]
+async fn run_injection_turn(
+    index: Option<Arc<SessionIndex>>,
+    registry: &Arc<WorkspaceRegistry>,
+    turn_flows: &TurnFlowMap,
+    activity_trackers: &ActivityTrackerMap,
+    steer_buffers: &SteerBufferMap,
+    compaction_handles: &CompactionHandleMap,
+    usage_model_key_handles: &UsageModelKeyHandleMap,
+    server_config: &Arc<std::sync::RwLock<mirri_core::ServerConfig>>,
+    flag_registry: &Arc<mirri_core::FlagRegistry>,
+    turn_stall_timeout: std::time::Duration,
+    turn_backstop_timeout: std::time::Duration,
+    in_flight_turns: &InFlightTurnsMap,
+    goal_chain_states: &super::goal_driver::GoalChainStateMap,
+    goal_chain_resources: &super::goal_driver::ChainResources,
+    provider_auth_failures: &std::sync::Mutex<HashMap<String, String>>,
+    tool_result_home: Option<std::path::PathBuf>,
+    session: &Arc<mirri_core::SessionScope>,
+    session_id: &str,
+    agent_key: &str,
+    addressee_id: &str,
+    agent: &Arc<mirri_core::AgentScope>,
+    llm: Arc<dyn mirri_core::llm::Llm>,
+    model_alias: String,
+    artifacts: &mirri_core::SessionArtifacts,
+    delivery: InjectionPrompt,
+    task_id_marker: Option<&str>,
+) {
+    let prompt = delivery.text;
+    let origin = delivery.origin;
+    let origin_wire = delivery.origin_wire;
     let prompt_wire = json!([{ "type": "text", "text": prompt }]);
     // The routed recorder (SDR-B2-01, task 4): the notification turn's
     // agent-domain records ride the ADDRESSEE's own journal — main's on the
@@ -753,9 +883,9 @@ async fn run_notification_turn(
     // in context is the delivery — the task record carries the fact so a
     // rebuilt context (resume, compaction, subagent journal replay) never
     // re-arms the debt.
-    session
-        .tasks()
-        .mark_notification_delivered(&delivery.key.task_id);
+    if let Some(task_id) = task_id_marker {
+        session.tasks().mark_notification_delivered(task_id);
+    }
 
     // Announce the turn bracket on the session bus.
     let event_bus = &artifacts.event_bus;
@@ -1032,7 +1162,289 @@ async fn run_notification_turn(
     }
 }
 
-// --- addressee resolution (B4 T9, reviews SF-3/N4/S3) ------------------------
+// --- silence warnings (B-ADR-16 ① / BH8) ------------------------------------
+
+/// One silence-warning delivery tick (B-ADR-16 ①): scan the session's
+/// running process-kind tasks against the threshold, reset warned
+/// episodes whose `last_output_at` advanced, and inject each due warning
+/// — parked to the steer buffer when main is busy, its own turn when
+/// idle.
+///
+/// Deliberately an INDEPENDENT path from
+/// [`deliver_due_notifications`]: that loop's candidate filter is
+/// terminal+detached+unsuppressed and fast-returns when empty — a
+/// silence warning is the opposite shape (non-terminal, mid-flight,
+/// episode-deduped in memory only, no durable delivery marker). What IS
+/// shared is the injection machinery's shape: the same busy-parking
+/// (steer buffer + `turn.steer` record), the same idle-turn engine
+/// (`run_injection_turn`), the same recipient resolution.
+#[expect(clippy::too_many_arguments)]
+pub(super) async fn deliver_due_silence_warnings(
+    index: Option<Arc<SessionIndex>>,
+    registry: &Arc<WorkspaceRegistry>,
+    turn_flows: &TurnFlowMap,
+    activity_trackers: &ActivityTrackerMap,
+    steer_buffers: &SteerBufferMap,
+    compaction_handles: &CompactionHandleMap,
+    usage_model_key_handles: &UsageModelKeyHandleMap,
+    llm_factory: &Option<Arc<dyn LlmFactory>>,
+    server_config: &Arc<std::sync::RwLock<mirri_core::ServerConfig>>,
+    flag_registry: &Arc<mirri_core::FlagRegistry>,
+    turn_stall_timeout: std::time::Duration,
+    turn_backstop_timeout: std::time::Duration,
+    in_flight_turns: &InFlightTurnsMap,
+    goal_chain_states: &super::goal_driver::GoalChainStateMap,
+    goal_chain_resources: &super::goal_driver::ChainResources,
+    provider_auth_failures: &std::sync::Mutex<HashMap<String, String>>,
+    tool_result_home: Option<std::path::PathBuf>,
+    session: &Arc<mirri_core::SessionScope>,
+    session_id: &str,
+    warned: &mut std::collections::HashSet<String>,
+    snapshots: &mut HashMap<String, std::time::Instant>,
+) {
+    // The threshold (the three-arm resolution, driver hop): the
+    // manager's `Some(ZERO)` off sentinel disables the scan (never the
+    // 300s fallback — the off-check precedes it), `None` (unconfigured)
+    // resolves to the 300s default, `Some(d)` passes through.
+    let Some(threshold) =
+        resolve_silence_threshold(session.tasks().silence_warn_secs())
+    else {
+        return;
+    };
+    let now = std::time::Instant::now();
+
+    // Episode bookkeeping: every running task's anchor is snapshotted;
+    // a task whose anchor ADVANCED against the previous snapshot had new
+    // output — its warned episode ends (re-armed for the next silence).
+    // Terminal/foreign-kind tasks leave both maps (no re-arm on stale
+    // ids).
+    let mut due: Vec<mirri_core::task_silence_warning::SilenceWarning> = Vec::new();
+    let mut live_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for task in session.tasks().list() {
+        if task.status.is_terminal() || !matches!(task.kind, mirri_core::TaskKind::Process { .. }) {
+            warned.remove(&task.id);
+            snapshots.remove(&task.id);
+            continue;
+        }
+        live_ids.insert(task.id.clone());
+        // The anchor: the last output instant, or the first snapshot as
+        // the fresh-registration fallback ("silent since we first saw
+        // it" — a task that never emitted reads as silent since start,
+        // and start ≈ the first scan that observed it).
+        let mut anchor = task
+            .last_output_at
+            .or_else(|| snapshots.get(&task.id).copied());
+        if let Some(last) = task.last_output_at {
+            // Output advanced vs the previous snapshot → the episode
+            // resets (the old warning, if any, is spent).
+            if snapshots.get(&task.id).is_none_or(|prev| &last != prev) {
+                warned.remove(&task.id);
+            }
+            snapshots.insert(task.id.clone(), last);
+        } else if let Some(first_seen) = snapshots.get(&task.id).copied() {
+            anchor = Some(first_seen);
+        } else {
+            // First scan: seed the fallback anchor for the NEXT tick.
+            snapshots.insert(task.id.clone(), now);
+            continue;
+        }
+        if warned.contains(&task.id) {
+            continue;
+        }
+        if mirri_core::task_silence_warning::is_silence_warn_due(&task, anchor, threshold, now) {
+            let silent_for = now
+                .duration_since(anchor.expect("due implies a resolved anchor"))
+                .min(threshold);
+            let warning = mirri_core::task_silence_warning::render_silence_warning(
+                &session.tasks(),
+                &task,
+                silent_for,
+            );
+            // Mark the episode BEFORE the injection attempt: a busy
+            // park is a delivery (the buffer holds it); a failed idle
+            // turn is NOT (no LLM, no artifacts) — but re-arming on a
+            // broken provider would re-inject every tick, so the
+            // episode-grain "delivered to the conversation machinery"
+            // marking is the safe choice. Output resuming resets it.
+            warned.insert(task.id.clone());
+            due.push(warning);
+        }
+    }
+    // Prune ids that disappeared (task removed / session closing).
+    let drained: Vec<String> = snapshots
+        .keys()
+        .filter(|id| !live_ids.contains(*id))
+        .cloned()
+        .collect();
+    for id in drained {
+        snapshots.remove(&id);
+        warned.remove(&id);
+    }
+    if due.is_empty() {
+        return;
+    }
+
+    // The recipient: the session's canonical main agent (a process task
+    // dispatched by a subagent still warns MAIN — the subagent is
+    // mid-turn by definition when it awaits the task, and the warning's
+    // audience is whoever holds the conversation's next move; the
+    // terminal notification's dispatcher routing is a SETTLEMENT concern
+    // that does not apply to mid-flight guidance).
+    let Some(main_agent) = session
+        .get_agent(&AgentId::new(super::DEFAULT_MAIN_AGENT_ID))
+        .await
+    else {
+        return;
+    };
+    let agent_key = format!("{session_id}:{}", super::DEFAULT_MAIN_AGENT_ID);
+
+    // Busy: main's turn-flow mutex held → park the warnings as steers
+    // (the same write-before-mutate park the terminal notifications
+    // use). The running turn's next `before_step` flush folds them in;
+    // a natural-stop boundary leaves them for the next idle tick (the
+    // continue hook flushes non-notification steers — `system_trigger`
+    // steers ARE flushed there — and the busy-parked warning rides the
+    // flush into the continued turn).
+    let busy = {
+        let flows = turn_flows.lock().unwrap_or_else(|e| e.into_inner());
+        flows
+            .get(&agent_key)
+            .is_some_and(|flow| flow.try_lock().is_err())
+    };
+    if busy {
+        let recorder = notification_recorder(session, super::DEFAULT_MAIN_AGENT_ID).await;
+        let buffer = {
+            let mut buffers = steer_buffers.lock().unwrap_or_else(|e| e.into_inner());
+            Arc::clone(
+                buffers
+                    .entry(agent_key.to_string())
+                    .or_insert_with(|| Arc::new(std::sync::Mutex::new(SteerBuffer::new()))),
+            )
+        };
+        for warning in due {
+            recorder
+                .record_op(WireOp::TurnSteer {
+                    input: json!([{ "type": "text", "text": warning.message }]),
+                    origin: silence_warning_origin_wire(),
+                })
+                .await;
+            buffer.lock().unwrap_or_else(|e| e.into_inner()).push(
+                vec![mirri_core::ContentPart::Text {
+                    text: warning.message,
+                }],
+                PromptOrigin::SystemTrigger,
+            );
+        }
+        return;
+    }
+
+    // Idle: the confirmation gate (the same posture as the terminal
+    // notifications — an unresolvable provider keeps the debt for the
+    // next tick; here "the debt" is the WARNED episode entry, which the
+    // next output advance resets, and the LLM-less environment is
+    // logged once).
+    let Some(llm_factory) = llm_factory else {
+        tracing::warn!(
+            session_id,
+            "silence warning deferred: no LLM provider configured"
+        );
+        return;
+    };
+    let (llm, model_alias) = {
+        let config_arc = main_agent.config();
+        let config_guard = config_arc.read().unwrap_or_else(|e| e.into_inner());
+        let model_alias = config_guard.model_id.clone();
+        match llm_factory.create_llm(&config_guard) {
+            Ok(llm) => (llm, model_alias),
+            Err(reason) => {
+                tracing::warn!(session_id, %reason, "silence warning deferred: LLM creation failed");
+                return;
+            }
+        }
+    };
+    let Ok(artifacts) = resolve_artifacts_via(registry, session_id) else {
+        return;
+    };
+    for warning in due {
+        let delivery = InjectionPrompt {
+            text: warning.message,
+            origin: PromptOrigin::SystemTrigger,
+            origin_wire: silence_warning_origin_wire(),
+        };
+        run_injection_turn(
+            index.clone(),
+            registry,
+            turn_flows,
+            activity_trackers,
+            steer_buffers,
+            compaction_handles,
+            usage_model_key_handles,
+            server_config,
+            flag_registry,
+            turn_stall_timeout,
+            turn_backstop_timeout,
+            in_flight_turns,
+            goal_chain_states,
+            goal_chain_resources,
+            provider_auth_failures,
+            tool_result_home.clone(),
+            session,
+            session_id,
+            &agent_key,
+            super::DEFAULT_MAIN_AGENT_ID,
+            &main_agent,
+            llm.clone(),
+            model_alias.clone(),
+            &artifacts,
+            delivery,
+            // No durable delivery marker: the silence warning carries no
+            // terminal debt; its dedup is the in-memory episode set.
+            None,
+        )
+        .await;
+    }
+}
+
+/// The scanner's fallback threshold when the session's task manager
+/// carries none (the directly-constructed test scopes — the 300s
+/// `silenceWarnSecs` default).
+const DEFAULT_SILENCE_WARN_SECS: Option<std::time::Duration> =
+    Some(std::time::Duration::from_secs(300));
+
+/// Resolve the silence scanner's effective threshold from the task
+/// manager's seeded state (the DRIVER HOP of the three-arm resolution):
+///
+/// - `Some(ZERO)` — the explicit `silenceWarnSecs = 0` off arm — must
+///   resolve to `None` (the scan is DISABLED). This is the hop's whole
+///   job: an explicit disable must not fall through to the 300s
+///   fallback, or a user who turned the warning off gets warned after
+///   5 minutes of silence anyway.
+/// - `Some(d)` resolves to `Some(d)` — the configured threshold.
+/// - `None` (unconfigured — a manager constructed without any config)
+///   resolves to the 300s default.
+///
+/// Unit-pinned by `should_resolve_the_driver_silence_threshold_from_the_manager_state`
+/// below — the resolution order (off-check BEFORE the fallback) is the
+/// contract; `.filter().or()` in the wrong order silently resurrects
+/// the disabled warning.
+fn resolve_silence_threshold(
+    manager_threshold: Option<std::time::Duration>,
+) -> Option<std::time::Duration> {
+    match manager_threshold.or(DEFAULT_SILENCE_WARN_SECS) {
+        Some(threshold) if threshold.is_zero() => None,
+        threshold => threshold,
+    }
+}
+
+/// The wire origin a silence-warning record carries: the
+/// `system_trigger` kind (an engine-synthesized steer, never real user
+/// input). The task identity rides the message text itself (the warning
+/// opens with the `<background-task-silence-warning task_id="…">` tag),
+/// so the origin needs no payload — `system_trigger` is a unit variant
+/// and any `system_trigger` reader parses the record.
+fn silence_warning_origin_wire() -> serde_json::Value {
+    json!({ "kind": "system_trigger" })
+}
 
 /// One candidate notification addressee (review N4): the agent to address,
 /// its steer-buffer key, and what is due for it this tick.
@@ -1214,5 +1626,43 @@ async fn claim_subagent_addressee(
     match host {
         Some(host) => host.claim_child_notification_turn(addressee_id),
         None => Some(mirri_core::NotificationRunGuard::noop()),
+    }
+}
+
+#[cfg(test)]
+mod silence_threshold_tests {
+    use super::*;
+
+    /// Given each of the task manager's three silence-threshold states,
+    /// when the driver resolves its effective scan threshold, then the
+    /// off sentinel disables the scan (NEVER falling through to the
+    /// 300s default), unset adopts the default, and a real threshold
+    /// passes through (B-ADR-16 ① / BH8). This pins the DRIVER HOP
+    /// specifically — the resolution order where `.filter().or()` in
+    /// the wrong order silently resurrected a disabled warning.
+    #[test]
+    fn should_resolve_the_driver_silence_threshold_from_the_manager_state() {
+        // Given an explicitly disabled manager (`Some(ZERO)`)
+        // When the driver resolves
+        // Then the scan is off — NOT the 300s fallback
+        assert_eq!(
+            resolve_silence_threshold(Some(std::time::Duration::ZERO)),
+            None,
+            "the explicit off sentinel must disable the scan, not fall back to 300s"
+        );
+
+        // Given an unconfigured manager (`None`)
+        // Then the scanner's own 300s default applies
+        assert_eq!(
+            resolve_silence_threshold(None),
+            DEFAULT_SILENCE_WARN_SECS
+        );
+
+        // Given a configured threshold
+        // Then it passes through unchanged
+        assert_eq!(
+            resolve_silence_threshold(Some(std::time::Duration::from_secs(45))),
+            Some(std::time::Duration::from_secs(45))
+        );
     }
 }

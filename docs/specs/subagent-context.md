@@ -194,7 +194,7 @@
 - 测试：`test/app/cron/*`（表达式/jitter/clock/持久化/Rust wire 对齐）、`test/session/cron/*`（工具/服务/steer e2e），详见 `test/session/cron/cron-tools.test.ts` 等（见 §6.2 引用文件）。
 
 - **Rust 落地（B5 批次，2026-09-13 快照）**：上列四项核心语义已在 rust 引擎对齐（详见 §6.2 各条对照）——
-  - **时区**：表达式按任务日历求值，缺省**宿主本地**（`iana-time-zone` 探测 + `chrono-tz` 解析，解析失败回退 UTC），`CronCreate` 新增可选 `timezone`（IANA 名，`"UTC"` 为旧语义逃生门），wire DTO 增 `timezone` 键、旧记录无该键按本地解释（`mirri-core/src/cron/tz.rs:19-101`；`cron.rs:82-96,122-236`；`tools/cron_create.rs:52-88`）；
+  - **时区**：表达式按任务日历求值，缺省**宿主本地**（`jiff` 探测宿主时区 + 解析 IANA 名，探测失败回退 UTC；2026-11-18 由 `iana-time-zone` + `chrono-tz` 迁移而来，见 requirements SDR-005 实施追记 4–7），`CronCreate` 新增可选 `timezone`（IANA 名，`"UTC"` 为旧语义逃生门），wire DTO 增 `timezone` 键、旧记录无该键按本地解释（`mirri-core/src/cron/tz.rs:1-119`；`cron.rs:82-96,122-236`；`tools/cron_create.rs:52-88`）；
   - **jitter**：TS `jitter.ts` 双算法逐字移植——`fraction_from_id`（8 位 hex 快路径 `u32/2^32`，否则 djb2 wrapping i32）；recurring 前移 `min(10% 周期, 15min)×fraction`；one-shot 仅本地 :00/:30 提前 ≤90s 且不早于 createdAt；`MIRRI_CRON_NO_JITTER=1` 经 `CronOptions` 关闭（`mirri-core/src/cron/jitter.rs:30-124`、`cron.rs:280-303`）；
   - **coalesce**：`check_due` 从游标 base（`max(last_fired, created_at)`，对齐 TS `baseFromMs`）逐 ideal+jittered 前进计数（上限 10000），一次触发携带 `coalescedCount`，游标推进到 `lastDue` 保相（`cron.rs:691-807`）；恢复路径同样从 base 重算（可落在过去 → 首个 due pass 合并触发，TS catch-up 语义，`cron.rs:557-623`）；
   - **7 天 stale**：recurring age ≥ 7d 在 fire 时标 stale、投递后写 `cron.delete`（durable，resume 不复活）再移除；one-shot 永不 stale；`MIRRI_CRON_NO_STALE=1` 关闭（`cron.rs:66-74,809-815`）；

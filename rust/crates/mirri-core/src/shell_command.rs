@@ -308,7 +308,10 @@ async fn run_tracked(
 
     let opts = ExecOptions {
         cwd: None,
+        // Intentionally unfiltered: user-initiated `!` shell commands run with
+        // the user's own environment (credential stripping is Bash-tool only).
         env: noninteractive_env(),
+        env_remove: Vec::new(),
         timeout_ms: None,
     };
     let mut child = match target
@@ -486,6 +489,16 @@ async fn run_tracked(
 /// accumulated output; the exit code settles the task's terminal status)
 /// and build the backgrounded result.
 ///
+/// The output accumulated inside the foreground window lands on the task row
+/// BEFORE the continuation spawns (BH4, B-ADR-15's bug-fix arm — the same
+/// stock fold the Bash tool's `hand_over_to_background` performs), so the
+/// row is never missing the pre-detach output; the continuation's
+/// per-chunk appends build on top of it. The window's separately-accumulated
+/// stdout and stderr are concatenated stdout-first — within the window the
+/// event stream interleaved them by arrival, so this fold re-orders
+/// concurrent same-window streams (the Bash path folds a single merged
+/// buffer instead); the task row still sees every byte.
+///
 /// The continuation is detached from the foreground run (its cancellation
 /// is the task lifecycle's, not the command id's — mirroring the TS
 /// service, which drops the command's AbortController when the run
@@ -498,6 +511,10 @@ fn finish_detached(
     stdout: String,
     stderr: String,
 ) -> ShellCommandResult {
+    // The window's accumulated stock lands on the row first — the chunks
+    // that arrive after the detach append after it, so the task's output
+    // reads window-stock ++ post-detach-stream, no gap, no duplication.
+    tasks.append_output(task_id, &format!("{stdout}{stderr}"));
     let tasks = Arc::clone(tasks);
     let task_id = task_id.to_string();
     let task_id_for_result = task_id.clone();
@@ -714,6 +731,64 @@ mod tests {
                 "detached runs never emit shell.completed"
             );
         }
+    }
+
+    /// Given a `!` command whose foreground window captured output before the
+    /// detach, when the run detaches to its background task, then the
+    /// accumulated stock output lands on the task row at the handover (BH4,
+    /// B-ADR-15's bug-fix arm: the Bash tool's detach path folds the window's
+    /// output into the row the same way), and the post-detach chunks keep
+    /// landing on top of it.
+    #[tokio::test]
+    async fn should_carry_accumulated_output_into_the_task_row_when_a_bang_command_detaches() {
+        let (target, tasks, _event_bus) = target();
+
+        let result = run_shell_command(
+            target,
+            "echo stock-output && sleep 2 && echo after-detach",
+            Some("cmd-stock"),
+            Duration::from_millis(200),
+            |_| {},
+        )
+        .await;
+
+        let task_id = result
+            .backgrounded
+            .expect("the tiny window detaches the run");
+
+        // The stock output (captured inside the foreground window, before any
+        // post-detach chunk could exist) is on the row right at the handover.
+        // Poll: a slow `sh` may emit its first line close to the window edge,
+        // so the stock-landing observable is eventual, not instantaneous.
+        let stock_landed = mirri_test_support::wait_for::wait_for_async(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                tasks
+                    .output(&task_id)
+                    .filter(|output| output.full_output.contains("stock-output"))
+                    .map(|_| ())
+            },
+        )
+        .await;
+        assert!(
+            stock_landed.is_ok(),
+            "the handover must fold the foreground window's output into the row, was: {:?}",
+            tasks.output(&task_id).map(|output| output.full_output)
+        );
+        assert_eq!(
+            tasks.get(&task_id).unwrap().status,
+            TaskStatus::Running,
+            "the stock lands while the detached run is still live"
+        );
+
+        // And the post-detach chunk lands on top; the run settles Completed.
+        assert_eq!(
+            tasks.wait_for_completion(&task_id, 15).await,
+            WaitResult::Completed
+        );
+        let output = tasks.output(&task_id).unwrap().full_output;
+        assert_eq!(output, "stock-output\nafter-detach\n");
     }
 
     /// Given a slow command and its registry entry, when shell.cancel fires,

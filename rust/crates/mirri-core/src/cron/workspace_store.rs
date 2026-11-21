@@ -656,8 +656,8 @@ fn restored_tables(
             // B1 / SDR-110: a restored task whose schedule already ran
             // past its end date restores dormant (its runs and records
             // survive; nothing fires again).
-            match super::CronManager::compute_schedule_next_fire_pub(&schedule, base, tz) {
-                Ok(ideal) if super::occurrence_past_ends_at(&task, ideal, tz) => None,
+            match super::CronManager::compute_schedule_next_fire_pub(&schedule, base, tz.clone()) {
+                Ok(ideal) if super::occurrence_past_ends_at(&task, ideal, tz.clone()) => None,
                 Ok(ideal) => Some(
                     super::CronManager::schedule_occurrence_for(
                         &schedule,
@@ -938,8 +938,8 @@ impl WorkspaceCronManager {
                 None => super::ScheduleSpec::Cron(&cron),
             };
             let first =
-                super::CronManager::compute_schedule_next_fire_pub(&schedule, Utc::now(), tz)?;
-            let first_day = first.with_timezone(&tz).date_naive();
+                super::CronManager::compute_schedule_next_fire_pub(&schedule, Utc::now(), tz.clone())?;
+            let first_day = super::local_date(first, &tz);
             if ends_at < first_day {
                 return Err(super::CronError::InvalidExpression(
                     "结束日期不能早于首次运行日".to_string(),
@@ -1489,19 +1489,19 @@ impl WorkspaceCronManager {
         }
         let tz = super::CronTimezone::parse(edited.timezone.as_deref())?.resolve();
         let schedule = super::task_schedule(&edited);
-        let first = super::CronManager::compute_schedule_next_fire_pub(&schedule, now, tz)?;
+        let first = super::CronManager::compute_schedule_next_fire_pub(&schedule, now, tz.clone())?;
         if let Some(ends_at) = edited.ends_at
-            && ends_at < first.with_timezone(&tz).date_naive()
+            && ends_at < super::local_date(first, &tz)
         {
             return Err(super::CronError::InvalidExpression(
                 "结束日期不能早于首次运行日".to_string(),
             ));
         }
-        let ideal = super::CronManager::compute_schedule_next_fire_pub(&schedule, now, tz)?;
+        let ideal = super::CronManager::compute_schedule_next_fire_pub(&schedule, now, tz.clone())?;
         edited.next_fire_at = if edited.paused {
             // A paused task keeps no live schedule; resuming recomputes.
             None
-        } else if super::occurrence_past_ends_at(&edited, ideal, tz) {
+        } else if super::occurrence_past_ends_at(&edited, ideal, tz.clone()) {
             None
         } else {
             Some(
@@ -1556,11 +1556,12 @@ impl WorkspaceCronManager {
             }
         };
         let schedule = super::task_schedule(task);
-        let Ok(ideal) = super::CronManager::compute_schedule_next_fire_pub(&schedule, now, tz)
+        let Ok(ideal) =
+            super::CronManager::compute_schedule_next_fire_pub(&schedule, now, tz.clone())
         else {
             return Ok(None);
         };
-        if super::occurrence_past_ends_at(task, ideal, tz) {
+        if super::occurrence_past_ends_at(task, ideal, tz.clone()) {
             return Ok(None);
         }
         Ok(Some(
@@ -1840,7 +1841,21 @@ impl WorkspaceCronManager {
     /// Running, so the next fire opens a fresh run (a Skip/Queue task
     /// wedged behind the dead Running is un-wedged). Returns the
     /// converged (task_id, run_id) pairs.
-    pub async fn fail_orphan_running_runs(&self, reason: &str) -> Vec<(String, String)> {
+    ///
+    /// `opened_before` is the sweep's orphan boundary — the instant the
+    /// sweeping scheduler started. A run record whose `started_at` is NOT
+    /// strictly earlier than this belongs to the CURRENT process: the
+    /// scheduler is spawned lazily by the first RPC, so a `cron.trigger`
+    /// that lands before the first workspace pass opens a live run the
+    /// sweep would otherwise converge as a crash orphan — turning a
+    /// running task into `Failed{服务重启中断}` while its turn is still
+    /// executing. Records written by a previous process always predate the
+    /// new process's scheduler, so the restart recovery is unaffected.
+    pub async fn fail_orphan_running_runs(
+        &self,
+        reason: &str,
+        opened_before: DateTime<Utc>,
+    ) -> Vec<(String, String)> {
         // The cheap pre-check first (the expire_lapsed_proposals posture):
         // no Running record means NO store write — a no-op mutate would
         // still create the cron/ directory + tasks.json file where none
@@ -1851,9 +1866,9 @@ impl WorkspaceCronManager {
                 .runs
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            runs.values()
-                .flatten()
-                .any(|run| run.status.is_in_flight())
+            runs.values().flatten().any(|run| {
+                run.status.is_in_flight() && run.started_at < opened_before
+            })
         };
         if !any_running {
             return Vec::new();
@@ -1866,7 +1881,7 @@ impl WorkspaceCronManager {
             let sweep = self.mutate_store(move |document| {
                 for (task_id, runs) in document.runs.iter_mut() {
                     for run in runs.iter_mut() {
-                        if run.status.is_in_flight() {
+                        if run.status.is_in_flight() && run.started_at < opened_before {
                             run.status = RunStatus::Failed;
                             run.ended_at = Some(chrono::Utc::now());
                             run.duration_ms = Some(
@@ -2141,17 +2156,19 @@ impl WorkspaceCronManager {
                 .unwrap_or(task.created_at);
             let mut cursor = base;
             while count < super::MAX_COALESCE_ITERATIONS {
-                let ideal =
-                    match super::CronManager::compute_schedule_next_fire_pub(&schedule, cursor, tz)
-                    {
-                        Ok(ideal) => ideal,
-                        Err(_) => break,
-                    };
+                let ideal = match super::CronManager::compute_schedule_next_fire_pub(
+                    &schedule,
+                    cursor,
+                    tz.clone(),
+                ) {
+                    Ok(ideal) => ideal,
+                    Err(_) => break,
+                };
                 // Review Major 2: the walk never crosses the end date — an
                 // occurrence past `ends_at`'s local day stops the coalesce
                 // walk without counting it (a recovered backlog must not
                 // coalesce occurrences the schedule had already ended on).
-                if super::occurrence_past_ends_at(task, ideal, tz) {
+                if super::occurrence_past_ends_at(task, ideal, tz.clone()) {
                     break;
                 }
                 let jittered = super::CronManager::schedule_occurrence_for(
@@ -2160,7 +2177,7 @@ impl WorkspaceCronManager {
                     ideal,
                     task.recurring,
                     task.created_at,
-                    tz,
+                    tz.clone(),
                     self.options,
                 )
                 .unwrap_or(ideal);
@@ -2177,11 +2194,11 @@ impl WorkspaceCronManager {
         // B1 / SDR-110: the end-date finale (the max_fires finale's
         // sibling) — the delivery whose NEXT occurrence would fall past
         // `ends_at`'s local day is the task's last.
-        let ended = super::ends_past_schedule(task, &schedule, advanced, tz);
+        let ended = super::ends_past_schedule(task, &schedule, advanced, tz.clone());
         let next_fire_at = if task.recurring && !stale && !maxed_out && !ended {
-            super::CronManager::compute_schedule_next_fire_pub(&schedule, advanced, tz)
+            super::CronManager::compute_schedule_next_fire_pub(&schedule, advanced, tz.clone())
                 .ok()
-                .filter(|ideal| !super::occurrence_past_ends_at(task, *ideal, tz))
+                .filter(|ideal| !super::occurrence_past_ends_at(task, *ideal, tz.clone()))
                 .map(|ideal| {
                     super::CronManager::schedule_occurrence_for(
                         &schedule,
@@ -2189,7 +2206,7 @@ impl WorkspaceCronManager {
                         ideal,
                         task.recurring,
                         task.created_at,
-                        tz,
+                        tz.clone(),
                         self.options,
                     )
                     .unwrap_or(ideal)
@@ -2982,8 +2999,12 @@ mod tests {
                 scheduled_at: None,
             },
         ));
-        // The sweep (the scheduler's first pass calls this).
-        let swept = futures_executor_block_on(manager.fail_orphan_running_runs("服务重启中断"));
+        // The sweep (the scheduler's first pass calls this). The boundary
+        // is taken AFTER the record landed: the record predates this
+        // instant, so it reads as a previous process's orphan.
+        let boundary = Utc::now();
+        let swept =
+            futures_executor_block_on(manager.fail_orphan_running_runs("服务重启中断", boundary));
         assert_eq!(swept, vec![(id.clone(), "run-orphan".to_string())]);
         let runs = manager.runs(&id);
         let converged = runs
@@ -3001,6 +3022,57 @@ mod tests {
                 .iter()
                 .all(|run| run.status != RunStatus::Running),
             "the orphan convergence persisted"
+        );
+    }
+
+    /// Given a run record THIS process opened (its `started_at` is later than
+    /// the scheduler's construction instant), when the orphan sweep runs,
+    /// then the live run is left alone.
+    ///
+    /// The scheduler is spawned lazily by the first RPC and then waits for
+    /// the startup housekeeping, so a `cron.trigger` (or a due fire) can open
+    /// a run before the first workspace pass sweeps. Without the boundary the
+    /// sweep converges that run to `Failed{服务重启中断}` while its turn is
+    /// still executing — the history then reports a failure that never
+    /// happened, and the run's usage/terminal state no longer describe it.
+    #[tokio::test]
+    async fn should_leave_a_run_this_process_opened_untouched_on_the_orphan_sweep() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = std::sync::Arc::new(ws_manager(&tmp));
+        let id = manager
+            .add(
+                "0 9 1 1 *".into(),
+                "live run".into(),
+                true,
+                CronCreateOptions::default(),
+            )
+            .await
+            .unwrap();
+        // The sweep's boundary is taken at scheduler construction…
+        let boundary = Utc::now();
+        // …and the run opens afterwards — it belongs to this process.
+        assert!(matches!(
+            manager.try_open_run(&id, false, opener_for("run-live")).await,
+            OpenRunOutcome::Opened(_)
+        ));
+
+        let swept = manager
+            .fail_orphan_running_runs("服务重启中断", boundary)
+            .await;
+
+        assert!(
+            swept.is_empty(),
+            "a run opened after the sweep boundary is not an orphan: {swept:?}"
+        );
+        let runs = manager.runs(&id);
+        assert_eq!(
+            runs[0].status,
+            RunStatus::Running,
+            "the live run keeps running: {runs:?}"
+        );
+        assert!(
+            runs[0].skip_reason.is_none(),
+            "and it carries no restart cause: {runs:?}"
         );
     }
 
@@ -3142,7 +3214,12 @@ mod tests {
         manager
             .set_run_status(&id, "run-o", RunStatus::WaitingApproval)
             .await;
-        let swept = manager.fail_orphan_running_runs("进程重启").await;
+        // The sweep boundary postdates the record (a previous process's
+        // run, from this scheduler's point of view).
+        let boundary = Utc::now();
+        let swept = manager
+            .fail_orphan_running_runs("进程重启", boundary)
+            .await;
         assert_eq!(swept, vec![(id.clone(), "run-o".to_string())]);
         assert_eq!(manager.runs(&id)[0].status, RunStatus::Failed);
     }

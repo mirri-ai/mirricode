@@ -12,7 +12,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Timelike as _;
 use serde_json::json;
 
 use super::*;
@@ -42,7 +41,7 @@ fn cron_b3_server(mock: Arc<ScriptedLlm>) -> (EmbeddedServer, tempfile::TempDir)
         config,
         None,
     )
-        .with_home_dir(Some(tmp.path().to_path_buf()))
+    .with_home_dir(Some(tmp.path().to_path_buf()))
     .with_task_sweep_tick(Duration::from_millis(50))
     .with_cron_tick(Duration::from_millis(50));
     (server, tmp)
@@ -629,7 +628,8 @@ async fn should_cache_a_persisted_sessions_replay_and_invalidate_when_the_log_mo
     {
         use std::fs::FileTimes;
         let file = std::fs::File::open(&wire_log).expect("open the wire log");
-        let times = FileTimes::new().set_modified(std::time::UNIX_EPOCH + Duration::from_secs(3_600));
+        let times =
+            FileTimes::new().set_modified(std::time::UNIX_EPOCH + Duration::from_secs(3_600));
         file.set_times(times).expect("pin the wire log mtime");
     }
     tokio::task::yield_now().await;
@@ -781,9 +781,9 @@ async fn should_answer_interval_occurrences_when_previewing_an_interval_schedule
     let occurrences = previewed["occurrences"].as_array().expect("occurrences");
     assert!(!occurrences.is_empty(), "the interval answers: {previewed}");
     // The first occurrence lands at the spec's time of day.
-    let first = chrono::DateTime::from_timestamp_millis(occurrences[0].as_i64().unwrap())
-        .unwrap()
-        .with_timezone(&chrono_tz::UTC);
+    let first = jiff::Timestamp::from_millisecond(occurrences[0].as_i64().unwrap())
+        .expect("a real instant")
+        .to_zoned_datetime(jiff::tz::TimeZone::UTC);
     assert_eq!(
         (first.hour(), first.minute()),
         (23, 45),

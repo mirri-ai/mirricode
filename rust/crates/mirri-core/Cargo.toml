@@ -21,8 +21,7 @@ anyhow = { workspace = true }
 uuid = { workspace = true }
 parking_lot = { workspace = true }
 chrono = { workspace = true }
-chrono-tz = { workspace = true }
-iana-time-zone = { workspace = true }
+jiff = { workspace = true }
 jsonschema = { workspace = true }
 globset = { workspace = true }
 regex = { workspace = true }

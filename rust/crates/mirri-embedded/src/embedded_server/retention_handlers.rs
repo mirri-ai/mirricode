@@ -55,6 +55,10 @@ struct ScanRow {
 struct RawScanEntry {
     session_id: String,
     workspace: String,
+    /// The index/metadata row's title, when it carries one — the
+    /// listing's primary title source (a row-only session has no
+    /// state.json to fall back to, ADR-006's normal shape).
+    row_title: Option<String>,
     archived_at: Option<String>,
     compressed_at: Option<String>,
     pre_compressed_size: Option<u64>,
@@ -417,6 +421,7 @@ impl EmbeddedServer {
                 raw.push(RawScanEntry {
                     session_id: row.id,
                     workspace: row.workspace_id,
+                    row_title: row.title,
                     archived_at: row.archived_at.map(|at| stamp(&at)),
                     compressed_at: row.compressed_at.map(|at| stamp(&at)),
                     // The savings basis rode the compression write into the
@@ -458,6 +463,7 @@ impl EmbeddedServer {
                     raw.push(RawScanEntry {
                         session_id: row_id,
                         workspace,
+                        row_title: Some(record.title),
                         archived_at: record.archived_at.map(|at| stamp(&at)),
                         compressed_at: record.compressed_at.map(|at| stamp(&at)),
                         pre_compressed_size: record.pre_compressed_size,
@@ -474,6 +480,7 @@ impl EmbeddedServer {
                 raw.push(RawScanEntry {
                     session_id: info.session_id,
                     workspace: String::new(),
+                    row_title: None,
                     archived_at: info.archived_at.map(|at| stamp(&at)),
                     compressed_at: info.compressed_at.map(|at| stamp(&at)),
                     pre_compressed_size: info.pre_compressed_size,
@@ -488,6 +495,7 @@ impl EmbeddedServer {
         for RawScanEntry {
             session_id,
             workspace,
+            row_title,
             archived_at,
             compressed_at,
             created_at,
@@ -504,8 +512,9 @@ impl EmbeddedServer {
             };
             let id = SessionId::new(&session_id);
             let dir = persistence.session_dir(&id);
-            // The disk facts: shape, occupancy, the title (from the
-            // state.json read when available).
+            // The disk facts: shape, occupancy. The title comes from the
+            // index/metadata row first, the state.json read only the
+            // pre-row fallback (a row-only session has no state.json).
             let compressed_shape = matches!(
                 mirri_persistence::probe_compressed(&dir),
                 mirri_persistence::CompressedShape::Compressed
@@ -518,14 +527,21 @@ impl EmbeddedServer {
                 .map(|meta| meta.len())
                 .unwrap_or(0); // zero-io-allow: retention scan — a stat of the persistence-owned .gz (the same class probe_compressed's is_file carries)
             let current_size_bytes = dir_size(&dir).unwrap_or(0);
-            // One state.json read backs three row facts: the title, the
-            // pre-size (when the index scan did not carry it), and the
-            // created stamp for the index-less fallback path (ADR-010).
+            // One state.json read backs three row facts: the title's
+            // fallback, the pre-size (when the index scan did not carry
+            // it), and the created stamp for the index-less fallback path
+            // (ADR-010).
             let persisted = persistence.read_persisted_info(&id).await;
-            let title = persisted
-                .as_ref()
-                .map(|info| info.metadata.title.clone())
-                .unwrap_or_default();
+            // The title: the index/metadata ROW first (a row-only session
+            // — post-ADR-006's normal shape — carries no state.json), the
+            // state.json read only the pre-row fallback.
+            let title = match row_title.as_deref() {
+                Some(t) if !t.is_empty() => t.to_string(),
+                _ => persisted
+                    .as_ref()
+                    .map(|info| info.metadata.title.clone())
+                    .unwrap_or_default(),
+            };
             let created_at = if created_at.is_empty() {
                 persisted
                     .as_ref()

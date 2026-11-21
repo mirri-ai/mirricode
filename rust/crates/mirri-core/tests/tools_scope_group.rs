@@ -51,6 +51,7 @@ fn fresh_services() -> BuiltinToolServices {
         background_gate: Arc::new(|| true),
         subagent_timeout: None,
         max_swarm_items: None,
+        env_allowlist: Vec::new(),
         question_channel_wait: std::time::Duration::from_secs(300),
         workspace_id: None,
         scheduled_task_creator: None,
@@ -3840,6 +3841,7 @@ fn should_approve_tool_when_permission_manager_in_yolo_mode() {
         cancel: &cancel,
         net_class: None,
         turn_origin: Default::default(),
+        command_text: None,
     };
 
     // When: evaluate the policy chain.
@@ -3884,6 +3886,7 @@ fn should_deny_tool_when_deny_rule_matches() {
         cancel: &cancel,
         net_class: None,
         turn_origin: Default::default(),
+        command_text: None,
     };
 
     // When: evaluate the policy chain.
@@ -3923,6 +3926,7 @@ fn should_approve_when_before_tool_call_in_headless_mode() {
         cancel: &cancel,
         net_class: None,
         turn_origin: Default::default(),
+        command_text: None,
     };
 
     // When: call before_tool_call (headless mode — Ask defaults to Approved).
@@ -3963,6 +3967,7 @@ fn should_block_when_before_tool_call_in_non_headless_mode() {
         cancel: &cancel,
         net_class: None,
         turn_origin: Default::default(),
+        command_text: None,
     };
 
     // When: call before_tool_call (non-headless — Ask should be Blocked).
@@ -4039,6 +4044,7 @@ fn should_fire_permission_result_when_before_tool_call_approves_in_yolo_mode() {
         cancel: &cancel,
         net_class: None,
         turn_origin: Default::default(),
+        command_text: None,
     };
 
     // When: before_tool_call approves the tool call (Yolo auto-approve).
@@ -4102,6 +4108,7 @@ fn should_fire_permission_result_when_before_tool_call_rejects_with_deny_rule() 
         cancel: &cancel,
         net_class: None,
         turn_origin: Default::default(),
+        command_text: None,
     };
 
     // When: before_tool_call rejects the tool call via the deny rule.
@@ -5218,6 +5225,7 @@ fn eval(
         cancel: &cancel,
         net_class: None,
         turn_origin: Default::default(),
+        command_text: None,
     };
     manager.evaluate(&ctx)
 }
@@ -5766,6 +5774,7 @@ impl OriginCtxBundle {
             cancel: &self.cancel,
             net_class: None,
             turn_origin,
+            command_text: None,
         }
     }
 }

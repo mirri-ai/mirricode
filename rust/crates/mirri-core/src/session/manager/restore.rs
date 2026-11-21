@@ -213,12 +213,31 @@ impl SessionManager {
         //    Its background tasks are rehydrated from `<session_dir>/tasks/`
         //    (tasks left running by the previous process are reconciled to
         //    stopped at load).
+        //
+        //    The session is registered NOT READY: it enters the live table
+        //    before the replay and the agent rebuild, so a concurrent cron
+        //    pass or `message.send` must defer rather than act on a scope
+        //    whose wire log has no writer yet. `land_resume_tail` flips it
+        //    (and `close_session` / the rollback path leave it dead anyway).
         let tasks_dir = self.persistence.session_dir(session_id).join("tasks");
         let session = self
             .workspace
-            .create_session_with_config(session_id.clone(), metadata, scope_config, Some(tasks_dir))
+            .create_session_with_config_readiness(
+                session_id.clone(),
+                metadata,
+                scope_config,
+                Some(tasks_dir),
+                false,
+            )
             .await
             .map_err(|e| SessionError::AlreadyExists(e.to_string()))?;
+        // Buffer the wire ops the restore window attracts (a cron manager
+        // mutation, a task notification) instead of discarding them: the
+        // replayed history is written by the replay itself, and the installed
+        // writer flushes this buffer in order once it lands. Without this the
+        // slot stays `Detached` until `install_wire_log`, and `record_op`
+        // silently drops every op in between.
+        session.defer_wire_log().await;
 
         // 5-8. Replay the wire log, install the event plumbing, and rebuild
         //      the agent. Every step here is fallible — and the session is
@@ -446,6 +465,13 @@ impl SessionManager {
             message_count = state.conversation.messages.len(),
             "session resumed; wire log replayed and agent context reconstructed"
         );
+        // The restore is complete: the writer is installed (any op buffered
+        // during the window has been flushed in order) and the agents are
+        // rebuilt, so turn-driving faces may act on this session again. This
+        // is the ONLY place a resumed session becomes runnable — a failure
+        // above leaves it closed and the caller rolls it back out of the live
+        // tables.
+        session.mark_ready();
         Ok(())
     }
 

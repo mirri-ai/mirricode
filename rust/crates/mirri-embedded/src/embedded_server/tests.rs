@@ -5,6 +5,7 @@ mod b1_task_lifecycle_tests;
 mod b2_notification_tests;
 mod b3_swarm_scheduler_tests;
 mod b7_task_overview_tests;
+mod bh8_silence_warning_tests;
 mod credential_store_tests;
 mod cron_b3_user_face_tests;
 mod cron_ws_4a_tests;
@@ -89,6 +90,60 @@ async fn drive_notification_ticks(server: &EmbeddedServer, session_id: &str, tic
     }
 }
 
+/// Drive ONE task-driver silence-warning pass for `session_id` — the
+/// scan+inject body the spawned driver runs after the notification
+/// delivery. The dedup state is fresh per call (the episode HashSet and
+/// snapshot map travel WITH the real loop; a test that needs
+/// tick-to-tick state passes them in and back out).
+async fn drive_silence_tick(
+    server: &EmbeddedServer,
+    session_id: &str,
+    warned: &mut std::collections::HashSet<String>,
+    snapshots: &mut HashMap<String, std::time::Instant>,
+) {
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(session_id))
+        .await
+        .expect("session is live");
+    let resources = server.goal_chain_resources();
+    super::task_driver::deliver_due_silence_warnings(
+        server.session_index(),
+        &server.registry,
+        &server.turn_flows,
+        &server.activity_trackers,
+        &server.steer_buffers,
+        &server.compaction_handles,
+        &server.usage_model_key_handles,
+        &server.llm_factory,
+        &server.config,
+        server.flag_registry(),
+        server.turn_stall_timeout,
+        server.turn_backstop_timeout,
+        &server.in_flight_turns,
+        &server.goal_chain_states,
+        &resources,
+        &server.provider_auth_failures,
+        server.home_dir().map(ToOwned::to_owned),
+        &session,
+        session_id,
+        warned,
+        snapshots,
+    )
+    .await;
+}
+
+/// A sweep already fired: the latch is set and the boundary is "now", so a
+/// pass through it neither converges anything nor rewrites a live run.
+/// Tests that drive passes directly use this instead of arming a real sweep
+/// (only the restart-recovery tests arm one, and they do it themselves).
+fn swept_orphan_sweep() -> std::sync::Arc<super::cron_driver::OrphanSweep> {
+    std::sync::Arc::new(super::cron_driver::OrphanSweep {
+        latched: std::sync::atomic::AtomicBool::new(true),
+        opened_before: chrono::Utc::now(),
+    })
+}
+
 /// Drive ONE SERVER-level cron pass for the default workspace. The orphan
 /// latch is pre-set (`true`) so a repeated call is a pure due-check + drain
 /// instead of re-running the stale-Running convergence.
@@ -103,7 +158,7 @@ async fn drive_cron_pass(server: &EmbeddedServer) {
         Arc::new(server.workspace_run_spawner()),
         Arc::clone(&server.steer_buffers),
         workspace_id,
-        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        swept_orphan_sweep(),
     )
     .await;
 }
@@ -162,7 +217,7 @@ async fn drive_cron_pass_capture(server: &EmbeddedServer) -> Vec<CapturedFire> {
         executor.clone(),
         Arc::clone(&server.steer_buffers),
         workspace_id,
-        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        swept_orphan_sweep(),
     )
     .await;
     std::mem::take(
@@ -499,6 +554,66 @@ async fn should_answer_session_list_before_census_settles() {
         .expect("session.create");
     assert_eq!(created["title"], "after the gates");
     server.set_settlement_probe(None);
+}
+
+/// Given a session whose restore is still in flight, when a message is sent
+/// to it, then the send is refused with the retryable conflict instead of
+/// starting a turn.
+///
+/// The resume path registers the scope in the workspace's live table before
+/// the wire-log replay and the agent rebuild finish, so for that window the
+/// session is resolvable but its wire log has no writer. A turn started then
+/// records its `turn.prompt` opener into a detached slot — a silently
+/// discarded write that leaves an assistant reply with no visible question in
+/// the transcript. The gate defers the send instead.
+#[tokio::test]
+async fn should_refuse_a_message_send_when_the_session_is_still_restoring() {
+    let (server, _tmp) = test_server(None);
+    let created = server
+        .call_method("session.create", json!({ "title": "restoring" }))
+        .await
+        .expect("session.create");
+    let session_id = created["id"].as_str().unwrap().to_string();
+    // Simulate the resume window: the scope is live but not yet runnable.
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("the session is live");
+    session.mark_restoring();
+
+    let refused = server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "too early" }),
+        )
+        .await;
+
+    let error = refused.expect_err("a restoring session must refuse the send");
+    // The conflict's domain code is the retry signal the client routes on.
+    let mirri_transport::adapter::EngineError::Rpc { data, .. } = &error else {
+        panic!("the refusal rides the RPC error shape: {error}");
+    };
+    let code = data
+        .as_ref()
+        .and_then(|data| data.get("domainCode"))
+        .and_then(|code| code.as_str())
+        .unwrap_or_default();
+    assert_eq!(
+        code,
+        mirri_core::ErrorCode::SessionConflict.as_str(),
+        "the refusal names the retryable conflict: {error}"
+    );
+
+    // And once the restore settles the same send proceeds.
+    session.mark_ready();
+    let _ = server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "after the restore" }),
+        )
+        .await
+        .map_err(|error| error.to_string());
 }
 
 /// should wait for the recovery check before answering recovery.list
@@ -7622,7 +7737,7 @@ async fn should_persist_session_approval_to_wire_log_when_user_approves_for_sess
             assert_eq!(method, "approval.ask");
             assert_eq!(params["tool_name"], "Bash");
             assert_eq!(
-                params["approval_rule"], "Bash",
+                params["approval_rule"], "Bash(true)",
                 "the ask must carry the facet it gated on"
             );
             Ok(json!({ "decision": "approved", "scope": "session" }))
@@ -7656,7 +7771,7 @@ async fn should_persist_session_approval_to_wire_log_when_user_approves_for_sess
         })
         .expect("permission.record_approval_result must be recorded");
     assert_eq!(approval["toolName"], "Bash");
-    assert_eq!(approval["sessionApprovalRule"], "Bash");
+    assert_eq!(approval["sessionApprovalRule"], "Bash(true)");
     assert_eq!(approval["result"]["decision"], "approved");
     assert_eq!(approval["result"]["scope"], "session");
 
@@ -7674,7 +7789,7 @@ async fn should_persist_session_approval_to_wire_log_when_user_approves_for_sess
             .expect("main agent exists");
         assert_eq!(
             agent.permission_manager().all_session_approvals(),
-            vec!["Bash".to_string()]
+            vec!["Bash(true)".to_string()]
         );
     }
 
@@ -7698,7 +7813,7 @@ async fn should_persist_session_approval_to_wire_log_when_user_approves_for_sess
         .await
         .expect("main agent restored");
     let pm = agent.permission_manager();
-    assert_eq!(pm.all_session_approvals(), vec!["Bash".to_string()]);
+    assert_eq!(pm.all_session_approvals(), vec!["Bash(true)".to_string()]);
 
     let args = json!({ "command": "true" });
     let display = mirri_core::ToolInputDisplay::Command {
@@ -7711,7 +7826,7 @@ async fn should_persist_session_approval_to_wire_log_when_user_approves_for_sess
         tool_name: "Bash",
         tool_call_id: "call-after-resume",
         args: &args,
-        approval_rule: "Bash",
+        approval_rule: "Bash(true)",
         display: &display,
         accesses: &[],
         mode: mirri_core::PermissionMode::Manual,
@@ -7720,6 +7835,7 @@ async fn should_persist_session_approval_to_wire_log_when_user_approves_for_sess
         cancel: &cancel,
         net_class: None,
         turn_origin: Default::default(),
+        command_text: Some("true"),
     };
     match pm.evaluate(&ctx) {
         mirri_core::PermissionPolicyResult::Approve { .. } => {}
@@ -7786,6 +7902,7 @@ async fn should_apply_config_permission_rules_to_new_sessions_when_config_declar
         cancel: &cancel,
         net_class: None,
         turn_origin: Default::default(),
+        command_text: None,
     };
     assert!(matches!(
         pm.evaluate(&ctx),
@@ -24884,10 +25001,32 @@ impl RetentionDeleteFixture {
             .unwrap();
         }
         drop(log);
-        persistence
-            .save_state(&session_id, &empty_session_metadata("Delete test"))
-            .await
-            .unwrap();
+        // Seed the session the way PRODUCTION creates one: one metadata
+        // record, written to BOTH sources with the SAME `created_at`.
+        //
+        // The single record matters. `save_state` writes state.json,
+        // `metadata_store.apply` inserts the index row — and the store stamps
+        // `created_at` itself from its own `Utc::now()` when the patch does
+        // not carry one. Two clock readings taken microseconds apart straddle
+        // a whole-second boundary often enough that the row and state.json
+        // disagree by one second once `stamp()` truncates to seconds, which
+        // is what `should_carry_the_created_stamp_on_archive_view_rows_when_listing`
+        // checks. Production never has that gap: the create path writes the
+        // row through `creation_metadata_patch`, which carries the scope's own
+        // stamp (see `creation_metadata_patch`'s doc). The fixture mirrors it.
+        let metadata = empty_session_metadata("Delete test");
+        persistence.save_state(&session_id, &metadata).await.unwrap();
+        {
+            use mirri_core::session::metadata_port::MetadataStorePort as _;
+            fixture_store
+                .apply(
+                    &session_id,
+                    &workspace_key,
+                    mirri_core::session::manager::creation_metadata_patch(&metadata),
+                )
+                .await
+                .expect("the fixture seeds the creation row");
+        }
 
         let workspace = Arc::new(WorkspaceScope::new(
             WorkspaceId::new("retention-delete-ws"),
@@ -24927,6 +25066,11 @@ impl RetentionDeleteFixture {
 /// Given an archived session, when the archive view is listed, then the
 /// row carries the session's created stamp (ADR-010: the merged view's
 /// created-time sort key) matching the state.json record.
+///
+/// The fixture seeds both sources from ONE metadata record (`save_state` +
+/// the production creation patch), which is what the engine's create path
+/// does — so this compares two views of the same instant rather than two
+/// independent clock readings. See `RetentionDeleteFixture::new`.
 #[tokio::test]
 async fn should_carry_the_created_stamp_on_archive_view_rows_when_listing() {
     let fixture = RetentionDeleteFixture::new().await;
@@ -24964,6 +25108,107 @@ async fn should_carry_the_created_stamp_on_archive_view_rows_when_listing() {
         row_instant.timestamp(),
         state_instant.timestamp(),
         "the row's created stamp must match the state.json record to the second"
+    );
+}
+
+/// Given a row-only archived session (no `state.json` — post-ADR-006's
+/// normal materialized shape) whose index row carries the title, when the
+/// archive view is listed, then the row's title is served — the index row
+/// is the primary title source, the state.json read only the degrade's
+/// fallback (a row-only session used to list with an empty title).
+#[tokio::test]
+async fn should_carry_the_index_row_title_when_the_archived_session_has_no_state_json() {
+    let fixture = RetentionDeleteFixture::new().await;
+    // Row-first: apply the archived row through the fixture's store (the
+    // same `<home>/session-index.db` the server's index converges from),
+    // and remove the state.json the fixture's seed wrote — the
+    // production row-only shape.
+    let aged = chrono::Utc::now() - chrono::Days::new(30);
+    use mirri_core::session::metadata_port::MetadataStorePort as _;
+    fixture
+        .fixture_store
+        .apply(
+            &fixture.session_id,
+            fixture.persistence.workspace_key().unwrap_or_default(),
+            mirri_core::session::metadata_port::MetadataPatch {
+                title: Some("Row-only title".to_string()),
+                archived: Some(true),
+                archived_at: Some(Some(aged)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("apply the archived row");
+    tokio::fs::remove_file(fixture.persistence.state_path(&fixture.session_id))
+        .await
+        .expect("the seed state.json is removed");
+    assert!(
+        !fixture.persistence.state_path(&fixture.session_id).exists(),
+        "the session is row-only"
+    );
+
+    let listed = fixture
+        .server
+        .call_method("retention.list", json!({ "include": "archived" }))
+        .await
+        .expect("retention.list must succeed");
+
+    let items = listed["items"].as_array().expect("items must be an array");
+    let entry = items
+        .iter()
+        .find(|item| item["session_id"].as_str() == Some(fixture.id()))
+        .expect("the row-only archived session must be listed");
+    assert_eq!(
+        entry["title"].as_str(),
+        Some("Row-only title"),
+        "the listing must carry the index row's title"
+    );
+
+    // And a sibling whose state.json still exists: the ROW's title still
+    // wins when both sources carry one — the precedence itself, not just
+    // the row-only fallback shape.
+    let sibling = mirri_core::SessionId::new("retention-title-sibling");
+    let sibling_dir = fixture.persistence.session_dir(&sibling);
+    tokio::fs::create_dir_all(&sibling_dir).await.unwrap();
+    fixture
+        .fixture_store
+        .apply(
+            &sibling,
+            fixture.persistence.workspace_key().unwrap_or_default(),
+            mirri_core::session::metadata_port::MetadataPatch {
+                title: Some("Row title wins".to_string()),
+                archived: Some(true),
+                archived_at: Some(Some(aged)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("apply the sibling's archived row");
+    fixture
+        .persistence
+        .save_state(&sibling, &empty_session_metadata("State.json title"))
+        .await
+        .unwrap();
+    assert!(
+        fixture.persistence.state_path(&sibling).exists(),
+        "the sibling keeps its state.json"
+    );
+
+    let listed = fixture
+        .server
+        .call_method("retention.list", json!({ "include": "archived" }))
+        .await
+        .expect("retention.list must succeed");
+
+    let items = listed["items"].as_array().expect("items must be an array");
+    let entry = items
+        .iter()
+        .find(|item| item["session_id"].as_str() == Some(sibling.as_str()))
+        .expect("the sibling must be listed");
+    assert_eq!(
+        entry["title"].as_str(),
+        Some("Row title wins"),
+        "the row's title must win over the state.json record when both exist"
     );
 }
 
@@ -26356,7 +26601,7 @@ async fn should_not_ask_again_when_pending_approval_is_decided_with_session_scop
         mirri_core::LlmToolCall {
             id: "call_bash_2".to_string(),
             name: "Bash".to_string(),
-            args: json!({ "command": "echo two" }),
+            args: json!({ "command": "echo one" }),
         },
     ]);
     mock.push_text("done");
@@ -39048,6 +39293,7 @@ async fn should_block_a_read_outside_the_workspace_when_permission_mode_is_manua
         cancel: &cancel,
         net_class: None,
         turn_origin: Default::default(),
+        command_text: None,
     };
     let pm = main_agent.permission_manager();
     match pm.evaluate(&ctx) {
@@ -39357,6 +39603,7 @@ async fn should_apply_a_session_dir_grant_when_decide_approves_an_outside_read_w
         cancel: &cancel,
         net_class: None,
         turn_origin: Default::default(),
+        command_text: None,
     };
     assert!(
         matches!(
@@ -44573,6 +44820,17 @@ async fn should_apply_extra_dir_changes_to_the_live_catalog_when_config_set_rewr
 
 // --- B5: cron semantics — fork regression, timezone firing, coalesce/stale e2e ---
 
+/// Roughly one minute ahead of now on the Asia/Shanghai wall clock — the
+/// `M H` fields of a one-shot pinned to that minute. The sub-second part is
+/// NOT truncated, so the minute is not necessarily aligned to a whole
+/// minute; the cron walk floors its own candidate minute anyway.
+fn next_shanghai_minute() -> jiff::ZonedDateTime {
+    let shanghai = jiff::tz::TimeZone::get("Asia/Shanghai").expect("bundled tzdb");
+    let now = jiff::Timestamp::now().to_zoned_datetime(shanghai);
+    now.checked_add(jiff::ToSpan::minutes(1))
+        .expect("a minute ahead always exists")
+}
+
 /// Subscribe and collect notifications until `predicate` matches one, with
 /// an explicit (longer) deadline — the cron scenarios wait for a real
 /// minute boundary (up to ~70s), beyond the 5s default of
@@ -44688,7 +44946,6 @@ async fn should_inherit_the_last_prompt_when_forking_a_session() {
 /// then event.cron.fired arrives with the cron-job origin.
 #[tokio::test]
 async fn should_fire_in_an_explicit_timezone_when_the_driver_ticks() {
-    use chrono::Timelike;
     let mock = Arc::new(ScriptedLlm::new());
     mock.push_text("cron reply");
     let (server, _tmp) = test_server(Some(Arc::new(ScriptedLlmFactory::new(Arc::clone(&mock)))));
@@ -44701,8 +44958,7 @@ async fn should_fire_in_an_explicit_timezone_when_the_driver_ticks() {
     converse_once(&server, &session_id).await;
     // The next Shanghai minute's "M H * * *" expression (computed from the
     // host clock — the expression is Shanghai-local by construction).
-    let now_local_sh =
-        chrono::Utc::now().with_timezone(&chrono_tz::Asia::Shanghai) + chrono::Duration::minutes(1);
+    let now_local_sh = next_shanghai_minute();
     let expr = format!("{} {} * * *", now_local_sh.minute(), now_local_sh.hour());
     {
         let session = server
@@ -44758,7 +45014,6 @@ async fn should_fire_in_an_explicit_timezone_when_the_driver_ticks() {
 #[cfg(unix)]
 #[tokio::test]
 async fn should_fire_on_the_host_local_calendar_when_no_timezone_is_given() {
-    use chrono::Timelike;
     // The only test in the batch that writes TZ — serialized on the
     // workspace env lock, restored by the guard's Drop on every path.
     // Held across the cron awaits on purpose (current-thread
@@ -44767,10 +45022,8 @@ async fn should_fire_on_the_host_local_calendar_when_no_timezone_is_given() {
     #[allow(clippy::await_holding_lock)]
     let mut _env = mirri_test_support::env::EnvGuard::new();
     _env.set("TZ", "Asia/Shanghai");
-    let honors_tz = {
-        let resolved = mirri_core::cron::CronTimezone::Local.resolve();
-        resolved == chrono_tz::Asia::Shanghai
-    };
+    let honors_tz = mirri_core::cron::CronTimezone::Local.resolve()
+        == jiff::tz::TimeZone::get("Asia/Shanghai").expect("bundled tzdb");
     if !honors_tz {
         // Degraded mode (plan T11 scenario 2 fallback): the Local branch
         // still yields a usable zone — the calendar firing chain is covered
@@ -44791,8 +45044,7 @@ async fn should_fire_on_the_host_local_calendar_when_no_timezone_is_given() {
     // A one-shot pinned to the next Shanghai wall minute, with NO explicit
     // timezone: the expression must be evaluated on the host's local
     // calendar (== Asia/Shanghai under this test's TZ).
-    let next_local_sh =
-        chrono::Utc::now().with_timezone(&chrono_tz::Asia::Shanghai) + chrono::Duration::minutes(1);
+    let next_local_sh = next_shanghai_minute();
     let expr = format!("{} {} * * *", next_local_sh.minute(), next_local_sh.hour());
     seed_session_cron_task(&server, &session_id, &expr, "local fire", false).await;
 
@@ -44816,7 +45068,6 @@ async fn should_fire_on_the_host_local_calendar_when_no_timezone_is_given() {
 /// stale task stays gone while the live one survives.
 #[tokio::test]
 async fn should_coalesce_and_stale_delete_when_restored_tasks_fire() {
-    use chrono::Timelike;
     // A slow driver tick: this test drives the due pass itself; the driver
     // must not race it after the resumes.
     let (server, _tmp) = test_server(None);
@@ -44931,15 +45182,13 @@ async fn should_coalesce_and_stale_delete_when_restored_tasks_fire() {
     let task = session.cron().get("cron-overdue").unwrap();
     let next = task.next_fire_at.unwrap();
     assert!(next > now, "rescheduled into the future");
-    let tz = mirri_core::cron::CronTimezone::Local.resolve();
-    assert_eq!(
-        (next + chrono::Duration::seconds(30))
-            .with_timezone(&tz)
-            .minute()
-            % 5,
-        0,
-        "cadence keeps its phase"
-    );
+    // The host's local wall minute (the task carries no explicit zone).
+    let local_minute = mirri_core::cron::to_local_datetime(
+        next + chrono::Duration::seconds(30),
+        &mirri_core::cron::CronTimezone::Local.resolve(),
+    )
+    .minute();
+    assert_eq!(local_minute % 5, 0, "cadence keeps its phase");
 
     // The stale deletion is durable: the wire log carries its cron.delete,
     // and a close→resume cycle does not resurrect it.

@@ -1101,6 +1101,20 @@ impl EmbeddedServer {
             )));
         };
 
+        // A session whose restore is still in flight is resolvable but not
+        // runnable: its agents exist (a placeholder) before the replay has
+        // rebuilt the context and before its wire log has a writer, so a turn
+        // started now would record its `turn.prompt` opener into a detached
+        // slot — a silently discarded write, leaving a reply with no visible
+        // question in the transcript. Answer a retryable conflict instead;
+        // the client may re-send once the restore settles (the resume RPC
+        // only returns after that).
+        if !session.is_ready() {
+            return Err(engine_error(CoreEngineError::SessionConflict {
+                session_id: params.session_id.clone(),
+            }));
+        }
+
         // Apply the caller's model param before anything else touches the
         // agent config, so the LLM factory below resolves the requested
         // model — "this request is the new model" (spec 11 A9). An empty

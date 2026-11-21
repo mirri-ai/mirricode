@@ -59,7 +59,7 @@
 | 12 | `AskUserQuestion` | 结构化提问 | 1–4 问 × 2–4 选项 |
 | 13 | `Skill` | 调用技能 | 嵌套深度 ≤3 |
 | 14 | `select_tools` | 显式加载动态工具 | 实验开关门控 |
-| 15–17 | `TaskList`/`TaskOutput`/`TaskStop` | 后台任务查询/读取/停止 | 预览 32 KiB / limit 1–100 |
+| 15–17 | `TaskList`/`TaskOutput`/`TaskStop` | 后台任务查询/读取/停止 | 快照 1 MiB / 分页 50,000（上限 256,000）/ limit 1–100 |
 | 18 | `TodoList` | 任务清单（整体替换） | 无 schema 上限 |
 | 19–22 | `CreateGoal`/`GetGoal`/`UpdateGoal`/`SetGoalBudget` | 目标管理 | 时间预算 1s–24h；仅 main agent |
 | 23–24 | `EnterPlanMode`/`ExitPlanMode` | 计划模式 | options 1–3 |
@@ -67,7 +67,7 @@
 
 （共 27 个注册工具：#1–14 为单体工具，#15–27 为 13 个工具、4 个族。历史文档曾用「22 工具」口径（goal/cron 族各计 1），本文以 27 个注册名为准。）
 
-**后台能力分布**：仅 `Bash`、`Agent`、`AskUserQuestion` 三个工具支持**模型主动后台化**（返回任务号、终态经自动通知送达，requirements US2.6/US2.11）；`AgentSwarm` 固定前台（内部子代理并行、结果聚合返回）；其余工具均为同步执行（同步工具在同批内仍可与不冲突调用并行，见架构 §4 调度）。补充通道两条：Bash 前台超时**自动**转后台（可配置为杀灭）；用户可随时把前台执行转后台（终端快捷键——用户侧操作，非模型能力）。后台化的前提是任务三件套（TaskList/TaskOutput/TaskStop）在当前 agent 工具面内启用，否则后台调用在预检被拒并给出明确原因。
+**后台能力分布**：仅 `Bash`、`Agent`、`AskUserQuestion` 三个工具支持**模型主动后台化**（返回任务号、终态经自动通知送达，requirements US2.6/US2.11）；`AgentSwarm` 固定前台（内部子代理并行、结果聚合返回）；其余工具均为同步执行（同步工具在同批内仍可与不冲突调用并行，见架构 §4 调度）。补充通道两条：Bash 前台超时**自动**转后台（可配置为杀灭）；用户可随时把前台执行转后台（终端快捷键——用户侧操作，非模型能力）。工具面内的后台预检仅 `Agent` 有：任务三件套（TaskList/TaskOutput/TaskStop）未在当前 agent 工具面启用时，后台派发在预检被拒并给出明确原因；Bash 的后台化与超时转后台没有工具面前提（不依赖任务三件套是否启用）。
 
 ---
 
@@ -363,11 +363,14 @@ Hidden files are searched by default; `include_ignored: true` also searches giti
 
 ### 2.1 Bash
 
-- **注册**：名称 `Bash`；目录描述 `Execute a bash command on the system.`；domain `os/backends`；无 when、无 capabilities、无 accesses 声明（按最保守与一切冲突处置）。
-- **执行元数据**：描述 `Running: {前 50 字符…}` / 后台 `Starting background: {preview}`；展示 `command`（command/cwd/description/language:bash）；审批刻面 `Bash` + 命令文本。
-- **描述按条件改写**：任务三件套未激活时改写后台段落——后台段整段替换为 `Background execution is disabled for this agent. Do not set `run_in_background=true`.`（超时句改为 ` For possibly long-running commands, set the `timeout` argument in seconds. The default is 60s; foreground commands allow up to 300s; a foreground command that hits its timeout is killed.`，末条改为 `- Do not set `run_in_background=true`; background task management tools are not available.`）；`bashAutoBackgroundOnTimeout=false` 时超时句替换为 ` A foreground command that hits its timeout is killed.`。
+- **注册**：名称 `Bash`；目录描述 `Execute a shell command and return its output.`；无 when、无 capabilities、无 accesses 声明（按最保守与一切冲突处置）。
+- **执行元数据**：展示 `command`（command/cwd/description/language:bash）；审批刻面 `Bash(<转义后的命令文本>)`（glob 元字符与 `!` 前缀转义为字面量，使命令只匹配自身；裸 `Bash` 规则仍按工具名匹配）。
+- **命令级授权**：deny/ask/allow 规则与会话批准记忆对命令文本匹配——整条逐字等价优先，否则按 `&&`/`||`/`;`/`|`/换行/单 `&` 拆段、逐段对段全文做 glob 匹配，全段命中才命中；含命令替换的段保守视为不匹配（进询问，不拒绝执行）；workspace 内静态可解的 `cd` 段从匹配串中剔除（字面命令优先尝试，保旧规则兼容）。
+- **环境契约**：子进程以非交互环境运行（`NO_COLOR=1`、`TERM=dumb`、`GIT_TERMINAL_PROMPT=0`、父 `SHELL` 保留）；父环境中名字命中敏感模式（含 `KEY`/`TOKEN`/`SECRET`/`PASSWORD`，大小写不敏感）的变量被剔除，受管注入名永不进入剔除集；`[bash] env_allowlist` 配置豁免清单提供逃生门。PowerShell 工具与用户 `!` shell 命令保持未过滤环境。
+- **执行目录审查**：`cwd` 参数与命令内静态可解的 `cd`/`chdir`/`pushd` 目标平权合并送工作区边界审查（沙箱外即 Ask，带目录授权）；无法静态解析的目标退回为命令段参与命令级授权；工具的默认 `cwd` 不参与审查。
+- **受保护目录事前知情**（US-BH11 / B-ADR-17）：命令文本命中主目录下的系统保护类别（`Desktop` / `Documents` / `Downloads`，主目录下首段判定、大小写不敏感，含 `~` 简写与绝对展开形态）时，按沙箱外路径语义 Ask 并如实告知「此命令将触碰系统受保护目录（可能触发系统授权）」，`grant_dir` 为类别目录本身（按类别常量拼写，不随命令文本大小写变形），一次授权本会话内覆盖整个类别（大小写不敏感文件系统如 macOS 上任意形态命中；大小写敏感宿主上覆盖类别规范拼写的形态，非规范拼写重问——保守方向）；沙箱外的其他 `~` 前缀目标（含 bare `~`）按未分类主目录目标保守 Ask（理由如实陈述「主目录目标无法静态归类」，携带展开路径为 `grant_dir`）；主目录未接线的宿主保持既有跳过；变量拼接等非字面形态不拦截（诚实边界：字符串级检测不是沙箱）。
 
-**面向模型的描述（原文，模板注入 shell 名与超时数值）**：
+**面向模型的描述（要点式照录，完整原文见 rust `BashTool::description`）**：
 
 ```
 Execute a `${SHELL_NAME}` command. Use this for shell semantics — pipes, env, processes, git, package managers, build/test runners, anything genuinely interactive or multi-step.
@@ -382,75 +385,49 @@ Translate these shell idioms to the dedicated tool instead — plain shell file 
 - `echo` / `printf` to talk to the user -> reply in text
 
 The dedicated tools resolve paths through the workspace access policy, cap their output, and render in the per-tool approval UI — that is why they are worth reaching for whenever one fits.
-
-**Output:**
-The stdout and stderr will be combined and returned as a string. The output may be truncated if it is too long. If the command exits non-zero, the output ends with a `Command failed with exit code: N` line; a command killed by its timeout or interrupted by the user ends with its own message instead.
-
-If `run_in_background=true`, the command will be started as a background task and this tool will return a task ID instead of waiting for command completion. When doing that, you must provide a short `description`. Background commands default to a 600s timeout and `timeout` is capped at 86400s; set `disable_timeout=true` only when the task should run without a timeout. You will be automatically notified when the task completes. After starting one, default to returning control to the user instead of immediately waiting on it. Use `TaskOutput` only for a non-blocking status/output snapshot — do not wait on a task you just launched, since its completion arrives automatically. Use `TaskStop` only if the task must be cancelled. If a human user wants to inspect background tasks themselves, point them to the `/tasks` command, which opens an interactive panel; it has no subcommands.
-
-**Guidelines for safety and security:**
-- Each shell tool call will be executed in a fresh shell environment. The shell variables, current working directory changes, and the shell history is not preserved between calls. To run a command in a particular directory, pass the `cwd` argument (or use absolute paths) rather than relying on a `cd` from an earlier call.
-- The tool call will return after the command is finished. You shall not use this tool to execute an interactive command or a command that may run forever. For possibly long-running foreground commands, set the `timeout` argument in seconds. Foreground commands default to 60s and allow up to 300s. When a foreground command hits its timeout it is moved to the background instead of being killed, and you will be automatically notified when it completes.
-- Avoid using `..` to access files or directories outside of the working directory.
-- Avoid modifying files outside of the working directory unless explicitly instructed to do so.
-- Never run commands that require superuser privileges unless explicitly instructed to do so.
-
-**Guidelines for efficiency:**
-- Use `&&` to chain commands that genuinely depend on each other, e.g. `npm install && npm test`. Independent read-only commands (separate `git show`, `ls`, or status checks) should be issued as separate parallel Bash calls in one response, not chained into a single call — chaining serializes their execution and mixes their output. Do not stitch outputs together with `echo` separators.
-- Use `;` to run commands sequentially regardless of success/failure
-- Use `||` for conditional execution (run second command only if first fails)
-- Use pipe operations (`|`) and redirections (`>`, `>>`) to chain input and output between commands
-- Always quote file paths containing spaces with double quotes (e.g., cd `"/path with spaces/"`)
-- Compose multi-step logic in a single call with `if` / `case` / `for` / `while` control flows.
-- Prefer `run_in_background=true` for long-running builds, tests, watchers, or servers when you need the conversation to continue before the command finishes.
-
-**Commands available:**
-The following common command categories are usually available. Availability still depends on the host, so when in doubt run `which <command>` first to confirm a command exists before relying on it.
-- Navigation and inspection: `ls`, `pwd`, `cd`, `stat`, `file`, `du`, `df`, `tree`
-- File and directory management: `cp`, `mv`, `rm`, `mkdir`, `touch`, `ln`, `chmod`, `chown`
-- Text and data processing: `wc`, `sort`, `uniq`, `cut`, `tr`, `diff`, `xargs`
-- Archives and compression: `tar`, `gzip`, `gunzip`, `zip`, `unzip`
-- Networking and transfer: `curl`, `wget`, `ping`, `ssh`, `scp`
-- Version control: `git`; for GitHub-hosted work (PRs, issues, CI runs, API queries) prefer the `gh` CLI when installed — it carries the user's GitHub auth and can return structured JSON
-- Process and system: `ps`, `kill`, `top`, `env`, `date`, `uname`, `whoami`
-- Language and package toolchains: `node`, `npm`, `pnpm`, `yarn`, `python`, `pip` (use whichever the project actually relies on)
 ```
+
+描述要点（与代码现状一致）：
+- 命令缺省在会话工作目录执行；需要其他目录时**传 `cwd` 参数而不是在命令里 `cd`**——参数是工作区边界与授权规则可见的入口。
+- 超时按秒：前台默认 60、上限 300（超上限钳制）；后台默认 600、上限 86400（超上限拒绝）。前台命令超时**转入后台**而非杀灭，完成自动通知。命令非交互执行（stdin 关闭、无色彩无提示）。
+- `run_in_background=true` 立即返回任务号；`disable_timeout` 移除超时（后台任务仍受全局生命周期天花板约束，除非 `exempt_lifetime` 豁免该单个任务）；`description` 为后台任务标注。
+- 凭证类环境变量从命令环境中剔除；构建确实需要时经配置豁免（`[bash] env_allowlist`）。
 
 **参数契约**：
 
 | name | 类型 | 必填 | 默认 | 描述原文 |
 |---|---|---|---|---|
-| `command` | string（≥1） | ✅ | — | `The command to execute.` |
-| `cwd` | string | 可选 | 会话目录 | `The working directory in which to run the command. When omitted, the command runs in the session's working directory.` |
-| `timeout` | number（秒，>0） | 可选 | 前台 60 / 后台 600 | `Optional timeout in seconds for the command to execute. Foreground default 60s, max 300s. Background default 600s, max 86400s. Ignored for background commands when disable_timeout=true.` |
-| `description` | string | 可选（后台必填，运行时校验） | — | `A short description for the background task. Required when run_in_background is true.` |
-| `run_in_background` | boolean | 可选 | — | `Whether to run the command as a background task.` |
-| `disable_timeout` | boolean | 可选 | — | `If true, do not apply a timeout to the command. Only applies when run_in_background is true.` |
+| `command` | string | ✅ | — | `The shell command to execute.` |
+| `cwd` | string | 可选 | 会话目录 | `Working directory for the command. Defaults to the session's working directory.`（参与执行目录边界审查，见上「执行目录审查」） |
+| `timeout` | integer | 可选 | 前台 60 / 后台 600 | `Timeout in seconds. Foreground: defaults to 60, maximum 300; values above 300 are clamped to 300. Background: defaults to 600, maximum 86400; values above 86400 are rejected. A foreground command that hits its timeout is moved to the background. Ignored when disable_timeout is true.` |
+| `description` | string | 可选 | 命令预览 | `A short description for the background task; used when run_in_background is true. Defaults to a preview of the command.`（缺省取命令预览 `Bash: {前 60 字符}`；前后台均不强制） |
+| `run_in_background` | boolean | 可选 | — | `Whether to run the command as a background task. When true, the call returns a task_id immediately instead of waiting for the command to finish.` |
+| `disable_timeout` | boolean | 可选 | — | `When true, no timeout is applied to the command. Background tasks still fall under the global lifetime ceiling; use exempt_lifetime to lift that for this one task.`（前台后台均生效） |
+| `exempt_lifetime` | boolean | 可选 | — | `When true, this task is exempt from the global lifetime ceiling. Once per task, never appendable — to run longer, start a new task.` |
 
-schema 级校验：`timeout` 超上限 `timeout must be ≤ ${cap}s (background|foreground)`。
+schema 级校验：后台 `timeout` 超上限 `timeout must be ≤ 86400s (background)`；前台超上限钳制到 300。
 
 **输出契约**：
-- 前台成功有输出：stdout 与 stderr 按到达顺序交错合并（同一缓冲流式追加，无分隔标记）；无输出时 `Command executed successfully.`。
-- 前台非零退出：`Command failed with exit code: N.`（brief `Failed with exit code: N`）；此前无已捕获输出时先补一行 `Process exited with code N`。
-- 前台截断（先落盘完整输出）：`[Full output saved]\ntask_id: {taskId}\noutput_path: {outputPath}\noutput_size_bytes: {n}\nnext_step: Use Read with output_path to page through the full log{, or TaskOutput(task_id="{taskId}")}.`
-- 后台启动成功（元数据块）：`task_id`、`pid`、`description`、`status`、`automatic_notification: true`、`next_step: The completion arrives automatically in a later turn — do NOT wait, poll, or call TaskOutput on it; continue with your current work.`、`next_step: Use TaskStop only if the task must be cancelled.`、`human_shell_hint: Tell the human to run /tasks to open the interactive background-task panel.`（任务三件套不可用时 next_step 简化为 `You will be automatically notified when it completes.`。）
-- 前台超时转后台（默认行为）：标题 `Task moved to background` / `Command timed out and moved to background`；`next_step: The task now runs in the background. You will be automatically notified when it completes — do NOT wait, poll, or call TaskOutput on it; continue with your current work.`；前台已捕获输出追加 `foreground_output:` 段。任务 id 前缀 `bash`。
+- 前台成功有输出：stdout 与 stderr 按到达顺序交错合并（单一 merged 流式缓冲，无分隔标记）；无输出时 `Command executed successfully.`。
+- 前台非零退出：`Command failed with exit code: N.`；此前无已捕获输出时先补一行 `Process exited with code N`。
+- 前台内存保护（1 MiB 环形缓冲）：合并输出总量超过 1 MiB 时丢最旧保最新，丢弃发生时结果以披露行开头——`[Output truncated: kept the last {kept} bytes, dropped {dropped} bytes from the start]`；未触发丢弃时输出逐字节不变。
+- 前台超模型可见预算（50,000 字节）：完整输出经通用截断器落盘并替换为预览块（`Tool output exceeded 50000 bytes; showing a preview only.` + 元数据 + `output_path` + `next_step: Use Read with output_path to page through the full output.`）。
+- 后台启动成功（元数据块）：`task_id`、`description`、`status: running`，及 `next_step: The task runs in the background — you will be automatically notified when it completes — that notification is the only completion signal. Continue with your current work. A single non-blocking TaskOutput snapshot is allowed only with a reason (unusual silence, the user asks, a suspected hang), at most once every few minutes; never wait on it with block=true.`、`next_step: Use TaskStop only if the task must be cancelled.`。
+- 前台超时转后台（默认行为）：可带 `reason: exceeded the foreground limit — automatically moved to background` 行（用户主动转后台无此行）；元数据块含 `task_id`、`description`、`status: running`、`automatic_notification: true`、`next_step: The task now runs in the background. You will be automatically notified when it completes — that notification is the only completion signal. Continue with your current work. A single non-blocking TaskOutput snapshot is allowed only with a reason (unusual silence, the user asks, a suspected hang), at most once every few minutes; never wait on it with block=true.`、`human_shell_hint: Tell the human to run /tasks to open the interactive background-task panel.`；前台已捕获输出追加 `foreground_output:` 段（含丢弃披露行）。任务 id 前缀 `task-`。
+- 静默预警（引擎侧兜底推送，B-ADR-16，与终态通知独立的注入路径）：后台命令任务静默时长超过会话配置阈值（`[task] silence_warn_secs`，默认 300 秒，0 = 关闭）时，注入一条**合成用户消息**（模型是受众；发起者忙则停靠至当前回合、闲则自起新回合）：`<background-task-silence-warning task_id="…" (command: …)>` 包裹的事实性陈述——任务描述 + 静默时长（`The background task "…" has produced no output for 5m30s.`）+ 尾部输出摘要（约 2 KB，无输出时如实说明）+ 行动指引（用 TaskOutput 查看明细、TaskStop 停止、或确认健康后继续）+ 任务带二次截止时的重布防剩余时长提示。每个静默周期至多一次（新输出到达即重置周期）；仅后台进程类任务；终态任务不预警；用户侧任务面板的静默标记是消费端参考项（非引擎对齐面）。
 
 **错误面**：
 
 | 条件 | 文案 |
 |---|---|
-| 中止 | `Aborted before command started` |
-| 空命令 | `Command cannot be empty.` |
-| 后台不可用仍要求后台 | `Background execution is not available for this agent because TaskOutput and TaskStop are not enabled.`（照录原文；Agent 工具的对应文案枚举三个工具名——差异非笔误） |
-| 后台缺 description | `description is required when run_in_background is true.` |
-| 前台超时被杀灭（配置关闭转后台时） | `Command killed by timeout (${label})` |
-| 用户取消 | `Interrupted by user` |
-| spawn/注册失败 | `error.message` |
+| 缺 `command` 参数（或非字符串） | `Bash requires a string 'command' argument` |
+| 后台容量已满 | `Too many background tasks are already running.`（isError，命令不启动） |
+| spawn 失败 | `Bash failed to execute: {error}`（前台）/ 任务行记 `Bash tool: {error}`（Windows shell 解析失败） |
+| 回合取消 | `command cancelled`（exit_code -1，任务行结算 stopped） |
 
-**非功能**：前台默认 60s、上限 300s；后台默认 600s、上限 86400s；`disable_timeout` 仅后台生效；前台超时默认转后台并重布防为后台超时；两阶段杀灭（SIGTERM → 5s 宽限 → SIGKILL）；输出缓冲 50,000 字节 / 行 2,000；每次调用全新 shell（变量/目录/历史不保留）；执行形态 `cd '{cwd}' && {command}`（cwd 单引号转义）；stdin 立即关闭（交互命令收 EOF）。
+**非功能**：前台默认 60s、上限 300s（超上限钳制）；后台默认 600s、上限 86400s（超上限拒绝）；`disable_timeout` 前台后台均生效（前台无超时 + 回合取消仍可终止）；前台超时默认转后台并重布防为后台超时；两阶段杀灭（SIGTERM → 5s 宽限 → SIGKILL）；前台合并输出环形缓冲 1 MiB（丢头保尾 + 丢弃量披露）、模型可见预算 50,000 字节（通用截断器落盘恢复）；每次调用全新 shell（变量/目录/历史不保留）；cwd 经 `ExecOptions.cwd` 直接传给子进程（无 `cd` 包装）；stdin 立即关闭（交互命令收 EOF）；凭证类环境变量剔除（受管注入名永不入剔除集，`[bash] env_allowlist` 豁免）。
 
-**界面呈现**：无 chip；卡片头部 `Running a command` / `Ran a command`（错误整体 error 色；参数截断 `Truncated Bash`）；命令预览 `$ ` 前缀 + 命令体（折叠态 ≤10 行）；结果折叠态前 3 行（成功暗色、错误 error 色），超出 `... (N more lines, ctrl+o to expand)`；运行超过短暂阈值后提示按快捷键转后台、用户可随时主动转后台（US2.6）。
+**界面呈现**：工具行以目录徽标（workspace/worktree/子目录/其他目录）+ 命令文本呈现，`cd … &&` 前缀折叠为徽标；运行中显示实时耗时（ADR-7）、可主动转后台（US2.6）；任务行尾部增量与静默时长经任务面板可见。
 
 ### 2.2 FetchURL
 
@@ -895,46 +872,29 @@ Load one or more tools by name so you can call them. All available tool names ar
 
 ### 4.1 TaskList
 
-- **注册**：名称 `TaskList`；目录描述 `List background tasks and their current status.`；domain `agentTask`；无 when（profile 差异见 §0.1）；审批刻面 `TaskList`。
+- **注册**：名称 `TaskList`；目录描述 `List background tasks and their current status.`；审批刻面 `TaskList`。
 
-**面向模型的描述（原文）**：
+**面向模型的描述（要点式照录，完整原文见 rust `TaskListTool::description`）**：
 
 ```
-List background tasks and their current status.
-
-Use this tool to discover which background tasks exist and where each one
-stands. It is the entry point for inspecting background work: it returns a
-task ID, status, and description for every task it reports, plus the command,
-PID, and (once finished) exit code for shell tasks, and a stop reason for any
-task that ended early.
-
-Guidelines:
-
-- After a context compaction, or whenever you are unsure which background
-  tasks are running or what their task IDs are, call this tool to
-  re-enumerate them instead of guessing a task ID.
-- Prefer the default `active_only=true`, which lists only non-terminal tasks.
-  Pass `active_only=false` only when you specifically need to see tasks that
-  have already finished. With `active_only=false` the result may also include
-  `lost` tasks — tasks left over from a previous process that can no longer be
-  inspected or controlled; treat them as already terminated.
-- `limit` caps how many tasks are returned. It accepts a value between 1 and
-  100 and defaults to 20 when omitted.
-- This tool only lists tasks; it does not return their output. Use it first
-  to locate the task ID you need, then call `TaskOutput` with that ID to read
-  the task's output and details.
-- This tool is read-only and does not change any state, so it is always safe
-  to call, including in plan mode.
+List background tasks and their current status. Use this tool to
+discover which background tasks exist and where each one stands.
+Returns a task ID, status, and description, plus kind-specific
+fields (command, PID, exit code for shell tasks; agent ids for
+subagents). Prefer the default active_only=true. Use the returned
+ids with TaskStop and TaskOutput.
 ```
+
+描述要点：上下文压缩后或不确定任务号时先枚举再操作，不猜任务号；`active_only=false` 仅在需要已终态任务时使用；`limit` 1–100 默认 20；本工具只列任务不返回输出（读输出走 TaskOutput）；read-only，plan mode 安全。
 
 **参数契约**：
 
 | name | 类型 | 必填 | 默认 | 描述原文 |
 |---|---|---|---|---|
-| `active_only` | boolean | 可选 | `true` | `Whether to list only non-terminal background tasks.` |
-| `limit` | integer（1–100） | 可选 | `20` | `Maximum number of tasks to return.` |
+| `active_only` | boolean | 可选 | `true` | `When true (default), list only tasks that have not reached a terminal status. Set false to also include finished and lost tasks.`（「lost tasks」为 schema 历史措辞——引擎从不产出 lost 状态，文案清理登记于 ROADMAP F-22） |
+| `limit` | integer（1–100） | 可选 | `20` | `Maximum number of tasks to return. Accepts 1 to 100; defaults to 20.` |
 
-**输出契约**：空表 `active_background_tasks: 0\nNo background tasks found.`（全量时 header `background_tasks: N`）；非空 header 后逐任务 `key: value` 行（snake_case 序列化），记录间 `---` 分隔。任务通用字段：`task_id` / `description` / `status`（`running|completed|failed|timed_out|killed|lost`）/ `detached` / `started_at` / `ended_at` / `stop_reason` / `terminal_notification_suppressed` / `timeout_ms`；按 kind 追加——process：`kind: process` `command` `pid` `exit_code`；agent：`kind: agent` `agent_id` `subagent_type` `model`；question：`kind: question` `question_count` `tool_call_id`。
+**输出契约**：空表 `active_background_tasks: 0\nNo background tasks found.`（全量时 header `background_tasks: N`）；非空 header 后逐任务 `key: value` 行（snake_case 序列化），记录间 `---` 分隔。任务通用字段：`task_id` / `description` / `status`（`running|completed|failed|killed`）/ `started_at` / `running_for`（已运行时长，如 `1h2m3s`）/ `silent_for`（非终态任务的静默时长——自最近一次非空输出起算）/ `ended_at`（终态）/ `stop_reason`（有则）/ `terminal_notification_suppressed`；按 kind 追加——process：`kind: process` `command`（有则） `exit_code`（终态有则）；agent：`kind: agent` `agent_id`（有则） `subagent_type`（有则）；question：`kind: question` `question_count`。引擎不追踪的字段（`detached`、`timeout_ms`、`pid`、`model`、`tool_call_id`）不产出。
 
 **错误面**：无（只读）。
 
@@ -942,72 +902,62 @@ Guidelines:
 
 ### 4.2 TaskOutput
 
-- **注册**：名称 `TaskOutput`；目录描述 `Retrieve a snapshot of a running or completed background task.`；domain `agentTask`；审批刻面 `TaskOutput`。
+- **注册**：名称 `TaskOutput`；目录描述 `Read the accumulated output of a background task by id.`；审批刻面 `TaskOutput`。
 
-**面向模型的描述（原文）**：
-
-```
-Retrieve a snapshot of a running or completed background task.
-
-Use this after `Bash(run_in_background=true)`, `Agent(run_in_background=true)`, or `AskUserQuestion(background=true)` to check progress, or to read the output of a task that has already completed.
-
-Guidelines:
-- Prefer relying on automatic completion notifications. Use this tool only when you need task output before the automatic notification arrives.
-- This tool is always non-blocking: it returns the current status/output snapshot immediately and never waits for the task to finish.
-- Do not use TaskOutput to wait for a result you need before continuing — if your next step depends on the task's result, run that task in the foreground instead. TaskOutput is for a deliberate progress check you will act on without blocking, not a way to sit and wait on a background task you just launched.
-- This tool returns structured task metadata, a fixed-size output preview, and an output_path for the full log.
-- For a terminal task, the metadata also explains why it ended. A shell command that runs to completion reports `status: completed` on a zero exit, or `status: failed` with its non-zero `exit_code` — judge that failure from the `exit_code`, because a plain command failure carries no `stop_reason` and no `terminal_reason`. `terminal_reason` is a categorical label emitted only when the end is not an ordinary exit: `timed_out` when the deadline aborted it, `stopped` when it was explicitly stopped, or `failed` when it errored without producing an exit code; the `stopped` and `failed` cases also carry a human-readable `stop_reason`. A task that finished on its own with a clean exit carries neither `stop_reason` nor `terminal_reason`.
-- The full, never-truncated log is always available at output_path; use the `Read` tool with that path to page through it, whether or not the preview was truncated.
-- This tool works with the generic background task system and should remain the primary read path for future task types, not just bash.
-```
-
-**参数契约**：仅 `task_id`（string，必填）——`The background task ID to inspect.`。
-
-**输出契约**（`key: value` 行序列）：`retrieval_status`（终态 `success` / 非终态 `not_ready`）→ 任务元数据全字段（同 TaskList）→ `output_path` → `terminal_reason`（`timed_out|stopped|failed`，普通退出缺省）→ `output_size_bytes` / `output_preview_bytes` / `output_truncated` / `full_output_available` / `full_output_tool`（`Read`）→ `full_output_hint`（截断时 `Only the last {32768} bytes are shown above. Use the Read tool with the output_path to page through the full log (parameters: path, line_offset, n_lines; read about {300} lines per page).`；未截断 `The preview above is the complete output. …`）→ 空行 → 截断提示 `[Truncated. Full output: {output_path}]` / 无落盘 `[Truncated. No persisted full log is available for this task.]` → `[output]` 行 + 预览（无输出 `[no output available]`）。
-
-**错误面**：任务不存在 `Task not found: {task_id}`（isError: true）。
-
-**非功能**：预览 = 输出**尾部** 32 KiB；非阻塞；完整日志永在 `output_path` 落盘。
-
-### 4.3 TaskStop
-
-- **注册**：名称 `TaskStop`；目录描述 `Stop a running background task.`；domain `agentTask`；审批刻面 `TaskStop`。
-
-**面向模型的描述（原文）**：
+**面向模型的描述（要点式照录，完整原文见 rust `TaskOutputTool::description`）**：
 
 ```
-Stop a running background task.
-
-Only use this when a task must genuinely be cancelled — for a task that is
-finishing normally, wait for its completion notification or inspect it with
-`TaskOutput` instead of stopping it.
-
-Guidelines:
-- This is a general-purpose stop capability for any background task. It is not
-  a bash-specific kill.
-- Stopping a task is destructive: it may leave partial side effects behind.
-  Use it with care.
-- If the task has already finished, this tool simply returns its current
-  status.
+Read the accumulated output of a background task by id. Use TaskList
+to discover task ids. The inline view is capped at 1 MiB; larger
+outputs are served as the tail plus the full log path. Pass
+offset_bytes / max_bytes to page an arbitrary window of the log.
 ```
+
+描述要点：与 Bash 转后台/启动后台的新指引配套——完成靠自动通知，TaskOutput 是「有理由时的非阻塞诊断快照」（异常静默、用户询问、怀疑卡住），不是等待手段；`block=true` 用于确实需要结果的场景但劝阻空转等待。
 
 **参数契约**：
 
 | name | 类型 | 必填 | 默认 | 描述原文 |
 |---|---|---|---|---|
-| `task_id` | string | ✅ | — | `The background task ID to stop.` |
-| `reason` | string | 可选 | `'Stopped by TaskStop'`（空亦回落） | `Short reason recorded when the task is stopped.` |
+| `task_id` | string | ✅ | — | `ID of the background task to read.` |
+| `block` | boolean | 可选 | `false` | `When true, wait for the task to finish before returning.` |
+| `timeout` | integer（0–3600） | 可选 | `30` | `Maximum seconds to wait when block is true (0-3600, default 30).` |
+| `offset_bytes` | integer（≥0） | 可选 | `0` | `Byte offset into the full output log to start a paged read at. Giving offset_bytes or max_bytes switches to paged mode; omit both for the tail snapshot.` |
+| `max_bytes` | integer（1–256000） | 可选 | `50000` | `Maximum bytes to return in paged mode (1-256000, default 50000).` |
 
-**输出契约**：终态任务（不操作）：`task_id` / `status` / `reason`（记录的 stop_reason 为空时 `Task already in terminal state`）。存活任务：先**抑制终态通知**（使本结果成为模型唯一应答），再停止：`task_id` / `status` / `reason`。
+分页组语义：给出 `offset_bytes` 或 `max_bytes` 任一即进入分页模式（对日志任意区间开窗，起点向后对齐 UTF-8 字符边界）；两者都省略时维持尾部快照行为。分页参数非法时报 `TaskOutput 'offset_bytes' must be an integer >= 0` / `TaskOutput 'max_bytes' must be an integer between 1 and 256000`。
+
+**输出契约**（`key: value` 行序列）：任务元数据 `task_id` / `status`（`completed (exit_code: N)`、`failed: {detail}`、`stopped`、`running`）→ `running_for`（运行/已运行时长）→ `silent_for`（非终态任务的静默时长）→ `output_bytes`（累计输出总字节数）→ `window: {start}..{end} of {total}`（仅分页模式）→ `coordinates: …`（仅分页模式，紧随 `window:` 行——坐标口径声明，见下）→ `output_truncated` →（block 超时仍在跑时）`message: task still running; partial output shown` → 空行 → 截断时 `[Truncated. Full output: {output_path}]` / 无落盘 `[Truncated. No persisted full log is available for this task.]` → 有落盘时的恢复指引 → `[output]` 行 → 预览（无输出 `[no output available]`；分页偏移越过末尾时 `offset_bytes {offset} is past the end of the log ({total} bytes)`）。
+
+分页坐标声明（B-ADR-18）：分页头部在 `window:` 行后追加一行 `coordinates:`，声明偏移量寻址的字节空间——有落盘日志时为 `coordinates: log-absolute (offsets address the full on-disk output log)`（偏移量寻址磁盘上的完整输出日志）；仅内存缓冲时为 `coordinates: buffer-relative (offsets address the retained in-memory buffer, which keeps only the tail window of the produced output)`（偏移量寻址内存中保留的尾部窗口，缓冲丢弃头部后 offset 0 指向保留内容的起点而非日志首字节）。两种声明共享 `coordinates:` 前缀（头形稳定）但措辞互斥可区分；非分页（尾部快照）模式不输出该行。
+
+**错误面**：任务不存在 `TaskOutput failed: task '{task_id}' not found`（isError: true）；block 期间回合被取消 `TaskOutput failed: the turn was cancelled while waiting`。
+
+**非功能**：快照预览窗口 = 尾部 1 MiB（有落盘时按持久层日志字节偏移取尾；无落盘时为内存缓冲快照）；分页默认窗口 50,000 字节（上限 256,000）；block=true 可等待但终态抑制通知（G25：工具结果是模型对该任务结算的唯一应答）；完整日志有落盘时永在 `output_path`。
+
+### 4.3 TaskStop
+
+- **注册**：名称 `TaskStop`；目录描述 `Stop a background task by id — marks it stopped and cancels the underlying work when the task carries a cancel signal (agent tasks do). Use TaskList to discover task ids.`；审批刻面 `TaskStop`。
+
+**面向模型的描述（原文）**：
+
+```
+Stop a background task by id — marks it stopped and cancels the
+underlying work when the task carries a cancel signal (agent
+tasks do). Use TaskList to discover task ids.
+```
+
+**参数契约**：仅 `task_id`（string，必填）——`ID of the background task to stop.`。
+
+**输出契约**：终态任务（不操作）：`task_id` / `status` / `reason: Task already in terminal state`。存活任务：先**抑制终态通知**（使本结果成为模型唯一应答，G25），再经优雅停止（先发取消信号、宽限窗内自然结算者保留诚实终态；宽限耗尽才升级 stopped）：`task_id` / `status` / `reason`（`Stopped by TaskStop (grace window expired)` 或 `Settled naturally within the stop grace window`）。
 
 **错误面**：
 
 | 条件 | 文案 |
 |---|---|
 | 任务不存在 | `Task not found: {task_id}` |
-| 停止失败 | `Failed to stop task: {task_id}` |
 
-**非功能**：停止为破坏性操作（可能留下部分副作用）；终态任务为只读返回。
+**非功能**：停止为破坏性操作（可能留下部分副作用）；优雅停止宽限窗默认 5s（可配置）；终态任务为只读返回。
 
 **界面呈现（任务三件套共用）**：无专用结果渲染器（回落通用截断渲染：前 3 行 + `... (N more lines, ctrl+o to expand)`，错误 error 色）；无 chip。
 

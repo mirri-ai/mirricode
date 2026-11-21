@@ -263,6 +263,7 @@ In print mode (`mirri -p "<prompt>"`), Mirri Code stays alive by default as long
 | `print_wait_ceiling_s` | `integer` | `315360000` | Wall-clock ceiling (seconds) for the drain/steer wait loop |
 | `print_max_turns` | `integer` | `100000` | Maximum new turns triggered by background completions in steer mode |
 | `heartbeat_interval_ms` | `integer` | `300000` | How long (milliseconds) a running task may go without activity before being flagged stale; `0` disables staleness detection |
+| `silenceWarnSecs` | `integer` | `300` | How long (seconds) a running background process task may go without output before the agent is warned; `0` disables the warning |
 
 ## `subagent`
 

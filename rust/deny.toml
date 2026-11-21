@@ -15,8 +15,11 @@ version = 2
 # CI must fail on any known vulnerability in Cargo.lock.
 yanked = "deny"
 ignore = [
-    # Add entries ONLY with a justification and an expiry/removal date, e.g.:
-    # "RUSTSEC-0000-0000" = { reason = "no fixed version; monitor", until = "2026-12-31" }
+    # Add entries ONLY with a justification and a review date, e.g.:
+    # { id = "RUSTSEC-0000-0000", reason = "no fixed version; monitor; revisit by 2026-12-31" }
+    # (cargo-deny 0.20 has no `until` key — the id is a field, and the review
+    # date lives at the end of the reason.)
+    { id = "RUSTSEC-2026-0543", reason = "chrono itself is unmaintained (chronotope/chrono#1768); the full chrono -> jiff migration of the main time types is a separate task, out of scope of the cron timezone migration; revisit by 2027-05-31" },
 ]
 
 [licenses]

@@ -179,6 +179,12 @@ impl ServerConfig {
         if let Some(retention) = &self.retention {
             wire.insert("retention".into(), retention_to_wire(retention));
         }
+        if let Some(bash) = &self.bash {
+            wire.insert(
+                "bash".into(),
+                serde_json::json!({ "envAllowlist": bash.env_allowlist }),
+            );
+        }
         if let Some(v) = self.telemetry {
             wire.insert("telemetry".into(), Value::Bool(v));
         }
@@ -519,6 +525,7 @@ pub(crate) const KNOWN_CONFIG_TOP_LEVEL_KEYS: &[&str] = &[
     "image",
     "model_catalog",
     "retention",
+    "bash",
     "telemetry",
     "disable_model_prompts",
 ];
@@ -881,6 +888,12 @@ fn task_to_wire(task: &TaskConfig) -> Value {
     if let Some(v) = task.bash_task_timeout_s {
         map.insert(
             "bashTaskTimeoutS".into(),
+            Value::Number(serde_json::Number::from(v)),
+        );
+    }
+    if let Some(v) = task.silence_warn_secs {
+        map.insert(
+            "silenceWarnSecs".into(),
             Value::Number(serde_json::Number::from(v)),
         );
     }
@@ -1276,6 +1289,8 @@ pub(crate) const KNOWN_SECTION_KEYS: &[(&str, &[&str])] = &[
             "bashAutoBackgroundOnTimeout",
             "bash_task_timeout_s",
             "bashTaskTimeoutS",
+            "silence_warn_secs",
+            "silenceWarnSecs",
             "kill_grace_period_ms",
             "killGracePeriodMs",
             "print_wait_ceiling_s",
@@ -1308,6 +1323,7 @@ pub(crate) const KNOWN_SECTION_KEYS: &[(&str, &[&str])] = &[
         &["question_channel_wait_secs", "questionChannelWaitSecs"],
     ),
     ("model_catalog", &["persist_cache", "persistCache"]),
+    ("bash", &["env_allowlist", "envAllowlist"]),
     (
         "retention",
         &[

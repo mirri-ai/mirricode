@@ -213,6 +213,7 @@ impl AgentScope {
                 background_gate,
                 subagent_timeout: config.subagent_timeout,
                 max_swarm_items: config.max_swarm_items,
+                env_allowlist: config.bash_env_allowlist.clone(),
                 question_channel_wait: config.question_channel_wait,
                 workspace_id: config.workspace_id.clone(),
                 scheduled_task_creator: config.scheduled_task_creator.clone(),
@@ -237,6 +238,9 @@ impl AgentScope {
             // The boundary policy classifies tool paths against the same
             // session sandbox the file tools use (plan D2).
             workspace_paths,
+            // The protected-directory review expands `~` against the OS
+            // user home (US-BH11 / B-ADR-17) — not the product data home.
+            os_home: mirri_os::os_home_dir().map(Arc::new),
         };
         // Session agents share the session's approval store (D-07): when
         // the config carries it, the manager is built over that store so a

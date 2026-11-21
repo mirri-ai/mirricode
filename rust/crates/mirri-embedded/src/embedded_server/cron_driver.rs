@@ -103,7 +103,36 @@ pub trait WorkspaceFireExecutor: Send + Sync {
 /// runs the first face opened — but a NEW server process (a restart) gets
 /// its own scheduler, and its own first pass converges the previous
 /// process's orphans.
-type OrphanSweepLatch = std::sync::Arc<std::sync::atomic::AtomicBool>;
+///
+/// `opened_before` is the sweep's orphan boundary, captured when the
+/// scheduler is CONSTRUCTED (the latch and the instant travel together so
+/// a pass cannot take a boundary afterwards). The boundary is what keeps
+/// "an orphan" meaning "a record from a previous process": the scheduler
+/// is spawned lazily by the first RPC and then waits for the startup
+/// housekeeping, so a `cron.trigger` can open a live run before the first
+/// pass ever runs. Without the boundary that live run reads as an orphan —
+/// its turn keeps executing while its record says `Failed{服务重启中断}`.
+#[derive(Debug)]
+pub(super) struct OrphanSweep {
+    /// The one-shot latch: the first pass through flips it.
+    pub(super) latched: std::sync::atomic::AtomicBool,
+    /// The scheduler's construction instant — the orphan boundary. A run
+    /// record is a crash orphan only when its `started_at` is strictly
+    /// earlier; a record this process opened is never converged.
+    pub(super) opened_before: chrono::DateTime<chrono::Utc>,
+}
+
+impl OrphanSweep {
+    /// A sweep armed at `opened_before` — production passes the scheduler's
+    /// construction instant; a test that wants every pre-existing record
+    /// swept passes its own "now".
+    pub(super) fn armed_at(opened_before: chrono::DateTime<chrono::Utc>) -> Self {
+        Self {
+            latched: std::sync::atomic::AtomicBool::new(false),
+            opened_before,
+        }
+    }
+}
 
 /// The workspace arm of one scheduler tick (T5): every BUILT runtime's
 /// workspace cron manager runs `check_due`; each returned fire is handed
@@ -125,7 +154,7 @@ pub(super) async fn schedule_workspace_cron_pass(
     executor: Arc<dyn WorkspaceFireExecutor>,
     _steer_buffers: SteerBufferMap,
     workspace_id: String,
-    orphan_swept: OrphanSweepLatch,
+    orphan_sweep: Arc<OrphanSweep>,
 ) {
     let Some(runtime) = registry.built_runtime(&workspace_id) else {
         return;
@@ -139,13 +168,14 @@ pub(super) async fn schedule_workspace_cron_pass(
     // every `Running` run record is a crash orphan — an execution turn
     // cannot survive a server restart, so a Running record read by a
     // fresh process is definitionally dead. The one-shot per-scheduler
-    // sweep (the `orphan_swept` latch — NOT per-manager: two manager
+    // sweep (the `orphan_sweep` latch — NOT per-manager: two manager
     // faces of one workspace coexist in one process, and a per-manager
     // sweep would kill the other face's live run) flips every Running
     // record to Failed{reason: 服务重启中断} and clears the task's stuck
     // posture (a Skip/Queue task whose only record was the dead Running
     // would otherwise be wedged forever).
-    if orphan_swept
+    if orphan_sweep
+        .latched
         .compare_exchange(
             false,
             true,
@@ -155,9 +185,10 @@ pub(super) async fn schedule_workspace_cron_pass(
         .is_ok()
     {
         let cron = std::sync::Arc::clone(_cron);
+        let opened_before = orphan_sweep.opened_before;
         let swept = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current()
-                .block_on(cron.fail_orphan_running_runs("服务重启中断"))
+                .block_on(cron.fail_orphan_running_runs("服务重启中断", opened_before))
         })
         .await
         .unwrap_or_else(|join_error| {
@@ -561,9 +592,15 @@ impl EmbeddedServer {
             tool_result_home: tool_result_home.clone(),
         });
         // The M2 orphan-sweep latch (per-scheduler): the first workspace
-        // pass converges the previous process's stale Running records.
-        let orphan_swept: OrphanSweepLatch =
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // pass converges the previous process's stale Running records. The
+        // boundary is the scheduler's construction instant — captured here,
+        // NOT when the sweep finally runs: the scheduler is spawned lazily by
+        // the first RPC and then waits for the startup housekeeping, so a
+        // `cron.trigger` can open a live run long before the first workspace
+        // pass. A sweep-time boundary would classify that live run as a crash
+        // orphan; a construction-time one still precedes every record this
+        // process can open, and every previous process's record predates it.
+        let orphan_sweep = std::sync::Arc::new(OrphanSweep::armed_at(chrono::Utc::now()));
         tokio::spawn(async move {
             // The startup housekeeping settles first (ADR-003 c) — a
             // WAIT-ONLY hold: these cells are initialized solely by the
@@ -604,7 +641,7 @@ impl EmbeddedServer {
                             Arc::clone(&run_spawner),
                             Arc::clone(&steer_buffers),
                             runtime.workspace_id.clone(),
-                            Arc::clone(&orphan_swept),
+                            Arc::clone(&orphan_sweep),
                         )));
                     }
                     let session_ids = runtime.manager.workspace().list_sessions().await;
@@ -718,6 +755,20 @@ pub(super) async fn schedule_session_cron_pass(
         // the resume).
         return;
     };
+    // A session still being restored is resolvable (it is registered in the
+    // live table before its replay finishes) but must not be driven: its
+    // agents are not rebuilt yet, and an injection now would be recorded
+    // against a half-restored context. Return WITHOUT draining — the held
+    // fires stay durable and the first tick after the restore redelivers
+    // them. Nothing is lost by waiting here: `check_due` is not even called,
+    // so the schedule simply catches up on the next pass.
+    if !session.is_ready() {
+        tracing::debug!(
+            session_id = %sid,
+            "cron pass deferred: the session is still restoring"
+        );
+        return;
+    }
     let cron = session.cron();
     // check_due publishes the `cron.fired` events on the session bus (the
     // manager's wired-in bus) and returns the fired prompts.
