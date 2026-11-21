@@ -25,6 +25,7 @@ export default {
   pinnedSection: '已置顶',
   workspaceOfSession: '工作区：{name}',
   pin: '置顶',
+  pinToTop: '置顶',
   unpin: '取消置顶',
   pinSessionToTop: '将「{title}」置顶',
   unpinSession: '取消置顶「{title}」',

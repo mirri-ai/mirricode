@@ -25,6 +25,7 @@ export default {
   pinnedSection: 'Pinned',
   workspaceOfSession: 'Workspace: {name}',
   pin: 'Pin to top',
+  pinToTop: 'Pin to top',
   unpin: 'Unpin',
   pinSessionToTop: 'Pin "{title}" to top',
   unpinSession: 'Unpin "{title}"',
