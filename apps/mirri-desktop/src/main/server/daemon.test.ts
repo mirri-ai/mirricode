@@ -188,9 +188,9 @@ describe('shutdownDaemon() — quit handshake', () => {
     // A daemon that dies 400ms after SIGTERM — the handshake must wait for
     // the exit, not fire-and-forget.
     let alive = true;
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((
       pid: number,
-      signal?: NodeJS.Signals | number,
+      signal?: string | number,
     ) => {
       if (signal === 'SIGTERM') {
         setTimeout(() => {
@@ -210,7 +210,7 @@ describe('shutdownDaemon() — quit handshake', () => {
         throw new Error('should not SIGKILL a promptly-exiting daemon');
       }
       return true;
-    }) as typeof process.kill);
+    });
 
     const { shutdownDaemon } = await import('./daemon');
     await shutdownDaemon(4242, 58827, 5_000);
@@ -222,13 +222,13 @@ describe('shutdownDaemon() — quit handshake', () => {
 
   it('should SIGKILL the daemon when it ignores SIGTERM past the grace window', async () => {
     // A daemon that never dies — the handshake must escalate to SIGKILL.
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((
       pid: number,
-      signal?: NodeJS.Signals | number,
+      signal?: string | number,
     ) => {
       if (signal === 0) return true; // forever alive
       return true;
-    }) as typeof process.kill);
+    });
 
     const { shutdownDaemon } = await import('./daemon');
     await shutdownDaemon(4242, 58827, 300);
@@ -241,9 +241,9 @@ describe('shutdownDaemon() — quit handshake', () => {
   it('should remove the desktop state file after the daemon exits', async () => {
     writeDesktopState({ pid: 4242, port: 58827, startedAt: Date.now() });
 
-    vi.spyOn(process, 'kill').mockImplementation(((
+    vi.spyOn(process, 'kill').mockImplementation((
       pid: number,
-      signal?: NodeJS.Signals | number,
+      signal?: string | number,
     ) => {
       if (signal === 0) {
         const err = new Error('process not found') as NodeJS.ErrnoException;
@@ -251,7 +251,7 @@ describe('shutdownDaemon() — quit handshake', () => {
         throw err;
       }
       return true;
-    }) as typeof process.kill);
+    });
 
     const { shutdownDaemon } = await import('./daemon');
     await shutdownDaemon(4242, 58827, 5_000);
@@ -262,15 +262,15 @@ describe('shutdownDaemon() — quit handshake', () => {
   it('should not signal anything when the pid is unknown (reuse-branch fallback)', async () => {
     writeDesktopState({ pid: -1, port: 58827, startedAt: Date.now() });
 
-    vi.spyOn(process, 'kill').mockImplementation(((
+    vi.spyOn(process, 'kill').mockImplementation((
       _pid: number,
-      signal?: NodeJS.Signals | number,
+      signal?: string | number,
     ) => {
       if (signal !== undefined && signal !== 0) {
         throw new Error(`should not signal with a non-positive pid (got ${String(signal)})`);
       }
       return true;
-    }) as typeof process.kill);
+    });
 
     const { shutdownDaemon } = await import('./daemon');
     await expect(shutdownDaemon(-1, 58827, 5_000)).resolves.toBeUndefined();
@@ -278,9 +278,9 @@ describe('shutdownDaemon() — quit handshake', () => {
   });
 
   it('should resolve without killing when the pid is already dead', async () => {
-    vi.spyOn(process, 'kill').mockImplementation(((
+    vi.spyOn(process, 'kill').mockImplementation((
       pid: number,
-      signal?: NodeJS.Signals | number,
+      signal?: string | number,
     ) => {
       if (signal === undefined || signal === 0) {
         const err = new Error('process not found') as NodeJS.ErrnoException;
@@ -288,7 +288,7 @@ describe('shutdownDaemon() — quit handshake', () => {
         throw err;
       }
       throw new Error('should not signal a dead daemon');
-    }) as typeof process.kill);
+    });
 
     const { shutdownDaemon } = await import('./daemon');
     await expect(shutdownDaemon(4242, 58827, 5_000)).resolves.toBeUndefined();
@@ -297,9 +297,9 @@ describe('shutdownDaemon() — quit handshake', () => {
   it('should tolerate a SIGTERM error (already-dead race) and still clean up state', async () => {
     writeDesktopState({ pid: 4242, port: 58827, startedAt: Date.now() });
 
-    vi.spyOn(process, 'kill').mockImplementation(((
+    vi.spyOn(process, 'kill').mockImplementation((
       pid: number,
-      signal?: NodeJS.Signals | number,
+      signal?: string | number,
     ) => {
       if (signal === 'SIGTERM') {
         const err = new Error('process not found') as NodeJS.ErrnoException;
@@ -307,7 +307,7 @@ describe('shutdownDaemon() — quit handshake', () => {
         throw err;
       }
       return true;
-    }) as typeof process.kill);
+    });
 
     const { shutdownDaemon } = await import('./daemon');
     await expect(shutdownDaemon(4242, 58827, 5_000)).resolves.toBeUndefined();
@@ -334,11 +334,11 @@ describe('killStaleDaemon() — v2 state file', () => {
 
     writeDesktopState({ pid: process.pid, port: 58827, startedAt: Date.now() });
 
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
       if (signal === undefined || signal === 0) return true;
       // SIGTERM: record it, don't actually kill ourselves
       return true;
-    }) as typeof process.kill);
+    });
 
     await killStaleDaemon();
 
@@ -367,10 +367,10 @@ describe('killStaleDaemon() — v2 state file', () => {
     // will fail because we don't mock fetch.
     writeDesktopState({ pid: process.pid, port: 59999, startedAt: Date.now() });
 
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
       if (signal === undefined || signal === 0) return true;
       throw new Error('should not kill');
-    }) as typeof process.kill);
+    });
 
     await killStaleDaemon();
 
@@ -384,14 +384,14 @@ describe('killStaleDaemon() — v2 state file', () => {
   it('should handle EPERM gracefully', async () => {
     writeDesktopState({ pid: process.pid, port: 59998, startedAt: Date.now() });
 
-    vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+    vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
       if (signal === undefined || signal === 0) {
         const err = new Error('Operation not permitted') as NodeJS.ErrnoException;
         err.code = 'EPERM';
         throw err;
       }
       return true;
-    }) as typeof process.kill);
+    });
 
     // Should not throw — health check will also fail.
     await expect(killStaleDaemon()).resolves.toBeUndefined();
@@ -432,10 +432,10 @@ describe('killStaleDaemon() — v1 lock file migration', () => {
 
     writeDesktopLock(process.pid, 58827);
 
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
       if (signal === undefined || signal === 0) return true;
       return true;
-    }) as typeof process.kill);
+    });
 
     await killStaleDaemon();
 
@@ -457,10 +457,10 @@ describe('killStaleDaemon() — v1 lock file migration', () => {
       json: async () => ({ code: 0 }),
     }) as unknown as typeof fetch;
 
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
       if (signal === undefined || signal === 0) return true;
       return true;
-    }) as typeof process.kill);
+    });
 
     await killStaleDaemon();
 
@@ -489,10 +489,10 @@ describe('killStaleDaemon() — v1 lock file migration', () => {
   it('should NOT kill when lock_name does not match "desktop"', async () => {
     writeDesktopLock(process.pid, 58827, undefined, 'cli');
 
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
       if (signal === undefined || signal === 0) return true;
       throw new Error('should not kill');
-    }) as typeof process.kill);
+    });
 
     await killStaleDaemon();
 
@@ -509,10 +509,10 @@ describe('killStaleDaemon() — v1 lock file migration', () => {
       JSON.stringify({ pid: process.pid, port: 58827, started_at: new Date().toISOString() }),
     );
 
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
       if (signal === undefined || signal === 0) return true;
       throw new Error('should not kill');
-    }) as typeof process.kill);
+    });
 
     await killStaleDaemon();
 

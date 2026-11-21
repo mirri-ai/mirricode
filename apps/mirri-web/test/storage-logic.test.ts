@@ -34,7 +34,7 @@ function createMemoryStorage(): Storage {
       data.delete(key);
     },
     setItem(key: string, value: string) {
-      data.set(key, String(value));
+      data.set(key, value);
     },
   };
 }

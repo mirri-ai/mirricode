@@ -526,8 +526,8 @@ export class JsonRpcClient {
     if (typeof raw !== 'object' || raw === null) return;
     const frame = raw as Record<string, unknown>;
     const hasId = Object.prototype.hasOwnProperty.call(frame, 'id');
-    const method = typeof frame['method'] === 'string' ? (frame['method'] as string) : undefined;
-    const id = typeof frame['id'] === 'number' ? (frame['id'] as number) : undefined;
+    const method = typeof frame['method'] === 'string' ? frame['method'] : undefined;
+    const id = typeof frame['id'] === 'number' ? frame['id'] : undefined;
 
     if (hasId && method !== undefined && id !== undefined) {
       this.handleReverseRequest(id, method, frame['params']);
@@ -729,15 +729,15 @@ export class JsonRpcClient {
 function extractEventEnvelope(params: unknown): RpcEvent | null {
   if (typeof params !== 'object' || params === null) return null;
   const fields = params as Record<string, unknown>;
-  const type = typeof fields['type'] === 'string' ? (fields['type'] as string) : undefined;
+  const type = typeof fields['type'] === 'string' ? fields['type'] : undefined;
   if (type === undefined || type === '') return null;
   const envelopeKeys = ['type', 'sessionId', 'seq', 'epoch', 'volatile'];
   const hasPayloadKey = Object.prototype.hasOwnProperty.call(fields, 'payload');
   return {
     type,
-    sessionId: typeof fields['sessionId'] === 'string' ? (fields['sessionId'] as string) : undefined,
-    seq: typeof fields['seq'] === 'number' ? (fields['seq'] as number) : undefined,
-    epoch: typeof fields['epoch'] === 'string' ? (fields['epoch'] as string) : undefined,
+    sessionId: typeof fields['sessionId'] === 'string' ? fields['sessionId'] : undefined,
+    seq: typeof fields['seq'] === 'number' ? fields['seq'] : undefined,
+    epoch: typeof fields['epoch'] === 'string' ? fields['epoch'] : undefined,
     volatile: fields['volatile'] === true,
     payload: hasPayloadKey ? fields['payload'] : stripKeys(fields, envelopeKeys),
   };
@@ -752,9 +752,9 @@ function extractDirectEvent(method: string, params: unknown): RpcEvent {
   const fields = params as Record<string, unknown>;
   return {
     type: method,
-    sessionId: typeof fields['sessionId'] === 'string' ? (fields['sessionId'] as string) : undefined,
-    seq: typeof fields['seq'] === 'number' ? (fields['seq'] as number) : undefined,
-    epoch: typeof fields['epoch'] === 'string' ? (fields['epoch'] as string) : undefined,
+    sessionId: typeof fields['sessionId'] === 'string' ? fields['sessionId'] : undefined,
+    seq: typeof fields['seq'] === 'number' ? fields['seq'] : undefined,
+    epoch: typeof fields['epoch'] === 'string' ? fields['epoch'] : undefined,
     volatile: fields['volatile'] === true,
     payload: stripKeys(fields, ['sessionId', 'seq', 'epoch', 'volatile']),
   };

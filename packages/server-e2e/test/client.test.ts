@@ -576,7 +576,7 @@ function recordingFetch(responseBody: unknown, calls: FetchCall[]): typeof fetch
       status: 200,
       headers: { 'content-type': 'application/json' },
     });
-  }) as typeof fetch;
+  });
 }
 
 function recordingFetchSequence(responseBodies: unknown[], calls: FetchCall[]): typeof fetch {
@@ -589,7 +589,7 @@ function recordingFetchSequence(responseBodies: unknown[], calls: FetchCall[]): 
       status: 200,
       headers: { 'content-type': 'application/json' },
     });
-  }) as typeof fetch;
+  });
 }
 
 function fetchInputUrl(input: Parameters<typeof fetch>[0]): string {

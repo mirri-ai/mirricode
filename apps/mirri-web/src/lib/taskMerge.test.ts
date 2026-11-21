@@ -194,7 +194,7 @@ describe('agentId join (foreground swarm member fold)', () => {
     // Poll 1: REST fold merges the copy into the live row.
     state = {
       ...state,
-      tasksBySession: { ...state.tasksBySession, [SID]: keepLiveSubagents([restRow()], state.tasksBySession[SID]!) },
+      tasksBySession: { ...state.tasksBySession, [SID]: keepLiveSubagents([restRow()], state.tasksBySession[SID]) },
     };
     expect(state.tasksBySession[SID]).toHaveLength(1);
 

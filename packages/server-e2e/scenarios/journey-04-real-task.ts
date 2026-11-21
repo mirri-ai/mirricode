@@ -175,7 +175,7 @@ async function phase_realTaskLoop(
   );
   assert.ok(bashResults.length > 0, 'a Bash tool result event is recorded');
   const bashOutput = bashResults
-    .map((n) => (typeof n.params['output'] === 'string' ? (n.params['output'] as string) : JSON.stringify(n.params['output'])))
+    .map((n) => (typeof n.params['output'] === 'string' ? n.params['output'] : JSON.stringify(n.params['output'])))
     .join('\n');
   assert.equal(bashResults[0]?.params['isError'], false, 'the node --test run did not error');
   assert.ok(
@@ -187,7 +187,7 @@ async function phase_realTaskLoop(
   // 那么：汇报文本引用真实执行结果片段
   const deltas = windowEvents
     .filter((n) => n.method === 'event.assistant.delta')
-    .map((n) => (typeof n.params['delta'] === 'string' ? (n.params['delta'] as string) : ''))
+    .map((n) => (typeof n.params['delta'] === 'string' ? n.params['delta'] : ''))
     .join('');
   assert.ok(deltas.includes('node --test'), 'the final summary quotes the real command node --test');
   assert.ok(/pass/i.test(deltas), 'the final summary reports the passing tests');
@@ -252,7 +252,7 @@ async function phase_subagent(
   );
   assert.ok(subagentDeltas.length > 0, 'the subagent streams its own assistant deltas (its agent id)');
   const subagentText = subagentDeltas
-    .map((n) => (typeof n.params['delta'] === 'string' ? (n.params['delta'] as string) : ''))
+    .map((n) => (typeof n.params['delta'] === 'string' ? n.params['delta'] : ''))
     .join('');
   assert.ok(
     subagentText.includes('SUBAGENT_FINDING'),
@@ -276,9 +276,9 @@ async function phase_subagent(
         n.method === 'event.assistant.delta' &&
         n.params['agentId'] !== subagentId &&
         typeof n.params['agentId'] === 'string' &&
-        !String(n.params['agentId']).includes(String(subagentId)),
+        !n.params['agentId'].includes(subagentId),
     )
-    .map((n) => (typeof n.params['delta'] === 'string' ? (n.params['delta'] as string) : ''))
+    .map((n) => (typeof n.params['delta'] === 'string' ? n.params['delta'] : ''))
     .join('');
   assert.ok(
     mainDeltas.includes('written-by-journey-04'),

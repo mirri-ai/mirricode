@@ -285,7 +285,7 @@ function listRustFiles(dir, externalModNames, dirModNames) {
       const isTestFile =
         base === 'tests' ||
         base.startsWith('test_') ||
-        externalModNames.has(base) ||
+        Boolean(externalModNames.has(base)) ||
         (dirModNames.has(path) && base === 'mod');
       const isFixture = /(^|\/)(fixtures|testdata)(\/|$)/.test(path);
       if (!isTestFile && !isFixture) {

@@ -1546,7 +1546,7 @@ describe('subagentStepBoundary reduction (ADR-015)', () => {
     state.tasksBySession['s1'] = [
       subagentTask({ id: 'sa-1', segments: [seg1], stepSegMark: { count: 1, openLen: 5 } }),
     ];
-    const rowBefore = state.tasksBySession['s1']![0]!;
+    const rowBefore = state.tasksBySession['s1'][0]!;
 
     // When 指向被截掉段 id 的 taskProgress 到达
     const after = reduceAppEvent(
@@ -1584,7 +1584,7 @@ describe('subagentStepBoundary reduction (ADR-015)', () => {
         stepSegMark: { count: 1, openLen: 7 },
       }),
     ];
-    const rowBefore = state.tasksBySession['s1']![0]!;
+    const rowBefore = state.tasksBySession['s1'][0]!;
 
     // When 同一非重试边界重放（重连重放窗口内的重复帧）
     const after = reduceAppEvent(
@@ -1663,7 +1663,7 @@ describe('taskProgress segment consumption (ADR-011)', () => {
 
     // Then 替换后行仍持有原 segments 引用
     const row = after.tasksBySession['s1']![0]!;
-    expect(row.segments).toBe(state.tasksBySession['s1']![0]!.segments);
+    expect(row.segments).toBe(state.tasksBySession['s1'][0]!.segments);
   });
 
   it('should drop the replayed tail chunk once when the segment guard is armed', () => {
@@ -1721,7 +1721,7 @@ describe('taskProgress segment consumption (ADR-011)', () => {
     );
 
     // Then 静默丢弃（连不上投影层的段），行引用不变
-    expect(after.tasksBySession['s1']![0]).toBe(state.tasksBySession['s1']![0]);
+    expect(after.tasksBySession['s1']![0]).toBe(state.tasksBySession['s1'][0]);
   });
 });
 

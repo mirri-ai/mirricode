@@ -80,7 +80,7 @@ describe('createWorkspaceRequestSchema (POST /api/v1/workspaces)', () => {
   });
 
   it('rejects missing root', () => {
-    expect(createWorkspaceRequestSchema.safeParse({} as unknown).success).toBe(false);
+    expect(createWorkspaceRequestSchema.safeParse({}).success).toBe(false);
   });
 
   it('rejects empty name', () => {
@@ -107,7 +107,7 @@ describe('updateWorkspaceRequestSchema (PATCH /api/v1/workspaces/{id})', () => {
   });
 
   it('rejects empty body (name is required for the patch)', () => {
-    expect(updateWorkspaceRequestSchema.safeParse({} as unknown).success).toBe(false);
+    expect(updateWorkspaceRequestSchema.safeParse({}).success).toBe(false);
   });
 });
 

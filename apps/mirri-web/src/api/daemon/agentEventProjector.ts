@@ -2249,13 +2249,16 @@ export function createAgentProjector(): AgentProjector {
       case 'skill.activated':
       case 'plugin_command.activated':
       case 'tool.list.updated':
-      // Shell runner lifecycle (rust core P3i): the user's local shell
-      // activity streams through event.shell.*; the web client has no shell
-      // console surface, so there is no AppEvent to project onto (the
-      // terminal panel is driven by the terminal_* WS frames instead).
       case 'shell.started':
       case 'shell.output':
       case 'shell.completed':
+        // Every event above is a deliberate no-op: the event is known but has
+        // no AppEvent to project onto. (Shell runner lifecycle, rust core P3i:
+        // local shell activity streams through event.shell.*, but the web
+        // client has no shell console surface — the terminal panel is driven
+        // by the terminal_* WS frames instead.) Grouping them on one `break`
+        // is the point; keep the labels contiguous so the fallthrough is
+        // unambiguous.
         break;
 
       // -----------------------------------------------------------------------

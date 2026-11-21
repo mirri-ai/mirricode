@@ -61,9 +61,6 @@ import {
   useWorkspaceState,
 } from './client/useWorkspaceState';
 
-const appearance = useAppearance();
-const notification = useNotification();
-const sound = useSoundNotification();
 import type {
   AppEvent,
   AppApprovalRequest,
@@ -117,6 +114,10 @@ import type {
   WorkspaceView,
 } from '../types';
 import type { SortableSessionRow } from '../lib/sessionSorting';
+
+const appearance = useAppearance();
+const notification = useNotification();
+const sound = useSoundNotification();
 
 // ---------------------------------------------------------------------------
 // Internal reactive state (plain object wrapped in reactive())
@@ -446,7 +447,7 @@ const rawState: ExtendedState = reactive({
   dangerousBypassAuth: false,
   backend: 'v1',
   workspaceName: 'mirri-web',
-  connection: 'disconnected' as ConnectionState,
+  connection: 'disconnected',
   permission: loadPermissionFromStorage(),
   // Resolved per session/model once the catalog/session is known (loadModels
   // and the active-session watcher in useModelProviderState) — the per-session
@@ -1018,7 +1019,7 @@ function applyEvent(event: ReturnType<typeof toAppEvent>, sessionId: string, seq
     }
     if (event.thinking !== undefined) {
       if (rawState.thinkingBySession[event.sessionId] !== event.thinking) {
-        rawState.thinkingBySession[event.sessionId] = event.thinking as ThinkingLevel;
+        rawState.thinkingBySession[event.sessionId] = event.thinking;
       }
     }
   }
@@ -2839,7 +2840,7 @@ const sessionsForView = computed<Session[]>(() => {
         workspaceId,
         workspaceName: nameByWorkspaceId.get(workspaceId),
         compressed: s.compressed === true,
-        pinned: s.pinned === true,
+        pinned: s.pinned,
         pinColor: s.pinColor,
       };
     });

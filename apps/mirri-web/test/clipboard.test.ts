@@ -26,7 +26,7 @@ function installDocument(execResult: boolean | Error): FakeDocument {
     }),
     createElement: vi.fn().mockReturnValue(textarea),
     body: { append: vi.fn(), appendChild: vi.fn(), removeChild: vi.fn() },
-    textarea: textarea as FakeDocument['textarea'],
+    textarea,
   };
   vi.stubGlobal('document', doc);
   return doc;

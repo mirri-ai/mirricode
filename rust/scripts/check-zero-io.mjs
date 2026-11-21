@@ -270,6 +270,12 @@ function stripTestModules(rawText) {
   const cfgTestRe =
     /#\[[^\n]*\b(?:cfg\(\s*(?:all\(\s*)?test|cfg_attr\([^)]*,\s*test)\b[^\n]*\]\s*\n?\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(\w+)/g;
   let match;
+  // Blank a module body while preserving its newline count, so line numbers in
+  // later diagnostics still line up with the original file.
+  const cutBody = (t, start, end) => {
+    const newlines = (t.slice(start, end).match(/\n/g) ?? []).length;
+    return t.slice(0, start) + '\n'.repeat(newlines) + t.slice(end);
+  };
   while ((match = cfgTestRe.exec(masked)) !== null) {
     const afterName = masked.slice(match.index + match[0].length);
     if (/^\s*;/.test(afterName)) {
@@ -278,12 +284,8 @@ function stripTestModules(rawText) {
     } else if (/^\s*\{/.test(afterName)) {
       const openBrace = match.index + match[0].length + afterName.match(/^\s*\{/)[0].length - 1;
       const end = findModBodyEnd(masked, openBrace);
-      const cut = (t) => {
-        const newlines = (t.slice(match.index, end).match(/\n/g) ?? []).length;
-        return t.slice(0, match.index) + '\n'.repeat(newlines) + t.slice(end);
-      };
-      masked = cut(masked);
-      text = cut(text);
+      masked = cutBody(masked, match.index, end);
+      text = cutBody(text, match.index, end);
       cfgTestRe.lastIndex = match.index; // re-scan from the same offset
     }
   }

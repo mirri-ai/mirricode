@@ -24,8 +24,7 @@ import {
 import { SkillMention } from '../../lib/skillMentionNode';
 import { serializeDocJsonWithFileMentions, collectFileMentionAttrs, toPromptReferences, type PromptFileReference } from '../../lib/fileMention';
 import { FileMention } from '../../lib/fileMentionNode';
-import type { SearchFilesResult } from '../../types';
-import type { ActivationBadges, ConversationStatus, PermissionMode, QueuedPromptView } from '../../types';
+import type { ActivationBadges, ConversationStatus, PermissionMode, QueuedPromptView, SearchFilesResult } from '../../types';
 import type { AppModel, AppSkill, ThinkingLevel } from '../../api/types';
 import {
   commitLevel,

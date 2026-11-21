@@ -141,7 +141,7 @@ function mediaUrlPart(part: Record<string, unknown>): { kind: ToolMedia['kind'];
     const source = part['source'];
     if (typeof source === 'object' && source !== null) {
       const url = (source as Record<string, unknown>)['url'];
-      if (typeof url === 'string') return { kind: type as ToolMedia['kind'], url };
+      if (typeof url === 'string') return { kind: type, url };
     }
     return null;
   }

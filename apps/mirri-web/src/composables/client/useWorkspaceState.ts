@@ -60,6 +60,8 @@ import type {
 } from '../../types';
 import type { ExtendedState, PromptAttachment } from '../useMirriWebClient';
 import type { UseModelProviderState } from './useModelProviderState';
+import type { UseSideChat } from './useSideChat';
+import type { UseTaskPoller } from './useTaskPoller';
 
 /** The E9 reference gate's rejection: nothing was sent. The composer shows
  *  the stale-reference dialog and re-submits with the surviving references
@@ -75,8 +77,6 @@ export interface SubmitPromptOutcome {
   ok: boolean;
   error?: SubmitReferenceGateError;
 }
-import type { UseSideChat } from './useSideChat';
-import type { UseTaskPoller } from './useTaskPoller';
 
 const MESSAGES_PAGE_SIZE = 50;
 // Sessions fetched per workspace on first load — the first screen only pulls
@@ -2047,6 +2047,9 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
             type: 'file',
             fileId: att.fileId,
             name: att.name ?? '',
+            // An empty media type is a missing one: fall back to the generic
+            // binary type rather than sending '' to the engine.
+            // eslint-disable-next-line typescript/prefer-nullish-coalescing -- empty mediaType means unknown
             mediaType: att.mediaType || 'application/octet-stream',
             size: att.size ?? 0,
           });
@@ -2733,7 +2736,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     rawState.swarmModeBySession = { ...rawState.swarmModeBySession, [sid]: on };
     // Leaving swarm also ends the /swarm <task> "awaiting ended divider" state.
     const hadTaskEntry = rawState.swarmTaskBySession[sid] !== undefined;
-    if (on === false) delete rawState.swarmTaskBySession[sid];
+    if (!on) delete rawState.swarmTaskBySession[sid];
     saveSwarmModeToStorage();
     const ok = await persistSessionProfile(
       { swarmMode: on },

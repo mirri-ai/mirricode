@@ -25,7 +25,7 @@ export function buildApprovalBlock(a: AppApprovalRequest): ApprovalBlock {
   const d = (a.display ?? {}) as Record<string, unknown>;
   const kind = typeof d['kind'] === 'string' ? d['kind'] : '';
   const str = (key: string): string | undefined =>
-    typeof d[key] === 'string' ? (d[key] as string) : undefined;
+    typeof d[key] === 'string' ? d[key] : undefined;
   // Honest expiry rides every variant (D-13): absent when the engine sent none.
   const expiry = a.expiresAt !== undefined ? { expiresAt: a.expiresAt } : {};
   // The engine approval-rule facet (B9) rides every variant the same way.

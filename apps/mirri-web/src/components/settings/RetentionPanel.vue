@@ -38,8 +38,7 @@ import {
   tierEstimate,
   toggleRetentionSort,
 } from '../../lib/retentionManagement';
-import type { RetentionFilter } from '../../lib/retentionManagement';
-import type { RetentionSort, RetentionSortKey } from '../../lib/retentionManagement';
+import type { RetentionFilter, RetentionSort, RetentionSortKey } from '../../lib/retentionManagement';
 import Badge from '../ui/Badge.vue';
 import Banner from '../ui/Banner.vue';
 import Button from '../ui/Button.vue';

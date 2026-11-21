@@ -12,8 +12,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { fakeProviderConfigToml, stopServe, type ProcHandle } from '../src/proc';
-import { startServe } from '../src/proc';
+import { fakeProviderConfigToml, startServe, stopServe, type ProcHandle } from '../src/proc';
 
 const procs: ProcHandle[] = [];
 

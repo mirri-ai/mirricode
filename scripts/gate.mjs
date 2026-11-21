@@ -73,7 +73,7 @@ const FULL_STAGES = [
   },
   {
     name: 'oxlint',
-    desc: 'oxlint --type-aware',
+    desc: 'oxlint --type-aware (warning budget ratchet)',
     cmd: [pnpmBin(), 'run', 'lint'],
   },
   {

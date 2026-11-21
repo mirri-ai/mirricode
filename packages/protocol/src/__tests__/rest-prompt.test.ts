@@ -82,7 +82,7 @@ describe('promptSubmissionSchema', () => {
   });
 
   it('rejects missing content', () => {
-    expect(promptSubmissionSchema.safeParse({} as unknown).success).toBe(false);
+    expect(promptSubmissionSchema.safeParse({}).success).toBe(false);
   });
 
   it('accepts any non-empty thinking effort (provider normalizes)', () => {

@@ -2,11 +2,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch, type ComponentPublicInstance } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { ActivationBadges, ApprovalBlock, ChatTurn, ConversationStatus, FilePreviewRequest, PermissionMode, QueuedPromptView, TaskItem, TodoView, ToolMedia, TurnAttachment, UIQuestion, WorkspaceView } from '../../types';
-import type { AppGoal, AppModel, AppSessionUsage, AppSkill, AppWarning, QuestionResponse, ThinkingLevel, TurnUsage } from '../../api/types';
-import type { SearchFilesResult } from '../../types';
+import type { ActivationBadges, ApprovalBlock, ChatTurn, ConversationStatus, FilePreviewRequest, PermissionMode, QueuedPromptView, SearchFilesResult, TaskItem, TodoView, ToolMedia, TurnAttachment, UIQuestion, WorkspaceView } from '../../types';
+import type { AppGoal, AppModel, AppSessionUsage, AppSkill, AppWarning, PromptReference, QuestionResponse, ThinkingLevel, TurnUsage } from '../../api/types';
 import type { PromptAttachment } from '../../composables/useMirriWebClient';
-import type { PromptReference } from '../../api/types';
 import ChatPane from './ChatPane.vue';
 import ChatHeader from './ChatHeader.vue';
 import Composer from './Composer.vue';

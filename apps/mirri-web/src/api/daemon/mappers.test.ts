@@ -472,7 +472,7 @@ describe('toAppEvent — event.session.created (engine row dialect, SDR-127)', (
           last_seq: 6,
         },
       },
-    } as unknown as WireEvent;
+    };
 
     // When it is mapped
     const appEvent = toAppEvent(wire);
@@ -950,7 +950,7 @@ describe('session lastUsedAt mapping (event-delivery ADR-003)', () => {
       message_count: 1,
       last_seq: 0,
       ...overrides,
-    } as unknown as WireSession;
+    };
   }
 
   it('should map the v1 wire last_used_at onto the session when present', () => {
@@ -1026,7 +1026,7 @@ describe('v2 session view lastUsedAt mapping (event-delivery ADR-003)', () => {
       messageCount: 1,
       lastSeq: 0,
       ...overrides,
-    } as Parameters<typeof toAppSessionFromRpcView>[0];
+    };
   }
 });
 

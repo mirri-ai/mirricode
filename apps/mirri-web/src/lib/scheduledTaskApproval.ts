@@ -38,10 +38,17 @@ export function describeScheduledTaskApproval(
   const zone = block.timezone?.trim() ?? '';
   const mode = block.permissionMode?.trim() ?? '';
   return {
+    // An untitled task falls back to its prompt's first line; a whitespace-only
+    // title counts as untitled, so `||` (not `??`) is intended here.
+    // eslint-disable-next-line typescript/prefer-nullish-coalescing -- blank title means untitled
     heading: block.title?.trim() || firstLine,
     schedule: human,
     zone: zone === '' ? null : zoneOffsetLabel(Date.now(), zone),
+    // Same rule for the workspace / model labels: a blank override means "use
+    // the default wording" rather than showing an empty label.
+    // eslint-disable-next-line typescript/prefer-nullish-coalescing -- blank workspace means default label
     workspace: context.workspaceName?.trim() || t('approval.scheduledTask.workspaceUnknown'),
+    // eslint-disable-next-line typescript/prefer-nullish-coalescing -- blank model means default label
     model: block.model?.trim() || t('approval.scheduledTask.modelDefault'),
     permission: t(`approval.scheduledTask.permission_${mode === '' ? 'manual' : mode}`),
     repeat: !block.recurring

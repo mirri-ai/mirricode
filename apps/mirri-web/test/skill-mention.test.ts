@@ -261,7 +261,7 @@ describe('SkillMention node — schema contract', () => {
     // The path child must NOT carry the prefix — renderSpec passes the
     // parent's namespace down to children, so a prefixed child tag would
     // double-qualify and break.
-    const pathSpec = (svgSpec as unknown[]).find((c) => Array.isArray(c) && c[0] === 'path') as unknown[];
+    const pathSpec = svgSpec.find((c) => Array.isArray(c) && c[0] === 'path') as unknown[];
     expect(pathSpec).toBeDefined();
   });
 

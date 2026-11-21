@@ -125,7 +125,7 @@ async function phase_readOnlyExploration(
   const deltas = notifications
     .slice(marksBefore)
     .filter((n) => n.method === 'event.assistant.delta')
-    .map((n) => (typeof n.params['delta'] === 'string' ? (n.params['delta'] as string) : ''))
+    .map((n) => (typeof n.params['delta'] === 'string' ? n.params['delta'] : ''))
     .join('');
   assert.ok(deltas.includes('src/main.ts'), `the assistant reply references the real file src/main.ts (got: ${deltas})`);
   assert.ok(deltas.includes('src/util.ts'), 'the assistant reply references the real file src/util.ts');
@@ -317,7 +317,9 @@ async function phase_streamingInterrupt(
     if (Date.now() > streamingDeadline) {
       throw new Error('journey-03 [R6]: the turn never reached the streaming phase');
     }
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => {
+      setTimeout(r, 50);
+    });
   }
   console.log('▶ journey-03 [R6]: turn is streaming, sending message.abort');
 
@@ -329,14 +331,16 @@ async function phase_streamingInterrupt(
   assert.equal(ended['reason'], 'cancelled', 'the aborted turn ends with reason cancelled');
 
   // 等一小段窗口，确认没有任何 chunk delta 在中断后继续到达
-  await new Promise((r) => setTimeout(r, 500));
+  await new Promise((r) => {
+      setTimeout(r, 500);
+    });
   const deltasAfterAbort = notifications
     .slice(marksBefore)
     .filter(
       (n) =>
         n.method === 'event.assistant.delta' &&
         typeof n.params['delta'] === 'string' &&
-        (n.params['delta'] as string).startsWith('chunk-'),
+        (n.params['delta']).startsWith('chunk-'),
     );
   // 已收增量（可能为 0——中断发生在响应开始前）全部保留在事件流记录中；
   // 关键用户语义：没有 delta 在中断之后才到达（流真正停了）。
@@ -347,7 +351,7 @@ async function phase_streamingInterrupt(
         (n) =>
           n.method === 'event.assistant.delta' &&
           typeof n.params['delta'] === 'string' &&
-          (n.params['delta'] as string).startsWith('chunk-'),
+          (n.params['delta']).startsWith('chunk-'),
       );
   assert.equal(deltasAfterEnd.length, 0, 'no scripted chunk delta arrives after the turn ended');
   void deltasAfterAbort;
@@ -361,7 +365,7 @@ async function phase_streamingInterrupt(
   const deltas2 = notifications
     .slice(marksAfter)
     .filter((n) => n.method === 'event.assistant.delta')
-    .map((n) => (typeof n.params['delta'] === 'string' ? (n.params['delta'] as string) : ''))
+    .map((n) => (typeof n.params['delta'] === 'string' ? n.params['delta'] : ''))
     .join('');
   assert.equal(deltas2, 'JOURNEY_THREE_STILL_USABLE', 'the post-abort prompt receives the full scripted reply');
   console.log('▶ journey-03 [R6]: deltas retained, turn cancelled, session usable again');

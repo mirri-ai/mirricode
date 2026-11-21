@@ -100,6 +100,8 @@ import type {
   PageRequest,
   PromptSubmission,
   PromptSubmitResult,
+  ProviderCredentialStatus,
+  ProviderCredentialValue,
   ProviderRefreshResult,
   QuestionResponse,
   SteerSessionResult,
@@ -107,17 +109,14 @@ import type {
   WorkspaceDeletionResult,
   WorkspaceDeleteMode,
 } from '../types';
-import { createAgentProjector, turnUsageForPromptId } from './agentEventProjector';
-import type { AgentProjector } from './agentEventProjector';
+import { createAgentProjector, turnUsageForPromptId, type AgentProjector } from './agentEventProjector';
 import {
   credentialUpdatedProviderId,
   toProviderCredentialInfo,
   type ProviderCredentialInfo,
 } from '../../lib/providerCredentials';
-import type { ProviderCredentialStatus, ProviderCredentialValue } from '../types';
 import { SERVER_AUTH_UNAUTHORIZED_CODE } from './http';
-import { JsonRpcCallError, JsonRpcClient, NOT_FOUND_CODE } from './json-rpc-client';
-import type { RpcEvent } from './json-rpc-client';
+import { JsonRpcCallError, JsonRpcClient, NOT_FOUND_CODE, type RpcEvent } from './json-rpc-client';
 // The shared protocol-part → app-content mapper (mappers.ts toAppMessageContent):
 // the rust `message.list` / `session.snapshot` content parts are the SAME shape
 // contract as WireMessageContent (the protocolMessage.ts union), so the snapshot
@@ -129,9 +128,9 @@ import {
   toAppTask as toAppTaskFromWire,
 } from './mappers';
 import { getCredential, markAuthRequired } from './serverAuth';
-import type { WireBackgroundTask } from './wire';
-import type { WireMessageContent } from './wire';
 import type {
+  WireBackgroundTask,
+  WireMessageContent,
   WireRetentionCompressNowResult,
   WireRetentionDeleteResult,
   WireRetentionDeleteTieredResult,
@@ -844,7 +843,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
       // keeps its own value); the engine's `null` maps onto it here.
       thinkingEffort: typeof status.thinkingEffort === 'string' ? status.thinkingEffort : '',
       permission: typeof status.permission === 'string' ? status.permission : '',
-      planMode: status.planMode === true,
+      planMode: status.planMode,
       swarmMode: status.swarmMode === true,
       collaborationMode: status.collaborationMode === true,
       contextTokens: typeof status.contextTokens === 'number' ? status.contextTokens : 0,
@@ -873,7 +872,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     const result = await this.client.call<RpcMessageListResult>('message.list', params);
     return {
       items: result.messages.map((message) => toAppMessage(message, sessionId)),
-      hasMore: result.hasMore === true,
+      hasMore: result.hasMore,
     };
   }
 
@@ -1607,7 +1606,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
       body.data !== null &&
       typeof body.data === 'object'
         ? (body.data as Record<string, unknown>)
-        : ((body ?? {}) as Record<string, unknown>);
+        : (body ?? {});
 
     const stringField = (...keys: string[]): string => {
       for (const key of keys) {
@@ -2474,7 +2473,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
   }
 
   async resumeInterrupted(sessionId: string): Promise<unknown> {
-    return this.client.call<unknown>('recovery.resume', { session_id: sessionId });
+    return this.client.call('recovery.resume', { session_id: sessionId });
   }
 
   async resumeAllInterrupted(): Promise<{
@@ -3352,7 +3351,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     // Fire-and-forget: the wire answers the bare `{deleted: true}` envelope,
     // not the row — the caller re-fetches through the list refresh path.
     try {
-      await this.client.call<unknown>('agent.deleteProfile', { name });
+      await this.client.call('agent.deleteProfile', { name });
     } catch (error) {
       throw agentProfileRpcError('agent.deleteProfile', error);
     }
@@ -3362,7 +3361,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     // Fire-and-forget: `{ok: true}` bare envelope; the refresh path re-reads
     // the row (the Task 25 lifecycle methods never return the updated row).
     try {
-      await this.client.call<unknown>('agent.enableProfile', { name });
+      await this.client.call('agent.enableProfile', { name });
     } catch (error) {
       throw agentProfileRpcError('agent.enableProfile', error);
     }
@@ -3370,7 +3369,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
 
   async disableAgent(name: string): Promise<void> {
     try {
-      await this.client.call<unknown>('agent.disableProfile', { name });
+      await this.client.call('agent.disableProfile', { name });
     } catch (error) {
       throw agentProfileRpcError('agent.disableProfile', error);
     }
@@ -3378,7 +3377,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
 
   async resetAgent(name: string): Promise<void> {
     try {
-      await this.client.call<unknown>('agent.resetProfile', { name });
+      await this.client.call('agent.resetProfile', { name });
     } catch (error) {
       throw agentProfileRpcError('agent.resetProfile', error);
     }
@@ -3935,7 +3934,7 @@ function rpcContentToAppContent(content: unknown): AppMessageContent[] {
     if (typeof part !== 'object' || part === null) return { type: 'unknown', raw: part };
     const fields = part as Record<string, unknown>;
     if (fields['type'] === 'text' && typeof fields['text'] === 'string') {
-      return { type: 'text', text: fields['text'] as string };
+      return { type: 'text', text: fields['text'] };
     }
     // Context-memory inline file form (resolved bytes, no store id — the
     // server degrades it to `{data,...}` because the protocol `file` part

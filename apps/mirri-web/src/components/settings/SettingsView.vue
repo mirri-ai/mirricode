@@ -9,12 +9,20 @@
 import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useMirriWebClient } from '../../composables/useMirriWebClient';
-import type { AppSession } from '../../api/types';
+import type { Accent, ColorScheme } from '../../composables/useMirriWebClient';
+import type {
+  AppAgentProfile,
+  AppConfig,
+  AppModel,
+  AppAgentProfileInput,
+  AppAgentProfileList,
+  AppAgentProfileUpdate,
+  AppAgentSkippedFile,
+  AppSession,
+} from '../../api/types';
 import LanguageSwitcher from './LanguageSwitcher.vue';
 import { serverEndpointLabel } from '../../api/config';
 import { downloadTraceLog, isTraceEnabled } from '../../debug/trace';
-import type { Accent, ColorScheme } from '../../composables/useMirriWebClient';
-import type { AppConfig, AppModel, AppAgentProfile, AppAgentProfileInput, AppAgentProfileList, AppAgentProfileUpdate, AppAgentSkippedFile } from '../../api/types';
 import FullscreenOverlay from '../ui/FullscreenOverlay.vue';
 import Icon from '../ui/Icon.vue';
 import { isMacosDesktop } from '../../lib/desktopFlag';

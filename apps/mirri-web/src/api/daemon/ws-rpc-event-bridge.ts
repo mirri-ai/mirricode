@@ -112,6 +112,9 @@ export function routeRpcEventToAppEvents(
 
 /** Re-shape one RpcEvent as the WireEvent form `toAppEvent` consumes. */
 function rpcEventAsWireEvent(event: RpcEvent): WireEvent {
+  // The two shapes are structurally different (RpcEvent is the transport
+  // envelope, WireEvent the protocol event), so the double cast is the
+  // deliberate boundary conversion rather than a redundant annotation.
   return {
     type: event.type,
     seq: event.seq ?? 0,

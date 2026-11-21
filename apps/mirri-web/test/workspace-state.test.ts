@@ -207,7 +207,7 @@ function createMemoryStorage(): Storage {
       data.delete(key);
     },
     setItem(key: string, value: string) {
-      data.set(key, String(value));
+      data.set(key, value);
     },
   };
 }
@@ -1606,7 +1606,7 @@ describe('useWorkspaceState — load eager transport connect (P11c)', () => {
     bindEventsMock.mockClear();
     setCredential('tok-boot');
     const state = createState();
-    const ws = useWorkspaceState(state, { ...createDeps() } as unknown as UseWorkspaceStateDeps);
+    const ws = useWorkspaceState(state, { ...createDeps() });
     await ws.load();
     expect(bindEventsMock).toHaveBeenCalledTimes(1);
   });
@@ -2259,7 +2259,7 @@ describe('useWorkspaceState — refreshWorkspaceSessions', () => {
       setSessions: vi.fn((next: AppSession[]) => {
         state.sessions = next;
       }),
-    } as unknown as UseWorkspaceStateDeps;
+    };
   }
 
   it('given the user triggers a refresh for one workspace, then refreshWorkspace/listWorkspaces/listSessions are called, the workspace’s sessions are replaced while other workspaces keep theirs, and a second click during the refresh is idempotent', async () => {
@@ -2674,7 +2674,7 @@ describe('useWorkspaceState — swarm enable consistency (D-25)', () => {
   function swarmDeps(overrides: Partial<UseWorkspaceStateDeps> = {}) {
     const deps = createDeps();
     (deps.persistSessionProfile as ReturnType<typeof vi.fn>).mockResolvedValue(true);
-    return { ...deps, ...overrides } as UseWorkspaceStateDeps;
+    return { ...deps, ...overrides };
   }
 
   it('Given manual permission and /swarm on Then enableSwarmMode confirms before flipping', async () => {
@@ -2949,7 +2949,7 @@ describe('useWorkspaceState — opening a session outside the list', () => {
         resolveThinkingForPrompt: async () => undefined,
       } as unknown as UseWorkspaceStateDeps['modelProvider'],
       syncSessionFromSnapshot: vi.fn().mockResolvedValue('ok'),
-    } as unknown as UseWorkspaceStateDeps;
+    };
   }
 
   it('should select the session when it can be fetched into the list', async () => {

@@ -104,7 +104,9 @@ async function main(): Promise<void> {
       if (Date.now() > reloadDeadline) {
         throw new Error(`config hot-reload never made session creation succeed: ${JSON.stringify(body)}`);
       }
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => {
+      setTimeout(r, 300);
+    });
     }
     console.log(`▶ journey-02: session ${sid} created after hot reload`);
 
@@ -134,7 +136,7 @@ async function main(): Promise<void> {
     let replyText = '';
     ws.onNotification((n) => {
       if (n.method === 'event.assistant.delta' && n.params['sessionId'] === sid) {
-        replyText += typeof n.params['delta'] === 'string' ? (n.params['delta'] as string) : '';
+        replyText += typeof n.params['delta'] === 'string' ? n.params['delta'] : '';
       }
     });
     const ended = await ws.waitForEvent(sid, 'event.turn.ended', 60_000);

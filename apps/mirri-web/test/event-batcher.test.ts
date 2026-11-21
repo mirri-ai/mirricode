@@ -25,7 +25,7 @@ function manualScheduler(): ManualScheduler {
   const tasks = new Map<number, () => void>();
 
   function takeOne(callbacks: Map<number, () => void>): void {
-    const entry = callbacks.entries().next().value as [number, () => void] | undefined;
+    const entry = callbacks.entries().next().value;
     if (entry === undefined) return;
     callbacks.delete(entry[0]);
     entry[1]();

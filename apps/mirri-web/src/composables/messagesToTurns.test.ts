@@ -480,7 +480,7 @@ function baseSubagentTask(): AppTask {
     description: 'member one',
     status: 'running',
     createdAt: '2026-10-23T00:00:00.000Z',
-  } as AppTask;
+  };
 }
 
 describe('toAgentMember (ADR-010 ③ 统一派生)', () => {

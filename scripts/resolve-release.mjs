@@ -78,6 +78,8 @@ async function main() {
   const anchorVersion =
     process.env['ANCHOR_VERSION'] ??
     readCommittedAnchorVersion(process.env['RELEASE_COMMIT'] ?? '');
+  // Blank LATEST_TAG means "no tag" — `||` is the point, not a `??` slip.
+  // eslint-disable-next-line typescript/prefer-nullish-coalescing -- empty tag means none
   const latestTag = process.env['LATEST_TAG']?.trim() || null;
   const isReleasePR = process.env['IS_RELEASE_PR'] === 'true';
   const result = resolveRelease({ anchorVersion, latestTag, isReleasePR });

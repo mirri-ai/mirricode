@@ -688,6 +688,14 @@ const key = (v) => `${v.file}:${v.line}`;
 // the `Legacy:` case variant, ad-hoc prose — is NOT coverage.
 const SLEEP_COVER_RE = /^(poll-step|negative-wait|real-|D:)/;
 
+// Reasons worth preserving when a baseline entry is re-anchored to a drifted
+// line: the R4 poll-step / negative-wait classifications and the R-layer
+// real-io / real-env audit verdicts. Deliberately NOT the same list as
+// SLEEP_COVER_RE above — that one answers "does this entry cover the
+// violation", this one answers "is this reason hand-curated, so a re-anchor
+// must carry it over". `D:` markers cover coverage but are not curated.
+const CURATED_REASON_PREFIXES = ['poll-step', 'negative-wait', 'real-io', 'real-env'];
+
 /** Does baseline entry `b` cover violation `v`? (sleep = allow-listed reasons only) */
 function baselineCovers(v, b) {
   if (!b) return false;
@@ -757,10 +765,7 @@ if (writeBaselineMode) {
         const vFile = v.file;
         return (
           kFile === vFile &&
-          (b.reason?.startsWith('poll-step') ||
-            b.reason?.startsWith('negative-wait') ||
-            b.reason?.startsWith('real-io') ||
-            b.reason?.startsWith('real-env'))
+          CURATED_REASON_PREFIXES.some((prefix) => b.reason?.startsWith(prefix))
         );
       },
     );

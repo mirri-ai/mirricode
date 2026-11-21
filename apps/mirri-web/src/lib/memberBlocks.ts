@@ -13,8 +13,7 @@
 //     status, output — nothing flattened away, ADR-009 decision ③).
 //   - memberBlocksFromLive: the running member's task fields (streamed text +
 //     structured steps accumulated by the event projector).
-import type { AppMessage } from '../api/types';
-import type { AgentStep, NarrativeSegment } from '../api/types';
+import type { AgentStep, AppMessage, NarrativeSegment } from '../api/types';
 import type { AssistantRenderBlock } from '../components/chatTurnRendering';
 import type { ToolCall, TurnBlock } from '../types';
 

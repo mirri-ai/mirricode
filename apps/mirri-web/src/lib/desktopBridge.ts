@@ -12,10 +12,9 @@
 // `getDesktopBridge()` returns null — callers then degrade gracefully
 // (browser Notification API, clipboard-copy prompts for file opens, ...).
 
+import type { MirriDesktopBridge } from './desktopBridgeContract';
 
 export type { MirriDesktopBridge } from './desktopBridgeContract';
-
-import type { MirriDesktopBridge } from './desktopBridgeContract';
 
 declare global {
   interface Window {

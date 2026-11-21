@@ -100,7 +100,7 @@ async function main(): Promise<void> {
     for (const [label, events] of [['A', eventsA], ['B', eventsB]] as const) {
       const deltas = events
         .filter((n) => n.method === 'event.assistant.delta')
-        .map((n) => (typeof n.params['delta'] === 'string' ? (n.params['delta'] as string) : ''))
+        .map((n) => (typeof n.params['delta'] === 'string' ? n.params['delta'] : ''))
         .join('');
       assert.ok(
         deltas.includes('MULTI_TAB_REPLY_MARKER'),

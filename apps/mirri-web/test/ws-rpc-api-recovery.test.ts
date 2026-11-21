@@ -53,7 +53,7 @@ describe('WsRpcApi interrupted-task recovery', () => {
       expiresAt: 1_700_000_500_000,
     });
 
-    const list = await api.listRecovery!();
+    const list = await api.listRecovery();
 
     expect(call).toHaveBeenCalledWith('recovery.list', {});
     expect(list).toEqual({
@@ -84,7 +84,7 @@ describe('WsRpcApi interrupted-task recovery', () => {
     const { api, call } = createApi();
     call.mockResolvedValue(null);
 
-    const list = await api.listRecovery!();
+    const list = await api.listRecovery();
 
     expect(call).toHaveBeenCalledWith('recovery.list', {});
     expect(list).toEqual({ interruptions: [] });
@@ -95,7 +95,7 @@ describe('WsRpcApi interrupted-task recovery', () => {
     const fireResult = { fired: true, prompt_id: 'p-9', queued: false };
     call.mockResolvedValue(fireResult);
 
-    const result = await api.resumeInterrupted!('s-1');
+    const result = await api.resumeInterrupted('s-1');
 
     expect(call).toHaveBeenCalledWith('recovery.resume', { session_id: 's-1' });
     expect(result).toBe(fireResult);
@@ -109,7 +109,7 @@ describe('WsRpcApi interrupted-task recovery', () => {
       failed: [{ sessionId: 's-3', error: 'session not found' }],
     });
 
-    const result = await api.resumeAllInterrupted!();
+    const result = await api.resumeAllInterrupted();
 
     expect(call).toHaveBeenCalledWith('recovery.resumeAll', {});
     expect(result).toEqual({
@@ -123,7 +123,7 @@ describe('WsRpcApi interrupted-task recovery', () => {
     const { api, call } = createApi();
     call.mockResolvedValue({ ok: true });
 
-    await api.dismissInterrupted!('s-1');
+    await api.dismissInterrupted('s-1');
 
     expect(call).toHaveBeenCalledWith('recovery.dismiss', { session_id: 's-1' });
   });
@@ -132,7 +132,7 @@ describe('WsRpcApi interrupted-task recovery', () => {
     const { api, call } = createApi();
     call.mockResolvedValue({ ok: true });
 
-    await api.dismissAllInterrupted!();
+    await api.dismissAllInterrupted();
 
     expect(call).toHaveBeenCalledWith('recovery.dismissAll', {});
   });
@@ -141,6 +141,6 @@ describe('WsRpcApi interrupted-task recovery', () => {
     const { api, call } = createApi();
     call.mockRejectedValue(new Error('session not found'));
 
-    await expect(api.resumeInterrupted!('s-1')).rejects.toThrow('session not found');
+    await expect(api.resumeInterrupted('s-1')).rejects.toThrow('session not found');
   });
 });

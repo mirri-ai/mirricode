@@ -87,9 +87,6 @@ function makeBridge(): MirriDesktopBridge & {
     getLoginItem: vi.fn().mockResolvedValue({ open: false }),
     onDeepLink: vi.fn(),
     onNotificationClick: vi.fn(),
-  } as unknown as MirriDesktopBridge & {
-    openInEditor: ReturnType<typeof vi.fn>;
-    revealPath: ReturnType<typeof vi.fn>;
   };
 }
 

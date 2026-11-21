@@ -198,7 +198,7 @@ function num(v: unknown): number | undefined {
 function urlHost(url: string): string {
   try {
     const u = new URL(url);
-    const seg = u.pathname.split('/').filter(Boolean)[0];
+    const seg = u.pathname.split('/').find(Boolean);
     return seg ? `${u.host}/${seg}` : u.host;
   } catch {
     return url.replace(/^https?:\/\//, '');

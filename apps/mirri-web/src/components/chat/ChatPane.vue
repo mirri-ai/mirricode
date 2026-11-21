@@ -4,7 +4,7 @@ import { computed, inject, nextTick, onMounted, onUnmounted, provide, ref, watch
 import type { Ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ChatTurn, ApprovalBlock, FilePreviewRequest, ToolMedia, QueuedPromptView, TurnAttachment } from '../../types';
-import type { AppModel } from '../../api/types';
+import type { AppModel, TurnUsage } from '../../api/types';
 import ToolCall from './ToolCall.vue';
 import ToolGroup from './ToolGroup.vue';
 import Markdown from './Markdown.vue';
@@ -20,7 +20,6 @@ import MoonSpinner from '../ui/MoonSpinner.vue';
 import Spinner from '../ui/Spinner.vue';
 import Icon from '../ui/Icon.vue';
 import TurnUsagePill from './TurnUsagePill.vue';
-import type { TurnUsage } from '../../api/types';
 import { useConfirmDialog } from '../../composables/useConfirmDialog';
 import { resolveModelDisplayName } from '../../lib/modelDisplayName';
 import { copyTextToClipboard } from '../../lib/clipboard';
