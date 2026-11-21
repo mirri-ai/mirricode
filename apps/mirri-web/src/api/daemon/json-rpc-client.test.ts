@@ -236,7 +236,7 @@ describe('JsonRpcClient call', () => {
     const client = makeClient();
     await connectClient(client);
 
-    const response = client.call<unknown>('session.get', { session_id: 'missing' });
+    const response = client.call('session.get', { session_id: 'missing' });
     const request = mock.lastSent();
     mock.serverSend({
       jsonrpc: '2.0',

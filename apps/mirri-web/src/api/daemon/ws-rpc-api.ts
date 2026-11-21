@@ -2473,7 +2473,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
   }
 
   async resumeInterrupted(sessionId: string): Promise<unknown> {
-    return this.client.call<unknown>('recovery.resume', { session_id: sessionId });
+    return this.client.call('recovery.resume', { session_id: sessionId });
   }
 
   async resumeAllInterrupted(): Promise<{
@@ -3351,7 +3351,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     // Fire-and-forget: the wire answers the bare `{deleted: true}` envelope,
     // not the row — the caller re-fetches through the list refresh path.
     try {
-      await this.client.call<unknown>('agent.deleteProfile', { name });
+      await this.client.call('agent.deleteProfile', { name });
     } catch (error) {
       throw agentProfileRpcError('agent.deleteProfile', error);
     }
@@ -3361,7 +3361,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     // Fire-and-forget: `{ok: true}` bare envelope; the refresh path re-reads
     // the row (the Task 25 lifecycle methods never return the updated row).
     try {
-      await this.client.call<unknown>('agent.enableProfile', { name });
+      await this.client.call('agent.enableProfile', { name });
     } catch (error) {
       throw agentProfileRpcError('agent.enableProfile', error);
     }
@@ -3369,7 +3369,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
 
   async disableAgent(name: string): Promise<void> {
     try {
-      await this.client.call<unknown>('agent.disableProfile', { name });
+      await this.client.call('agent.disableProfile', { name });
     } catch (error) {
       throw agentProfileRpcError('agent.disableProfile', error);
     }
@@ -3377,7 +3377,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
 
   async resetAgent(name: string): Promise<void> {
     try {
-      await this.client.call<unknown>('agent.resetProfile', { name });
+      await this.client.call('agent.resetProfile', { name });
     } catch (error) {
       throw agentProfileRpcError('agent.resetProfile', error);
     }
