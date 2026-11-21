@@ -1,5 +1,55 @@
 # Changelog
 
+## 3.3.0
+
+### Minor Changes
+
+- [#234](https://github.com/mirri-ai/mirricode/pull/234) [`c7520de`](https://github.com/mirri-ai/mirricode/commit/c7520de38d6ce59be3eb56ece156073e6c3fae7f) Thanks [@im-bravo](https://github.com/im-bravo)! - Harden the Bash tool: command-level permissions, credential hygiene, safer output handling, and running-task observability.
+
+  - Bash permission rules and session approvals now match the exact command text (facets like `Bash(git status)`) instead of every Bash call, so a previously approved command no longer blanket-approves different commands. Legacy bare `Bash` rules keep working.
+  - An explicit `cwd` outside the workspace sandbox — or an in-command `cd` into one — now asks for approval before running, even when the command itself was previously approved.
+  - Environment variables whose names look like credentials (matching KEY, TOKEN, SECRET or PASSWORD, case-insensitive) are filtered out of Bash command environments. Add a name to the new `[bash] env_allowlist` config key if a build genuinely needs one.
+  - Foreground command output now interleaves stdout and stderr in arrival order, keeps only the last 1 MiB in memory, and discloses how many bytes were dropped from the start when output exceeds the cap.
+  - Task tools can now page through background output (`offset_bytes` / `max_bytes`) and report how long a task has been running and how long since it last produced output.
+  - PowerShell commands keep their current output handling — output order stays as-is with no interleaving and no in-memory output cap; user-typed `!` shell commands keep their full environment.
+
+- [#234](https://github.com/mirri-ai/mirricode/pull/234) [`c7520de`](https://github.com/mirri-ai/mirricode/commit/c7520de38d6ce59be3eb56ece156073e6c3fae7f) Thanks [@im-bravo](https://github.com/im-bravo)! - Harden background command handling: live output streaming, silence warnings, and approvals for protected home directories.
+
+  - Background commands now stream their output to the task list as it is produced, instead of only becoming visible when the command finishes. User-typed `!` shell commands carry their accumulated output into the task row when they are handed to the background.
+  - When a background process task goes silent for longer than the `[task]` `silenceWarnSecs` threshold in `config.toml` (default 300 seconds, `0` disables), the agent is warned once per silent stretch with the task id, its description, how long it has been silent, the tail of its output, and suggested next actions; the warning re-arms when output resumes. A session restored after a restart derives the silence baseline from the log's last-write time.
+  - Commands that touch protected home directories — `~/Desktop`, `~/Documents`, `~/Downloads`, matched case-insensitively as the first path segment — now ask for approval before running. A grant covers the rest of the session, and sandbox verdicts take precedence over this check. As part of this change, `~`-prefixed directory switches that previously ran without any check now trigger a conservative approval prompt.
+  - Paged TaskOutput responses now state whether offset_bytes counts from the start of the full output log or from the start of the retained in-memory buffer (which keeps only the tail of the output), so offset semantics are unambiguous.
+
+- [#224](https://github.com/mirri-ai/mirricode/pull/224) [`e14d5f9`](https://github.com/mirri-ai/mirricode/commit/e14d5f97ae2606b41dda0a434da391244db1d621) Thanks [@im-bravo](https://github.com/im-bravo)! - Scheduled task runs now show up as regular sessions in the session list — visible in the sidebar with the task's title and prompt, searchable, and kept across restarts. Opening a run from the task history jumps straight to its session in the chat area like any other session, and a failed open shows a visible notice instead of silently doing nothing. Scheduled fires now deliver exactly the prompt you configured — no wrapping and no "fired" prefix on the message; schedule details stay outside the message as metadata.
+
+- [#230](https://github.com/mirri-ai/mirricode/pull/230) [`60c96d7`](https://github.com/mirri-ai/mirricode/commit/60c96d77b68d623d03ffdd550930122090cda08b) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Pinned sessions now gather in one "Pinned" section at the top of the sidebar, across every workspace, with the most recently pinned session first — so the sessions that matter are all in one place instead of split into one short list per workspace. A pinned session no longer repeats inside its own workspace group, the section disappears entirely when nothing is pinned, and hovering a row tells you which workspace it belongs to. Each pinned row also carries a colored strip on its left edge plus a pushpin next to the title that opens a seven-color palette; the hover pin icon pins a session in a single click and unpins it on the next click. List search and the mobile switcher offer the same pin and unpin actions.
+
+### Patch Changes
+
+- [#234](https://github.com/mirri-ai/mirricode/pull/234) [`c7520de`](https://github.com/mirri-ai/mirricode/commit/c7520de38d6ce59be3eb56ece156073e6c3fae7f) Thanks [@im-bravo](https://github.com/im-bravo)! - Preserve the partial output of a cancelled foreground command. Cancelling a running command — or stopping it externally — no longer discards what it already printed: the accumulated output stays attached to the task and remains readable via TaskOutput.
+
+- [#234](https://github.com/mirri-ai/mirricode/pull/234) [`c7520de`](https://github.com/mirri-ai/mirricode/commit/c7520de38d6ce59be3eb56ece156073e6c3fae7f) Thanks [@im-bravo](https://github.com/im-bravo)! - Update the timezone database used for scheduled tasks to the current IANA release (the previous embedded database stopped receiving updates). Schedules keep firing at the same local times; DST edge cases behave as before.
+
+- [#227](https://github.com/mirri-ai/mirricode/pull/227) [`5e496ff`](https://github.com/mirri-ai/mirricode/commit/5e496ff137733c7e7fb437943b9aec7b69585454) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix per-turn token usage, duration and completion time missing for scheduled-task and reminder turns after reopening a session — the session total was correct, but each turn's usage pill stayed empty because the turn could not be matched back to its rows.
+
+- [#234](https://github.com/mirri-ai/mirricode/pull/234) [`c7520de`](https://github.com/mirri-ai/mirricode/commit/c7520de38d6ce59be3eb56ece156073e6c3fae7f) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix the engine crashing when deleting a workspace while its skill directories were still settling file events. The crash required restarting the engine manually; deleting a workspace now always shuts the watcher down cleanly.
+
+- [#228](https://github.com/mirri-ai/mirricode/pull/228) [`c7c606b`](https://github.com/mirri-ai/mirricode/commit/c7c606bc7a5d68031624c004cfbe155a105c9dd0) Thanks [@im-bravo](https://github.com/im-bravo)! - Scheduled task runs now appear in the session tree automatically as soon as they start, without refreshing. The sidebar row is identical to the one a manual refresh produces (same title and prompt preview), and the same live announcement covers sessions created by any other path — a new chat, a fork, or a side chat.
+
+- [#234](https://github.com/mirri-ai/mirricode/pull/234) [`c7520de`](https://github.com/mirri-ai/mirricode/commit/c7520de38d6ce59be3eb56ece156073e6c3fae7f) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix a manually triggered task run being reported as failed with the restart cause while it was still running. When a run was started right after the app launched — before the scheduler's first pass — that pass treated the live run as left over from a previous process and rewrote it to failed, so the run history showed "服务重启中断" for a run that went on to complete normally.
+
+- [#234](https://github.com/mirri-ai/mirricode/pull/234) [`c7520de`](https://github.com/mirri-ai/mirricode/commit/c7520de38d6ce59be3eb56ece156073e6c3fae7f) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix a resumed session discarding messages sent while it was still loading. Reopening a session briefly registered it before its history had finished loading, so a message arriving in that window (a scheduled task firing, a second client sending) ran a turn whose prompt was never written to the transcript — the reply appeared with no question above it, and a scheduled reminder in that window was dropped for good. Such sends now report a retryable conflict instead, and scheduled fires wait for the load to finish.
+
+- [#234](https://github.com/mirri-ai/mirricode/pull/234) [`c7520de`](https://github.com/mirri-ai/mirricode/commit/c7520de38d6ce59be3eb56ece156073e6c3fae7f) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix archived sessions showing an empty title in the Storage management page. Sessions stored in the newer record-only format carry no fallback title file, which also broke searching and sorting archived sessions by title.
+
+- [#226](https://github.com/mirri-ai/mirricode/pull/226) [`219d2bf`](https://github.com/mirri-ai/mirricode/commit/219d2bf5b1de7e0f23582b736b792144f4e5aafc) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Fix the scheduled task edit form rolling back to pre-save values after a save, a saved schedule reopening as the generic "custom" option instead of the option the user picked (an every-minute rule now reads "every minute" on every surface), and confirming a custom schedule rule silently doing nothing.
+
+- [#231](https://github.com/mirri-ai/mirricode/pull/231) [`2a44433`](https://github.com/mirri-ai/mirricode/commit/2a444338c93f059b367537c06cd3ff656d34b32b) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Fix a resumed background subagent disappearing from the bottom task dock. A subagent dispatched in the background now stays a background subagent when it is resumed, and the dock keeps showing it — with its live status — instead of freezing it at the finished run or listing it twice.
+
+- [#234](https://github.com/mirri-ai/mirricode/pull/234) [`c7520de`](https://github.com/mirri-ai/mirricode/commit/c7520de38d6ce59be3eb56ece156073e6c3fae7f) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix the TaskOutput hint claiming "Only the tail is shown above" when a paged read (offset_bytes / max_bytes) served a middle window of the log — the hint now describes the requested window and no longer prints a truncation banner for windows the caller asked for.
+
+- [#229](https://github.com/mirri-ai/mirricode/pull/229) [`7e66944`](https://github.com/mirri-ai/mirricode/commit/7e669445c850599f5333f9885f9a92a9ce84618c) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Fix the sidebar refreshing a session's time to "just now" and moving it to the top when you merely open it — opening a session no longer counts as recent use; only sending a message does.
+
 ## 3.2.1
 
 ### Patch Changes
