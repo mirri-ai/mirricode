@@ -61,7 +61,9 @@ async function getFreePort(): Promise<number> {
   });
   const address = netServer.address();
   const port = typeof address === 'object' && address !== null ? address.port : 0;
-  await new Promise<void>((res) => netServer.close(() => res()));
+  await new Promise<void>((res) => {
+    netServer.close(() => res());
+  });
   return port;
 }
 
@@ -79,7 +81,9 @@ async function waitHealthy(baseUrl: string, timeoutMs: number, onFail: () => str
     } catch (error) {
       lastError = error;
     }
-    await new Promise((r) => setTimeout(r, 250));
+    await new Promise((r) => {
+      setTimeout(r, 250);
+    });
   }
   const lastErrorText =
     lastError instanceof Error ? lastError.message : lastError !== undefined ? JSON.stringify(lastError) : 'unknown';
@@ -153,8 +157,12 @@ export async function stopServe(proc: ProcHandle, mode: 'graceful' | 'kill' = 'g
 
 async function waitExit(child: ChildProcess, timeoutMs: number): Promise<void> {
   await Promise.race([
-    new Promise<void>((r) => child.once('exit', () => r())),
-    new Promise<void>((r) => setTimeout(r, timeoutMs)),
+    new Promise<void>((r) => {
+      child.once('exit', () => r());
+    }),
+    new Promise<void>((r) => {
+      setTimeout(r, timeoutMs);
+    }),
   ]);
 }
 
@@ -169,7 +177,10 @@ export async function runOneShot(args: string[], homeDir: string): Promise<{ cod
     return { code: 0, stdout };
   } catch (error) {
     const err = error as { code?: number; stdout?: string; stderr?: string };
-    return { code: err.code ?? 1, stdout: err.stdout ?? '' + (err.stderr ?? '') };
+    // Keep BOTH streams: `??` binds looser than `+`, so the unparenthesised
+    // form silently dropped stderr whenever stdout was present — exactly the
+    // case where a failing command's message matters most.
+    return { code: err.code ?? 1, stdout: (err.stdout ?? '') + (err.stderr ?? '') };
   }
 }
 
