@@ -11,11 +11,11 @@ import type { SessionWorkFacts } from '../types';
 import type { SortableSessionRow } from '../lib/sessionSorting';
 import { formatTime } from '../composables/useMirriWebClient';
 import { interruptedBadgeVisible } from '../lib/sessionRowRecovery';
-import Spinner from './ui/Spinner.vue';
 import Badge from './ui/Badge.vue';
 import IconButton from './ui/IconButton.vue';
 import Icon from './ui/Icon.vue';
 import Tooltip from './ui/Tooltip.vue';
+import SessionLeadIndicator from './SessionLeadIndicator.vue';
 import { isCompositionKeyEvent } from '../lib/keyboard';
 import { DEFAULT_PIN_COLOR, PIN_COLORS, type PinColor } from '../lib/pinColor';
 
@@ -99,6 +99,14 @@ const workspaceHint = computed(() =>
   props.workspaceName ? t('sidebar.workspaceOfSession', { name: props.workspaceName }) : null,
 );
 
+/** The indicator's accessible name: it names the SESSION, so a screen reader
+ *  user can tell two pin buttons apart, and it says what activating it does. */
+const pinLabel = computed(() =>
+  props.session.pinned
+    ? t('sidebar.unpinSession', { title: props.session.title })
+    : t('sidebar.pinSessionToTop', { title: props.session.title }),
+);
+
 const emit = defineEmits<{
   select: [id: string];
   rename: [id: string, title: string];
@@ -171,23 +179,17 @@ function onKeydown(e: KeyboardEvent): void {
     if (arming.value) disarm();
   }
 }
-/** Hover dwell before the palette opens on a pinned circle. Long enough that
- *  a pointer sweeping across the rail never triggers it — only a deliberate
- *  stop does. */
-const PIN_HOVER_OPEN_MS = 600;
-/** Grace period for moving the pointer from the circle into the palette. Kept
+/** Grace period for moving the pointer from the dot into the palette. Kept
  *  short: the palette floats OVER the list, so it must get out of the way
  *  quickly once the pointer has moved on. */
 const PIN_HOVER_CLOSE_MS = 120;
 
-// The color palette hangs off the pinned row's STATUS pin (next to the
-// title), not the hover action. It renders position:fixed and is anchored
-// to the trigger via getBoundingClientRect (the ws-menu pattern) so the
-// scrolling session list can't clip it; it closes on outside mousedown,
-// window resize, and scroll (the anchor moves with the row).
+// The colour palette hangs off the row's lead indicator. It renders
+// position:fixed and is anchored to the trigger via getBoundingClientRect (the
+// ws-menu pattern) so the scrolling session list can't clip it; it closes on
+// outside mousedown, window resize, and scroll (the anchor moves with the row).
 const paletteOpen = ref(false);
 const paletteStyle = ref<Record<string, string>>({});
-const railPinRef = ref<HTMLButtonElement | null>(null);
 const paletteEl = ref<HTMLElement | null>(null);
 
 function closePalette(): void {
@@ -207,7 +209,7 @@ function onPaletteDocClick(e: MouseEvent): void {
   closePalette();
 }
 
-async function togglePalette(): Promise<void> {
+async function togglePalette(anchor?: HTMLElement | null): Promise<void> {
   if (paletteOpen.value) {
     closePalette();
     return;
@@ -220,7 +222,7 @@ async function togglePalette(): Promise<void> {
   window.addEventListener('resize', closePalette);
   window.addEventListener('scroll', closePalette, true);
   await nextTick();
-  const btn = railPinRef.value;
+  const btn = anchor ?? null;
   const palette = paletteEl.value;
   if (!btn) return;
   const r = btn.getBoundingClientRect();
@@ -252,42 +254,10 @@ function togglePin(): void {
   else emit('pin', props.session.id, DEFAULT_PIN_COLOR);
 }
 
-/** Hovering a pinned circle opens the color palette, so recoloring costs no
- *  click. Delayed so a plain click (pin/unpin) never flashes the palette, and
- *  cancelled by `onPinLeave` — the palette keeps itself open while the pointer
- *  is inside it (its own mouseenter cancels the close). */
-/** Hovering a pinned dot opens the palette — but only after the pointer has
- *  SETTLED on it. A pointer merely travelling across the rail (on its way to
- *  the title, the archive button or a row below) must not pop a popover over
- *  the list. Any motion on the dot restarts the dwell, so only a deliberate
- *  stop opens it. */
-let hoverOpenTimer: ReturnType<typeof setTimeout> | null = null;
-function cancelHoverOpen(): void {
-  if (hoverOpenTimer !== null) {
-    clearTimeout(hoverOpenTimer);
-    hoverOpenTimer = null;
-  }
-}
-function onPinEnter(): void {
-  if (!props.session.pinned || paletteOpen.value) return;
-  cancelHoverOpen();
-  hoverOpenTimer = setTimeout(() => {
-    hoverOpenTimer = null;
-    void togglePalette();
-  }, PIN_HOVER_OPEN_MS);
-}
-/** The pointer moved while over the dot: the user is passing through, not
- *  stopping. Restart the dwell so a sweep never opens the palette. */
-function onPinMove(): void {
-  if (paletteOpen.value) return;
-  cancelHoverOpen();
-  hoverOpenTimer = setTimeout(() => {
-    hoverOpenTimer = null;
-    void togglePalette();
-  }, PIN_HOVER_OPEN_MS);
-}
+/** The pointer left the indicator. The palette keeps itself open while the
+ *  pointer is inside it (its own mouseenter cancels the close), so this only
+ *  starts the grace timer. */
 function onPinLeave(): void {
-  cancelHoverOpen();
   if (paletteOpen.value) schedulePaletteClose();
 }
 
@@ -306,16 +276,6 @@ function schedulePaletteClose(): void {
     paletteCloseTimer = null;
     closePalette();
   }, PIN_HOVER_CLOSE_MS);
-}
-
-/** Keyboard path to the palette: Shift+F10 / the ContextMenu key (the standard
- *  keyboard equivalents of a right-click). Enter/Space keep their native
- *  button behavior (pin/unpin). */
-function onPinKeydown(e: KeyboardEvent): void {
-  if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
-    e.preventDefault();
-    void togglePalette();
-  }
 }
 
 /** Enter on a focused row opens it (the row is Tab-reachable). */
@@ -359,62 +319,31 @@ if (typeof window !== 'undefined') {
 <template>
   <div
     class="se"
-    :class="{ on: active }"
+    :class="{ on: active, 'is-busy': busy }"
     :tabindex="0"
     :aria-current="active ? 'true' : undefined"
     @click="emit('select', session.id)"
     @keydown.enter="onRowEnter"
     @mouseleave="disarm"
   >
-      <!-- Pin rail: the 24px slot at the row's far left, a FIXED anchor the
-           tree indent never pushes. The marker is a small filled circle in the
-           pin color (red by default) — deliberately not an icon glyph: the dot
-           reads as state at a glance and keeps one shape in both states.
-           Unpinned rows leave the slot empty; hovering/focusing the row reveals
-           a hollow outline of the same circle as the "pin here" affordance.
-           Clicking the circle pins (default red) or unpins; hovering a PINNED
-           circle opens the color palette, so color editing costs no click.
-           Right-click and Shift+F10 also open the palette (keyboard path). -->
-      <span class="pin-rail">
-        <!-- A pinned circle gets NO tooltip: hovering it opens the color palette,
-             so a bubble would fight the popover (and its aria-label already says
-             "Unpin …" for assistive tech). Only the unpinned affordance needs a
-             hint, since its hollow circle is new. -->
-        <Tooltip v-if="!renaming" :text="session.pinned ? null : t('sidebar.pinToTop')">
-          <button
-            ref="railPinRef"
-            type="button"
-            class="pin-toggle"
-            :class="{
-              'is-pinned': session.pinned,
-              [`pin-${session.pinColor ?? DEFAULT_PIN_COLOR}`]: session.pinned,
-            }"
-            data-test-id="session-pin-btn"
-            :aria-pressed="session.pinned"
-            :aria-label="
-              session.pinned
-                ? t('sidebar.unpinSession', { title: session.title })
-                : t('sidebar.pinSessionToTop', { title: session.title })
-            "
-            @click.stop="togglePin"
-            @mouseenter="onPinEnter"
-            @mousemove="onPinMove"
-            @mouseleave="onPinLeave"
-            @contextmenu.prevent.stop="togglePalette()"
-            @keydown="onPinKeydown"
-          >
-            <span class="pin-dot" aria-hidden="true" />
-          </button>
-        </Tooltip>
-      </span>
-
       <div class="row">
-        <!-- Leading status slot (in the gutter left of the title): a spinner
-             while the session runs, otherwise an unread blue dot. Fixed width
-             so the title start never shifts. -->
-        <span class="lead" aria-hidden="true">
-          <Spinner v-if="busy" size="sm" />
-          <span v-else-if="unread" class="unread-dot" />
+        <!-- The row's whole state rides ONE indicator in the gutter the sidebar
+             already had (SDR-022): running / pinned / pin colour / unread, with
+             the pin colour palette hanging off it. See SessionLeadIndicator. -->
+        <span class="lead">
+          <SessionLeadIndicator
+            :pinned="session.pinned"
+            :pin-color="session.pinColor"
+            :busy="busy"
+            :unread="unread"
+            :label="pinLabel"
+            :hint="renaming ? undefined : t('sidebar.pinToTop')"
+            :palette-open="paletteOpen"
+            :interactive="!renaming"
+            @toggle="togglePin"
+            @open-palette="togglePalette"
+            @leave="onPinLeave"
+          />
         </span>
 
         <div class="left">
@@ -619,77 +548,33 @@ if (typeof window !== 'undefined') {
 }
 .se:focus-visible { outline: none; box-shadow: var(--p-focus-ring); }
 
-/* The pin rail — 24px, fixed at the row's left edge, never shifted by the tree
-   indent. The slot itself is inert (pointer-events:none) so an empty slot, or
-   any part of the slot that is not the dot, falls through to the row: clicking
-   there OPENS the session and can never pin it by accident. Only the 20×20
-   button re-enables pointer events. */
-.pin-rail {
-  width: 24px;
-  flex: none;
-  display: flex;
-  align-items: center;
-  /* A little breathing room off the sidebar edge: the dot sits 6px in rather
-     than flush against the row's left edge, so it reads as part of the row
-     instead of hugging the panel border. */
-  justify-content: center;
-  padding-left: var(--space-1);
-  box-sizing: border-box;
-  align-self: stretch;
-  pointer-events: none;
-}
-.pin-toggle {
-  width: 20px;
-  height: 20px;
+/* The lead slot: the session row's whole state (running / pinned / pin colour /
+   unread) rides the ONE indicator inside it — see SessionLeadIndicator.vue.
+   Width is exactly --sb-gutter (the header's icon slot), so the title start is
+   IDENTICAL to what it was before pinning existed: the indicator takes over the
+   space that was already reserved, never a new column. */
+.lead {
+  width: var(--sb-gutter, 16px);
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0;
-  border: none;
-  border-radius: var(--radius-full);
-  background: none;
-  cursor: pointer;
-  pointer-events: auto;
-  /* Unpinned: the hollow "pin here" circle appears only on row hover / focus —
-     the resting state is an empty slot, so the rail reads as quiet state, not
-     a column of buttons. */
-  opacity: 0;
-  transition: opacity var(--duration-fast) var(--ease-out);
+  /* The unread badge punches itself out with a ring of the row's own
+     background, so the indicator needs to know what that surface is. */
+  --row-bg: var(--panel);
 }
-.se:hover .pin-toggle,
-.se:focus-within .pin-toggle,
-.pin-toggle:focus-visible { opacity: 1; }
-.pin-toggle:focus-visible { outline: none; box-shadow: var(--p-focus-ring); }
+.se:hover { --row-bg: var(--color-surface-sunken); }
+.se.on { --row-bg: var(--color-accent-soft); }
 
-/* The marker itself: ONE shape in both states — a 9px circle. Unpinned it is a
-   hollow outline (the affordance); pinned it is filled with the pin color, so
-   the state reads without an icon glyph and without relying on color alone
-   (the fill vs. the outline carries it). */
-.pin-toggle .pin-dot {
-  width: 13px;
-  height: 13px;
-  border-radius: var(--radius-full);
-  background: transparent;
-  box-shadow: inset 0 0 0 1.5px currentColor;
-  color: var(--color-text-muted);
-  transition:
-    background var(--duration-fast) var(--ease-out),
-    box-shadow var(--duration-fast) var(--ease-out);
+.se:hover .lead :deep(.orb.is-idle-unpinned),
+.se:focus-within .lead :deep(.orb.is-idle-unpinned),
+.lead :deep(.orb.is-idle-unpinned:focus-visible) {
+  opacity: 1;
+  pointer-events: auto;
 }
-.pin-toggle:hover .pin-dot { color: var(--color-text); }
-.pin-toggle.is-pinned { opacity: 1; }
-.pin-toggle.is-pinned .pin-dot {
-  background: var(--pin-color, var(--pin-red));
-  /* A hairline ring keeps the dot legible on light and dark surfaces and gives
-     the filled state a slightly larger optical size than the hollow one. */
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pin-color, var(--pin-red)) 60%, #000);
-}
-.pin-toggle.is-pinned:hover .pin-dot {
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--pin-color, var(--pin-red)) 60%, #000),
-    0 0 0 2px color-mix(in srgb, var(--pin-color, var(--pin-red)) 28%, transparent);
-}
+/* Hovering the live dot itself brightens it: the row says "clickable" without a
+   second icon. A running dot keeps its animation — only the fill lifts. */
+.lead :deep(.orb:hover) .orb-dot { filter: brightness(1.12); }
 
 .row {
   display: flex;
@@ -707,23 +592,6 @@ if (typeof window !== 'undefined') {
   align-items: center;
   flex: 1;
   min-width: 0;
-}
-
-/* Leading status slot — mirrors the workspace header's icon slot (so the title
-   aligns under the workspace name) AND carries the running spinner / unread dot.
-   Fixed width keeps the title start fixed whether or not an indicator shows. */
-.lead {
-  width: var(--sb-gutter, 16px);
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.unread-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-full);
-  background: var(--color-accent);
 }
 
 .t {
@@ -789,12 +657,9 @@ if (typeof window !== 'undefined') {
 .sessions .se {
   margin: 0;
   border-radius: var(--radius-md);
-  /* SDR-021: the pin rail owns the row's left edge, so the row's own horizontal
-     padding moves to the right side only. The title then starts at
-     --sb-pad-x + --sb-pin-rail + --sb-gutter + --sb-gap — the workspace header
-     and the show-more lead are shifted by the same rail width below, so the
-     title still lines up under the workspace name. */
-  padding: var(--space-1) calc(var(--sb-pad-x, 12px) - var(--space-2)) var(--space-1) 0;
+  /* Trim the row padding by the inset margin so the title still starts at the
+     same x as the workspace name (whose header has no inset). */
+  padding: var(--space-1) calc(var(--sb-pad-x, 12px) - var(--space-2));
 }
 .sessions .se:hover { background: var(--panel2); }
 .sessions .se.on {

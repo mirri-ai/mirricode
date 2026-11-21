@@ -824,12 +824,10 @@ const showNewWorkspaceButton = false;
   height: 100%;
   /* Alignment contract, inherited by SessionRow and the de-terminalization
      rules in style.css: text in the workspace header, the path line and session
-     rows all starts at --sb-pad-x + --sb-pin-rail + --sb-gutter + --sb-gap from
-     the sidebar edge. --sb-pin-rail is the session row's fixed pin slot (SDR-021)
-     — the header and the show-more lead reserve the same width so the titles
-     still line up under the workspace name. */
+     rows all starts at --sb-pad-x + --sb-gutter + --sb-gap from the sidebar edge.
+     The session row's pin state rides the lead slot inside that same gutter, so
+     no extra column is reserved. */
   --sb-pad-x: var(--space-4);  /* row horizontal padding */
-  --sb-pin-rail: 24px;         /* session row's fixed pin slot (SDR-021) */
   --sb-gutter: 20px;           /* leading icon slot (14px folder icon + 6px margin) */
   --sb-gap: var(--space-2);    /* gap between the icon slot and the text */
   /* Sidebar stays one step above compact UI chrome, but still follows the

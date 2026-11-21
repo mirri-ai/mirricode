@@ -285,10 +285,10 @@ function onHeaderDragStart(event: DragEvent): void {
   display: flex;
   align-items: center;
   margin: 0;
-  /* SDR-021: reserve the session rows' pin slot on the left so the folder icon
-     (and therefore the workspace name) lines up with the session titles, which
-     now start after that slot. */
-  padding: var(--space-1) var(--space-2) var(--space-1) calc(var(--space-2) + var(--sb-pin-rail));
+  /* A little breathing room off the sidebar edge: the dot sits 6px in rather
+     than flush against the row's left edge, so it reads as part of the row
+     instead of hugging the panel border. */
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
   font-family: var(--font-ui);
   font-size: var(--text-xs);
@@ -393,7 +393,7 @@ function onHeaderDragStart(event: DragEvent): void {
 }
 
 .group-empty {
-  padding: var(--space-1) var(--space-2) var(--space-1) calc(var(--sb-pad-x) + var(--sb-pin-rail) + var(--sb-gutter) + var(--sb-gap));
+  padding: var(--space-1) var(--space-2) var(--space-1) calc(var(--sb-pad-x) + var(--sb-gutter) + var(--sb-gap));
   font-size: var(--text-xs);
   color: var(--color-text-faint);
   font-family: var(--font-mono);
@@ -410,11 +410,9 @@ function onHeaderDragStart(event: DragEvent): void {
   width: 100%;
   min-height: 26px;
   margin: 0;
-  /* SDR-021: the label must land at the session titles' x. The session row
-     reserves --sb-pin-rail before its lead slot and has no left padding of its
-     own, so this control takes the same rail width as its left inset — the lead
-     slots then line up and so do the labels. */
-  padding: var(--space-1) calc(var(--sb-pad-x) - var(--space-2)) var(--space-1) var(--sb-pin-rail);
+  /* Plain symmetric inset: the lead slot below is --sb-gutter + --sb-gap wide,
+     exactly a session row's, so the label lands on the titles' x. */
+  padding: var(--space-1) calc(var(--sb-pad-x) - var(--space-2));
   border: none;
   border-radius: var(--radius-md);
   background: transparent;
@@ -426,6 +424,8 @@ function onHeaderDragStart(event: DragEvent): void {
 }
 .show-more:hover { background: var(--color-surface-sunken); }
 .show-more:focus-visible { outline: none; box-shadow: var(--p-focus-ring); }
+/* Same width as a session row's lead slot (--sb-gutter), so the label lands on
+   the session titles' x. */
 .show-more-lead { width: var(--sb-gutter); flex: none; }
 .show-more-label {
   flex: 1;
