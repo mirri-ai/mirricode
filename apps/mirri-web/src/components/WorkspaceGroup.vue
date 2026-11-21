@@ -53,14 +53,14 @@ const emit = defineEmits<{
   refreshWorkspace: [workspaceId: string];
 }>();
 
-// SDR-020: a pinned row does NOT render in its workspace group — it renders
-// once, in the sidebar's global pinned section (pinning is a cross-workspace
-// "this matters" statement). The group's DATA stays complete (pinned rows are
-// still in `group.sessions`; they carry the mobile switcher's inline list), so
-// this is purely where the desktop draws the line. Everything below paginates
-// over the unpinned subset, so the show-more counts describe what this group
-// actually renders.
-const groupRows = computed(() => props.group.sessions.filter((s) => !s.pinned));
+// SDR-021: the group renders ALL its sessions, pinned ones included. Pinning
+// is a cross-workspace "this matters" statement, so a pinned row ALSO rides the
+// sidebar's global section above — but the workspace group stays the place the
+// user browses by project, so the row must stay findable under its workspace
+// too. The sort keeps pinned rows at the head of the group (the pinned-first
+// comparator), so they always land inside the first page and the show-more trim
+// below never hides them.
+const groupRows = computed(() => props.group.sessions);
 
 // Sessions to render: all when expanded, otherwise only the first page. The
 // collapse is a pure view-layer trim — data, cursor and hasMore stay intact, so
@@ -172,20 +172,27 @@ function onHeaderDragStart(event: DragEvent): void {
       :class="{ collapsed: isCollapsed(group.workspace.id) }"
       :inert="isCollapsed(group.workspace.id)"
     >
-      <SessionRow
-        v-for="s in visibleSessions"
-        :key="s.id"
-        :session="s"
-        :active="s.id === activeId"
-        :approval-count="pendingBySession[s.id]?.approvals ?? 0"
-        :question-count="pendingBySession[s.id]?.questions ?? 0"
-        :unread="unreadBySession[s.id] ?? false"
-        @select="emit('selectSession', $event)"
-        @rename="(id, title) => emit('renameSession', id, title)"
-        @archive="emit('archiveSession', $event)"
-        @pin="(id, color) => emit('pinSession', id, color)"
-        @unpin="emit('unpinSession', $event)"
-      />
+      <!-- Pin/unpin also moves a row within this group (a pinned row sits
+           at the head), so the same FLIP treatment applies here: surviving
+           rows glide instead of teleporting. The show-more controls stay
+           OUTSIDE the group — they are not session rows and must not
+           animate with them. -->
+      <TransitionGroup name="session-list" tag="div" class="session-list">
+        <SessionRow
+          v-for="s in visibleSessions"
+          :key="s.id"
+          :session="s"
+          :active="s.id === activeId"
+          :approval-count="pendingBySession[s.id]?.approvals ?? 0"
+          :question-count="pendingBySession[s.id]?.questions ?? 0"
+          :unread="unreadBySession[s.id] ?? false"
+          @select="emit('selectSession', $event)"
+          @rename="(id, title) => emit('renameSession', id, title)"
+          @archive="emit('archiveSession', $event)"
+          @pin="(id, color) => emit('pinSession', id, color)"
+          @unpin="emit('unpinSession', $event)"
+        />
+      </TransitionGroup>
       <button
         v-if="group.hasMore || group.loadingMore"
         class="show-more"
@@ -233,6 +240,43 @@ function onHeaderDragStart(event: DragEvent): void {
   height: 0;
 }
 
+/* Pin/unpin FLIP inside one workspace group: the same motion budget as the
+   pinned section so both lists read as one system. The leaving row leaves the
+   flow at once, letting the rows below start closing the gap immediately. */
+.session-list {
+  position: relative;
+}
+.session-list-move,
+.session-list-enter-active,
+.session-list-leave-active {
+  transition:
+    transform var(--duration-base) var(--ease-out),
+    opacity var(--duration-fast) var(--ease-out);
+}
+.session-list-leave-active {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}
+.session-list-enter-from,
+.session-list-leave-to {
+  opacity: 0;
+}
+.session-list-enter-from {
+  transform: translateY(-4px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .session-list-move,
+  .session-list-enter-active,
+  .session-list-leave-active {
+    transition: none;
+  }
+  .session-list-enter-from {
+    transform: none;
+  }
+}
+
 /* Workspace header — an inset rounded row that mirrors the session-row inset
    (6px margin + 10px padding), so the folder icon lands at --sb-pad-x and the
    name lines up with the session titles below. Hover washes the header in the
@@ -241,6 +285,9 @@ function onHeaderDragStart(event: DragEvent): void {
   display: flex;
   align-items: center;
   margin: 0;
+  /* A little breathing room off the sidebar edge: the dot sits 6px in rather
+     than flush against the row's left edge, so it reads as part of the row
+     instead of hugging the panel border. */
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-sm);
   font-family: var(--font-ui);
@@ -363,6 +410,8 @@ function onHeaderDragStart(event: DragEvent): void {
   width: 100%;
   min-height: 26px;
   margin: 0;
+  /* Plain symmetric inset: the lead slot below is --sb-gutter + --sb-gap wide,
+     exactly a session row's, so the label lands on the titles' x. */
   padding: var(--space-1) calc(var(--sb-pad-x) - var(--space-2));
   border: none;
   border-radius: var(--radius-md);
@@ -375,6 +424,8 @@ function onHeaderDragStart(event: DragEvent): void {
 }
 .show-more:hover { background: var(--color-surface-sunken); }
 .show-more:focus-visible { outline: none; box-shadow: var(--p-focus-ring); }
+/* Same width as a session row's lead slot (--sb-gutter), so the label lands on
+   the session titles' x. */
 .show-more-lead { width: var(--sb-gutter); flex: none; }
 .show-more-label {
   flex: 1;

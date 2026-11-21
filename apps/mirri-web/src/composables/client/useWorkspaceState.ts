@@ -12,6 +12,7 @@ import { getMirriWebApi } from '../../api';
 import { SERVER_AUTH_UNAUTHORIZED_CODE } from '../../api/daemon/http';
 import { isPlaceholderSessionUsage } from '../../api/daemon/mappers';
 import { sortKeyEpoch } from '../../lib/sessionSorting';
+import { DEFAULT_PIN_COLOR, pickPinColor } from '../../lib/pinColor';
 import { i18n } from '../../i18n';
 import { useConfirmDialog } from '../useConfirmDialog';
 import {
@@ -24,6 +25,7 @@ import type {
   AppConfig,
   AppInFlightTurn,
   AppMessage,
+  AppNotice,
   AppRecoveryInterruption,
   AppSession,
   AppWorkspace,
@@ -294,6 +296,8 @@ export interface UseWorkspaceStateDeps {
     err: unknown,
     opts?: { title?: string; message?: string; sessionId?: string },
   ) => void;
+  /** Push one structured notice onto the corner toast stack. */
+  pushNotice: (notice: AppNotice) => void;
   activity: ComputedRef<ActivityState>;
   sessionsKnownEmpty: Set<string>;
   // rawState.sessions mutation funnel, owned by the facade. This module never
@@ -380,6 +384,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     sideChat,
     modelProvider,
     pushOperationFailure,
+    pushNotice,
     activity,
     sessionsKnownEmpty,
     setSessions,
@@ -2973,6 +2978,54 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     rawState.warnings = list;
   }
 
+  /** Inline notice-action registry. A notice carries an opaque `action.id`
+   *  (the notice type stays domain-agnostic); the app renders the button and
+   *  calls back here. Actions are single-use and dropped when their notice is
+   *  dismissed, so a stale id can never fire. */
+  const noticeActions = new Map<string, () => void>();
+  let nextNoticeActionId = 1;
+
+  function registerNoticeAction(run: () => void): string {
+    const id = `notice-action-${nextNoticeActionId++}`;
+    noticeActions.set(id, run);
+    return id;
+  }
+
+  /** Run a notice's inline action (the toast's callback), then retire it. */
+  function runNoticeAction(id: string): void {
+    const run = noticeActions.get(id);
+    if (!run) return;
+    noticeActions.delete(id);
+    run();
+  }
+
+  /** Drop a notice by identity (the toast's own close button). */
+  function dismissNotice(notice: AppNotice): void {
+    const index = rawState.warnings.indexOf(notice);
+    if (index === -1) return;
+    if (notice.action) noticeActions.delete(notice.action.id);
+    dismissWarning(index);
+  }
+
+  /** The live pin notice per session, so a NEW pin action can retire the
+   *  opposite one. Without this, pinning and then unpinning leaves two
+   *  contradicting toasts on screen — and the older one's "Undo" would apply
+   *  the OPPOSITE action (unpinning an already-unpinned row). */
+  const pinNoticeBySession = new Map<string, AppNotice>();
+
+  function retirePinNotice(sessionId: string): void {
+    const stale = pinNoticeBySession.get(sessionId);
+    if (!stale) return;
+    pinNoticeBySession.delete(sessionId);
+    dismissNotice(stale);
+  }
+
+  function pushPinNotice(sessionId: string, notice: AppNotice): void {
+    retirePinNotice(sessionId);
+    pinNoticeBySession.set(sessionId, notice);
+    pushNotice(notice);
+  }
+
   /** Rename a session — calls API and updates local state */
   async function renameSession(id: string, title: string): Promise<void> {
     try {
@@ -2984,35 +3037,91 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
   }
 
+  /** The colour of the most recently pinned row, if any — the "previous" colour
+   *  a new random pick avoids, so two pins in a row never land on the same one
+   *  (identical neighbouring dots read as the same item). */
+  function mostRecentPinColor():
+    | 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray'
+    | undefined {
+    let newest: AppSession | undefined;
+    for (const s of rawState.sessions) {
+      if (!s.pinned) continue;
+      if (!newest) { newest = s; continue; }
+      const a = Date.parse(s.pinnedAt ?? '') || 0;
+      const b = Date.parse(newest.pinnedAt ?? '') || 0;
+      if (a > b) newest = s;
+    }
+    return newest?.pinColor;
+  }
+
   /** Pin a session (SDR-016/017): the engine writes ONLY the pin trio —
    *  the local patch mirrors that posture (no recency keys touched), and
    *  the pinned-first re-order follows from the sort comparator (the
-   *  reactive session array re-sorts on the field flip). */
+   *  reactive session array re-sorts on the field flip).
+   *  SDR-021: pinning always lands WITH a color. A NEW pin picks a random
+   *  preset colour (avoiding the most recent pin's colour) so consecutive pins
+   *  stay distinguishable at a glance; an explicit colour — the palette's
+   *  re-pin, or the undo of an unpin restoring its old colour — is honoured as
+   *  given. Every entry point (lead indicator, search dialog, mobile sheet,
+   *  header menu) goes through here, so the decision lives in exactly one
+   *  place and callers must NOT pre-pick a colour. */
   async function pinSession(
     id: string,
     color?: 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'purple' | 'gray',
   ): Promise<void> {
+    const resolved = color ?? pickPinColor(mostRecentPinColor());
+    // Read BEFORE the write: a re-pin (the palette's color edit) is not a pin
+    // action, and offering "undo" on a recolor would be noise.
+    const wasPinned = rawState.sessions.find((s) => s.id === id)?.pinned === true;
     try {
-      await getMirriWebApi().pinSession(id, color);
+      await getMirriWebApi().pinSession(id, resolved);
       updateSession(id, (s) => ({
         ...s,
         pinned: true,
         // Keep the previous pin moment on a re-pin (the engine's own
         // idempotency); only a first pin stamps now.
         pinnedAt: s.pinnedAt ?? new Date().toISOString(),
-        pinColor: color,
+        pinColor: resolved,
       }));
+      if (wasPinned) return;
+      const title = rawState.sessions.find((s) => s.id === id)?.title ?? id;
+      pushPinNotice(id, {
+        severity: 'info',
+        title: t('sidebar.pinnedToast', { title }),
+        message: t('sidebar.pinnedToastHint'),
+        action: { label: t('sidebar.undo'), id: registerNoticeAction(() => void unpinSession(id)) },
+      });
     } catch (error) {
       pushOperationFailure('pinSession', error, { sessionId: id });
     }
   }
 
   /** Unpin a session: the local patch clears the trio; the re-order drops
-   *  it back into the recency group. */
+   *  it back into the recency group. Restores are offered as an undo notice —
+   *  re-pinning is the only way back, and without the notice a mis-click is
+   *  silent and unrecoverable. */
   async function unpinSession(id: string): Promise<void> {
+    const previous = rawState.sessions.find((s) => s.id === id);
+    const previousColor = previous?.pinColor;
+    const wasPinned = previous?.pinned === true;
     try {
       await getMirriWebApi().unpinSession(id);
       updateSession(id, (s) => ({ ...s, pinned: false, pinnedAt: undefined, pinColor: undefined }));
+      if (!wasPinned) return;
+      const title = previous?.title ?? id;
+      // Undo re-pins with the color the row carried. The pin MOMENT is not
+      // restorable over the wire (the engine stamps a fresh one), so an undone
+      // pin lands at the top of the pinned section rather than its old slot —
+      // the notice's hint says so instead of promising an exact restore.
+      pushPinNotice(id, {
+        severity: 'info',
+        title: t('sidebar.unpinnedToast', { title }),
+        message: t('sidebar.unpinnedToastHint'),
+        action: {
+          label: t('sidebar.undo'),
+          id: registerNoticeAction(() => void pinSession(id, previousColor ?? DEFAULT_PIN_COLOR)),
+        },
+      });
     } catch (error) {
       pushOperationFailure('unpinSession', error, { sessionId: id });
     }
@@ -3631,6 +3740,8 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     controlGoal,
     setPermission,
     dismissWarning,
+    dismissNotice,
+    runNoticeAction,
     renameSession,
     pinSession,
     unpinSession,

@@ -30,6 +30,14 @@ export interface AppNoticeDetail {
   value: string;
 }
 
+/** An optional inline action a notice offers (e.g. "Undo" after a reversible
+ *  action). `id` is an opaque handle the app resolves against its own action
+ *  registry — the notice type stays domain-agnostic. */
+export interface AppNoticeAction {
+  label: string;
+  id: string;
+}
+
 export interface AppNotice {
   severity: AppNoticeSeverity;
   title: string;
@@ -38,6 +46,8 @@ export interface AppNotice {
   /** Routing tag: notices produced by a failed turn render in the chat
    *  dock's bottom bar instead of the corner toast stack. */
   channel?: 'turn-failure';
+  /** Inline action button (rendered with the toast). */
+  action?: AppNoticeAction;
 }
 
 export type AppWarning = string | AppNotice;

@@ -17,6 +17,7 @@ import {
   useWorkspaceTrustPrompt,
 } from '../src/composables/useWorkspaceTrustPrompt';
 import { i18n } from '../src/i18n';
+import { PIN_COLORS } from '../src/lib/pinColor';
 import type { ExtendedState } from '../src/composables/useMirriWebClient';
 
 const apiMock = vi.hoisted(() => ({
@@ -145,6 +146,7 @@ function createDeps(): UseWorkspaceStateDeps {
     sideChat: {},
     modelProvider: { resolveThinkingForPrompt: async () => undefined },
     pushOperationFailure: vi.fn(),
+    pushNotice: vi.fn(),
     activity: computed(() => 'running'),
     sessionsKnownEmpty: new Set(),
     setSessions: vi.fn(),
@@ -2980,5 +2982,116 @@ describe('useWorkspaceState — opening a session outside the list', () => {
         title: i18n.global.t('warnings.sessionOpenFailedTitle'),
       }),
     );
+  });
+});
+
+describe('useWorkspaceState — pin undo notices (SDR-021)', () => {
+  it('should offer an undo notice when a session is unpinned', async () => {
+    const state = createState();
+    state.sessions = [{ ...createSession(), pinned: true, pinColor: 'blue' }];
+    const deps = createDeps();
+    const workspace = useWorkspaceState(state, deps);
+    apiMock.unpinSession = vi.fn().mockResolvedValue(undefined);
+    apiMock.pinSession = vi.fn().mockResolvedValue(undefined);
+
+    await workspace.unpinSession('sess_1');
+
+    const notice = (deps.pushNotice as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(notice?.severity, '取消置顶后应给出可撤销的提示').toBe('info');
+    expect(notice?.title, '提示应点名会话').toContain('Session');
+    expect(notice?.action?.label, '提示应带撤销按钮').toBe(i18n.global.t('sidebar.undo'));
+    expect(notice?.message, '提示应说明撤销的真实效果').toBe(
+      i18n.global.t('sidebar.unpinnedToastHint'),
+    );
+  });
+
+  it('should restore the pin with its previous color when undo runs', async () => {
+    const state = createState();
+    state.sessions = [{ ...createSession(), pinned: true, pinColor: 'blue' }];
+    const deps = createDeps();
+    const workspace = useWorkspaceState(state, deps);
+    apiMock.unpinSession = vi.fn().mockResolvedValue(undefined);
+    apiMock.pinSession = vi.fn().mockResolvedValue(undefined);
+
+    await workspace.unpinSession('sess_1');
+    const actionId = (deps.pushNotice as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.action?.id;
+    expect(actionId).toBeTruthy();
+
+    workspace.runNoticeAction(actionId as string);
+    await vi.waitFor(() => expect(apiMock.pinSession).toHaveBeenCalledWith('sess_1', 'blue'));
+  });
+
+  it('should not offer an undo notice when recoloring an already pinned session', async () => {
+    const state = createState();
+    state.sessions = [{ ...createSession(), pinned: true, pinColor: 'blue' }];
+    const deps = createDeps();
+    const workspace = useWorkspaceState(state, deps);
+    apiMock.pinSession = vi.fn().mockResolvedValue(undefined);
+
+    await workspace.pinSession('sess_1', 'green');
+
+    // 改色不是置顶动作：不该弹「已置顶」提示。
+    expect(deps.pushNotice as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+});
+
+describe('useWorkspaceState — a new pin picks a random colour', () => {
+  it('should pin with a preset colour when no colour is given', async () => {
+    const state = createState();
+    state.sessions = [createSession()];
+    const deps = createDeps();
+    const workspace = useWorkspaceState(state, deps);
+    apiMock.pinSession = vi.fn().mockResolvedValue(undefined);
+
+    await workspace.pinSession('sess_1');
+
+    const sent = apiMock.pinSession.mock.calls[0]?.[1];
+    expect(PIN_COLORS, '新置顶必须带七色预设之一').toContain(sent);
+  });
+
+  it('should vary the colour across consecutive pins', async () => {
+    // 连续置顶若总拿到同一个颜色，顶部置顶区就是一排同色点，随机失去意义。
+    const seen = new Set<string>();
+    for (let i = 0; i < 30; i++) {
+      const state = createState();
+      state.sessions = [createSession()];
+      const deps = createDeps();
+      const workspace = useWorkspaceState(state, deps);
+      apiMock.pinSession = vi.fn().mockResolvedValue(undefined);
+      await workspace.pinSession('sess_1');
+      seen.add(String(apiMock.pinSession.mock.calls[0]?.[1]));
+    }
+    expect(seen.size, '多次新置顶应取到不止一种颜色').toBeGreaterThan(1);
+  });
+
+  it('should avoid the most recently pinned colour', async () => {
+    const state = createState();
+    state.sessions = [
+      { ...createSession(), id: 'sess_old', pinned: true, pinColor: 'gray', pinnedAt: '2026-01-01T00:00:00.000Z' },
+      { ...createSession(), id: 'sess_new', pinned: true, pinColor: 'blue', pinnedAt: '2026-02-01T00:00:00.000Z' },
+      { ...createSession(), id: 'sess_1' },
+    ];
+    const deps = createDeps();
+    const workspace = useWorkspaceState(state, deps);
+    apiMock.pinSession = vi.fn().mockResolvedValue(undefined);
+
+    // sess_new 是最新置顶（pinnedAt 更晚），新置顶不应与它同色。
+    for (let i = 0; i < 20; i++) {
+      apiMock.pinSession.mockClear();
+      await workspace.pinSession('sess_1');
+      expect(apiMock.pinSession.mock.calls[0]?.[1], '不应与最近置顶同色').not.toBe('blue');
+    }
+  });
+
+  it('should honour an explicitly given colour', async () => {
+    const state = createState();
+    state.sessions = [createSession()];
+    const deps = createDeps();
+    const workspace = useWorkspaceState(state, deps);
+    apiMock.pinSession = vi.fn().mockResolvedValue(undefined);
+
+    await workspace.pinSession('sess_1', 'purple');
+
+    expect(apiMock.pinSession).toHaveBeenCalledWith('sess_1', 'purple');
   });
 });

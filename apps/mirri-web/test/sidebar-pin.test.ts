@@ -1,16 +1,22 @@
 // @vitest-environment jsdom
 // apps/mirri-web/test/sidebar-pin.test.ts
 //
-// 会话置顶的交互语义（P1 行为变更）：
-// - hover 图钉按钮 = 快捷动作：未置顶单击直接无色置顶；已置顶单击取消置顶。
-// - 标题旁常驻状态图钉 = 状态标识 + 改色入口：点击打开七色调色板弹层。
-// - 调色板选色 = 直接 re-pin 带色（不需要先取消置顶）；「无颜色」= 无色
-//   re-pin（清掉颜色但保持置顶）。
-// - 已置顶行最左缘渲染 3px 彩色竖条（aria-hidden），颜色 = pinColor。
+// 会话行首指示器（SDR-022：把「是否在跑 / 是否置顶 / 置顶颜色 / 未读」合到一个槽位）：
+// - 槽位是标题左侧本来就有的那条 gutter（--sb-gutter + --sb-gap），不新增列；
+//   标题起点与搜索、新建会话同一条左边线。
+// - 六种状态由 pinned / busy / unread 三个布尔决定：
+//   ① 未置顶·空闲 = 空（悬停才浮出可点的空心环）
+//   ② 未置顶·未读 = 中性实心点
+//   ③ 未置顶·思考中 = 空心环 + 扫描弧
+//   ④ 已置顶·空闲 = 实心圆 = 置顶色
+//   ⑤ 已置顶·未读 = ④ + 右上角标（2px 背景挖孔，只与行背景比对比度）
+//   ⑥ 已置顶·思考中 = ④ + 呼吸发光（MCP 面板那套 glow-pulse）
+// - busy 压过 unread：一行只表达一件事。
+// - 交互：点圆圈 = 置顶（随机取一个预设色）/ 取消置顶；悬停已置顶圆圈 =
+//   打开七色调色板；右键 / Shift+F10 也开调色板。
 //
-// 这里锁定的就是 sidebar 自己的事件边界：真实 Sidebar + 真实 WorkspaceGroup +
-// 真实 SessionRow 一起挂载，用户点图钉 / 点状态图钉 / 选色，断言 Sidebar 发出的
-// pin/unpin 与竖条的渲染形态。
+// 这里锁定的是 sidebar 自己的事件边界：真实 Sidebar + 真实 WorkspaceGroup +
+// 真实 SessionRow + 真实 SessionLeadIndicator 一起挂载。
 
 import { describe, expect, it, vi } from 'vitest';
 import { mount, type DOMWrapper, type VueWrapper } from '@vue/test-utils';
@@ -18,9 +24,10 @@ import { createI18n } from 'vue-i18n';
 
 import { messages } from '../src/i18n/locales';
 import Sidebar from '../src/components/Sidebar.vue';
+import { PIN_COLORS, pickPinColor } from '../src/lib/pinColor';
 import type { SortableSessionRow } from '../src/lib/sessionSorting';
+import type { SessionWorkFacts, WorkspaceGroup as WorkspaceGroupType } from '../src/types';
 import { splitPinnedSessions } from '../src/lib/sessionSorting';
-import type { WorkspaceGroup as WorkspaceGroupType } from '../src/types';
 
 // lib/icons 通过 unplugin-icons 的虚拟模块（~icons/ri/*）引入图标集，
 // Vitest 在打包管线之外无法加载它们。
@@ -59,9 +66,13 @@ function groupOf(rows: SortableSessionRow[]): WorkspaceGroupType {
   };
 }
 
-function mountSidebar(groups: WorkspaceGroupType[]): VueWrapper {
+function mountSidebar(
+  groups: WorkspaceGroupType[],
+  workFacts: Record<string, Partial<SessionWorkFacts>> = {},
+  unread: Record<string, boolean> = {},
+): VueWrapper {
   const i18n = createI18n({ legacy: false, locale: 'zh', fallbackLocale: 'en', messages });
-  // SDR-019：置顶行不再渲染在 workspace 分组里，改由全局「已置顶」分区呈现。
+  // SDR-021：置顶行同时出现在顶部「已置顶」分区和所属工作区分组里。
   // 这里按 client 的同一条投影（分流 + 置顶时刻倒序）把置顶行供给分区，
   // 使本文件的图钉交互断言继续命中真实渲染出来的置顶行。
   const { pinned } = splitPinnedSessions(
@@ -80,37 +91,56 @@ function mountSidebar(groups: WorkspaceGroupType[]): VueWrapper {
       sessions: [],
       groups,
       pinnedSessions: pinned,
+      unreadBySession: unread,
       activeId: '',
       workspaceSortMode: 'manual',
     },
-    global: { plugins: [i18n] },
+    global: {
+      plugins: [i18n],
+      // The row reads its running/idle facts from this injected lookup; the
+      // running-ring assertions need to drive it per session.
+      provide: {
+        resolveSessionWorkFacts: (id: string): SessionWorkFacts => ({
+          busy: false,
+          ...workFacts[id],
+        }),
+      },
+    },
   });
 }
 
-/** 该行悬停区的快捷图钉按钮（未置顶 = 无色置顶，已置顶 = 取消置顶）。 */
+/** The row's lead indicator — one control for every state (SDR-022). */
 function pinButton(wrapper: VueWrapper): DOMWrapper<HTMLButtonElement> {
   return wrapper.find<HTMLButtonElement>('[data-test-id="session-pin-btn"]');
 }
 
-/** 已置顶行标题旁的常驻状态图钉（改色入口）。 */
-function statusPin(wrapper: VueWrapper): DOMWrapper<HTMLButtonElement> {
-  return wrapper.find<HTMLButtonElement>('[data-test-id="session-pin-status"]');
+/** Open the color palette: the rail pin's right-click (a plain click toggles). */
+async function openPalette(wrapper: VueWrapper): Promise<void> {
+  await pinButton(wrapper).trigger('contextmenu');
 }
 
 describe('sidebar session pinning', () => {
-  it('should pin without a color when the pin button is clicked on an unpinned row', async () => {
+  it('should emit a colorless pin so the colour is decided in one place', async () => {
+    // 颜色的随机决定只发生在 pinSession（那里能看到「最近置顶的颜色」，
+    // 从而避免相邻同色）。行/指示器只发"要置顶"，不预先选色。
     const wrapper = mountSidebar([groupOf([row()])]);
 
     await pinButton(wrapper).trigger('click');
 
-    // 事件链（WorkspaceGroup/Sidebar 转发）可能显式透传 color 槽位，
-    // 所以锁定语义而非参数个数：有且只有一次 pin，id 正确，color 为 undefined。
-    const pinCalls = wrapper.emitted('pin');
-    expect(pinCalls, '未置顶行单击应发出 pin').toHaveLength(1);
-    expect(pinCalls?.[0]?.[0]).toBe('s-1');
-    expect(pinCalls?.[0]?.[1], '不应携带颜色').toBeUndefined();
+    const call = wrapper.emitted('pin')?.[0];
+    expect(call?.[0]).toBe('s-1');
+    expect(call?.[1], '行不应预先选色').toBeUndefined();
     expect(wrapper.emitted('unpin'), '未置顶行不应发出 unpin').toBeUndefined();
     wrapper.unmount();
+  });
+
+  it('should not repeat the previous color when re-pinning the same row', () => {
+    // 相邻两行同色会被读成「同一条」，所以随机时排除上一次的取值。
+    for (const prev of PIN_COLORS) {
+      for (let i = 0; i < 20; i++) {
+        expect(pickPinColor(prev), `上一色为 ${prev} 时不应再抽到它`).not.toBe(prev);
+      }
+    }
   });
 
   it('should unpin when the pin button is clicked on a pinned row', async () => {
@@ -122,16 +152,186 @@ describe('sidebar session pinning', () => {
     wrapper.unmount();
   });
 
-  it('should open the color palette when the pinned status icon is clicked', async () => {
+  it('should render one indicator in the row lead slot for both pin states', async () => {
+    // 两态是同一个槽位上的同一个控件、同一个圆形标记：未置顶空心，已置顶实心。
+    const unpinned = mountSidebar([groupOf([row()])]);
+    const unpinnedPin = pinButton(unpinned);
+    expect(unpinnedPin.exists(), '未置顶行也应有行首指示器').toBe(true);
+    expect(unpinnedPin.attributes('aria-pressed'), '未置顶的 aria-pressed 应为 false').toBe('false');
+    expect(unpinnedPin.classes(), '未置顶不应带 is-pinned').not.toContain('is-pinned');
+    expect(unpinnedPin.find('.orb-dot').exists(), '标记是圆圈而不是图标').toBe(true);
+    expect(
+      unpinned.find('.lead [data-test-id="session-pin-btn"]').exists(),
+      '指示器必须落在行首的 lead 槽位里，不新增列',
+    ).toBe(true);
+    unpinned.unmount();
+
+    const pinned = mountSidebar([groupOf([row({ pinned: true, pinColor: 'blue' })])]);
+    const pinnedPin = pinButton(pinned);
+    expect(pinnedPin.attributes('aria-pressed'), '已置顶的 aria-pressed 应为 true').toBe('true');
+    expect(pinnedPin.classes(), '已置顶应带 is-pinned').toContain('is-pinned');
+    expect(pinnedPin.classes(), '圆圈携带置顶颜色').toContain('pin-blue');
+    expect(pinnedPin.find('.orb-dot').exists(), '两态共用同一个圆圈标记').toBe(true);
+    pinned.unmount();
+  });
+
+  it('should show the same running ring on a pinned row without a second indicator', async () => {
+    const wrapper = mountSidebar([groupOf([row({ pinned: true, pinColor: 'blue' })])], {
+      's-1': { busy: true },
+    });
+
+    const btn = pinButton(wrapper);
+    expect(btn.classes(), '运行中的置顶圆圈应带 is-running').toContain('is-running');
+    expect(btn.classes(), '置顶态同时保留，环色取置顶色').toContain('is-pinned');
+    expect(btn.attributes('aria-busy'), '运行态对辅助技术可读').toBe('true');
+    expect(wrapper.find('.ui-spinner').exists(), '一行只有一个指示器，不应再有行首转圈').toBe(false);
+    wrapper.unmount();
+  });
+
+  it('should render running rows with one shared spinner whether pinned or not', async () => {
+    // 置顶与未置顶的运行态只在环色上不同，形态必须是同一套 spinner，
+    // 否则同一侧栏里会出现两种「在跑」。
+    const pinnedRunning = mountSidebar([groupOf([row({ pinned: true, pinColor: 'blue' })])], {
+      's-1': { busy: true },
+    });
+    const bareRunning = mountSidebar([groupOf([row()])], { 's-1': { busy: true } });
+
+    expect(pinButton(pinnedRunning).classes(), '置顶运行行带 is-running').toContain('is-running');
+    expect(pinButton(bareRunning).classes(), '未置顶运行行带 is-running').toContain('is-running');
+    expect(
+      pinButton(bareRunning).classes(),
+      '未置顶不参与置顶态',
+    ).not.toContain('is-pinned');
+    // 运行态用带圆头的 SVG 弧（轨道 + 弧），不是缺口环、也不是旧的实心圆。
+    for (const [label, w] of [['置顶', pinnedRunning], ['未置顶', bareRunning]] as const) {
+      const ring = pinButton(w).find('.orb-ring');
+      expect(ring.exists(), `${label}运行行应渲染 spinner 环`).toBe(true);
+      expect(ring.find('.orb-ring-track').exists(), `${label}应有底环`).toBe(true);
+      expect(ring.find('.orb-ring-arc').exists(), `${label}应有转动弧`).toBe(true);
+      expect(pinButton(w).find('.orb-dot').exists(), `${label}运行态不应再画实心圆点`).toBe(false);
+    }
+    expect(pinnedRunning.find('.ui-spinner').exists(), '转圈并入指示器，不再单独渲染').toBe(false);
+    expect(bareRunning.find('.ui-spinner').exists(), '转圈并入指示器，不再单独渲染').toBe(false);
+    pinnedRunning.unmount();
+    bareRunning.unmount();
+  });
+
+  it('should stay still when a pinned row is idle', async () => {
     const wrapper = mountSidebar([groupOf([row({ pinned: true, pinColor: 'blue' })])]);
 
-    expect(statusPin(wrapper).exists(), '已置顶行应渲染常驻状态图钉').toBe(true);
+    expect(pinButton(wrapper).classes(), '空闲的置顶圆圈保持静止').not.toContain('is-running');
+    wrapper.unmount();
+  });
+
+  it('should mark an unread unpinned row with a neutral dot', async () => {
+    const wrapper = mountSidebar([groupOf([row()])], {}, { 's-1': true });
+
+    const btn = pinButton(wrapper);
+    expect(btn.classes(), '未读行应带 is-unread').toContain('is-unread');
+    expect(btn.find('.orb-unread').exists(), '未读用角标表达').toBe(true);
+    expect(btn.classes(), '未读不等于置顶').not.toContain('is-pinned');
+    wrapper.unmount();
+  });
+
+  it('should keep the unread badge on a pinned row so the two states coexist', async () => {
+    const wrapper = mountSidebar([groupOf([row({ pinned: true, pinColor: 'orange' })])], {}, {
+      's-1': true,
+    });
+
+    const btn = pinButton(wrapper);
+    expect(btn.classes(), '置顶与未读可共存').toContain('is-pinned');
+    expect(btn.classes(), '置顶与未读可共存').toContain('is-unread');
+    expect(btn.find('.orb-unread').exists(), '置顶行的未读也是角标').toBe(true);
+    wrapper.unmount();
+  });
+
+  it('should let running win over unread so a row says one thing', async () => {
+    // 后台跑完置了未读、随后又被续跑：技术上会同时成立，视觉上只表达运行态。
+    const wrapper = mountSidebar([groupOf([row()])], { 's-1': { busy: true } }, { 's-1': true });
+
+    const btn = pinButton(wrapper);
+    expect(btn.classes(), '运行态压过未读').toContain('is-running');
+    expect(btn.classes(), '运行中不叠加未读').not.toContain('is-unread');
+    expect(btn.find('.orb-unread').exists(), '运行中不渲染未读角标').toBe(false);
+    wrapper.unmount();
+  });
+
+  it('should render nothing but the idle ring for a plain unpinned row', async () => {
+    // ① 普通空闲：静止时槽位里没有可见标记，环只在悬停/聚焦时浮出（由行负责）。
+    const wrapper = mountSidebar([groupOf([row()])]);
+
+    const btn = pinButton(wrapper);
+    expect(btn.classes(), '普通空闲属于「无态」').toContain('is-idle-unpinned');
+    expect(btn.classes(), '未置顶不应带 is-pinned').not.toContain('is-pinned');
+    expect(btn.classes(), '空闲不是运行态').not.toContain('is-running');
+    expect(btn.find('.orb-unread').exists(), '空闲且未读才有角标').toBe(false);
+    wrapper.unmount();
+  });
+
+  it('should name the session in the pin label so screen readers disambiguate', async () => {
+    const wrapper = mountSidebar([groupOf([row({ title: '修复登录按钮配色' })])]);
+
+    expect(pinButton(wrapper).attributes('aria-label'), '未置顶的标签应带会话标题').toContain(
+      '修复登录按钮配色',
+    );
+    wrapper.unmount();
+
+    const pinned = mountSidebar([groupOf([row({ title: '修复登录按钮配色', pinned: true })])]);
+    expect(pinButton(pinned).attributes('aria-label'), '已置顶的标签应带会话标题').toContain(
+      '修复登录按钮配色',
+    );
+    pinned.unmount();
+  });
+
+  it('should not open the palette when the pointer only passes over the pinned dot', async () => {
+    vi.useFakeTimers();
+    try {
+      const wrapper = mountSidebar([groupOf([row({ pinned: true, pinColor: 'blue' })])]);
+      const pin = pinButton(wrapper);
+
+      // 指针扫过：enter 之后紧接着 mousemove，停顿时长从未攒够。
+      await pin.trigger('mouseenter');
+      await vi.advanceTimersByTimeAsync(120);
+      await pin.trigger('mousemove');
+      await vi.advanceTimersByTimeAsync(120);
+
+      expect(
+        wrapper.find('[data-test-id="session-pin-palette"]').exists(),
+        '快速扫过圆点不应弹出调色板',
+      ).toBe(false);
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('should open the palette when the pointer settles on the pinned dot', async () => {
+    vi.useFakeTimers();
+    try {
+      const wrapper = mountSidebar([groupOf([row({ pinned: true, pinColor: 'blue' })])]);
+
+      await pinButton(wrapper).trigger('mouseenter');
+      await vi.advanceTimersByTimeAsync(700);
+
+      expect(
+        wrapper.find('[data-test-id="session-pin-palette"]').exists(),
+        '指针停留后应弹出调色板',
+      ).toBe(true);
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('should open the color palette when the pinned pin is right-clicked', async () => {
+    const wrapper = mountSidebar([groupOf([row({ pinned: true, pinColor: 'blue' })])]);
+
     expect(wrapper.find('[data-test-id="session-pin-palette"]').exists()).toBe(false);
-    await statusPin(wrapper).trigger('click');
+    await openPalette(wrapper);
 
     expect(
       wrapper.find('[data-test-id="session-pin-palette"]').exists(),
-      '点击状态图钉后应打开调色板',
+      '右键钉子后应打开调色板',
     ).toBe(true);
     wrapper.unmount();
   });
@@ -139,7 +339,7 @@ describe('sidebar session pinning', () => {
   it('should re-pin with the picked color when a palette swatch is chosen', async () => {
     const wrapper = mountSidebar([groupOf([row({ pinned: true, pinColor: 'blue' })])]);
 
-    await statusPin(wrapper).trigger('click');
+    await openPalette(wrapper);
     const swatch = wrapper.find('[data-test-id="session-pin-palette"] .pin-red');
     expect(swatch.exists(), '打开色板后应能看到七色色块').toBe(true);
     await swatch.trigger('click');
@@ -151,29 +351,32 @@ describe('sidebar session pinning', () => {
   });
 
   it('should clear the pin color when the colorless option is chosen', async () => {
+    // 「无颜色」不再提供：置顶用彩色圆圈表达，无色置顶没有可见痕迹。
+    // 调色板只提供七色。
     const wrapper = mountSidebar([groupOf([row({ pinned: true, pinColor: 'blue' })])]);
 
-    await statusPin(wrapper).trigger('click');
-    const clear = wrapper.find('[data-test-id="session-pin-clear"]');
-    expect(clear.exists(), '调色板应提供「无颜色」选项').toBe(true);
-    await clear.trigger('click');
+    await openPalette(wrapper);
 
-    // 无色 re-pin：保持置顶、清掉颜色（color 槽位为 undefined）。
-    const pinCalls = wrapper.emitted('pin');
-    expect(pinCalls, '清色应发出无色 pin').toHaveLength(1);
-    expect(pinCalls?.[0]?.[0]).toBe('s-1');
-    expect(pinCalls?.[0]?.[1], '不应携带颜色').toBeUndefined();
-    expect(wrapper.emitted('unpin'), '清色不应取消置顶').toBeUndefined();
+    expect(
+      wrapper.find('[data-test-id="session-pin-clear"]').exists(),
+      '调色板不应再有「无颜色」选项',
+    ).toBe(false);
+    expect(
+      wrapper.findAll('[data-test-id="session-pin-palette"] .pin-sw'),
+      '调色板应只提供七色',
+    ).toHaveLength(7);
     wrapper.unmount();
   });
 
-  it('should render the colored side bar for a pinned session', () => {
+  it('should carry the pin color on the rail circle instead of a side bar', () => {
     const wrapper = mountSidebar([groupOf([row({ pinned: true, pinColor: 'blue' })])]);
 
-    const bar = wrapper.find('[data-test-id="session-pin-bar"]');
-    expect(bar.exists(), '已置顶行应渲染行左缘彩色竖条').toBe(true);
-    expect(bar.classes(), '竖条应带 pinColor 的颜色类').toContain('pin-blue');
-    expect(bar.attributes('aria-hidden'), '竖条是纯视觉装饰').toBe('true');
+    // 颜色只染圆圈（方案 A）：行里不再有独立竖条。
+    expect(
+      wrapper.find('[data-test-id="session-pin-bar"]').exists(),
+      '置顶颜色不再用行左缘竖条表达',
+    ).toBe(false);
+    expect(pinButton(wrapper).classes(), '圆圈应带 pinColor 颜色类').toContain('pin-blue');
     wrapper.unmount();
   });
 });
