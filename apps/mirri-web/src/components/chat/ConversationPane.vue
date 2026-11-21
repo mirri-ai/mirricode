@@ -13,8 +13,7 @@ import ConversationToc, { type ConversationTocItem } from './ConversationToc.vue
 import Icon from '../ui/Icon.vue';
 import IconButton from '../ui/IconButton.vue';
 import Spinner from '../ui/Spinner.vue';
-import Tooltip from '../ui/Tooltip.vue';
-import { getVisibleWorkspaces } from '../../lib/workspacePicker';
+import { pickGreeting } from './greetings';
 import { resolveModelDisplayName } from '../../lib/modelDisplayName';
 import { safeRemove, STORAGE_KEYS } from '../../lib/storage';
 import { isMacosDesktop } from '../../lib/desktopFlag';
@@ -206,50 +205,22 @@ const emit = defineEmits<{
   openInApp: [appId: string];
 }>();
 
-// Empty-composer workspace picker.
-const wsPickOpen = ref(false);
-const wsPickExpanded = ref(false);
-
-const activeWorkspaceLabel = computed(() => {
-  const w = props.workspaces?.find((ws) => ws.id === props.activeWorkspaceId);
-  return w?.name ?? props.workspaceName ?? '';
-});
-
-/** Workspace display names by id — the approval card names the workspace a
- *  scheduled task will land in (never a bare id). */
+// Workspace display names by id — the approval card names the workspace a
+// scheduled task will land in (never a bare id).
 const workspaceNameById = computed<Record<string, string>>(() =>
   Object.fromEntries((props.workspaces ?? []).map((ws) => [ws.id, ws.name])),
 );
 
-const hasWorkspaces = computed(() => (props.workspaces?.length ?? 0) > 0);
+const { t, locale } = useI18n();
 
-const visibleWorkspaces = computed(() =>
-  getVisibleWorkspaces(props.workspaces ?? [], props.activeWorkspaceId, wsPickExpanded.value),
-);
-
-const hiddenWorkspaceCount = computed(
-  () => (props.workspaces?.length ?? 0) - visibleWorkspaces.value.length,
-);
-
-// Collapse the expanded list when the dropdown closes so it doesn't stay open
-// the next time the user opens the menu.
-watch(wsPickOpen, (open) => {
-  if (!open) wsPickExpanded.value = false;
+// The landing greeting is picked ONCE per mount. Re-picking inside the template
+// (or in a computed) would hand back a different sentence on every re-render,
+// which reads as flicker, not variety. Switching sessions remounts this pane
+// (ChatPane's key), so a new empty chat gets a fresh line.
+const greeting = ref(pickGreeting(new Date(), locale.value));
+watch(locale, () => {
+  greeting.value = pickGreeting(new Date(), locale.value);
 });
-
-// W8: the active workspace's honest untrusted state (the closed picker's
-// badge — same indicator the menu items and the sidebar group carry).
-const activeWorkspaceUntrusted = computed(() => {
-  const w = props.workspaces?.find((ws) => ws.id === props.activeWorkspaceId);
-  return w !== undefined && !w.trusted;
-});
-
-function pickWorkspace(id: string): void {
-  wsPickOpen.value = false;
-  if (id !== props.activeWorkspaceId) emit('selectWorkspace', id);
-}
-
-const { t } = useI18n();
 
 // The align toggle was removed with its UI (6e50cb7) — reading layout is
 // always centered now. Drop the old persisted preference so users who once
@@ -1470,79 +1441,47 @@ defineExpose({ loadComposerForEdit, focusComposer, focusApproval, showStaleFileR
           <template v-if="turns.length === 0 && !sessionLoading">
             <!-- Empty session: Composer rendered in the centre of the pane -->
             <div class="empty-spacer" />
-            <div class="empty-hint">
-              <span class="empty-hint-title" :class="{ 'is-starting': starting }">
-                <Spinner v-if="starting" size="sm" />
-                <span>{{ starting ? t('conversation.starting') : t('composer.emptyConversationTitle') }}</span>
-              </span>
-              <span v-if="!starting" class="empty-hint-text">{{ t('composer.emptyConversation') }}</span>
-              <!-- Workspace picker: choose where this new conversation starts.
-                   Hidden while starting — a workspace is already committed. -->
-              <div v-if="hasWorkspaces && !starting" class="ws-pick">
-                <Tooltip :text="t('conversation.switchWorkspace')">
-                  <button type="button" class="ws-pick-btn" @click.stop="wsPickOpen = !wsPickOpen">
-                    <Icon name="folder" size="sm" />
-                    <span class="ws-pick-name">{{ activeWorkspaceLabel }}</span>
-                    <span
-                      v-if="activeWorkspaceUntrusted"
-                      class="ws-pick-item-untrusted"
-                    >{{ t('workspace.untrustedTag') }}</span>
-                    <Icon class="ws-pick-chev" :class="{ open: wsPickOpen }" name="chevron-down" size="sm" />
-                  </button>
-                </Tooltip>
-                <div v-if="wsPickOpen" class="ws-pick-backdrop" @click="wsPickOpen = false" />
-                <div v-if="wsPickOpen" class="ws-pick-menu">
-                  <button
-                    v-for="w in visibleWorkspaces"
-                    :key="w.id"
-                    type="button"
-                    class="ws-pick-item"
-                    :class="{ on: w.id === activeWorkspaceId }"
-                    @click.stop="pickWorkspace(w.id)"
-                  >
-                    <span class="ws-pick-item-name">
-                      {{ w.name }}
-                      <!-- W8: the honest untrusted indicator (US4.2). -->
-                      <span
-                        v-if="!w.trusted"
-                        class="ws-pick-item-untrusted"
-                        :title="t('workspace.untrustedTitle')"
-                      >{{ t('workspace.untrustedTag') }}</span>
-                    </span>
-                    <span class="ws-pick-item-path">{{ w.shortPath }}</span>
-                  </button>
-                  <button
-                    v-if="hiddenWorkspaceCount > 0"
-                    type="button"
-                    class="ws-pick-item ws-pick-more"
-                    @click.stop="wsPickExpanded = !wsPickExpanded"
-                  >
-                    <span>{{ t('conversation.moreWorkspaces', { count: hiddenWorkspaceCount }) }}</span>
-                  </button>
-                  <div class="ws-pick-divider" />
-                  <button
-                    type="button"
-                    class="ws-pick-action"
-                    @click.stop="wsPickOpen = false; emit('addWorkspace')"
-                  >
-                    <Icon name="plus" size="sm" />
-                    <span>{{ t('conversation.addWorkspace') }}</span>
-                  </button>
+            <div class="empty-hero">
+              <!-- The product mark, large, with the greeting overlapping its
+                   lower third. The mark is painted TWICE at the same size — a
+                   sharp copy and a blurred copy — and their masks cross over, so
+                   it stays crisp on top and dissolves into blur exactly where
+                   the greeting covers it. That is what keeps a mark this large
+                   from competing with the words: it loses focus, not just
+                   contrast.
+                   The soft copy fades back out at the bottom; leaving it at full
+                   strength would drag a grey smear under the greeting.
+                   Inlined rather than <img src>, because an <img> is an isolated
+                   document — its currentColor never sees the page's colour, so
+                   it would paint black in the dark theme. -->
+              <div v-if="!starting" class="mark-figure" aria-hidden="true">
+                <div class="mk mk-sharp">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="471 471 594 578" fill="none">
+                    <g stroke="currentColor" stroke-width="9" stroke-linejoin="miter">
+                      <polygon points="480,480 480,1040 768,868" />
+                      <polygon points="768,700 1056,480 1056,1040 768,868" />
+                    </g>
+                  </svg>
+                </div>
+                <div class="mk mk-soft">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="471 471 594 578" fill="none">
+                    <g stroke="currentColor" stroke-width="9" stroke-linejoin="miter">
+                      <polygon points="480,480 480,1040 768,868" />
+                      <polygon points="768,700 1056,480 1056,1040 768,868" />
+                    </g>
+                  </svg>
                 </div>
               </div>
-              <button
-                v-else-if="!starting"
-                type="button"
-                class="empty-add-workspace"
-                @click="emit('addWorkspace')"
-              >
-                <Icon name="folder-plus" size="sm" />
-                <span>{{ t('conversation.addWorkspace') }}</span>
-              </button>
+              <h1 v-if="starting" class="empty-starting">
+                <Spinner size="sm" />
+                <span>{{ t('conversation.starting') }}</span>
+              </h1>
+              <h1 v-else class="greeting">{{ greeting }}</h1>
             </div>
             <Composer
               ref="emptyComposerRef"
               class="empty-composer"
+              landing
               :session-id="sessionId"
               :running="running"
               :queued="queued"
@@ -1561,6 +1500,9 @@ defineExpose({ loadComposerForEdit, focusComposer, focusApproval, showStaleFileR
               :skills="skills"
               :starting="starting"
               :supports-file-references="supportsFileReferences"
+              :workspaces="workspaces ?? []"
+              :active-workspace-id="activeWorkspaceId"
+              :workspace-name="workspaceName"
               hide-context
               @submit="handleComposerSubmit"
               @steer="emit('steer', $event)"
@@ -1582,6 +1524,8 @@ defineExpose({ loadComposerForEdit, focusComposer, focusApproval, showStaleFileR
               @compact="emit('compact')"
               @pick-model="emit('pickModel')"
               @select-model="emit('selectModel', $event)"
+              @select-workspace="emit('selectWorkspace', $event)"
+              @add-workspace="emit('addWorkspace')"
             />
             <div class="empty-spacer" />
           </template>
@@ -1830,198 +1774,111 @@ defineExpose({ loadComposerForEdit, focusComposer, focusApproval, showStaleFileR
 /* Empty-workspace spacers: push the centred Composer to the vertical middle. */
 .empty-spacer { flex: 1; }
 
-/* Empty-session hint above the centred composer */
-.empty-hint {
+/* ---------------- Empty-session hero ---------------- */
+
+/* The landing stage above the composer: the product mark, with the greeting
+   overlapping its lower third. */
+.empty-hero {
   flex: none;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  text-align: center;
-  padding: 0 16px 16px;
+  padding: 0 16px 26px;
+}
+
+/* The mark is drawn TWICE at the same size — a sharp copy and a blurred copy —
+   and their masks cross over, so it reads crisp at the top and dissolves into
+   blur toward the bottom, exactly where the greeting sits on top of it. The blur
+   is not what fades the mark; the masks are. Between the two, a mark this large
+   can sit behind the words without competing with them: it loses focus, not
+   just contrast.
+   Painted in `currentColor` inline (not <img src>): an <img> is an isolated
+   document, so its currentColor never sees the page's colour and it would render
+   black in the dark theme. */
+.mark-figure {
+  --mark-w: 300px;
+  --mark-blur: 11px;
+  /* Line art at a solid mark's opacity reads far heavier — thin strokes
+     concentrate the eye — so the outline gets its own, much lower ceiling. */
+  --mark-opacity: 0.07;
+  position: relative;
+  flex: none;
+  width: min(var(--mark-w), 72vw);
+  opacity: var(--mark-opacity);
+  pointer-events: none;
+  user-select: none;
   color: var(--color-text);
+  /* Pull the greeting up into the dissolving band: the words overlap the mark's
+     lower third, and that overlap is the effect. */
+  margin-bottom: calc(min(var(--mark-w), 72vw) * -0.30);
+}
+html[data-color-scheme="dark"] .mark-figure { --mark-opacity: 0.11; }
+@media (prefers-color-scheme: dark) {
+  html[data-color-scheme="system"] .mark-figure { --mark-opacity: 0.11; }
+}
+
+.mk {
+  display: block;
+  width: 100%;
+}
+.mk svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+/* Sharp copy: full strength down to 40% of the mark, gone by 68%. */
+.mk-sharp {
+  -webkit-mask-image: linear-gradient(to bottom, #000 40%, transparent 68%);
+  mask-image: linear-gradient(to bottom, #000 40%, transparent 68%);
+}
+/* Blurred copy: the mirror image, peaking at 58% and returning to transparent by
+   84%. Fading it back out at the bottom is load-bearing — a full-strength
+   blurred slab under the greeting reads as a stain, not a watermark. */
+.mk-soft {
+  position: absolute;
+  inset: 0;
+  filter: blur(var(--mark-blur));
+  -webkit-mask-image: linear-gradient(to bottom, transparent 40%, #000 58%, transparent 84%);
+  mask-image: linear-gradient(to bottom, transparent 40%, #000 58%, transparent 84%);
+}
+
+.greeting {
+  position: relative;
+  z-index: 1;
+  text-align: center;
   font-family: var(--sans);
+  font-size: clamp(26px, 2.9vw, 36px);
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+  color: var(--color-text);
+  /* Gap to the composer = one line of the greeting's own type, so the air under
+     the headline scales with it instead of staying pinned at a pixel value. */
+  margin: 0 0 1em;
+  animation: greet-in 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
-.empty-hint-title {
-  font-size: calc(var(--ui-font-size) + 16px);
-  font-weight: 500;
-}
-.empty-hint-title.is-starting {
+
+/* Creating the first session: the greeting steps aside for the wait state. */
+.empty-starting {
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   gap: 9px;
-  color: var(--dim);
+  margin: 0 0 1em;
+  font-family: var(--sans);
+  font-size: calc(var(--ui-font-size) + 16px);
   font-weight: 400;
-}
-.empty-hint-text {
-  display: inline-block;
-  font-size: var(--text-base);
   color: var(--dim);
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.empty-add-workspace {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  min-height: 34px;
-  padding: 7px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
-  color: var(--dim);
-  font-family: var(--mono);
-  font-size: var(--ui-font-size-sm);
-  cursor: pointer;
-}
-.empty-add-workspace:hover {
-  border-color: var(--color-accent-bd);
-  color: var(--color-text);
-}
-.empty-add-workspace:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
-}
-.empty-add-workspace svg {
-  flex: none;
 }
 
-/* Empty-composer workspace picker */
-.ws-pick {
-  position: relative;
-  font-family: var(--mono);
+@keyframes greet-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
 }
-.ws-pick-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  width: max-content;
-  max-width: min(100%, calc(100vw - var(--space-8)));
-  padding: 5px 10px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  color: var(--dim);
-  font-family: inherit;
-  font-size: var(--ui-font-size-sm);
-  cursor: pointer;
+@media (prefers-reduced-motion: reduce) {
+  .greeting { animation: none; }
 }
-.ws-pick-btn:hover { border-color: var(--color-accent-bd); color: var(--color-text); }
-.ws-pick-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ws-pick-chev { flex: none; color: var(--muted); transition: transform 0.15s; }
-.ws-pick-chev.open { transform: rotate(180deg); }
-.ws-pick-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-sticky);
-}
-.ws-pick-menu {
-  position: absolute;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  left: 50%;
-  transform: translateX(-50%);
-  top: calc(100% + 6px);
-  z-index: var(--z-dropdown);
-  width: max-content;
-  min-width: min(180px, calc(100cqw - var(--space-8)));
-  max-width: calc(100cqw - var(--space-8));
-  max-height: 50vh;
-  overflow: hidden auto;
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  padding: 4px;
-}
-.ws-pick-item {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  width: 100%;
-  text-align: left;
-  background: none;
-  border: none;
-  border-radius: 6px;
-  padding: 6px 10px;
-  cursor: pointer;
-  font-family: var(--mono);
-}
-.ws-pick-item:hover { background: var(--panel2); }
-.ws-pick-item.on { background: var(--color-accent-soft); }
-.ws-pick-item-name {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--ui-font-size-sm);
-  font-weight: 500;
-  color: var(--color-text);
-}
-.ws-pick-item.on .ws-pick-item-name { color: var(--color-accent-hover); }
-.ws-pick-item-untrusted {
-  margin-left: 6px;
-  font-size: var(--text-xs);
-  line-height: 1;
-  padding: 1px 4px;
-  border-radius: 4px;
-  color: var(--dim);
-  background: var(--panel2, var(--panel));
-  border: 1px solid var(--color-line);
-  vertical-align: middle;
-  user-select: none;
-}
-
-.ws-pick-item-path {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--text-base);
-  color: var(--muted);
-}
-.ws-pick-item.ws-pick-more {
-  flex-direction: row;
-  justify-content: flex-start;
-  font-size: var(--text-base);
-  font-weight: var(--weight-medium);
-  color: var(--dim);
-}
-.ws-pick-item.ws-pick-more:hover { color: var(--color-text); }
-.ws-pick-item.ws-pick-more span,
-.ws-pick-action span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.ws-pick-divider {
-  height: 1px;
-  margin: 4px 6px;
-  background: var(--line);
-}
-.ws-pick-action {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  width: 100%;
-  text-align: left;
-  background: none;
-  border: none;
-  border-radius: 6px;
-  padding: 7px 10px;
-  cursor: pointer;
-  font-family: var(--mono);
-  font-size: var(--ui-font-size-sm);
-  font-weight: var(--weight-medium);
-  color: var(--dim);
-}
-.ws-pick-action:hover { background: var(--panel2); color: var(--color-text); }
-.ws-pick-action svg { flex: none; }
 
 /* Chat scroll area: owns only messages; the dock is the bottom sibling. */
 .chat-scroll {
