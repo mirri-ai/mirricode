@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.3.1
+
+### Patch Changes
+
+- [#236](https://github.com/mirri-ai/mirricode/pull/236) [`14c9f72`](https://github.com/mirri-ai/mirricode/commit/14c9f724420e04db839f0c83450cb4ba6d7433e6) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Animate the session list when pinning or unpinning, so rows glide into their new slots instead of jumping. The color palette on a pinned dot now opens only after the pointer settles on it, so sweeping across the sidebar no longer pops a popover over the list.
+
+- [#236](https://github.com/mirri-ai/mirricode/pull/236) [`14c9f72`](https://github.com/mirri-ai/mirricode/commit/14c9f724420e04db839f0c83450cb4ba6d7433e6) Thanks [@im-bravo](https://github.com/im-bravo)! - web: The session row's whole state now rides one indicator in the leading slot the sidebar already had — running, pinned, pin colour and unread — instead of a separate pin column that pushed every title to the right. A running session shows a spinner in its own pin colour (or a neutral one when unpinned), and an unread result sits as a corner badge punched out of the dot, so the seven pin colours and both themes stay legible. New pins pick a random preset colour, so pinning a few sessions in a row leaves them distinguishable at a glance rather than a column of identical dots.
+
 ## 3.3.0
 
 ### Minor Changes
