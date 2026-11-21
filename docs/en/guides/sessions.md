@@ -34,6 +34,8 @@ Past sessions are stored locally and can be resumed without any special flags:
 
 **In the web UI:** the session sidebar lists the workspace's past sessions — select one to continue it.
 
+> The longer a session's history, the longer it takes to load when opened. Sending a message before the load finishes answers a retryable "the session is still restoring" notice instead of accepting the message — wait a moment and send it again. Scheduled reminders that come due during the load are delivered once it finishes rather than being lost.
+
 **List all sessions:**
 
 ```sh

@@ -133,6 +133,17 @@ async fn drive_silence_tick(
     .await;
 }
 
+/// A sweep already fired: the latch is set and the boundary is "now", so a
+/// pass through it neither converges anything nor rewrites a live run.
+/// Tests that drive passes directly use this instead of arming a real sweep
+/// (only the restart-recovery tests arm one, and they do it themselves).
+fn swept_orphan_sweep() -> std::sync::Arc<super::cron_driver::OrphanSweep> {
+    std::sync::Arc::new(super::cron_driver::OrphanSweep {
+        latched: std::sync::atomic::AtomicBool::new(true),
+        opened_before: chrono::Utc::now(),
+    })
+}
+
 /// Drive ONE SERVER-level cron pass for the default workspace. The orphan
 /// latch is pre-set (`true`) so a repeated call is a pure due-check + drain
 /// instead of re-running the stale-Running convergence.
@@ -147,7 +158,7 @@ async fn drive_cron_pass(server: &EmbeddedServer) {
         Arc::new(server.workspace_run_spawner()),
         Arc::clone(&server.steer_buffers),
         workspace_id,
-        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        swept_orphan_sweep(),
     )
     .await;
 }
@@ -206,7 +217,7 @@ async fn drive_cron_pass_capture(server: &EmbeddedServer) -> Vec<CapturedFire> {
         executor.clone(),
         Arc::clone(&server.steer_buffers),
         workspace_id,
-        Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        swept_orphan_sweep(),
     )
     .await;
     std::mem::take(
@@ -543,6 +554,66 @@ async fn should_answer_session_list_before_census_settles() {
         .expect("session.create");
     assert_eq!(created["title"], "after the gates");
     server.set_settlement_probe(None);
+}
+
+/// Given a session whose restore is still in flight, when a message is sent
+/// to it, then the send is refused with the retryable conflict instead of
+/// starting a turn.
+///
+/// The resume path registers the scope in the workspace's live table before
+/// the wire-log replay and the agent rebuild finish, so for that window the
+/// session is resolvable but its wire log has no writer. A turn started then
+/// records its `turn.prompt` opener into a detached slot — a silently
+/// discarded write that leaves an assistant reply with no visible question in
+/// the transcript. The gate defers the send instead.
+#[tokio::test]
+async fn should_refuse_a_message_send_when_the_session_is_still_restoring() {
+    let (server, _tmp) = test_server(None);
+    let created = server
+        .call_method("session.create", json!({ "title": "restoring" }))
+        .await
+        .expect("session.create");
+    let session_id = created["id"].as_str().unwrap().to_string();
+    // Simulate the resume window: the scope is live but not yet runnable.
+    let session = server
+        .session_manager()
+        .get_session(&SessionId::new(&session_id))
+        .await
+        .expect("the session is live");
+    session.mark_restoring();
+
+    let refused = server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "too early" }),
+        )
+        .await;
+
+    let error = refused.expect_err("a restoring session must refuse the send");
+    // The conflict's domain code is the retry signal the client routes on.
+    let mirri_transport::adapter::EngineError::Rpc { data, .. } = &error else {
+        panic!("the refusal rides the RPC error shape: {error}");
+    };
+    let code = data
+        .as_ref()
+        .and_then(|data| data.get("domainCode"))
+        .and_then(|code| code.as_str())
+        .unwrap_or_default();
+    assert_eq!(
+        code,
+        mirri_core::ErrorCode::SessionConflict.as_str(),
+        "the refusal names the retryable conflict: {error}"
+    );
+
+    // And once the restore settles the same send proceeds.
+    session.mark_ready();
+    let _ = server
+        .call_method(
+            "message.send",
+            json!({ "session_id": &session_id, "text": "after the restore" }),
+        )
+        .await
+        .map_err(|error| error.to_string());
 }
 
 /// should wait for the recovery check before answering recovery.list
@@ -24930,10 +25001,32 @@ impl RetentionDeleteFixture {
             .unwrap();
         }
         drop(log);
-        persistence
-            .save_state(&session_id, &empty_session_metadata("Delete test"))
-            .await
-            .unwrap();
+        // Seed the session the way PRODUCTION creates one: one metadata
+        // record, written to BOTH sources with the SAME `created_at`.
+        //
+        // The single record matters. `save_state` writes state.json,
+        // `metadata_store.apply` inserts the index row — and the store stamps
+        // `created_at` itself from its own `Utc::now()` when the patch does
+        // not carry one. Two clock readings taken microseconds apart straddle
+        // a whole-second boundary often enough that the row and state.json
+        // disagree by one second once `stamp()` truncates to seconds, which
+        // is what `should_carry_the_created_stamp_on_archive_view_rows_when_listing`
+        // checks. Production never has that gap: the create path writes the
+        // row through `creation_metadata_patch`, which carries the scope's own
+        // stamp (see `creation_metadata_patch`'s doc). The fixture mirrors it.
+        let metadata = empty_session_metadata("Delete test");
+        persistence.save_state(&session_id, &metadata).await.unwrap();
+        {
+            use mirri_core::session::metadata_port::MetadataStorePort as _;
+            fixture_store
+                .apply(
+                    &session_id,
+                    &workspace_key,
+                    mirri_core::session::manager::creation_metadata_patch(&metadata),
+                )
+                .await
+                .expect("the fixture seeds the creation row");
+        }
 
         let workspace = Arc::new(WorkspaceScope::new(
             WorkspaceId::new("retention-delete-ws"),
@@ -24973,6 +25066,11 @@ impl RetentionDeleteFixture {
 /// Given an archived session, when the archive view is listed, then the
 /// row carries the session's created stamp (ADR-010: the merged view's
 /// created-time sort key) matching the state.json record.
+///
+/// The fixture seeds both sources from ONE metadata record (`save_state` +
+/// the production creation patch), which is what the engine's create path
+/// does — so this compares two views of the same instant rather than two
+/// independent clock readings. See `RetentionDeleteFixture::new`.
 #[tokio::test]
 async fn should_carry_the_created_stamp_on_archive_view_rows_when_listing() {
     let fixture = RetentionDeleteFixture::new().await;

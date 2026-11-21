@@ -1177,7 +1177,9 @@ async fn should_recover_from_a_stale_running_record_after_the_server_restarts() 
         Arc::new(restarted.workspace_run_spawner()),
         Arc::clone(&restarted.steer_buffers),
         default_workspace_id(&restarted),
-        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        Arc::new(crate::embedded_server::cron_driver::OrphanSweep::armed_at(
+            chrono::Utc::now(),
+        )),
     )
     .await;
     let runs = restarted_cron.runs(&task_id);

@@ -1841,7 +1841,21 @@ impl WorkspaceCronManager {
     /// Running, so the next fire opens a fresh run (a Skip/Queue task
     /// wedged behind the dead Running is un-wedged). Returns the
     /// converged (task_id, run_id) pairs.
-    pub async fn fail_orphan_running_runs(&self, reason: &str) -> Vec<(String, String)> {
+    ///
+    /// `opened_before` is the sweep's orphan boundary — the instant the
+    /// sweeping scheduler started. A run record whose `started_at` is NOT
+    /// strictly earlier than this belongs to the CURRENT process: the
+    /// scheduler is spawned lazily by the first RPC, so a `cron.trigger`
+    /// that lands before the first workspace pass opens a live run the
+    /// sweep would otherwise converge as a crash orphan — turning a
+    /// running task into `Failed{服务重启中断}` while its turn is still
+    /// executing. Records written by a previous process always predate the
+    /// new process's scheduler, so the restart recovery is unaffected.
+    pub async fn fail_orphan_running_runs(
+        &self,
+        reason: &str,
+        opened_before: DateTime<Utc>,
+    ) -> Vec<(String, String)> {
         // The cheap pre-check first (the expire_lapsed_proposals posture):
         // no Running record means NO store write — a no-op mutate would
         // still create the cron/ directory + tasks.json file where none
@@ -1852,9 +1866,9 @@ impl WorkspaceCronManager {
                 .runs
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            runs.values()
-                .flatten()
-                .any(|run| run.status.is_in_flight())
+            runs.values().flatten().any(|run| {
+                run.status.is_in_flight() && run.started_at < opened_before
+            })
         };
         if !any_running {
             return Vec::new();
@@ -1867,7 +1881,7 @@ impl WorkspaceCronManager {
             let sweep = self.mutate_store(move |document| {
                 for (task_id, runs) in document.runs.iter_mut() {
                     for run in runs.iter_mut() {
-                        if run.status.is_in_flight() {
+                        if run.status.is_in_flight() && run.started_at < opened_before {
                             run.status = RunStatus::Failed;
                             run.ended_at = Some(chrono::Utc::now());
                             run.duration_ms = Some(
@@ -2985,8 +2999,12 @@ mod tests {
                 scheduled_at: None,
             },
         ));
-        // The sweep (the scheduler's first pass calls this).
-        let swept = futures_executor_block_on(manager.fail_orphan_running_runs("服务重启中断"));
+        // The sweep (the scheduler's first pass calls this). The boundary
+        // is taken AFTER the record landed: the record predates this
+        // instant, so it reads as a previous process's orphan.
+        let boundary = Utc::now();
+        let swept =
+            futures_executor_block_on(manager.fail_orphan_running_runs("服务重启中断", boundary));
         assert_eq!(swept, vec![(id.clone(), "run-orphan".to_string())]);
         let runs = manager.runs(&id);
         let converged = runs
@@ -3004,6 +3022,57 @@ mod tests {
                 .iter()
                 .all(|run| run.status != RunStatus::Running),
             "the orphan convergence persisted"
+        );
+    }
+
+    /// Given a run record THIS process opened (its `started_at` is later than
+    /// the scheduler's construction instant), when the orphan sweep runs,
+    /// then the live run is left alone.
+    ///
+    /// The scheduler is spawned lazily by the first RPC and then waits for
+    /// the startup housekeeping, so a `cron.trigger` (or a due fire) can open
+    /// a run before the first workspace pass sweeps. Without the boundary the
+    /// sweep converges that run to `Failed{服务重启中断}` while its turn is
+    /// still executing — the history then reports a failure that never
+    /// happened, and the run's usage/terminal state no longer describe it.
+    #[tokio::test]
+    async fn should_leave_a_run_this_process_opened_untouched_on_the_orphan_sweep() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = std::sync::Arc::new(ws_manager(&tmp));
+        let id = manager
+            .add(
+                "0 9 1 1 *".into(),
+                "live run".into(),
+                true,
+                CronCreateOptions::default(),
+            )
+            .await
+            .unwrap();
+        // The sweep's boundary is taken at scheduler construction…
+        let boundary = Utc::now();
+        // …and the run opens afterwards — it belongs to this process.
+        assert!(matches!(
+            manager.try_open_run(&id, false, opener_for("run-live")).await,
+            OpenRunOutcome::Opened(_)
+        ));
+
+        let swept = manager
+            .fail_orphan_running_runs("服务重启中断", boundary)
+            .await;
+
+        assert!(
+            swept.is_empty(),
+            "a run opened after the sweep boundary is not an orphan: {swept:?}"
+        );
+        let runs = manager.runs(&id);
+        assert_eq!(
+            runs[0].status,
+            RunStatus::Running,
+            "the live run keeps running: {runs:?}"
+        );
+        assert!(
+            runs[0].skip_reason.is_none(),
+            "and it carries no restart cause: {runs:?}"
         );
     }
 
@@ -3145,7 +3214,12 @@ mod tests {
         manager
             .set_run_status(&id, "run-o", RunStatus::WaitingApproval)
             .await;
-        let swept = manager.fail_orphan_running_runs("进程重启").await;
+        // The sweep boundary postdates the record (a previous process's
+        // run, from this scheduler's point of view).
+        let boundary = Utc::now();
+        let swept = manager
+            .fail_orphan_running_runs("进程重启", boundary)
+            .await;
         assert_eq!(swept, vec![(id.clone(), "run-o".to_string())]);
         assert_eq!(manager.runs(&id)[0].status, RunStatus::Failed);
     }
