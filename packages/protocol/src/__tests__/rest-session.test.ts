@@ -37,7 +37,7 @@ describe('createSessionRequestSchema', () => {
 
   it('rejects metadata without cwd', () => {
     expect(
-      createSessionRequestSchema.safeParse({ metadata: {} } as unknown).success,
+      createSessionRequestSchema.safeParse({ metadata: {} }).success,
     ).toBe(false);
   });
 

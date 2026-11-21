@@ -419,7 +419,7 @@ describe('useModelProviderState thinking on model selection', () => {
       skillName: 'gen-changesets',
       promptId: 'prompt_queued_1',
       status: 'queued',
-    } as never);
+    });
 
     await provider.activateSkill('gen-changesets');
 
@@ -447,7 +447,7 @@ describe('useModelProviderState thinking on model selection', () => {
       skillName: 'gen-changesets',
       promptId: 'prompt_queued_1',
       status: 'queued',
-    } as never);
+    });
 
     await provider.activateSkill('gen-changesets');
 
@@ -495,7 +495,7 @@ describe('useModelProviderState thinking on model selection', () => {
         activeSession: { id: 'session-1', model: maxOnlyAppModel.id },
         defaultModel: maxOnlyAppModel.id,
       }),
-    ) as ExtendedState;
+    );
     state.sessions = [
       { id: 'session-1', model: maxOnlyAppModel.id },
       { id: 'session-2', model: effortAppModel.id },
@@ -520,7 +520,7 @@ describe('useModelProviderState thinking on model selection', () => {
         activeSession: { id: 'session-1', model: effortAppModel.id },
         defaultModel: effortAppModel.id,
       }),
-    ) as ExtendedState;
+    );
     state.sessions = [
       { id: 'session-1', model: effortAppModel.id },
       { id: 'session-2', model: effortAppModel.id },
@@ -542,7 +542,7 @@ describe('useModelProviderState thinking on model selection', () => {
         activeSession: { id: 'session-1', model: effortAppModel.id },
         defaultModel: effortAppModel.id,
       }),
-    ) as ExtendedState;
+    );
     state.sessions = [
       { id: 'session-1', model: effortAppModel.id },
       { id: 'session-2', model: effortAppModel.id },

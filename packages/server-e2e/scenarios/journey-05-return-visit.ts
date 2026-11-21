@@ -88,7 +88,7 @@ async function getSession(proc: ProcHandle, sid: string): Promise<Record<string,
 
 /** The durable seq carried by an event notification, when present. */
 function eventSeq(n: ObservedNotification): number | undefined {
-  return typeof n.params['seq'] === 'number' ? (n.params['seq'] as number) : undefined;
+  return typeof n.params['seq'] === 'number' ? n.params['seq'] : undefined;
 }
 
 async function main(): Promise<void> {

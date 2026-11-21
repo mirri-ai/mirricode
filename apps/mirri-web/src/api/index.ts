@@ -82,9 +82,10 @@ async function doInit(): Promise<MirriWebApi> {
 function createRustApi(origin: string): MirriWebApi {
   const url = buildRpcWsUrl(origin);
   const token = getCredential();
-  // WsRpcApi implements Partial<MirriWebApi>; the cast is intentional —
+  // WsRpcApi implements Partial<MirriWebApi>; the double cast is intentional —
   // missing methods will surface as runtime errors only if called, and the
-  // migration is incremental (methods are added over time).
+  // migration is incremental (methods are added over time). A single `as` is
+  // not enough because the two interfaces do not overlap sufficiently.
   return new WsRpcApi(url, origin, token) as unknown as MirriWebApi;
 }
 

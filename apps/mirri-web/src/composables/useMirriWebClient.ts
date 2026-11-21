@@ -446,7 +446,7 @@ const rawState: ExtendedState = reactive({
   dangerousBypassAuth: false,
   backend: 'v1',
   workspaceName: 'mirri-web',
-  connection: 'disconnected' as ConnectionState,
+  connection: 'disconnected',
   permission: loadPermissionFromStorage(),
   // Resolved per session/model once the catalog/session is known (loadModels
   // and the active-session watcher in useModelProviderState) — the per-session
@@ -1018,7 +1018,7 @@ function applyEvent(event: ReturnType<typeof toAppEvent>, sessionId: string, seq
     }
     if (event.thinking !== undefined) {
       if (rawState.thinkingBySession[event.sessionId] !== event.thinking) {
-        rawState.thinkingBySession[event.sessionId] = event.thinking as ThinkingLevel;
+        rawState.thinkingBySession[event.sessionId] = event.thinking;
       }
     }
   }

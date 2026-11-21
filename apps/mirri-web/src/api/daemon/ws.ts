@@ -423,6 +423,9 @@ export class DaemonEventSocket {
 
         if (decision.route === 'protocol') {
           // Genuine projected protocol event → existing toAppEvent() path.
+          // `frame` is the raw WS payload, so the double cast is the boundary
+          // conversion into the wire-event shape (there is no runtime check
+          // here by design — classifyFrame already decided the route).
           this.handlers.onWireEvent(frame as unknown as WireEvent);
           break;
         }
@@ -532,7 +535,7 @@ export class DaemonEventSocket {
     const existing = this.subscriptions.get(sid);
     if (!existing) return; // not a session we manage
     if (seq <= existing.seq && existing.epoch !== undefined) return;
-    const epoch = typeof frame['epoch'] === 'string' ? (frame['epoch']) : existing.epoch;
+    const epoch = typeof frame['epoch'] === 'string' ? frame['epoch'] : existing.epoch;
     this.subscriptions.set(sid, { seq: Math.max(seq, existing.seq), epoch });
   }
 

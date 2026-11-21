@@ -50,7 +50,7 @@ describe('approval expiry honesty (D-13)', () => {
       tool_name: 'Bash',
       action: 'execute Bash',
       created_at: '2026-01-01T00:00:00Z',
-    } as never);
+    });
     expect(approval.expiresAt).toBeUndefined();
   });
 
@@ -71,7 +71,7 @@ describe('approval expiry honesty (D-13)', () => {
         action: 'execute Bash',
         created_at: '2026-01-01T00:00:00Z',
       }],
-    } as never, 's1');
+    }, 's1');
     expect(snapshot.pendingApprovals[0].expiresAt).toBeUndefined();
   });
 });
@@ -92,7 +92,7 @@ describe('snapshot approval facet (B9 R4)', () => {
         approvalRule: 'Bash',
         created_at: '2026-01-01T00:00:00Z',
       }],
-    } as never, 's1');
+    }, 's1');
     expect(snapshot.pendingApprovals[0].approvalRule).toBe('Bash');
   });
 
@@ -114,7 +114,7 @@ describe('snapshot approval facet (B9 R4)', () => {
         approval_rule: 'Bash',
         created_at: '2026-01-01T00:00:00Z',
       }],
-    } as never, 's1');
+    }, 's1');
     expect(snapshot.pendingApprovals[0].approvalRule).toBe('Bash');
   });
 
@@ -132,7 +132,7 @@ describe('snapshot approval facet (B9 R4)', () => {
         action: 'execute Bash',
         created_at: '2026-01-01T00:00:00Z',
       }],
-    } as never, 's1');
+    }, 's1');
     expect(snapshot.pendingApprovals[0].approvalRule).toBeUndefined();
   });
 });

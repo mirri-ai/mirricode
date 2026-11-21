@@ -160,7 +160,7 @@ export function validateNotifyPayload(
   if (tag !== undefined) {
     if (typeof tag !== 'string' || tag.length === 0 || tag.length > MAX_TAG_LENGTH) return null;
   }
-  return { title, body, tag: tag as string | undefined };
+  return { title, body, tag: tag };
 }
 
 /** `{ count }` for the dock/taskbar badge — non-negative integer. */

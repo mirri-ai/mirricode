@@ -25,7 +25,7 @@ const apiMock = vi.hoisted(() => {
       if (!(prop in target)) target[prop] = vi.fn().mockResolvedValue(null);
       return target[prop];
     },
-  }) as Record<string, ReturnType<typeof vi.fn>>;
+  });
 });
 
 vi.mock('../src/api', () => ({

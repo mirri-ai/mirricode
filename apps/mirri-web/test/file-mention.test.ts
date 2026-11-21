@@ -14,7 +14,7 @@ describe('fileMention node', () => {
       kind: 'file',
       root: 'webapp',
     });
-    const render = FileMention.config.renderHTML!.call(FileMention as never, props as never) as unknown[];
+    const render = FileMention.config.renderHTML!.call(FileMention as never, props) as unknown[];
 
     // Outer chip span with the fileMention marker and both chip classes.
     expect(render[0]).toBe('span');
@@ -30,7 +30,7 @@ describe('fileMention node', () => {
     // 0×0 unknown element — the chip icon vanishes); the path child stays bare.
     const svgSpec = render.find((c) => Array.isArray(c) && c[0].includes('svg')) as unknown[];
     expect((svgSpec[0] as string).startsWith('http://www.w3.org/2000/svg')).toBe(true);
-    expect((svgSpec as unknown[]).some((c) => Array.isArray(c) && c[0] === 'path')).toBe(true);
+    expect(svgSpec.some((c) => Array.isArray(c) && c[0] === 'path')).toBe(true);
 
     // Display text child.
     const nameSpec = render.find((c) => Array.isArray(c) && (c[1] as { class?: string })?.class === 'ref-chip-name');

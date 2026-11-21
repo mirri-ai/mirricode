@@ -254,7 +254,7 @@ describe('toAppQuestionRequest — question item spelling (Other parity)', () =>
           allow_other: true,
         },
       ],
-    } as Parameters<typeof toAppQuestionRequest>[0]);
+    });
 
     expect(app.questions[0]).toMatchObject({ multiSelect: true, allowOther: true });
   });
@@ -271,7 +271,7 @@ describe('toAppQuestionRequest — question item spelling (Other parity)', () =>
           allowOther: true,
         },
       ],
-    } as unknown as Parameters<typeof toAppQuestionRequest>[0]);
+    });
 
     expect(app.questions[0]).toMatchObject({ multiSelect: true, allowOther: true });
   });

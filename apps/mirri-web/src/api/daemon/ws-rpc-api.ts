@@ -1606,7 +1606,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
       body.data !== null &&
       typeof body.data === 'object'
         ? (body.data as Record<string, unknown>)
-        : ((body ?? {}) as Record<string, unknown>);
+        : (body ?? {});
 
     const stringField = (...keys: string[]): string => {
       for (const key of keys) {
@@ -3934,7 +3934,7 @@ function rpcContentToAppContent(content: unknown): AppMessageContent[] {
     if (typeof part !== 'object' || part === null) return { type: 'unknown', raw: part };
     const fields = part as Record<string, unknown>;
     if (fields['type'] === 'text' && typeof fields['text'] === 'string') {
-      return { type: 'text', text: fields['text'] as string };
+      return { type: 'text', text: fields['text'] };
     }
     // Context-memory inline file form (resolved bytes, no store id — the
     // server degrades it to `{data,...}` because the protocol `file` part

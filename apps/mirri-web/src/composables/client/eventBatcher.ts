@@ -53,6 +53,9 @@ const defaultScheduler: EventBatcherScheduler = {
     if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(handle);
   },
   requestTask(callback) {
+    // `setTimeout` returns a `Timeout` object under Node and a number in the
+    // browser; the scheduler contract is number-typed, so the boundary cast
+    // states that difference instead of leaving it to infer.
     return setTimeout(callback, FALLBACK_TASK_DELAY_MS) as unknown as number;
   },
   cancelTask(handle) {
@@ -291,10 +294,12 @@ function mergeUsageEvents(
   prev: Extract<AppEvent, { type: 'sessionUsageUpdated' }>,
   next: Extract<AppEvent, { type: 'sessionUsageUpdated' }>,
 ): Extract<AppEvent, { type: 'sessionUsageUpdated' }> {
-  type UsageEvent = Extract<AppEvent, { type: 'sessionUsageUpdated' }>;
+  // An absent field inherits the previous frame's value; the generic keeps each
+  // key's own type, so `opt('model')` stays `string | undefined` rather than
+  // widening to the union of every field.
   const opt = <K extends 'model' | 'swarmMode' | 'planMode' | 'collaborationMode' | 'thinking'>(
     key: K,
-  ) => (next[key] ?? prev[key]) as UsageEvent[K];
+  ) => next[key] ?? prev[key];
   return {
     ...next,
     model: opt('model'),

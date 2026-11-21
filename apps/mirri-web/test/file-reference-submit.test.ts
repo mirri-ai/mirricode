@@ -343,7 +343,7 @@ describe('submit pipeline M4 truncation probe + M5 echo metadata', () => {
     const updateSessionMessages = vi.fn();
     const deps = createDeps();
     deps.updateSessionMessages = updateSessionMessages;
-    const ws = useWorkspaceState(createState('v3'), deps as unknown as UseWorkspaceStateDeps);
+    const ws = useWorkspaceState(createState('v3'), deps);
 
     const outcome = await ws.submitPromptInternal('sess_1', '看 @big.log', undefined, [
       { path: 'big.log', kind: 'file' },
@@ -364,7 +364,7 @@ describe('submit pipeline M4 truncation probe + M5 echo metadata', () => {
     const updateSessionMessages = vi.fn();
     const deps = createDeps();
     deps.updateSessionMessages = updateSessionMessages;
-    const ws = useWorkspaceState(createState('v3'), deps as unknown as UseWorkspaceStateDeps);
+    const ws = useWorkspaceState(createState('v3'), deps);
 
     const outcome = await ws.submitPromptInternal('sess_1', '看 @small.ts', undefined, [
       { path: 'small.ts', kind: 'file' },
@@ -383,7 +383,7 @@ describe('submit pipeline M4 truncation probe + M5 echo metadata', () => {
     const updateSessionMessages = vi.fn();
     const deps = createDeps();
     deps.updateSessionMessages = updateSessionMessages;
-    const ws = useWorkspaceState(createState('v3'), deps as unknown as UseWorkspaceStateDeps);
+    const ws = useWorkspaceState(createState('v3'), deps);
 
     const outcome = await ws.submitPromptInternal('sess_1', '看 @d/', undefined, [
       { path: 'd', kind: 'folder' },
@@ -399,7 +399,7 @@ describe('submit pipeline M4 truncation probe + M5 echo metadata', () => {
     const updateSessionMessages = vi.fn();
     const deps = createDeps();
     deps.updateSessionMessages = updateSessionMessages;
-    const ws = useWorkspaceState(createState('v2'), deps as unknown as UseWorkspaceStateDeps);
+    const ws = useWorkspaceState(createState('v2'), deps);
 
     const outcome = await ws.submitPromptInternal('sess_1', '看 @a.ts', undefined, [
       { path: 'a.ts', kind: 'file' },

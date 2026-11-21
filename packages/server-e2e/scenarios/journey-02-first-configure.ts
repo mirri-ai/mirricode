@@ -134,7 +134,7 @@ async function main(): Promise<void> {
     let replyText = '';
     ws.onNotification((n) => {
       if (n.method === 'event.assistant.delta' && n.params['sessionId'] === sid) {
-        replyText += typeof n.params['delta'] === 'string' ? (n.params['delta'] as string) : '';
+        replyText += typeof n.params['delta'] === 'string' ? n.params['delta'] : '';
       }
     });
     const ended = await ws.waitForEvent(sid, 'event.turn.ended', 60_000);
