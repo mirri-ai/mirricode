@@ -104,7 +104,9 @@ async function main(): Promise<void> {
       if (Date.now() > reloadDeadline) {
         throw new Error(`config hot-reload never made session creation succeed: ${JSON.stringify(body)}`);
       }
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => {
+      setTimeout(r, 300);
+    });
     }
     console.log(`▶ journey-02: session ${sid} created after hot reload`);
 

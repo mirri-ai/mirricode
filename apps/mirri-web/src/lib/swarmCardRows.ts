@@ -26,7 +26,9 @@ export interface SwarmCardRow {
 
 function lastNonEmptyLine(text: string | undefined): string {
   if (!text) return '';
-  return text.split('\n').map((l) => l.trimEnd()).filter(Boolean).at(-1) ?? '';
+  // `findLast` scans from the end, so this stops at the last non-blank line
+  // instead of building a filtered copy of the whole array.
+  return text.split('\n').findLast((l) => l.trim() !== '')?.trimEnd() ?? '';
 }
 
 /** The mirror of `lastNonEmptyLine` (ADR-012 ②): a text segment's first line is

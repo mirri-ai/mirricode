@@ -317,7 +317,9 @@ async function phase_streamingInterrupt(
     if (Date.now() > streamingDeadline) {
       throw new Error('journey-03 [R6]: the turn never reached the streaming phase');
     }
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((r) => {
+      setTimeout(r, 50);
+    });
   }
   console.log('▶ journey-03 [R6]: turn is streaming, sending message.abort');
 
@@ -329,7 +331,9 @@ async function phase_streamingInterrupt(
   assert.equal(ended['reason'], 'cancelled', 'the aborted turn ends with reason cancelled');
 
   // 等一小段窗口，确认没有任何 chunk delta 在中断后继续到达
-  await new Promise((r) => setTimeout(r, 500));
+  await new Promise((r) => {
+      setTimeout(r, 500);
+    });
   const deltasAfterAbort = notifications
     .slice(marksBefore)
     .filter(

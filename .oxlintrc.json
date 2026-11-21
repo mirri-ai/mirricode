@@ -31,6 +31,37 @@
       { "considerDefaultExhaustiveForUnions": true }
     ],
     "typescript/only-throw-error": "error",
+    // `[...arr].sort()` is the standard way to sort WITHOUT mutating — the
+    // rule fires on the copy too, so it reports six call sites that are all
+    // already correct. `toSorted()` would be the real fix, but it is ES2023
+    // and this repo still targets older runtimes.
+    "unicorn/no-array-sort": "off",
+    // `disposed` is read in a `while` condition and written later in the same
+    // closure; the rule only looks inside the loop body and cannot see the
+    // write, so both reports are false positives.
+    "eslint/no-unmodified-loop-condition": "off",
+    // The e2e journey scripts are top-level programs whose `main().catch(...)`
+    // tail is deliberate: top-level await would turn an orderly failure report
+    // into an unhandled rejection.
+    "unicorn/prefer-top-level-await": "off",
+    // `forkSession(sid, body: T = {})` is a legitimate API default for a
+    // method whose body is entirely optional.
+    "unicorn/no-object-as-default-parameter": "off",
+    // The 24 remaining hits are all load-bearing and carry an inline comment
+    // saying why: `it.each` table elements that are typed BY the cast,
+    // `as unknown as X` conversions across unrelated domains (transport ↔
+    // protocol, Node `Timeout` ↔ the scheduler's number), and `unknown`
+    // narrowing that keeps `String()` off the "[object Object]" path. The
+    // rule cannot tell those from a redundant annotation, and its autofix
+    // silently breaks the first two kinds — so it stays off rather than
+    // inviting another blind `--fix`.
+    "typescript/no-unnecessary-type-assertion": "off",
+    // The 13 remaining hits all compare against a boolean literal to NARROW
+    // AWAY `undefined` (`result?.deleted !== true`, `menuItem?.checked ===
+    // true`). That is the precise spelling: `Boolean(x)` would turn a missing
+    // value into `false`, and dropping the comparison would widen the result
+    // back to `boolean | undefined`.
+    "typescript/no-unnecessary-boolean-literal-compare": "off",
     "import/no-cycle": "error",
     "import/no-self-import": "error",
     "import/no-unassigned-import": "off",

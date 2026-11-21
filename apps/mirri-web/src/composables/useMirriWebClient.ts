@@ -61,9 +61,6 @@ import {
   useWorkspaceState,
 } from './client/useWorkspaceState';
 
-const appearance = useAppearance();
-const notification = useNotification();
-const sound = useSoundNotification();
 import type {
   AppEvent,
   AppApprovalRequest,
@@ -117,6 +114,10 @@ import type {
   WorkspaceView,
 } from '../types';
 import type { SortableSessionRow } from '../lib/sessionSorting';
+
+const appearance = useAppearance();
+const notification = useNotification();
+const sound = useSoundNotification();
 
 // ---------------------------------------------------------------------------
 // Internal reactive state (plain object wrapped in reactive())
@@ -2839,7 +2840,7 @@ const sessionsForView = computed<Session[]>(() => {
         workspaceId,
         workspaceName: nameByWorkspaceId.get(workspaceId),
         compressed: s.compressed === true,
-        pinned: s.pinned === true,
+        pinned: s.pinned,
         pinColor: s.pinColor,
       };
     });

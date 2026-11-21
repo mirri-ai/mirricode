@@ -843,7 +843,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
       // keeps its own value); the engine's `null` maps onto it here.
       thinkingEffort: typeof status.thinkingEffort === 'string' ? status.thinkingEffort : '',
       permission: typeof status.permission === 'string' ? status.permission : '',
-      planMode: status.planMode === true,
+      planMode: status.planMode,
       swarmMode: status.swarmMode === true,
       collaborationMode: status.collaborationMode === true,
       contextTokens: typeof status.contextTokens === 'number' ? status.contextTokens : 0,
@@ -872,7 +872,7 @@ export class WsRpcApi implements Partial<MirriWebApi> {
     const result = await this.client.call<RpcMessageListResult>('message.list', params);
     return {
       items: result.messages.map((message) => toAppMessage(message, sessionId)),
-      hasMore: result.hasMore === true,
+      hasMore: result.hasMore,
     };
   }
 

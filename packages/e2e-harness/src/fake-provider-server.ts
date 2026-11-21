@@ -105,7 +105,9 @@ export async function createFakeProviderServer(
       }
 
       if (streamDelayMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, streamDelayMs));
+        await new Promise((resolve) => {
+      setTimeout(resolve, streamDelayMs);
+    });
       }
 
       switch (response.kind) {
