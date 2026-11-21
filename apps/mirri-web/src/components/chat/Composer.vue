@@ -24,7 +24,7 @@ import {
 import { SkillMention } from '../../lib/skillMentionNode';
 import { serializeDocJsonWithFileMentions, collectFileMentionAttrs, toPromptReferences, type PromptFileReference } from '../../lib/fileMention';
 import { FileMention } from '../../lib/fileMentionNode';
-import type { ActivationBadges, ConversationStatus, PermissionMode, QueuedPromptView, SearchFilesResult } from '../../types';
+import type { ActivationBadges, ConversationStatus, PermissionMode, QueuedPromptView, SearchFilesResult, WorkspaceView } from '../../types';
 import type { AppModel, AppSkill, ThinkingLevel } from '../../api/types';
 import {
   commitLevel,
@@ -52,6 +52,7 @@ import Icon from '../ui/Icon.vue';
 import ContextRing from '../ui/ContextRing.vue';
 import Tooltip from '../ui/Tooltip.vue';
 import AttachmentChip from './AttachmentChip.vue';
+import { getVisibleWorkspaces } from '../../lib/workspacePicker';
 
 // ---------------------------------------------------------------------------
 // Props & emits
@@ -90,6 +91,15 @@ const props = withDefaults(defineProps<{
   skills?: AppSkill[];
   /** Hide the context-usage indicator (used on the empty-session landing page). */
   hideContext?: boolean;
+  /** Landing form: the empty-session hero composer. Adds the workspace scope
+   *  row and the taller input box; the docked composer keeps the compact one. */
+  landing?: boolean;
+  /** Workspaces offered by the landing composer's scope picker. */
+  workspaces?: WorkspaceView[];
+  /** Active workspace id, to mark the current entry in that picker. */
+  activeWorkspaceId?: string | null;
+  /** Workspace name fallback when the active id is not in `workspaces`. */
+  workspaceName?: string;
 }>(), {
   running: false,
   starting: false,
@@ -100,6 +110,10 @@ const props = withDefaults(defineProps<{
   models: () => [],
   starredIds: () => [],
   skills: () => [],
+  landing: false,
+  workspaces: () => [],
+  activeWorkspaceId: null,
+  workspaceName: '',
 });
 
 const placeholder = computed(() =>
@@ -136,9 +150,52 @@ const emit = defineEmits<{
   /** E9 uiux §4: a file chip was clicked — open the preview (folder chips
    *  have no click behavior; the composer filters before emitting). */
   openFile: [target: { path: string }];
+  /** Landing composer scope picker: start the new conversation elsewhere. */
+  selectWorkspace: [workspaceId: string];
+  /** Landing composer scope picker: create a new workspace. */
+  addWorkspace: [];
 }>();
 
 const { t } = useI18n();
+
+// ---------------------------------------------------------------------------
+// Landing workspace scope picker — only rendered when `landing` is set.
+// The knowledge stays here (the pane owns the workspace list and the session
+// switch); the composer only renders the affordance and emits the intent.
+// ---------------------------------------------------------------------------
+const wsPickOpen = ref(false);
+const wsPickExpanded = ref(false);
+
+const activeWorkspaceLabel = computed(() => {
+  const w = props.workspaces.find((ws) => ws.id === props.activeWorkspaceId);
+  return w?.name ?? props.workspaceName;
+});
+
+const hasWorkspaces = computed(() => props.workspaces.length > 0);
+
+const visibleWorkspaces = computed(() =>
+  getVisibleWorkspaces(props.workspaces, props.activeWorkspaceId, wsPickExpanded.value),
+);
+
+const hiddenWorkspaceCount = computed(() => props.workspaces.length - visibleWorkspaces.value.length);
+
+/** W8: the active workspace's honest untrusted state (the closed picker's
+ *  badge — same indicator the menu items and the sidebar group carry). */
+const activeWorkspaceUntrusted = computed(() => {
+  const w = props.workspaces.find((ws) => ws.id === props.activeWorkspaceId);
+  return w !== undefined && !w.trusted;
+});
+
+// Collapse the expanded list when the dropdown closes so it doesn't stay open
+// the next time the user opens the menu.
+watch(wsPickOpen, (open) => {
+  if (!open) wsPickExpanded.value = false;
+});
+
+function pickWorkspace(id: string): void {
+  wsPickOpen.value = false;
+  if (id !== props.activeWorkspaceId) emit('selectWorkspace', id);
+}
 
 // ---------------------------------------------------------------------------
 // TipTap editor + per-session draft persistence — see useComposerDraft.
@@ -1239,7 +1296,7 @@ function selectModel(modelId: string): void {
 <template>
   <div
     class="composer"
-    :class="{ 'drag-over': isDragOver, expanded }"
+    :class="{ 'drag-over': isDragOver, expanded, landing: props.landing }"
     @dragover="handleDragOver"
     @dragleave="handleDragLeave"
     @drop="handleDrop"
@@ -1263,6 +1320,66 @@ function selectModel(modelId: string): void {
 
     <!-- Main composer card -->
     <div class="composer-card">
+      <!-- Landing form: workspace scope row at the card's top-left, so "where
+           this chat runs" reads as composer context rather than a separate
+           control block above the card. Docked composer keeps it out — there
+           the session already pins the workspace.
+           Hidden while starting: the first prompt has committed a workspace. -->
+      <div v-if="landing && !starting" class="ws-row">
+        <div v-if="hasWorkspaces" class="ws-pick">
+          <button type="button" class="ws-btn" @click.stop="wsPickOpen = !wsPickOpen">
+            <Icon name="folder" size="sm" />
+            <span class="ws-btn-name">{{ activeWorkspaceLabel }}</span>
+            <span v-if="activeWorkspaceUntrusted" class="ws-tag">{{ t('workspace.untrustedTag') }}</span>
+            <Icon class="ws-btn-chev" :class="{ open: wsPickOpen }" name="chevron-down" size="sm" />
+          </button>
+          <div v-if="wsPickOpen" class="ws-pick-backdrop" @click="wsPickOpen = false" />
+          <div v-if="wsPickOpen" class="ws-pick-menu">
+            <button
+              v-for="w in visibleWorkspaces"
+              :key="w.id"
+              type="button"
+              class="ws-pick-item"
+              :class="{ on: w.id === activeWorkspaceId }"
+              @click.stop="pickWorkspace(w.id)"
+            >
+              <span class="ws-pick-item-name">
+                {{ w.name }}
+                <!-- W8: the honest untrusted indicator (US4.2). -->
+                <span
+                  v-if="!w.trusted"
+                  class="ws-pick-item-untrusted"
+                  :title="t('workspace.untrustedTitle')"
+                >{{ t('workspace.untrustedTag') }}</span>
+              </span>
+              <span class="ws-pick-item-path">{{ w.shortPath }}</span>
+            </button>
+            <button
+              v-if="hiddenWorkspaceCount > 0"
+              type="button"
+              class="ws-pick-item ws-pick-more"
+              @click.stop="wsPickExpanded = !wsPickExpanded"
+            >
+              <span>{{ t('conversation.moreWorkspaces', { count: hiddenWorkspaceCount }) }}</span>
+            </button>
+            <div class="ws-pick-divider" />
+            <button
+              type="button"
+              class="ws-pick-action"
+              @click.stop="wsPickOpen = false; emit('addWorkspace')"
+            >
+              <Icon name="plus" size="sm" />
+              <span>{{ t('conversation.addWorkspace') }}</span>
+            </button>
+          </div>
+        </div>
+        <!-- Fresh install: no workspace registered yet. -->
+        <button v-else type="button" class="ws-add" @click="emit('addWorkspace')">
+          <Icon name="folder-plus" size="sm" />
+          <span>{{ t('conversation.addWorkspace') }}</span>
+        </button>
+      </div>
+
       <!-- Input row with popup menus -->
       <div class="cin-wrap">
         <!-- Attachment strip — inside the card, above the editor, so pasted
@@ -1788,6 +1905,230 @@ function selectModel(modelId: string): void {
 .cin-wrap {
   position: relative;
   padding: 14px 16px 8px;
+}
+
+/* Landing form: the workspace scope row owns the card's top edge, so the input
+   wrapper gives up most of its top padding. */
+.composer.landing .cin-wrap {
+  padding-top: 8px;
+}
+
+/* Landing workspace scope row — top-left inside the card, so "where this chat
+   runs" reads as composer context rather than a separate control block. */
+.ws-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 14px 0;
+}
+.ws-pick {
+  position: relative;
+  min-width: 0;
+  font-family: var(--mono);
+}
+.ws-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 8px 3px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 18px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.ws-btn:hover {
+  color: var(--color-text);
+  border-color: var(--color-accent-bd);
+}
+.ws-btn > svg {
+  flex: none;
+  color: var(--muted);
+}
+.ws-btn:hover > svg {
+  color: var(--color-accent);
+}
+.ws-btn-name {
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-btn-chev {
+  flex: none;
+  color: var(--faint);
+  transition: transform 0.15s;
+}
+.ws-btn-chev.open {
+  transform: rotate(180deg);
+}
+.ws-tag {
+  flex: none;
+  padding: 2px 4px;
+  border: 1px solid var(--color-line);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1;
+}
+/* Fresh install: no workspace registered yet. */
+.ws-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  white-space: nowrap;
+  padding: 3px 9px 3px 7px;
+  border: 1px dashed var(--color-line);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 18px;
+  cursor: pointer;
+}
+.ws-add:hover {
+  color: var(--color-accent);
+  border-color: var(--color-accent-bd);
+}
+.ws-add > svg {
+  flex: none;
+}
+.ws-pick-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-sticky);
+}
+.ws-pick-menu {
+  position: absolute;
+  z-index: var(--z-dropdown);
+  top: calc(100% + 4px);
+  left: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: max-content;
+  min-width: 264px;
+  max-width: min(340px, calc(100vw - 40px));
+  max-height: 50vh;
+  padding: 4px;
+  overflow: hidden auto;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+.ws-pick-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  text-align: left;
+  font-family: var(--mono);
+  cursor: pointer;
+}
+.ws-pick-item:hover {
+  background: var(--panel2);
+}
+.ws-pick-item.on {
+  background: var(--color-accent-soft);
+}
+.ws-pick-item-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 500;
+}
+.ws-pick-item.on .ws-pick-item-name {
+  color: var(--color-accent-hover);
+}
+.ws-pick-item-path {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.ws-pick-item-untrusted {
+  margin-left: 6px;
+  padding: 1px 4px;
+  border: 1px solid var(--color-line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1;
+  vertical-align: middle;
+  user-select: none;
+}
+.ws-pick-item.ws-pick-more {
+  flex-direction: row;
+  justify-content: flex-start;
+  color: var(--dim);
+  font-size: 12px;
+  font-weight: var(--weight-medium);
+}
+.ws-pick-item.ws-pick-more:hover {
+  color: var(--color-text);
+}
+.ws-pick-item.ws-pick-more span,
+.ws-pick-action span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-pick-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line);
+}
+.ws-pick-action {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--dim);
+  text-align: left;
+  font-family: var(--mono);
+  font-size: var(--ui-font-size-sm);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+}
+.ws-pick-action:hover {
+  background: var(--panel2);
+  color: var(--color-text);
+}
+.ws-pick-action svg {
+  flex: none;
+}
+
+/* Landing form: the resting input box is taller, so an empty chat opens with
+   room to think instead of a single-line strip. */
+.composer.landing .ph-box :deep(.ProseMirror) {
+  min-height: 84px;
 }
 
 /* Input row */

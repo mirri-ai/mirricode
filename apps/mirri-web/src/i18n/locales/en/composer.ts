@@ -25,8 +25,6 @@ export default {
   interruptTitle: 'Interrupt current operation',
   expandTitle: 'Expand input for multi-line editing',
   collapseTitle: 'Collapse input',
-  emptyConversationTitle: 'Mirri Code',
-  emptyConversation: 'No messages yet — type below to start the session',
   quickStartPlaceholder: 'Type a message to start a new session…',
   thinkingSuffix: ' · thinking',
   thinkingSuffixEffort: ' · {level}',
