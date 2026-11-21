@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.3.2
+
+### Patch Changes
+
+- [#238](https://github.com/mirri-ai/mirricode/pull/238) [`2eec940`](https://github.com/mirri-ai/mirricode/commit/2eec94076e54950f912015ba87de9e578ae416a1) Thanks [@im-bravo](https://github.com/im-bravo)! - web: Redesign the empty conversation screen into a landing view — the brand mark as a watermark with a time-of-day greeting over it, and the workspace picker moved inside the composer card, which now opens taller.
+
 ## 3.3.1
 
 ### Patch Changes
