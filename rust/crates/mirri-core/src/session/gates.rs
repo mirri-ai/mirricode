@@ -326,10 +326,15 @@ impl ApprovalGate {
             return ApprovalDecision::Timeout;
         }
 
+        let summary = if args_summary.trim().is_empty() {
+            format!("execute {tool_name}")
+        } else {
+            args_summary.to_string()
+        };
         let snapshot = ApprovalSnapshot {
             tool_name: tool_name.to_string(),
-            action: format!("execute {tool_name}"),
-            display: json!({}),
+            action: summary.clone(),
+            display: json!({ "kind": "generic", "summary": summary }),
             agent_id,
             turn_id: None,
             tool_call_id: None,
@@ -1006,6 +1011,39 @@ mod tests {
         assert_eq!(snapshot.turn_id, Some(7));
         assert_eq!(snapshot.tool_call_id.as_deref(), Some("call_q"));
         assert!(snapshot.created_at >= before);
+    }
+
+    /// Given a tool approval request without a structured display, when
+    /// the request is registered, then the snapshot carries a generic
+    /// display with a non-empty summary — never an empty object (SDR-008).
+    #[tokio::test]
+    async fn should_never_register_an_empty_display_snapshot() {
+        let gate = std::sync::Arc::new(ApprovalGate::new(false));
+        let asker = tokio::spawn({
+            let gate = std::sync::Arc::clone(&gate);
+            async move { gate.request_for_agent(Uuid::nil(), "Echo", "").await }
+        });
+        // The asker registers before awaiting the decision — yield until
+        // the spawned task reaches its registration (cooperative
+        // scheduling, no wall-clock wait).
+        let mut registered = false;
+        for _ in 0..1_000 {
+            if !gate.list_pending().is_empty() {
+                registered = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(registered, "the asker must register a pending request");
+        let pending = gate.list_pending();
+        assert_eq!(pending.len(), 1);
+        let (request_id, snapshot) = &pending[0];
+        let display = &snapshot.display;
+        assert_eq!(display["kind"], "generic");
+        assert!(!display["summary"].as_str().unwrap().is_empty());
+        assert_ne!(*display, json!({}));
+        gate.resolve(*request_id, ApprovalDecision::Approved { label: None });
+        let _ = asker.await;
     }
 
     /// Given a resolved approval, when the resolved ring is queried, then

@@ -544,13 +544,21 @@
             "options": { "type": "array", "items": { "type": "object", "required": ["label"],
               "additionalProperties": false, "properties": { "label": { "type": "string" },
                 "description": { "type": "string" } } } } } },
+        { "type": "object", "required": ["kind", "cron", "workspace_id", "prompt", "recurring"],
+          "additionalProperties": false,
+          "properties": { "kind": { "const": "scheduled_task_create" }, "cron": { "type": "string" },
+            "timezone": { "type": "string" }, "workspace_id": { "type": "string" },
+            "permission_mode": { "type": "string" }, "model": { "type": "string" },
+            "effort": { "type": "string" }, "title": { "type": "string" },
+            "prompt": { "type": "string" }, "recurring": { "type": "boolean" },
+            "max_fires": { "type": "integer" }, "reason": { "type": "string" } } },
         { "type": "object", "required": ["kind", "objective"], "additionalProperties": false,
           "properties": { "kind": { "const": "goal_start" }, "objective": { "type": "string" },
             "completion_criterion": { "type": "string" } } },
         { "type": "object", "required": ["kind", "summary"], "additionalProperties": false,
           "properties": { "kind": { "const": "generic" }, "summary": { "type": "string" } } }
       ],
-      "description": "审批载荷的结构化预览提示。语义蓝本为 agent-core-v2 的 ToolInputDisplay（approval-architecture.md 13 形态）。可选字段缺省时整个键省略（非 null）。"
+      "description": "审批载荷的结构化预览提示。语义蓝本为 agent-core-v2 的 ToolInputDisplay（approval-architecture.md 14 形态）。可选字段缺省时整个键省略（非 null）。"
     }
   }
 }

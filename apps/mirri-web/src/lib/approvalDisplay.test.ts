@@ -98,4 +98,22 @@ describe('buildApprovalBlock (protocol dialect)', () => {
     const block = buildApprovalBlock(approval(undefined));
     expect(block).toMatchObject({ kind: 'generic', summary: 'execute Write' });
   });
+
+  it('should show the engine summary when the engine sends a canonical generic display', () => {
+    const block = buildApprovalBlock(approval({ kind: 'generic', summary: 'ping the host' }));
+    expect(block).toMatchObject({ kind: 'generic', summary: 'ping the host' });
+  });
+
+  it('should fall back to a content-bearing generic card when the display kind is unknown', () => {
+    const block = buildApprovalBlock(approval({ kind: 'future_thing', payload: 'x' }));
+    expect(block.kind).toBe('generic');
+    expect(block).toMatchObject({ kind: 'generic', summary: 'execute Write', toolName: 'Write' });
+    expect((block as { raw?: string }).raw).toContain('future_thing');
+  });
+
+  it('should still carry the tool name when the display payload is missing', () => {
+    const block = buildApprovalBlock(approval(undefined, '', 'Write'));
+    expect(block).toMatchObject({ kind: 'generic', summary: 'Write', toolName: 'Write' });
+    expect((block as { raw?: string }).raw).toBeUndefined();
+  });
 });

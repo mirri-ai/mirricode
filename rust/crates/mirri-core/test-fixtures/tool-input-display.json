@@ -1,0 +1,17 @@
+[
+  { "kind": "command", "command": "ls" },
+  { "kind": "file_io", "path": "/a.md", "operation": "write" },
+  { "kind": "diff", "path": "/a.rs", "before": "old", "after": "new" },
+  { "kind": "search", "query": "foo", "scope": "src" },
+  { "kind": "search", "query": "foo" },
+  { "kind": "url_fetch", "url": "https://example.com" },
+  { "kind": "agent_call", "agent_name": "coder", "prompt": "fix it" },
+  { "kind": "skill_call", "skill_name": "commit" },
+  { "kind": "todo_list" },
+  { "kind": "background_task" },
+  { "kind": "task_stop", "task_id": "t-1" },
+  { "kind": "plan_review", "plan": "the plan", "path": "/p.md", "options": [{ "label": "Approach A" }] },
+  { "kind": "goal_start", "objective": "ship it", "completion_criterion": "tests green" },
+  { "kind": "scheduled_task_create", "cron": "15 10 * * 1-5", "timezone": "Asia/Tokyo", "workspace_id": "wd_example", "permission_mode": "manual", "title": "Pick Up Review", "prompt": "review tickets", "recurring": true },
+  { "kind": "generic", "summary": "s" }
+]

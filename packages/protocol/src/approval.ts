@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { ToolInputDisplaySchema } from './display';
 import { isoDateTimeSchema } from './time';
 
 export const approvalDecisionSchema = z.enum(['approved', 'rejected', 'cancelled']);
@@ -15,7 +16,9 @@ export const approvalRequestSchema = z.object({
   tool_call_id: z.string().min(1),
   tool_name: z.string().min(1),
   action: z.string(),
-  tool_input_display: z.unknown(),
+  // Canonical wire dialect only (ADR-011): legacy v1 aliases stay
+  // tolerated in the web presentation mapper, never in the contract.
+  tool_input_display: ToolInputDisplaySchema,
   created_at: isoDateTimeSchema,
   expires_at: isoDateTimeSchema,
 });

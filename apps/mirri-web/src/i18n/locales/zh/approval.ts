@@ -13,6 +13,8 @@ export default {
     scheduled_task: '创建定时任务?',
     generic: '批准操作?',
   },
+  genericTool: '工具：{tool}',
+  genericRaw: '原始请求载荷',
   subagentBadge: '子 agent · {name}',
   required: '需要批准',
   danger: '危险: {detail}',

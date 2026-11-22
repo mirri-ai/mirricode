@@ -133,6 +133,12 @@ pub struct ScheduledTaskCreateDisplay {
 /// `ToolInputDisplay` contract (`docs/specs/rust-core-design/
 /// 01-protocol-unification.md` $defs): internally tagged `kind`, snake_case
 /// variant names, optional fields omitted (never null) when absent.
+//
+// New-variant checklist (ADR-011 / SDR-008 decision 2): a new variant
+// must update all three parity consumers, or the contract drifts silently:
+//   1. rust/crates/mirri-core/test-fixtures/tool-input-display.json (wire sample)
+//   2. packages/protocol/src/display.ts (ToolInputDisplaySchema)
+//   3. apps/mirri-web/test/approval-display-parity.test.ts (expectedBlockKind map)
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolInputDisplay {
@@ -193,6 +199,42 @@ pub enum ToolInputDisplay {
     Generic {
         summary: String,
     },
+}
+
+impl ToolInputDisplay {
+    /// Semantic action text (verb + object) for approval requests — the
+    /// user-readable answer to "what is being approved" (SDR-008).
+    /// `tool_name` is the fallback object for shapes that carry none.
+    /// The return value is never empty.
+    pub fn describe_action(&self, tool_name: &str) -> String {
+        fn clip(text: &str) -> String {
+            const MAX: usize = 80;
+            let mut out: String = text.chars().take(MAX).collect();
+            if text.chars().count() > MAX {
+                out.push('…');
+            }
+            out
+        }
+        match self {
+            ToolInputDisplay::Command { command } => format!("run `{}`", clip(command)),
+            ToolInputDisplay::FileIo { path, operation } => format!("{operation} `{path}`"),
+            ToolInputDisplay::Diff { path, .. } => format!("edit `{path}`"),
+            ToolInputDisplay::Search { query, .. } => format!("search `{}`", clip(query)),
+            ToolInputDisplay::UrlFetch { url } => format!("fetch `{url}`"),
+            ToolInputDisplay::AgentCall { agent_name, .. } => {
+                format!("dispatch agent `{agent_name}`")
+            }
+            ToolInputDisplay::SkillCall { skill_name, .. } => format!("use skill `{skill_name}`"),
+            ToolInputDisplay::TodoList => "update the todo list".to_string(),
+            ToolInputDisplay::BackgroundTask => format!("manage a background task ({tool_name})"),
+            ToolInputDisplay::TaskStop { task_id } => format!("stop task `{task_id}`"),
+            ToolInputDisplay::PlanReview { .. } => "submit a plan for review".to_string(),
+            ToolInputDisplay::GoalStart { objective, .. } => format!("start goal `{}`", clip(objective)),
+            ToolInputDisplay::ScheduledTaskCreate(_) => "create a scheduled task".to_string(),
+            ToolInputDisplay::Generic { summary } if !summary.is_empty() => summary.clone(),
+            ToolInputDisplay::Generic { .. } => format!("execute {tool_name}"),
+        }
+    }
 }
 
 /// One selectable approach offered by an `ExitPlanMode` plan review.
@@ -895,26 +937,140 @@ mod tests {
         assert_eq!(seen[1].text.as_deref(), Some("warn"));
     }
 
-    /// Given the protocol wire contract (01-protocol-unification.md
-    /// `ToolInputDisplay`), when a display is serialized, then it is the
-    /// internally-tagged `{ kind: ... }` dialect with snake_case variant
-    /// names — the shape every approval UI reads. Optional fields are
-    /// omitted (never null) when absent.
+    /// Given the shared wire sample set (the machine-readable contract
+    /// fixture the TS schema and web mapper parity tests consume), when
+    /// each display variant is serialized, then it matches a fixture
+    /// sample exactly, every fixture kind has a producing variant, the
+    /// sample count matches the producing-case count (no orphan sample
+    /// under an existing kind), and no sample carries an empty string
+    /// field — the fixture is the single expected-value source for the
+    /// cross-language dialect.
     #[test]
     fn should_serialize_display_with_protocol_kind_tagging_when_crossing_the_wire() {
-        let cases: Vec<(ToolInputDisplay, serde_json::Value)> = vec![
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../test-fixtures/tool-input-display.json"))
+                .expect("wire sample fixture parses");
+        let cases: Vec<ToolInputDisplay> = vec![
+            ToolInputDisplay::Command { command: "ls".into() },
+            ToolInputDisplay::FileIo {
+                path: "/a.md".into(),
+                operation: "write".into(),
+            },
+            ToolInputDisplay::Diff {
+                path: "/a.rs".into(),
+                before: "old".into(),
+                after: "new".into(),
+            },
+            ToolInputDisplay::Search {
+                query: "foo".into(),
+                scope: Some("src".into()),
+            },
+            ToolInputDisplay::Search {
+                query: "foo".into(),
+                scope: None,
+            },
+            ToolInputDisplay::UrlFetch {
+                url: "https://example.com".into(),
+            },
+            ToolInputDisplay::AgentCall {
+                agent_name: "coder".into(),
+                prompt: "fix it".into(),
+                background: None,
+            },
+            ToolInputDisplay::SkillCall {
+                skill_name: "commit".into(),
+                args: None,
+            },
+            ToolInputDisplay::TodoList,
+            ToolInputDisplay::BackgroundTask,
+            ToolInputDisplay::TaskStop {
+                task_id: "t-1".into(),
+            },
+            ToolInputDisplay::PlanReview {
+                plan: "the plan".into(),
+                path: Some("/p.md".into()),
+                options: vec![PlanReviewOption {
+                    label: "Approach A".into(),
+                    description: None,
+                }],
+            },
+            ToolInputDisplay::GoalStart {
+                objective: "ship it".into(),
+                completion_criterion: Some("tests green".into()),
+            },
+            ToolInputDisplay::ScheduledTaskCreate(Box::new(ScheduledTaskCreateDisplay {
+                cron: "15 10 * * 1-5".into(),
+                timezone: Some("Asia/Tokyo".into()),
+                workspace_id: "wd_example".to_string(),
+                permission_mode: Some("manual".into()),
+                model: None,
+                effort: None,
+                title: Some("Pick Up Review".into()),
+                prompt: "review tickets".into(),
+                recurring: true,
+                max_fires: None,
+                reason: None,
+            })),
+            ToolInputDisplay::Generic { summary: "s".into() },
+        ];
+        let case_count = cases.len();
+        let mut seen_kinds = std::collections::BTreeSet::new();
+        for display in cases {
+            let wire = serde_json::to_value(&display).expect("display must serialize");
+            assert!(
+                fixture.contains(&wire),
+                "serialized display must match a fixture sample: {wire}"
+            );
+            seen_kinds.insert(wire["kind"].as_str().unwrap().to_string());
+        }
+        let fixture_kinds: std::collections::BTreeSet<String> = fixture
+            .iter()
+            .map(|sample| sample["kind"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            seen_kinds, fixture_kinds,
+            "every fixture kind must have a producing variant"
+        );
+        assert_eq!(
+            fixture.len(),
+            case_count,
+            "every fixture sample must have a producing variant"
+        );
+        // SDR-008 minimal information set: no empty string field anywhere.
+        for sample in &fixture {
+            fn walk(value: &serde_json::Value) {
+                match value {
+                    serde_json::Value::Object(map) => {
+                        for (key, child) in map {
+                            if let Some(text) = child.as_str() {
+                                assert!(!text.is_empty(), "fixture field {key} must not be empty");
+                            }
+                            walk(child);
+                        }
+                    }
+                    serde_json::Value::Array(items) => items.iter().for_each(walk),
+                    _ => {}
+                }
+            }
+            walk(sample);
+        }
+    }
+
+    /// Given a structured display, when the action is described, then it
+    /// reads as verb + object — never a bare tool placeholder (SDR-008).
+    #[test]
+    fn should_describe_the_action_as_verb_plus_object_for_every_display_shape() {
+        let cases: Vec<(ToolInputDisplay, &str)> = vec![
             (
-                ToolInputDisplay::Command {
-                    command: "ls".into(),
-                },
-                serde_json::json!({"kind":"command","command":"ls"}),
+                ToolInputDisplay::Command { command: "ls".into() },
+                "run `ls`",
             ),
             (
                 ToolInputDisplay::FileIo {
                     path: "/a.md".into(),
                     operation: "write".into(),
                 },
-                serde_json::json!({"kind":"file_io","path":"/a.md","operation":"write"}),
+                "write `/a.md`",
             ),
             (
                 ToolInputDisplay::Diff {
@@ -922,27 +1078,20 @@ mod tests {
                     before: "old".into(),
                     after: "new".into(),
                 },
-                serde_json::json!({"kind":"diff","path":"/a.rs","before":"old","after":"new"}),
-            ),
-            (
-                ToolInputDisplay::Search {
-                    query: "foo".into(),
-                    scope: Some("src".into()),
-                },
-                serde_json::json!({"kind":"search","query":"foo","scope":"src"}),
+                "edit `/a.rs`",
             ),
             (
                 ToolInputDisplay::Search {
                     query: "foo".into(),
                     scope: None,
                 },
-                serde_json::json!({"kind":"search","query":"foo"}),
+                "search `foo`",
             ),
             (
                 ToolInputDisplay::UrlFetch {
                     url: "https://example.com".into(),
                 },
-                serde_json::json!({"kind":"url_fetch","url":"https://example.com"}),
+                "fetch `https://example.com`",
             ),
             (
                 ToolInputDisplay::AgentCall {
@@ -950,82 +1099,76 @@ mod tests {
                     prompt: "fix it".into(),
                     background: None,
                 },
-                serde_json::json!({"kind":"agent_call","agent_name":"coder","prompt":"fix it"}),
+                "dispatch agent `coder`",
             ),
             (
                 ToolInputDisplay::SkillCall {
                     skill_name: "commit".into(),
                     args: None,
                 },
-                serde_json::json!({"kind":"skill_call","skill_name":"commit"}),
+                "use skill `commit`",
             ),
-            (
-                ToolInputDisplay::TodoList,
-                serde_json::json!({"kind":"todo_list"}),
-            ),
+            (ToolInputDisplay::TodoList, "update the todo list"),
             (
                 ToolInputDisplay::BackgroundTask,
-                serde_json::json!({"kind":"background_task"}),
+                "manage a background task (Task)",
             ),
             (
                 ToolInputDisplay::TaskStop {
                     task_id: "t-1".into(),
                 },
-                serde_json::json!({"kind":"task_stop","task_id":"t-1"}),
+                "stop task `t-1`",
             ),
             (
                 ToolInputDisplay::PlanReview {
                     plan: "the plan".into(),
-                    path: Some("/p.md".into()),
-                    options: vec![PlanReviewOption {
-                        label: "Approach A".into(),
-                        description: None,
-                    }],
+                    path: None,
+                    options: vec![],
                 },
-                serde_json::json!({"kind":"plan_review","plan":"the plan","path":"/p.md","options":[{"label":"Approach A"}]}),
+                "submit a plan for review",
             ),
             (
                 ToolInputDisplay::GoalStart {
                     objective: "ship it".into(),
-                    completion_criterion: Some("tests green".into()),
+                    completion_criterion: None,
                 },
-                serde_json::json!({"kind":"goal_start","objective":"ship it","completion_criterion":"tests green"}),
+                "start goal `ship it`",
             ),
             (
                 ToolInputDisplay::ScheduledTaskCreate(Box::new(ScheduledTaskCreateDisplay {
                     cron: "15 10 * * 1-5".into(),
-                    timezone: Some("Asia/Tokyo".into()),
-                    workspace_id: "wd_flat35_workspace_4653096df70d".into(),
-                    permission_mode: Some("manual".into()),
+                    timezone: None,
+                    workspace_id: "wd_example".to_string(),
+                    permission_mode: None,
                     model: None,
                     effort: None,
-                    title: Some("Pick Up Review".into()),
+                    title: None,
                     prompt: "review tickets".into(),
                     recurring: true,
                     max_fires: None,
                     reason: None,
                 })),
-                serde_json::json!({
-                    "kind": "scheduled_task_create",
-                    "cron": "15 10 * * 1-5",
-                    "timezone": "Asia/Tokyo",
-                    "workspace_id": "wd_flat35_workspace_4653096df70d",
-                    "permission_mode": "manual",
-                    "title": "Pick Up Review",
-                    "prompt": "review tickets",
-                    "recurring": true
-                }),
+                "create a scheduled task",
             ),
             (
                 ToolInputDisplay::Generic {
-                    summary: "s".into(),
+                    summary: "ping the host".into(),
                 },
-                serde_json::json!({"kind":"generic","summary":"s"}),
+                "ping the host",
             ),
         ];
         for (display, expected) in cases {
-            let wire = serde_json::to_value(&display).expect("display must serialize");
-            assert_eq!(wire, expected, "wire shape of {display:?}");
+            assert_eq!(display.describe_action("Task"), expected);
         }
+    }
+
+    /// Given a generic display with an empty summary, when the action is
+    /// described, then it falls back to the tool name — never empty.
+    #[test]
+    fn should_fall_back_to_the_tool_name_when_a_generic_display_has_no_summary() {
+        let display = ToolInputDisplay::Generic {
+            summary: String::new(),
+        };
+        assert_eq!(display.describe_action("Echo"), "execute Echo");
     }
 }

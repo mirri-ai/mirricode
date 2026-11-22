@@ -41,7 +41,7 @@ describe('approvalRequestSchema (SCHEMAS §6.1)', () => {
     tool_call_id: 'tc_1',
     tool_name: 'shell.run',
     action: 'Run `rm -rf foo/`',
-    tool_input_display: { kind: 'command', command: 'rm -rf foo/', summary: 'rm' },
+    tool_input_display: { kind: 'command', command: 'rm -rf foo/' },
     created_at: '2026-06-04T10:30:00Z',
     expires_at: '2026-06-04T10:31:00Z',
   };
@@ -52,10 +52,14 @@ describe('approvalRequestSchema (SCHEMAS §6.1)', () => {
     expect(parsed.tool_call_id).toBe('tc_1');
   });
 
-  it('accepts arbitrary tool_input_display shapes (12-arm passthrough)', () => {
+  it('should reject the approval request when tool_input_display kind is not canonical', () => {
     const exotic = { ...base, tool_input_display: { kind: 'future_unknown_kind', summary: 'hi' } };
-    const parsed = approvalRequestSchema.parse(exotic);
-    expect((parsed.tool_input_display as { kind: string }).kind).toBe('future_unknown_kind');
+    expect(() => approvalRequestSchema.parse(exotic)).toThrow();
+  });
+
+  it('should reject the approval request when tool_input_display uses a legacy v1 dialect kind', () => {
+    const legacy = { ...base, tool_input_display: { kind: 'shell', command: 'ls' } };
+    expect(() => approvalRequestSchema.parse(legacy)).toThrow();
   });
 
   it('accepts optional turn_id', () => {
@@ -145,7 +149,7 @@ describe('listPendingApprovalsResponseSchema (REST pending recovery)', () => {
     tool_call_id: 'tc_1',
     tool_name: 'shell.run',
     action: 'Run `ls`',
-    tool_input_display: { kind: 'command', command: 'ls', summary: 'ls' },
+    tool_input_display: { kind: 'command', command: 'ls' },
     created_at: '2026-06-04T10:30:00Z',
     expires_at: '2026-06-04T10:31:00Z',
   };
@@ -170,7 +174,6 @@ describe('listPendingApprovalsResponseSchema (REST pending recovery)', () => {
     expect(parsed.items[0]?.tool_input_display).toEqual({
       kind: 'command',
       command: 'ls',
-      summary: 'ls',
     });
   });
 });

@@ -13,6 +13,8 @@ export default {
     scheduled_task: 'Create a scheduled task?',
     generic: 'Approve action?',
   },
+  genericTool: 'Tool: {tool}',
+  genericRaw: 'Raw request payload',
   subagentBadge: 'sub agent · {name}',
   required: 'APPROVAL REQUIRED',
   danger: 'Danger: {detail}',
