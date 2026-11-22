@@ -16346,11 +16346,11 @@ async fn should_approve_tool_when_reverse_rpc_callback_returns_approved() {
     );
 
     // The request should include snake_case fields and the new `action` /
-    // `display` fields.
+    // `display` fields; the action derives from the display (SDR-008).
     let params = mock.last_params.lock().unwrap().clone().unwrap();
     assert_eq!(params["tool_name"], "Bash");
     assert_eq!(params["tool_call_id"], "call-1");
-    assert!(params["action"].as_str().unwrap().contains("execute Bash"));
+    assert_eq!(params["action"], "test");
     assert!(
         params["display"].is_object(),
         "display should be serialized"

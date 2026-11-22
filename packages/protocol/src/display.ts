@@ -48,19 +48,23 @@ export const ToolInputDisplaySchema = z.discriminatedUnion('kind', [
   }),
   z.object({
     kind: z.literal('todo_list'),
-    items: z.array(z.object({ title: z.string(), status: z.string() })),
+    // The wire carries the bare unit form (01-protocol-unification.md);
+    // `items` is tolerated when a producer includes it.
+    items: z.array(z.object({ title: z.string(), status: z.string() })).optional(),
   }),
   z.object({
     kind: z.literal('background_task'),
-    task_id: z.string(),
-    status: z.string(),
-    description: z.string(),
+    // Bare unit form on the wire; the descriptive fields are tolerated
+    // when a producer includes them.
+    task_id: z.string().optional(),
+    status: z.string().optional(),
+    description: z.string().optional(),
     task_kind: z.string().optional(),
   }),
   z.object({
     kind: z.literal('task_stop'),
-    task_id: z.string(),
-    task_description: z.string(),
+    task_id: z.string().min(1),
+    task_description: z.string().optional(),
   }),
   z.object({
     kind: z.literal('plan_review'),
@@ -70,7 +74,7 @@ export const ToolInputDisplaySchema = z.discriminatedUnion('kind', [
       .array(
         z.object({
           label: z.string(),
-          description: z.string(),
+          description: z.string().optional(),
         }),
       )
       .readonly()
@@ -79,11 +83,9 @@ export const ToolInputDisplaySchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('goal_start'),
     objective: z.string(),
-    completionCriterion: z.string().optional(),
-    // Current permission mode at approval time. The client uses it to pick the
-    // start menu (manual vs yolo); `auto` never reaches this display because it
-    // auto-approves the goal without a prompt.
-    mode: z.enum(['manual', 'yolo']),
+    // Wire naming follows the rust serde dialect (snake_case, optional
+    // keys omitted — 01-protocol-unification.md).
+    completion_criterion: z.string().optional(),
   }),
   z.object({
     // A scheduled-task creation the user judges (ADR-022): every parameter

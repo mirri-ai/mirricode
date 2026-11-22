@@ -199,6 +199,19 @@ export function buildApprovalBlock(a: AppApprovalRequest): ApprovalBlock {
     };
   }
 
-  // Unknown daemon display.kind → 'generic' with summary = action
-  return { kind: 'generic', summary: a.action, ...expiry, ...facet };
+  // Unknown daemon display.kind or canonical generic → 'generic'. SDR-008:
+  // the fallback card is never blank — it always carries the tool name and
+  // the raw display payload, and prefers the engine's own `summary` over
+  // the derived action line.
+  const summary = str('summary') ?? (a.action || a.toolName);
+  const raw =
+    d['kind'] !== undefined || Object.keys(d).length > 0 ? JSON.stringify(d, null, 2) : undefined;
+  return {
+    kind: 'generic',
+    summary,
+    toolName: a.toolName,
+    raw,
+    ...expiry,
+    ...facet,
+  };
 }

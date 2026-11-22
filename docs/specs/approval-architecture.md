@@ -164,7 +164,7 @@
 
 - `ReverseRpcController`：`show(payload)` 返回 Promise；一次一个、按到达顺序排队；`respond` 解当前并推进；`cancelAll(reason)`（会话切换/重载）把当前+排队全部以 cancel 响应收尾；`autoResolveFor` 钩子实现「session 级批准继承给排队中的同 action 请求」（丢弃 feedback/selectedLabel）。
 - `ReverseRpcModalCoordinator`：approval / question 两类模态的互斥与串行（当前接线下两类各自 FIFO 串行、异类互斥先后呈现）。
-- 审批适配器：SDK `ApprovalRequest` → 面板数据（标题映射、generic 参数推导预览块、8 种高危命令模式标注、`ToolInputDisplay` 13 形态 → 展示块、选项特化：默认四项 / 计划审查 / goal_start 档位）；面板响应 → SDK `ApprovalResponse`（`approved_for_session` → approved+session）。
+- 审批适配器：SDK `ApprovalRequest` → 面板数据（标题映射、generic 参数推导预览块、8 种高危命令模式标注、`ToolInputDisplay` 14 形态 → 展示块、选项特化：默认四项 / 计划审查 / goal_start 档位）；面板响应 → SDK `ApprovalResponse`（`approved_for_session` → approved+session）。
 - 审批面板组件：块渲染（diff 聚类 3 行上下文、内容高亮 10 行截断、danger 警示）、键盘（↑/↓/数字/回车/Esc/Ctrl+C/Ctrl+D 拒绝/Ctrl+E 预览/Ctrl+O 工具输出）、行内反馈输入、最多 5 块 + brief 去重、提示行。
 - 会话接线：切换/重载会话时注销旧 handler、`cancelAll` 并为新会话重装 handler。
 - 模式命令：`/auto`、`/yolo`（on/off/toggle，含状态提示文案）、`/permission` 选择器（设置入口可达）；`--auto`/`--yolo` 启动参数；goal/swarm 命令的启动确认对话框（选择后经 `setPermission` 切档，goal 创建失败回滚原档）。
@@ -219,7 +219,7 @@
 
 ### ADR-005（2026-09-16）审批展示 wire 契约采用内部标签 `kind` 协议方言
 
-**决策**：Rust 引擎 `ToolInputDisplay` 跨线（`approval.ask` / `session.snapshot` 的 `tool_input_display`）一律序列化为内部标签方言——`{ "kind": "file_io", "path": ..., "operation": ... }`，变体名与字段名以 `rust-core-design/01-protocol-unification.md` 的 `ToolInputDisplay` schema 为准（语义蓝本即本域 13 形态）。serde 侧用 `tag = "kind"` + `rename_all = "snake_case"` + Option 字段 `skip_serializing_if` 实现。
+**决策**：Rust 引擎 `ToolInputDisplay` 跨线（`approval.ask` / `session.snapshot` 的 `tool_input_display`）一律序列化为内部标签方言——`{ "kind": "file_io", "path": ..., "operation": ... }`，变体名与字段名以 `rust-core-design/01-protocol-unification.md` 的 `ToolInputDisplay` schema 为准（语义蓝本即本域 14 形态）。serde 侧用 `tag = "kind"` + `rename_all = "snake_case"` + Option 字段 `skip_serializing_if` 实现。
 
 **备选与否决理由**：(a) serde 默认外部标签（`{"FileIo": {...}}`）——任何按 kind 判别的客户端（web/TUI/ACP）都读不出形态，全部降级 generic，正是本 ADR 要修的缺陷；(b) 只发扁平 `summary` 字符串（01-protocol-unification 初稿）——无法渲染 diff/文件内容/目标文本等结构化预览，US3.1/US9.1 不满足。
 
@@ -301,3 +301,20 @@
 **备选与否决理由**：(a) 纯配置逃生舱（`allowed_private_hosts` 白名单，不动审批流）——默认体验仍是硬拒报错，未解决核心 UX 问题，且不产生审批事件、无观察面，行为静默；(b) 保留 provider 层判断、加查询回调——层次倒挂：provider 是无上下文单例，让它回调会话层权限会引入跨层耦合，等于把策略链机制重造一遍；(c) 所有 fetch 全量按域名走 allow/ask/deny——审批疲劳（每次抓网页都要点一次），公网抓取本就低风险，且改变既有 Manual 模式的默认放行语义，冲击面不成比例；(d) 云元数据端点也走问询——被诱导的"批准"等于凭证泄漏，不可接受；(e) 问询策略放行会话记忆/用户 allow（豁免自查从策略中拿掉，交链序解决）——记忆与 allow 策略在链上位于模式放行之后，对内网目标永不可达，「批一次本会话」与 allow 规则两个承诺直接失效，故豁免自查必须内聚在问询策略里。
 
 **后果**：`FetchURL` 的默认放行语义对**公网地址不变**（Manual 下不弹审批）；provider 错误文案按分级更新（永久拒绝段用 never-bypass 契约文案，其余无豁免内网命中保持可区分错误并提示须经用户批准）；fetch 结果对模型的描述不承诺"绝不抓内网"，改为"内网地址需要用户批准"（云元数据端点标注恒定阻断、无批准通道）；策略链新增两条策略，链序见 §2.3。问询理由中的解析地址与段名在各审批卡（TUI/web/ACP）经问询理由行的通用渲染呈现，不新增预览块形态。元数据端点列表未来扩展 IPv6 `fd00:ec2::254` 之外的形态时，作为独立 ADR 增补。
+
+### ADR-011（2026-11-22）审批展示契约的机器执法：共享样本集 + 三方穷举对拍
+
+**背景与动机**：审批展示词汇表跨三份手工镜像（rust 枚举、TS zod schema、web 呈现映射）以字符串相等同步，无编译期关联。任何一端漂移（新形态漏改、字段名不一致、必填字段与线况不符）都不报错，只在用户面前降级为空审批卡（动机见 requirements SDR-008）。
+
+**决策**：
+1. **共享 wire 样本集**：`rust/crates/mirri-core/test-fixtures/tool-input-display.json` 为机器可读的权威样本集——每形态一份规范线况样本（与 rust serde 实际输出逐字节一致）。rust 序列化测试以该样本集为期望值驱动（单一期望源），并钉死「形态穷举 + 无空字符串字段」。
+2. **三方对拍测试**：(a) rust：每个 `ToolInputDisplay` 变体序列化结果必须命中样本集；(b) TS：每份样本必须被 `ToolInputDisplaySchema` 解析，schema 形态集合 == 样本集形态集合；(c) web：每份样本经 `buildApprovalBlock` 必须命中声明的目标块形态（声明表内显式声明 generic 降级的除外）。任何一端加形态/改字段而不更新样本集或其他两端，CI 即红。执法边界（诚实声明）：以样本集、TS schema 或 web 映射先行的漂移由对拍机器执法（漏改即 CI 红）；新增 rust 变体方向例外——rust 测试的 `cases` 手工维护、无变体穷举 derive，须按 SDR-008 决策 2 以流程纪律随变体登记样本集（漏登不自动红），此时由 web 端「工具名 + 原始载荷」兜底呈现作优雅降级背板。
+3. **语义化行动描述**：`ToolInputDisplay::describe_action(tool_name)` 从展示载荷派生「动词 + 对象」行动文案，审批请求的 `action` 字段统一由它生成（替代无信息的 `execute <tool>` 占位）。文案为英文自由文本、非契约字段，可随呈现层演进。
+4. **构造点空展示禁令**：审批快照的 `display` 不允许为空对象（缺展示时构造 generic 形态并携带非空摘要）；`generic` 形态的 `summary` 必须非空，空时回退工具名。
+5. **schema 收紧**：`approvalRequestSchema.tool_input_display` 从宽松类型收紧为规范方言 `ToolInputDisplaySchema`；v1 旧方言别名（`shell`/`file_content` 等）的容忍读取仅保留在 web 呈现映射（presentation-layer tolerance），契约层只承认规范方言。
+
+**已知线况修正（对拍暴露的既有漂移，同批修复）**：TS schema 的 `goal_start`（`completionCriterion` → `completion_criterion`，移除引擎从不发送的 `mode`）、`plan_review.options[].description` 改可选、`todo_list`/`background_task` 改单元形态（字段可选）、`task_stop.task_description` 改可选——全部向 rust serde 实际线况（01-protocol-unification.md 的 `ToolInputDisplay` schema）对齐；01 文档 oneOf 同批补 `scheduled_task_create` 形态。
+
+**备选与否决理由**：(a) 代码生成单一 schema（JSON Schema → rust/TS 双端）——为一个十余形态的词汇表引入生成器基建不成比例，且本仓库无既有 codegen 管线；(b) 运行时强校验拒绝非规范载荷——把漂移从「降级卡」变成「整条审批丢失」，故障更重；(c) 只修前端兜底不建对拍——兜底止血但漂移会继续累积，用户仍拿不到结构化内容。
+
+**影响范围**：`mirri-core`（describe_action、样本集对拍测试、空展示禁令）、`packages/protocol`（schema 对齐与收紧）、`mirri-web`（兜底呈现与覆盖对拍）；SDR-008 同批落档。跨语言契约的执法模式沿用 RPC 方法表（TSV ⇄ 注册表 parity test）先例。

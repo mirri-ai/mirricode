@@ -25,6 +25,7 @@
 | v1 legacy 差异（60s 过期、parent 链、协议面） | ✅ 已摘要 | architecture §7；context §3 |
 | **B9 Rust 轨（2026-09-13）**：会话级批准跨代理共享、用户级规则接线 + `approval.listRules/addRule/removeRule` CRUD、`approvalRule` 刻面下发、`expires_at` 引擎侧零派生 | ✅ 已文档化 | context §7（增量快照）；裁决 4.b（用户级规则不进 wire log，`PermissionRulesAdd` 保持 dead）一并落档 |
 | **v3 模式传递（2026-09-16，SDR-004/ADR-004）**：单一事实源、先落地后裁决、全量广播、默认值仅种子 | ✅ 已文档化（终态） | requirements SDR-004 / architecture ADR-004 / US1.2 修订；**v3 实现存三处缺口（context §8），修复项挂 §3 开放项 8——已于 2026-09-16 全部落地（§3 开放项 8 闭环）** |
+| **审批内容完整度契约（2026-11-22，SDR-008/ADR-011）**：最小信息集、共享样本集三方对拍、语义化 action、web 兜底永不空白 | ✅ 已文档化 | requirements SDR-008 / architecture ADR-011；线况修正与执法机制见 ADR-011 |
 
 ## 2. 跨域术语（**已注册**，glossary v8 起陆续登记；本表保留作域内映射台账）
 

@@ -1062,7 +1062,7 @@ wants to abandon the current goal and start a new one.
 | `completionCriterion` | string | 可选 | `How to verify the goal is complete. Include when the user provides one.` |
 | `replace` | boolean | 可选 | `Replace an existing active, paused, or blocked goal instead of failing.` |
 
-**输出契约**：成功 → goal 快照 JSON；非 auto 权限模式附 `goal_start` 结构化展示（objective/completionCriterion/mode）。
+**输出契约**：成功 → goal 快照 JSON；非 auto 权限模式附 `goal_start` 结构化展示（objective/completion_criterion，01-protocol-unification.md 的 `ToolInputDisplay` schema）。
 **错误面**：执行间 goal 变化 `Goal not created: the current goal changed.`（isError: false）。
 
 #### GetGoal

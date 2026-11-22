@@ -423,9 +423,14 @@ onUnmounted(() => {
         <Markdown :text="block.plan" />
       </div>
 
-      <!-- generic -->
+      <!-- generic — SDR-008: never blank; tool + summary + raw payload -->
       <div v-else class="body-generic">
-        <span class="gen-text">{{ block.summary }}</span>
+        <div v-if="block.toolName" class="gen-tool">{{ t('approval.genericTool', { tool: block.toolName }) }}</div>
+        <span class="gen-text">{{ block.summary || t('approval.title.generic') }}</span>
+        <details v-if="block.raw" class="gen-raw">
+          <summary>{{ t('approval.genericRaw') }}</summary>
+          <pre class="gen-raw-pre">{{ block.raw }}</pre>
+        </details>
       </div>
 
       <!-- Inline feedback textarea (submit / cancel are real buttons so touch
@@ -695,6 +700,27 @@ onUnmounted(() => {
   font: var(--text-base)/var(--leading-normal) var(--font-ui);
   color: var(--color-text);
   word-break: break-word;
+}
+.gen-tool {
+  font: var(--text-xs) var(--font-ui);
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-1);
+}
+.gen-raw {
+  margin-top: var(--space-2);
+}
+.gen-raw summary {
+  cursor: pointer;
+  font: var(--text-xs) var(--font-ui);
+  color: var(--color-text-muted);
+}
+.gen-raw-pre {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2);
+  overflow: auto;
+  font: var(--text-xs)/var(--leading-normal) var(--font-mono);
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius-sm);
 }
 
 /* Plan review — Markdown body, capped at half the viewport height with scroll

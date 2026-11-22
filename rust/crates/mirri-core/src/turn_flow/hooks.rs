@@ -1272,7 +1272,7 @@ impl LoopHooks for TurnFlowHooks {
         let headless = pm.is_headless();
         let tool_name = ctx.tool_name.to_string();
         let tool_call_id = ctx.tool_call_id.to_string();
-        let action = format!("execute {tool_name}");
+        let action = ctx.display.describe_action(&tool_name);
         let turn_id = ctx.turn_id.parse::<u64>().unwrap_or(0);
         let ctx_display = serde_json::to_value(ctx.display).unwrap_or(json!({}));
         let ctx_cancel = ctx.cancel.clone();

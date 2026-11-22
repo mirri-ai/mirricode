@@ -430,7 +430,7 @@ async fn should_approve_tool_call_when_reverse_rpc_approval_ask_received_and_app
         assert_eq!(requests[0].0, "approval.ask");
         assert_eq!(requests[0].1["tool_name"], "Bash");
         assert_eq!(requests[0].1["tool_call_id"], "call_1");
-        assert_eq!(requests[0].1["action"], "execute Bash");
+        assert_eq!(requests[0].1["action"], "run `echo hello`");
     }
 
     // And the approved Bash call actually executed: its tool result — the

@@ -26503,7 +26503,7 @@ async fn should_list_and_decide_pending_approvals_while_approval_wait_in_flight(
     let rows = poll_until_pending(&server, &session_id, "approval.listPending").await;
     assert_eq!(rows.len(), 1, "params: {rows:?}");
     assert_eq!(rows[0]["toolName"], json!("Bash"));
-    assert_eq!(rows[0]["action"], json!("execute Bash"));
+    assert_eq!(rows[0]["action"], json!("run `echo hello`"));
     assert_eq!(rows[0]["sessionId"], json!(session_id));
     let request_id = rows[0]["id"].as_str().unwrap().to_string();
     assert!(

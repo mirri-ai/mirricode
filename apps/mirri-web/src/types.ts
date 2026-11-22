@@ -289,7 +289,9 @@ export type ApprovalBlock = ApprovalBlockCommon &
         maxFires?: number;
         reason?: string;
       }
-    | { kind: 'generic'; summary: string }
+    // generic block carries the tool name and the raw display payload so the
+    // approval card is never blank — SDR-008.
+    | { kind: 'generic'; summary: string; toolName?: string; raw?: string }
   );
 
 export type TurnRole = 'user' | 'assistant' | 'compaction' | 'cron' | 'swarmEnded' | 'notification' | 'modelSwitch';
