@@ -43,7 +43,29 @@ use std::path::{Component, Path, PathBuf};
 /// Returns `None` for a path that is not a shell-spelled Windows path, so a
 /// caller can chain this in front of its existing logic without changing any
 /// behaviour it did not mean to touch.
+///
+/// **Windows only, deliberately.** On POSIX, `/c/Users/me` is a perfectly
+/// ordinary absolute path — a real directory under `/c`. Translating it there
+/// would corrupt a legitimate path into a Windows one, so this function
+/// declines everything off Windows (the notion of a "drive letter" does not
+/// exist on the host to begin with). The MSYS ambiguity is a Windows-only
+/// problem because only there is a drive-less rooted path *not* absolute.
 pub fn translate_msys_path(path: &Path, anchor: &Path) -> Option<PathBuf> {
+    #[cfg(not(windows))]
+    {
+        let _ = (path, anchor);
+        None
+    }
+
+    #[cfg(windows)]
+    {
+        translate_msys_path_on_windows(path, anchor)
+    }
+}
+
+/// The Windows implementation — see [`translate_msys_path`] for the contract.
+#[cfg(windows)]
+fn translate_msys_path_on_windows(path: &Path, anchor: &Path) -> Option<PathBuf> {
     let raw = path.to_str()?;
 
     // Only `/`-rooted inputs are candidates. A native `C:\...`, a UNC path,
@@ -85,12 +107,19 @@ pub fn translate_msys_path(path: &Path, anchor: &Path) -> Option<PathBuf> {
 }
 
 /// Whether `segment` is a single ASCII letter — the MSYS drive spelling.
+///
+/// `#[cfg(windows)]`: only the Windows translation path uses it, and an
+/// ungated helper would be dead code on POSIX under `-D warnings`.
+#[cfg(windows)]
 fn is_drive_letter(segment: &str) -> bool {
     let mut chars = segment.chars();
     matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_alphabetic())
 }
 
 /// Build `<root>\segment\segment...` from a `"C:"` root and POSIX segments.
+///
+/// `#[cfg(windows)]` for the same reason as [`is_drive_letter`].
+#[cfg(windows)]
 fn join_under_root(root: &str, segments: &[&str]) -> PathBuf {
     let mut out = PathBuf::from(format!("{root}{}", std::path::MAIN_SEPARATOR));
     for segment in segments {
@@ -184,23 +213,18 @@ mod tests {
     use super::*;
 
     /// The MSYS drive form (`/c/...`) translates to the drive-qualified
-    /// native path. On POSIX the same text has no native meaning, so the
-    /// function still produces the literal `C:/...` spelling — the assertion
-    /// is about the TRANSLATION, not about whether the host can open it.
+    /// native path.
     #[test]
+    #[cfg(windows)]
     fn should_translate_the_msys_drive_form_to_a_drive_qualified_path() {
         // Given a Git-Bash-spelled absolute path
         let raw = Path::new("/c/Users/me/proj");
 
         // When it is translated against any anchor
-        let translated = translate_msys_path(raw, Path::new("/tmp/ws"))
-            .expect("the MSYS drive form is always translatable");
+        let translated = translate_msys_path(raw, Path::new(r"C:\ws"))
+            .expect("the MSYS drive form is translatable on Windows");
 
-        // Then the drive survives as the first component and no `c` segment
-        // is left behind. The textual form is the portable assertion: on
-        // POSIX `C:/...` carries no `Prefix` component at all (there are no
-        // drives there), so asserting the component would make this a
-        // Windows-only test for no benefit.
+        // Then the drive survives and no `c` segment is left behind
         let text = translated.to_string_lossy().replace('\\', "/");
         assert_eq!(text, "C:/Users/me/proj");
         assert!(
@@ -209,11 +233,26 @@ mod tests {
         );
     }
 
+    /// On POSIX, `/c/Users/me` is a REAL absolute path — a directory under
+    /// `/c` — and must never be rewritten into a Windows spelling. The
+    /// translation declines everything off Windows for exactly this reason.
+    #[test]
+    #[cfg(unix)]
+    fn should_decline_the_msys_spelling_on_posix() {
+        for raw in ["/c/Users/me/proj", "/Users/me/proj", "/d/work/repo"] {
+            assert!(
+                translate_msys_path(Path::new(raw), Path::new("/tmp/ws")).is_none(),
+                "{raw} is an ordinary POSIX path and must pass through untouched"
+            );
+        }
+    }
+
     /// A lowercase drive letter is folded up, matching the canonical
     /// spelling Windows APIs report.
     #[test]
+    #[cfg(windows)]
     fn should_fold_a_lowercase_drive_letter_when_translating() {
-        let translated = translate_msys_path(Path::new("/d/work/repo"), Path::new("/tmp/ws"))
+        let translated = translate_msys_path(Path::new("/d/work/repo"), Path::new(r"C:\ws"))
             .expect("translatable");
         assert_eq!(
             translated.to_string_lossy().replace('\\', "/"),
@@ -225,29 +264,17 @@ mod tests {
     /// anchor — the workspace root — so a workspace on `D:` still resolves
     /// correctly instead of being pinned to `C:`.
     #[test]
+    #[cfg(windows)]
     fn should_take_the_drive_from_the_anchor_when_the_form_has_none() {
         // Given a home-form path and a D:-drive anchor
-        let translated = translate_msys_path(
-            Path::new("/Users/me/proj"),
-            Path::new("D:\\work\\ws"),
-        );
+        let translated = translate_msys_path(Path::new("/Users/me/proj"), Path::new(r"D:\work\ws"));
 
-        // On Windows the anchor carries a prefix, so the translation
-        // happens; on POSIX there is no drive in the anchor, so the
-        // function declines rather than inventing one.
-        if cfg!(windows) {
-            let translated = translated.expect("a Windows anchor always has a drive");
-            assert_eq!(
-                translated.to_string_lossy().replace('\\', "/"),
-                "D:/Users/me/proj",
-                "the drive comes from the anchor, never a hardcoded C:"
-            );
-        } else {
-            assert!(
-                translated.is_none(),
-                "without a drive-qualified anchor there is nothing to anchor to"
-            );
-        }
+        // Then the drive comes from the anchor, never a hardcoded C:
+        let translated = translated.expect("a Windows anchor always has a drive");
+        assert_eq!(
+            translated.to_string_lossy().replace('\\', "/"),
+            "D:/Users/me/proj"
+        );
     }
 
     /// A native path, a relative path, and a UNC path are all left alone —
@@ -272,25 +299,51 @@ mod tests {
 
     /// Comparison normalization folds the drive case so `c:\x` and `C:\x`
     /// compare equal, and leaves the rest of the path untouched.
+    ///
+    /// `#[cfg(windows)]`: `c:\Users\Me\Proj` is only a *drive-qualified
+    /// path* on Windows. On POSIX it is a single relative component, so the
+    /// two spellings differ in their content and folding them is not the
+    /// right behavior there — the assertion would be testing Windows
+    /// semantics on a host that has none.
     #[test]
+    #[cfg(windows)]
     fn should_fold_the_drive_case_when_normalizing_for_comparison() {
         let lowered = normalize_for_comparison(Path::new("c:\\Users\\Me\\Proj"));
         let raised = normalize_for_comparison(Path::new("C:\\Users\\Me\\Proj"));
         assert_eq!(lowered, raised);
         assert!(
-            !lowered.to_string_lossy().contains("Users\\Me".to_lowercase().as_str())
-                || lowered.to_string_lossy().contains("Users\\Me"),
-            "only the drive folds — the rest keeps its spelling"
+            lowered.to_string_lossy().contains("Users\\Me"),
+            "only the drive folds — the rest keeps its spelling: {}",
+            lowered.display()
         );
     }
 
     /// On Windows the verbatim prefix canonicalize produces (`\\?\C:\x`)
     /// must compare equal to the plain spelling — otherwise the containment
     /// check reports an escape for every path the sandbox itself resolved.
+    ///
+    /// `#[cfg(windows)]`: `\\?\` is a Windows verbatim prefix; on POSIX the
+    /// same text is an ordinary (and different) path.
     #[test]
+    #[cfg(windows)]
     fn should_strip_the_verbatim_prefix_when_normalizing_for_comparison() {
         let plain = normalize_for_comparison(Path::new("C:\\Users\\me"));
         let verbatim = normalize_for_comparison(Path::new("\\\\?\\C:\\Users\\me"));
         assert_eq!(plain, verbatim);
+    }
+
+    /// On POSIX, comparison normalization is a structural no-op: a path
+    /// survives unchanged, which is what keeps the existing unix verdicts
+    /// byte-identical.
+    #[test]
+    #[cfg(unix)]
+    fn should_leave_a_posix_path_unchanged_when_normalizing_for_comparison() {
+        for raw in ["/Users/me/proj", "relative/dir", "/"] {
+            assert_eq!(
+                normalize_for_comparison(Path::new(raw)),
+                PathBuf::from(raw),
+                "{raw} must survive comparison normalization unchanged"
+            );
+        }
     }
 }
