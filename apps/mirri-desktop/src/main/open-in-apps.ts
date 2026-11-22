@@ -139,11 +139,11 @@ export const OPEN_IN_APP_REGISTRY: readonly OpenInAppDescriptor[] = [
     winSearch: { roots: JETBRAINS_WIN_ROOTS, exeNames: ['rider64.exe'] },
   },
   {
-    appId: 'datagrip',
-    name: 'DataGrip',
+    appId: 'rustrover',
+    name: 'RustRover',
     kind: 'editor',
-    macAppBundles: ['DataGrip'],
-    winSearch: { roots: JETBRAINS_WIN_ROOTS, exeNames: ['datagrip64.exe'] },
+    macAppBundles: ['RustRover'],
+    winSearch: { roots: JETBRAINS_WIN_ROOTS, exeNames: ['rustrover64.exe'] },
   },
   { appId: 'iterm', name: 'iTerm', kind: 'terminal', macAppBundles: ['iTerm'] },
   {

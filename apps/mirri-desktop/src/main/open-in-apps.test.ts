@@ -87,7 +87,7 @@ describe('OPEN_IN_APP_REGISTRY', () => {
     expect(OPEN_IN_APP_REGISTRY.map((a) => a.appId)).toEqual([
       'finder', 'vscode', 'cursor', 'zed', 'sublime',
       'intellij', 'webstorm', 'pycharm', 'goland', 'phpstorm',
-      'clion', 'rider', 'datagrip',
+      'clion', 'rider', 'rustrover',
       'iterm', 'terminal', 'warp',
     ]);
   });
@@ -289,6 +289,30 @@ describe('detectInstalledOpenInApps', () => {
       getAppIcon: vi.fn(async () => undefined),
     });
     expect(apps.map((a) => a.appId)).toContain('intellij');
+  });
+
+  it('should find RustRover through its exe name in the JetBrains tree', async () => {
+    const jetbrainsRoot = `${WIN_ENV.ProgramFiles}${BS}JetBrains`;
+    const install = `${jetbrainsRoot}${BS}RustRover 2024.3`;
+    const apps = await detectInstalledOpenInApps({
+      platform: 'win32',
+      ...fakeFs({
+        [jetbrainsRoot]: ['RustRover 2024.3/'],
+        [install]: ['bin/'],
+        [`${install}${BS}bin`]: ['rustrover64.exe'],
+      }),
+      env: WIN_ENV,
+      getAppIcon: vi.fn(async () => undefined),
+    });
+    expect(apps.map((a) => a.appId)).toContain('rustrover');
+    expect(resolveWindowsExe('rustrover', {
+      ...fakeFs({
+        [jetbrainsRoot]: ['RustRover 2024.3/'],
+        [install]: ['bin/'],
+        [`${install}${BS}bin`]: ['rustrover64.exe'],
+      }),
+      env: WIN_ENV,
+    })).toBe(`${install}${BS}bin${BS}rustrover64.exe`);
   });
 
   it('should stop searching a directory tree that cannot be read', async () => {
