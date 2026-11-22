@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.4.0
+
+### Minor Changes
+
+- [#240](https://github.com/mirri-ai/mirricode/pull/240) [`9b7db7f`](https://github.com/mirri-ai/mirricode/commit/9b7db7f0e927f8e5b473fac60c7e084964354bf8) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix approval cards that could render blank: approval requests now carry a semantic action line, and unrecognized display data falls back to a card with the tool name and request payload instead of an empty card.
+
 ## 3.3.2
 
 ### Patch Changes
