@@ -18,6 +18,7 @@ import {
 } from './ipc';
 import { editorLaunchFor, launchDetached, openInAppLaunch, type LaunchCommand } from './file-launch';
 import { resolveMacBundleName, resolveWindowsExe, type DetectedOpenInApp } from './open-in-apps';
+import { qualifyWindowsDrivePath } from './platform';
 
 /** OS surfaces the handlers need. register-ipc.ts adapts Electron's modules
  *  to this shape; tests provide mocks. */
@@ -91,6 +92,21 @@ export function createDesktopIpcHandlers(deps: DesktopIpcDeps): DesktopIpcHandle
       // The UI opens the workspace folder, so the target is always a directory.
       // Windows editors/terminals launch their real exe; resolve it with the
       // same probe detection used, so the dropdown and the launch agree.
+      //
+      // The path is normalized and verified before anything is spawned: a
+      // short-lived session/workspace record can still carry a Windows path
+      // whose drive prefix was dropped (`/Users/me/proj`), and both
+      // `explorer.exe` and editors accept it silently — Explorer exits, VS Code
+      // shows its Welcome screen. Launching only an existing directory, and
+      // rejecting otherwise, turns that silent no-op into the renderer's
+      // "could not open" notice.
+      const target =
+        deps.platform === 'win32'
+          ? qualifyWindowsDrivePath(parsed.path, deps.env['USERPROFILE'] ?? deps.env['HOME'] ?? '')
+          : parsed.path;
+      if (!deps.existsSync(target)) {
+        throw new Error(`openInApp: ${target} is not an existing directory`);
+      }
       const windowsExe =
         deps.platform === 'win32'
           ? (resolveWindowsExe(parsed.appId, {
@@ -109,7 +125,7 @@ export function createDesktopIpcHandlers(deps: DesktopIpcDeps): DesktopIpcHandle
       await deps.launch(
         openInAppLaunch(
           parsed.appId,
-          parsed.path,
+          target,
           { isDirectory: true, windowsExe, macAppBundleName },
           deps.platform,
         ),

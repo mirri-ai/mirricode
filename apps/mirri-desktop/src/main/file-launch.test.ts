@@ -92,7 +92,8 @@ describe('openInAppLaunch', () => {
   it('should open the containing folder on win32 when a file is targeted', () => {
     expect(openInAppLaunch('finder', 'C:\\ws\\a.txt', { isDirectory: false }, 'win32')).toEqual({
       command: 'explorer.exe',
-      args: ['C:\\ws']
+      args: ['C:\\ws'],
+      windowsHide: false,
     });
   });
 

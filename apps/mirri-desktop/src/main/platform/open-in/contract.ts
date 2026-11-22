@@ -13,6 +13,12 @@ export interface LaunchCommand {
   readonly command: string;
   readonly args: readonly string[];
   readonly shell?: boolean;
+  /** Windows only: hide the launched process's console window. Defaults to
+   *  true for console-backed launches (a `.cmd` shim would otherwise flash a
+   *  window). GUI apps must pass `false`: the flag reaches them as
+   *  `STARTF_USESHOWWINDOW`/`SW_HIDE`, and Explorer honours it for the window
+   *  it creates — the folder opened, but invisibly. */
+  readonly windowsHide?: boolean;
 }
 
 export interface OpenInAppOptions {

@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { platformOpenInLaunch } from './contract';
+import { qualifyWindowsDrivePath } from './windows-linux';
 
 describe('platform open-in launch dispatch', () => {
   it('should launch a registry app with open -a on darwin', () => {
@@ -37,7 +38,7 @@ describe('platform open-in launch dispatch', () => {
 
   it('should open a directory with explorer.exe on win32', () => {
     const cmd = platformOpenInLaunch('finder', '/w/dir', { isDirectory: true }, 'win32');
-    expect(cmd).toEqual({ command: 'explorer.exe', args: ['/w/dir'] });
+    expect(cmd).toEqual({ command: 'explorer.exe', args: ['/w/dir'], windowsHide: false });
   });
 
   it('should open the containing folder when a file is targeted on win32', () => {
@@ -49,12 +50,12 @@ describe('platform open-in launch dispatch', () => {
       { isDirectory: false },
       'win32',
     );
-    expect(cmd).toEqual({ command: 'explorer.exe', args: ['C:\\my ws'] });
+    expect(cmd).toEqual({ command: 'explorer.exe', args: ['C:\\my ws'], windowsHide: false });
   });
 
   it('should open the workspace folder itself through File Explorer', () => {
     const cmd = platformOpenInLaunch('finder', 'C:\\my ws', { isDirectory: true }, 'win32');
-    expect(cmd).toEqual({ command: 'explorer.exe', args: ['C:\\my ws'] });
+    expect(cmd).toEqual({ command: 'explorer.exe', args: ['C:\\my ws'], windowsHide: false });
   });
 
   it('should launch a Windows editor through its resolved exe', () => {
@@ -67,6 +68,7 @@ describe('platform open-in launch dispatch', () => {
     expect(cmd).toEqual({
       command: 'C:\\Program Files\\Microsoft VS Code\\Code.exe',
       args: ['C:\\ws'],
+      windowsHide: false,
     });
   });
 
@@ -81,5 +83,31 @@ describe('platform open-in launch dispatch', () => {
 
   it('should throw for an unknown app id on any platform', () => {
     expect(() => platformOpenInLaunch('not-an-app', '/w', {}, 'darwin')).toThrow(/unknown app id/);
+  });
+});
+
+describe('Windows drive-prefix qualification', () => {
+  it('should prepend the reference drive when the path lost its drive prefix', () => {
+    expect(qualifyWindowsDrivePath('/Users/me/proj', 'C:\\Users\\me')).toBe('C:\\Users\\me\\proj');
+  });
+
+  it('should accept backslash-separated driveless paths', () => {
+    expect(qualifyWindowsDrivePath('\\Users\\me\\proj', 'C:\\Users\\me')).toBe(
+      'C:\\Users\\me\\proj',
+    );
+  });
+
+  it('should leave an already drive-qualified path untouched', () => {
+    expect(qualifyWindowsDrivePath('D:\\work\\proj', 'C:\\Users\\me')).toBe('D:\\work\\proj');
+  });
+
+  it('should leave a UNC path untouched', () => {
+    expect(qualifyWindowsDrivePath('\\\\server\\share\\proj', 'C:\\Users\\me')).toBe(
+      '\\\\server\\share\\proj',
+    );
+  });
+
+  it('should leave the path untouched when the reference carries no drive', () => {
+    expect(qualifyWindowsDrivePath('/Users/me/proj', '')).toBe('/Users/me/proj');
   });
 });

@@ -14,6 +14,29 @@ import path from 'node:path';
 import type { OpenInAppDescriptor } from '../../open-in-apps';
 import type { LaunchCommand, OpenInAppOptions } from './contract';
 
+/** Qualify a rooted-but-driveless Windows path with the drive of a reference
+ *  path: `/Users/me/proj` → `C:\Users\me\proj`.
+ *
+ *  Windows itself resolves such a path against the *current* drive, and the
+ *  current directory of an Electron main process is not the user's home (it is
+ *  the install directory or `C:\Windows\System32`). Session/workspace records
+ *  produced by the old path-resolution bug carry exactly this shape — the drive
+ *  was dropped and `/Users/me/proj` survived — and no Windows API can open that
+ *  as the user intended. The reference is the home/profile path, whose drive is
+ *  where user workspaces live; the caller still verifies existence afterwards,
+ *  so a wrong guess fails loudly instead of opening something unrelated.
+ *
+ *  Anything already drive-qualified (`C:\...`), UNC (`\\server\share`), or
+ *  POSIX is returned unchanged. */
+export function qualifyWindowsDrivePath(absolutePath: string, referencePath: string): string {
+  const windowsPath = absolutePath.replaceAll('/', '\\');
+  if (!windowsPath.startsWith('\\')) return absolutePath;
+  if (windowsPath.startsWith('\\\\')) return absolutePath; // UNC — already qualified
+  const drive = /^([A-Za-z]):/.exec(referencePath.replaceAll('/', '\\')); // e.g. `C:`
+  if (drive === null) return absolutePath;
+  return `${drive[1]}:${windowsPath}`;
+}
+
 export function windowsLinuxLaunch(
   app: OpenInAppDescriptor,
   absolutePath: string,
@@ -31,6 +54,11 @@ export function windowsLinuxLaunch(
         args: [
           options.isDirectory ? absolutePath : path.win32.dirname(absolutePath),
         ],
+        // explorer.exe is a GUI app and forwards to the running shell, which
+        // applies the inherited show state to the window it creates — with
+        // `windowsHide` the folder opens perfectly but the window stays
+        // invisible, which reads as "the click did nothing".
+        windowsHide: false,
       };
     }
     return {
@@ -48,7 +76,9 @@ export function windowsLinuxLaunch(
     if (options.windowsExe === undefined) {
       throw new Error(`openInApp: ${app.appId} is not installed on this machine`);
     }
-    return { command: options.windowsExe, args: [absolutePath] };
+    // Editors are GUI apps too; hide only their console window, never the
+    // window they create.
+    return { command: options.windowsExe, args: [absolutePath], windowsHide: false };
   }
   // 非 macOS：没有编辑器/终端的平台专属语义 —— 用目录默认打开。
   return { command: 'xdg-open', args: [absolutePath] };

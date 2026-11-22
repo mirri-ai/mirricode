@@ -79,7 +79,9 @@ export function launchDetached(cmd: LaunchCommand): Promise<void> {
       detached: true,
       stdio: 'ignore',
       shell: cmd.shell === true,
-      windowsHide: true,
+      // Console-backed launches keep their window hidden; GUI apps opt out so
+      // the window they create is actually shown (see `LaunchCommand`).
+      windowsHide: cmd.windowsHide !== false,
     });
     child.once('error', (err) => {
       if (settled) return;
