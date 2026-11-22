@@ -67,26 +67,51 @@ pub fn lexically_resolve(path: &Path) -> PathBuf {
         std::env::current_dir().unwrap_or_default().join(path)
     };
 
-    // Clean component by component. `Path::components()` already collapses
-    // repeated separators and drops interior `.` entries, but KEEPS `..` —
-    // so `..` is handled here by popping the last normal component.
-    let mut resolved = if joined.has_root() {
-        PathBuf::from("/")
-    } else {
-        PathBuf::new()
-    };
+    // Seed the result with the path's OWN root, not with a hardcoded `/`.
+    // On Windows the root is `Prefix(C:)` + `RootDir` (`C:\`); seeding `/`
+    // used to DROP the drive component, so `C:\Users\me\proj` resolved to
+    // `/Users\me\proj` — a path no Windows API can open, which surfaced as
+    // "Open in File Explorer / VS Code does nothing". POSIX paths seed `/`
+    // exactly as before, so their keys are byte-identical.
+    //
+    // Cleaning is component-by-component. `Path::components()` already
+    // collapses repeated separators and drops interior `.` entries, but
+    // KEEPS `..` — so `..` is handled here by popping the last normal
+    // component.
+    let mut resolved = root_of(&joined);
     for component in joined.components() {
         match component {
-            Component::RootDir | Component::Prefix(_) => { /* the leading `/` is already laid */ }
+            Component::Prefix(_) | Component::RootDir => { /* already seeded */ }
             Component::CurDir => { /* `.` is a no-op (leading `.` survives components()) */ }
             Component::ParentDir => {
                 // Pop the parent; at the root the pop is a no-op (`/..` → `/`).
+                // On Windows `pop()` on `C:\` yields None and leaves it intact,
+                // so `..` cannot escape the drive.
                 resolved.pop();
             }
             Component::Normal(segment) => resolved.push(segment),
         }
     }
     resolved
+}
+
+/// The root portion of `path`: on Windows `Prefix(C:)` + `RootDir` (`C:\`),
+/// on POSIX `/`, and empty for a pure relative path. Rebuilt from the
+/// platform's own components rather than a literal string so the separators
+/// match what the rest of the path uses.
+fn root_of(path: &Path) -> PathBuf {
+    let mut root = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) => root.push(component.as_os_str()),
+            Component::RootDir => {
+                root.push(component.as_os_str());
+                break;
+            }
+            _ => break,
+        }
+    }
+    root
 }
 
 /// The normalized path's basename as a `&str` (lossy for non-UTF-8 — the
@@ -161,6 +186,13 @@ mod tests {
         hex_encode(&Sha256::digest(path.as_bytes()))[..HASH_LENGTH].to_string()
     }
 
+    // The tests below spell their fixtures as literal POSIX paths
+    // (`/Users/dev/project`), so they assert POSIX semantics and only run on
+    // unix. On Windows `/Users/...` is not absolute — it would be joined onto
+    // the drive's cwd — so the same assertions describe a different path.
+    // Windows semantics are covered by the `C:\...` cases at the end of this
+    // module.
+    #[cfg(unix)]
     #[test]
     fn should_derive_the_full_key_when_given_a_plain_workspace_path() {
         // Given a plain absolute path
@@ -174,6 +206,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn should_slug_spaces_into_a_single_dash_when_basename_has_runs() {
         // Given a basename with a run of spaces and mixed bad characters
@@ -188,6 +221,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn should_slug_unicode_to_a_dash_when_basename_has_non_ascii() {
         // Given a basename made entirely of unicode characters
@@ -201,6 +235,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn should_fall_back_to_workspace_when_the_slug_is_empty() {
         // Given a path whose basename slugifies to the empty string ("/")
@@ -209,6 +244,7 @@ mod tests {
         assert_eq!(key, format!("wd_workspace_{}", expected_hash("/")));
     }
 
+    #[cfg(unix)]
     #[test]
     fn should_truncate_the_slug_when_the_basename_exceeds_forty_chars() {
         // Given a 60-character basename of valid slug characters
@@ -222,6 +258,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn should_trim_a_trailing_dash_exposed_by_truncation() {
         // Given a basename whose 40th slug character is the dash the bad
@@ -250,6 +287,7 @@ mod tests {
         assert_eq!(plain, doubled);
     }
 
+    #[cfg(unix)]
     #[test]
     fn should_keep_the_root_when_parent_dirs_overflow_the_root() {
         // Given a path that climbs above the root
@@ -259,6 +297,7 @@ mod tests {
         assert_eq!(key, format!("wd_etc_{}", expected_hash("/etc")));
     }
 
+    #[cfg(unix)]
     #[test]
     fn should_normalize_a_trailing_dot_component_when_deriving_the_key() {
         // Given a path with a trailing `.` component (and one climbing with
@@ -273,6 +312,48 @@ mod tests {
         assert_eq!(dotted, plain);
         assert_eq!(climbed, plain);
         assert!(encode_work_dir_path_str("/work/..").starts_with("wd_workspace_"));
+    }
+
+    #[test]
+    fn should_keep_the_drive_prefix_when_normalizing_a_windows_path() {
+        // Given a Windows absolute path (the shape every Windows workspace
+        // root has). Seeding the result with a bare `/` used to DROP the
+        // `Prefix(C:)` component, turning `C:\Users\me\proj` into
+        // `/Users\me\proj` — a path no Windows API can open, which surfaced
+        // as "Open in File Explorer / VS Code does nothing".
+        let windows_style = Path::new(r"C:\Users\me\proj");
+        if !windows_style.has_root() {
+            // POSIX hosts parse `C:\...` as one relative component, so the
+            // Windows-only semantics cannot be asserted here; the shape is
+            // covered on the Windows runners.
+            return;
+        }
+
+        // When the path is lexically resolved
+        let resolved = lexically_resolve(windows_style);
+
+        // Then the drive prefix survives and no segment is lost
+        assert_eq!(resolved, windows_style, "drive prefix must survive");
+        assert!(
+            resolved.to_string_lossy().starts_with("C:"),
+            "resolved path must stay drive-qualified: {}",
+            resolved.display()
+        );
+    }
+
+    #[test]
+    fn should_clamp_at_the_drive_root_when_parent_dirs_overflow() {
+        // Given a Windows path climbing above its drive root
+        let overflow = Path::new(r"C:\..\..\Users\me");
+        if !overflow.has_root() {
+            return; // POSIX host — see the test above.
+        }
+
+        // When resolved
+        let resolved = lexically_resolve(overflow);
+
+        // Then `..` cannot escape the drive: `C:\` is the floor
+        assert_eq!(resolved, Path::new(r"C:\Users\me"));
     }
 
     /// Test seam: [`encode_work_dir_key`] over a `&str` path (the tests
