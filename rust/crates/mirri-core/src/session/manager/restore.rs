@@ -112,6 +112,17 @@ impl SessionManager {
         //    decompression step — the old failure surfaced as an opaque
         //    "wire log not found" / a hard read error instead of telling
         //    the user to run session.restore).
+        //
+        //    Before the existence check, try to adopt a body parked under a
+        //    stale workspace bucket: the bucket key is derived from the
+        //    workspace path, so it changes whenever that path normalizes
+        //    differently (a moved/renamed workspace, a relocated data
+        //    directory, a fixed key derivation). The body is on disk; only
+        //    its address moved. Adopting it here — the single point where a
+        //    resume establishes "does this session have a body" — keeps every
+        //    downstream path (replay, fork, compression, tasks) working
+        //    against the ordinary `session_dir` answer.
+        self.adopt_relocated_session(session_id).await;
         let wire_log_path = self.persistence.wire_log_path(session_id);
         // The compressed probe runs FIRST: a `.gz`-shaped session has no
         // plain wire.jsonl, so the existence check below would mask it

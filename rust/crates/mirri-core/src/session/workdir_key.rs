@@ -181,6 +181,11 @@ mod tests {
     /// The expected `hash12` for a path, computed through sha2 directly —
     /// the same primitive the TS side uses, so the tests assert the
     /// composition rather than a hardcoded digest.
+    ///
+    /// `#[cfg(unix)]`: only the POSIX-literal fixtures below use it (they
+    /// are unix-gated for the reason stated there), and on Windows an
+    /// ungated helper would be dead code — a `-D warnings` clippy failure.
+    #[cfg(unix)]
     fn expected_hash(path: &str) -> String {
         use sha2::Digest;
         hex_encode(&Sha256::digest(path.as_bytes()))[..HASH_LENGTH].to_string()
