@@ -16,6 +16,10 @@ export function darwinLaunch(
       ? { command: 'open', args: [absolutePath] }
       : { command: 'open', args: ['-R', absolutePath] };
   }
-  // 编辑器 / 终端：macOS 用 `open -a <AppName>`。
-  return { command: 'open', args: ['-a', app.macAppBundle!, absolutePath] };
+  // 编辑器 / 终端：macOS 用 `open -a <AppName>`。名称由 IPC 层解析出的实际
+  // bundle 决定 —— 社区版（`PyCharm CE`）与专业版共用一个注册表条目。
+  if (options.macAppBundleName === undefined) {
+    throw new Error(`openInApp: ${app.appId} is not installed on this machine`);
+  }
+  return { command: 'open', args: ['-a', options.macAppBundleName, absolutePath] };
 }

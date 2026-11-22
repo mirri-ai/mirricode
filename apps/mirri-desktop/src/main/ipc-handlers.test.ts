@@ -12,6 +12,8 @@ function makeDeps(overrides: Partial<DesktopIpcDeps> = {}): DesktopIpcDeps {
     launch: vi.fn().mockResolvedValue(undefined),
     showNotification: vi.fn().mockReturnValue(true),
     detectOpenInApps: vi.fn().mockResolvedValue([]),
+    existsSync: vi.fn().mockReturnValue(false),
+    readdirSync: vi.fn().mockReturnValue([]),
     setBadgeCount: vi.fn().mockReturnValue(true),
     dockBounce: vi.fn(),
     setLoginItem: vi.fn(),
@@ -94,14 +96,82 @@ describe('desktop:open-in-editor', () => {
 });
 
 describe('desktop:open-in-app', () => {
-  it('should launch the mapped app command', async () => {
-    const deps = makeDeps();
+  it('should launch the resolved bundle on macOS', async () => {
+    const deps = makeDeps({
+      existsSync: vi.fn().mockImplementation((p: string) => p === '/Applications/Visual Studio Code.app'),
+    });
     await expect(
       channelCaller(IPC_CHANNELS.openInApp, deps)({ appId: 'vscode', path: '/ws' }),
     ).resolves.toEqual({ opened: true });
     expect(deps.launch).toHaveBeenCalledWith({
       command: 'open',
       args: ['-a', 'Visual Studio Code', '/ws'],
+    });
+  });
+
+  it('should launch the Community Edition bundle on macOS when that is what is installed', async () => {
+    const deps = makeDeps({
+      existsSync: vi.fn().mockImplementation((p: string) => p === '/Applications/PyCharm CE.app'),
+    });
+    await expect(
+      channelCaller(IPC_CHANNELS.openInApp, deps)({ appId: 'pycharm', path: '/ws' }),
+    ).resolves.toEqual({ opened: true });
+    expect(deps.launch).toHaveBeenCalledWith({
+      command: 'open',
+      args: ['-a', 'PyCharm CE', '/ws'],
+    });
+  });
+
+  it('should launch the resolved exe directly when the platform is Windows', async () => {
+    const deps = makeDeps({
+      platform: 'win32',
+      env: { LOCALAPPDATA: 'C:\\Users\\demo\\AppData\\Local' },
+      existsSync: vi
+        .fn()
+        .mockImplementation(
+          (p: string) => p === 'C:\\Users\\demo\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe',
+        ),
+    });
+    await expect(
+      channelCaller(IPC_CHANNELS.openInApp, deps)({ appId: 'vscode', path: 'C:\\ws' }),
+    ).resolves.toEqual({ opened: true });
+    expect(deps.launch).toHaveBeenCalledWith({
+      command: 'C:\\Users\\demo\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe',
+      args: ['C:\\ws'],
+    });
+  });
+
+  it('should launch a JetBrains IDE found through the versioned install scan on Windows', async () => {
+    const root = 'C:\\Program Files\\JetBrains';
+    const install = `${root}\\IntelliJ IDEA 2024.1`;
+    const deps = makeDeps({
+      platform: 'win32',
+      env: { ProgramFiles: 'C:\\Program Files' },
+      existsSync: vi.fn().mockImplementation((p: string) => p === root || p === install),
+      readdirSync: vi.fn().mockImplementation((p: string) => {
+        if (p === root) return [{ name: 'IntelliJ IDEA 2024.1', isDirectory: () => true }];
+        if (p === install) return [{ name: 'bin', isDirectory: () => true }];
+        if (p === `${install}\\bin`) return [{ name: 'idea64.exe', isDirectory: () => false }];
+        throw new Error(`ENOENT: ${p}`);
+      }),
+    });
+    await expect(
+      channelCaller(IPC_CHANNELS.openInApp, deps)({ appId: 'intellij', path: 'C:\\ws' }),
+    ).resolves.toEqual({ opened: true });
+    expect(deps.launch).toHaveBeenCalledWith({
+      command: `${install}\\bin\\idea64.exe`,
+      args: ['C:\\ws'],
+    });
+  });
+
+  it('should open the workspace folder when File Explorer is chosen on Windows', async () => {
+    const deps = makeDeps({ platform: 'win32' });
+    await expect(
+      channelCaller(IPC_CHANNELS.openInApp, deps)({ appId: 'finder', path: 'C:\\my ws' }),
+    ).resolves.toEqual({ opened: true });
+    expect(deps.launch).toHaveBeenCalledWith({
+      command: 'explorer.exe',
+      args: ['C:\\my ws'],
     });
   });
 

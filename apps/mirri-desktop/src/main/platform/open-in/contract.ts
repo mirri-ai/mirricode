@@ -18,6 +18,13 @@ export interface LaunchCommand {
 export interface OpenInAppOptions {
   readonly line?: number;
   readonly isDirectory?: boolean;
+  /** Resolved Windows executable for editor/terminal launches on win32 (see
+   *  `resolveWindowsExe`). Ignored on other platforms. */
+  readonly windowsExe?: string;
+  /** Resolved macOS bundle name for editor/terminal launches on darwin (see
+   *  `resolveMacBundleName`) — the edition actually installed. Ignored on
+   *  other platforms. */
+  readonly macAppBundleName?: string;
 }
 
 function registryApp(appId: string): OpenInAppDescriptor {
