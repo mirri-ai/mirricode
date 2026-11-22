@@ -680,7 +680,10 @@ for (const crate of readdirSync(cratesDir, { withFileTypes: true })) {
 
 // --- baseline -----------------------------------------------------------------
 
-const key = (v) => `${v.file}:${v.line}`;
+// Baseline keys are POSIX-separated (`crates/x/tests/y.rs:12`). `relative()`
+// yields backslashes on Windows, which made every entry look unlisted — 221
+// phantom "new violations" on a Windows checkout with no rust change.
+const key = (v) => `${v.file.replaceAll('\\', '/')}:${v.line}`;
 
 // Sleep coverage allow-list (batch 6b, review Minor 1): a `sleep` baseline
 // entry only covers its violation when its reason matches one of the

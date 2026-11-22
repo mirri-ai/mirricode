@@ -22,8 +22,12 @@
 
 import { spawnSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+// `fileURLToPath` rather than `URL.pathname`: on Windows the latter yields
+// `/C:/…`, which spawnSync cannot use as a cwd (ENOENT), so every stage failed
+// before it ran and the pre-commit hook blocked all Windows commits.
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 // --- stage definitions (lightest first — fast-fail ordering) -------------------
 // Each: { name, cmd (string[]), cwd, knownFailure?: 'note' }
@@ -133,16 +137,23 @@ if (args.has('--list') || args.has('-l')) {
 const MODE = args.has('--full') ? 'full' : args.has('--rust') ? 'rust' : args.has('--real') ? 'real' : 'fast';
 
 // --- runner ----------------------------------------------------------------------
+// Windows resolves `pnpm` to its `.cmd` shim through the shell, which is why
+// runStage() sets shell: true there. Passing the explicit `pnpm.cmd` name
+// instead would be redundant and, under cmd.exe, not found.
 function pnpmBin() {
-  return process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
+  return 'pnpm';
 }
 
 function runStage(stage) {
   const t0 = performance.now();
+  // Windows runs `pnpm` through a `.cmd` shim, which Node refuses to spawn
+  // without a shell (EINVAL) — every pnpm stage would fail before it ran.
+  const winShell = process.platform === 'win32';
   const res = spawnSync(stage.cmd[0], stage.cmd.slice(1), {
     cwd: ROOT,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, FORCE_COLOR: '0' },
+    shell: winShell,
   });
   const ms = performance.now() - t0;
   return { ...stage, ok: res.status === 0, ms, output: res };
