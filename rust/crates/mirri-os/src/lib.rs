@@ -7,6 +7,7 @@ pub mod file_index;
 pub mod fs;
 pub mod glob;
 pub mod home;
+pub mod msys_path;
 pub mod path_access;
 pub mod process;
 pub mod pty;
@@ -20,6 +21,7 @@ pub use glob::{DynGlobFuture, DynGlobMatch, GlobMatch, GlobParams, GlobResult, L
 pub use home::{
     mirri_home_dir, os_home_dir, resolve_mirri_home_dir_from, resolve_os_home_dir_from,
 };
+pub use msys_path::{normalize_for_comparison, translate_msys_path};
 pub use path_access::PathAccess;
 pub use process::{
     ChildProcess, DynChildProcess, DynChildStdin, DynChildStream, DynOsProcess, DynProcessFuture,

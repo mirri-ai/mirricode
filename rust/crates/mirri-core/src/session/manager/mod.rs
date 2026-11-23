@@ -2247,6 +2247,18 @@ impl SessionManager {
     /// ordinary row delete (its tombstone is harmless — a tombstone with no
     /// directory is cleared by the next reaper sweep).
     ///
+    /// **The body probe covers every bucket, not just this workspace's.**
+    /// A session's bucket key is derived from its workspace path, so the
+    /// key can stop matching while the body is still on disk in the old
+    /// bucket (a moved/renamed workspace, a relocated data directory, or a
+    /// fix to the key derivation itself). Probing only
+    /// [`Self::persistence`].`session_dir` there reads a relocation as "the
+    /// body is gone" — and because the delete writes a tombstone that the
+    /// reaper then executes against the REAL directory, that false verdict
+    /// is what makes a whole session library disappear. The anywhere-probe
+    /// below is the guard: no body found ANYWHERE is the only verdict that
+    /// may drop the row.
+    ///
     /// Returns whether a row was dropped.
     pub async fn discard_row_without_body(&self, session_id: &SessionId) -> bool {
         if self.get_session(session_id).await.is_some() {
@@ -2262,8 +2274,28 @@ impl SessionManager {
         if !conversed {
             return false;
         }
-        let dir = self.persistence.session_dir(session_id);
-        if mirri_persistence::probe_compressed(&dir) != mirri_persistence::CompressedShape::Missing {
+        let own_dir = self.persistence.session_dir(session_id);
+        if let Some(found) = self
+            .persistence
+            .locate_session_dir_anywhere(session_id)
+            .await
+        {
+            // The body exists — the bucket key just no longer matches this
+            // workspace's derivation. Never drop the row: the session is
+            // still readable, and deleting its tombstone-bearing row would
+            // hand the reaper a live directory to remove.
+            tracing::warn!(
+                session_id = %session_id,
+                expected = %own_dir.display(),
+                found = %found.display(),
+                "session body found under a different workspace bucket; \
+                 keeping the metadata row (the workspace key derivation changed)"
+            );
+            return false;
+        }
+        if mirri_persistence::probe_compressed(&own_dir)
+            != mirri_persistence::CompressedShape::Missing
+        {
             return false;
         }
         if let Err(error) = self.metadata_store.delete(session_id).await {
@@ -2276,11 +2308,39 @@ impl SessionManager {
         }
         tracing::info!(
             session_id = %session_id,
-            directory = %dir.display(),
+            directory = %own_dir.display(),
             "dropped the metadata row of a conversed session whose persisted body is gone \
-             (its session directory was deleted outside the engine)"
+             (no bucket under the sessions root holds it)"
         );
         true
+    }
+
+    /// Adopt a session parked under a stale workspace bucket (see
+    /// [`SessionPersistence::adopt_session_dir`]).
+    ///
+    /// The bucket key is derived from the workspace path, so it stops
+    /// matching whenever that path normalizes differently — a moved or
+    /// renamed workspace, a data directory copied to another machine, or a
+    /// fix to the derivation itself. The body is still on disk under the old
+    /// key. Every read path asks [`SessionPersistence::session_dir`] for the
+    /// NEW key, so without adoption the session reads as missing even though
+    /// it is right there.
+    ///
+    /// Best-effort: a failure logs and leaves the session where it is (the
+    /// caller's not-found answer stays honest). Returns whether a move
+    /// happened.
+    pub async fn adopt_relocated_session(&self, session_id: &SessionId) -> bool {
+        match self.persistence.adopt_session_dir(session_id).await {
+            Ok(moved) => moved,
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    %error,
+                    "adopting a relocated session failed; leaving it where it is"
+                );
+                false
+            }
+        }
     }
 
     /// Whether this process closed the session (see [`Self::close_session`]).

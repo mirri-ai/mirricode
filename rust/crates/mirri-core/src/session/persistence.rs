@@ -479,6 +479,134 @@ impl SessionPersistence {
         self.session_dir(session_id).join("wire.jsonl")
     }
 
+    /// Locate `session_id`'s body under EVERY bucket of the sessions root,
+    /// not just this persistence instance's own workspace key.
+    ///
+    /// A session's bucket key is derived from its workspace path, so the
+    /// bucket a session was written into stops matching the one its current
+    /// workspace computes the moment that path normalizes differently —
+    /// a moved/renamed workspace, a data directory copied to another
+    /// machine, or a fix to the key derivation itself. The body is still on
+    /// disk in the old bucket; only its address changed.
+    ///
+    /// `session_dir` deliberately answers "where would THIS workspace write
+    /// it" and must stay that way (resume, fork, and the write paths all
+    /// depend on it). Callers that ask "does this session still have a
+    /// body anywhere" — the body-less row reclamation, the tombstone
+    /// reaper — must ask THIS question instead: probing only the current
+    /// bucket turns a relocation into a false "the body is gone" verdict,
+    /// and acting on that verdict deletes the user's session.
+    ///
+    /// The probe mirrors [`Self::session_dir`]'s own key first, then every
+    /// sibling bucket (and the flat layout) by name, sorted for a
+    /// deterministic answer. Returns `None` when no bucket holds it.
+    pub async fn locate_session_dir_anywhere(&self, session_id: &SessionId) -> Option<PathBuf> {
+        let own = self.session_dir(session_id);
+        if self.has_session_body(&own).await {
+            return Some(own);
+        }
+        let entries = self.io.iterdir(&self.sessions_dir).await.ok()?;
+        let mut candidates: Vec<PathBuf> = entries
+            .into_iter()
+            .filter(|entry| entry.is_dir)
+            .map(|entry| PathBuf::from(entry.path).join(session_id.as_str()))
+            .collect();
+        candidates.sort();
+        for candidate in candidates {
+            if self.has_session_body(&candidate).await {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    /// Whether `dir` holds a session body in either wire-log shape (the same
+    /// shape truth [`mirri_persistence::probe_compressed`] defines).
+    async fn has_session_body(&self, dir: &Path) -> bool {
+        if self
+            .io
+            .exists(&dir.join(mirri_persistence::WIRE_LOG_FILE))
+            .await
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        self.io
+            .exists(&dir.join(mirri_persistence::WIRE_LOG_GZ_FILE))
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Adopt a session that lives under a bucket whose key no longer matches
+    /// this workspace's derivation by moving its directory into this
+    /// workspace's own bucket.
+    ///
+    /// The sibling of [`Self::locate_session_dir_anywhere`]: that one answers
+    /// "where is the body"; this one makes the answer match
+    /// [`Self::session_dir`] so every downstream path (resume, fork,
+    /// compression, tasks, subagent journals) finds it without each of them
+    /// carrying a fallback. The move is a directory rename inside one
+    /// sessions root — same filesystem, so it is atomic and cheap.
+    ///
+    /// Returns `Ok(true)` when a directory was moved, `Ok(false)` when there
+    /// was nothing to do (the body is already where it belongs, or no bucket
+    /// holds it at all — the caller's own not-found handling applies).
+    ///
+    /// Never overwrites: a target that already exists wins (it is the
+    /// newer copy), and the legacy one is left in place for the user to
+    /// inspect rather than being deleted behind their back.
+    pub async fn adopt_session_dir(
+        &self,
+        session_id: &SessionId,
+    ) -> std::io::Result<bool> {
+        let target = self.session_dir(session_id);
+        if self.has_session_body(&target).await {
+            return Ok(false);
+        }
+        let Some(found) = self.locate_session_dir_anywhere(session_id).await else {
+            return Ok(false);
+        };
+        if found == target {
+            return Ok(false);
+        }
+        if self.io.exists(&target).await.unwrap_or(false) {
+            // Both copies exist — keep the one this workspace would read and
+            // leave the other untouched (deleting user data is never this
+            // function's call).
+            tracing::warn!(
+                session_id = %session_id,
+                legacy = %found.display(),
+                current = %target.display(),
+                "session exists under both the legacy and the current workspace bucket; \
+                 keeping both and reading the current one"
+            );
+            return Ok(false);
+        }
+        if let Some(parent) = target.parent()
+            && let Err(error) = self.io.mkdir(parent, true).await
+        {
+            return Err(std::io::Error::other(format!(
+                "creating the target bucket {} failed: {error}",
+                parent.display()
+            )));
+        }
+        self.io.rename(&found, &target).await.map_err(|error| {
+            std::io::Error::other(format!(
+                "moving the session from {} to {} failed: {error}",
+                found.display(),
+                target.display()
+            ))
+        })?;
+        tracing::info!(
+            session_id = %session_id,
+            from = %found.display(),
+            to = %target.display(),
+            "adopted a session whose workspace bucket key changed \
+             (moved it into the current bucket)"
+        );
+        Ok(true)
+    }
+
     /// The per-subagent journal path (B4 T7/T8, D-55):
     /// `<session_dir>/agents/<agent_id>/wire.jsonl`. Agent ids are
     /// host-minted (`agent-<uuid>`), so the path needs no further
@@ -3370,4 +3498,166 @@ mod tests {
             "the listing must only see the injected enumeration"
         );
     }
+
+// ---------------------------------------------------------------------------
+// Bucket adoption: the relocation remedy
+// ---------------------------------------------------------------------------
+//
+// The guard in `discard_row_without_body` stops the data loss; adoption is
+// what makes a relocated session usable again. The bucket key is derived
+// from the workspace path, so a moved/renamed workspace (or a fixed key
+// derivation) leaves every read path asking the new bucket while the body
+// sits in the old one. Adopting moves the directory into the current bucket
+// once, so resume/fork/compression/tasks all find it normally afterwards.
+
+/// Given a session body under a stale bucket, When its persistence adopts
+/// it, Then the directory moves into the current bucket and the ordinary
+/// `session_dir` answer finds it.
+#[tokio::test]
+async fn should_move_a_relocated_session_into_the_current_bucket_when_adopting() {
+    // Given a body under an old bucket and a persistence whose own key is
+    // derived from a different workspace path
+    let tmp = tempfile::tempdir().unwrap();
+    let sessions_dir = tmp.path().join("v3_sessions");
+    let old_bucket = sessions_dir.join("wd_old_000000000000");
+    let session_id = SessionId::new("session-relocated");
+    let old_dir = old_bucket.join(session_id.as_str());
+    tokio::fs::create_dir_all(&old_dir).await.unwrap();
+    tokio::fs::write(old_dir.join("wire.jsonl"), "{\"type\":\"metadata\"}\n")
+        .await
+        .unwrap();
+
+    let persistence = SessionPersistence::new(
+        sessions_dir.clone(),
+        std::sync::Arc::new(mirri_os::LocalFs::new()),
+    )
+    .with_workspace_key("wd_current_111111111111".to_string());
+    let target = persistence.session_dir(&session_id);
+    assert_ne!(target, old_dir, "precondition: the buckets differ");
+
+    // When the session is adopted
+    let moved = persistence.adopt_session_dir(&session_id).await.unwrap();
+
+    // Then the directory lives at the current bucket's path
+    assert!(moved, "the adoption moved the directory");
+    assert!(
+        target.join("wire.jsonl").is_file(),
+        "the body is now where every read path looks for it"
+    );
+    assert!(!old_dir.exists(), "the old location no longer holds it");
+}
+
+/// Given a session already in its own bucket, When adoption runs, Then
+/// nothing moves — the common case is a no-op.
+#[tokio::test]
+async fn should_do_nothing_when_the_session_is_already_in_its_bucket() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sessions_dir = tmp.path().join("v3_sessions");
+    let persistence = SessionPersistence::new(
+        sessions_dir.clone(),
+        std::sync::Arc::new(mirri_os::LocalFs::new()),
+    )
+    .with_workspace_key("wd_current_111111111111".to_string());
+    let session_id = SessionId::new("session-in-place");
+    let dir = persistence.session_dir(&session_id);
+    tokio::fs::create_dir_all(&dir).await.unwrap();
+    tokio::fs::write(dir.join("wire.jsonl"), "{}\n").await.unwrap();
+
+    let moved = persistence.adopt_session_dir(&session_id).await.unwrap();
+
+    assert!(!moved);
+    assert!(dir.join("wire.jsonl").is_file());
+}
+
+/// Given a session that exists in BOTH the stale and the current bucket,
+/// When adoption runs, Then neither copy is touched — the current one is
+/// what reads resolve to, and deleting the other is never this call's call.
+#[tokio::test]
+async fn should_keep_both_copies_when_the_session_exists_under_two_buckets() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sessions_dir = tmp.path().join("v3_sessions");
+    let session_id = SessionId::new("session-duplicated");
+
+    let old_dir = sessions_dir
+        .join("wd_old_000000000000")
+        .join(session_id.as_str());
+    let persistence = SessionPersistence::new(
+        sessions_dir.clone(),
+        std::sync::Arc::new(mirri_os::LocalFs::new()),
+    )
+    .with_workspace_key("wd_current_111111111111".to_string());
+    let target = persistence.session_dir(&session_id);
+
+    tokio::fs::create_dir_all(&old_dir).await.unwrap();
+    tokio::fs::write(old_dir.join("wire.jsonl"), "old\n").await.unwrap();
+    tokio::fs::create_dir_all(&target).await.unwrap();
+    tokio::fs::write(target.join("wire.jsonl"), "current\n")
+        .await
+        .unwrap();
+
+    let moved = persistence.adopt_session_dir(&session_id).await.unwrap();
+
+    assert!(!moved, "a present target wins; nothing is moved");
+    assert_eq!(
+        tokio::fs::read_to_string(target.join("wire.jsonl")).await.unwrap(),
+        "current\n",
+        "the current copy is untouched"
+    );
+    assert_eq!(
+        tokio::fs::read_to_string(old_dir.join("wire.jsonl")).await.unwrap(),
+        "old\n",
+        "the legacy copy is left for the user, never deleted"
+    );
+}
+
+/// Given no body anywhere, When adoption runs, Then it reports no move and
+/// creates nothing — adoption must never fabricate an empty session.
+#[tokio::test]
+async fn should_create_nothing_when_no_bucket_holds_the_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sessions_dir = tmp.path().join("v3_sessions");
+    tokio::fs::create_dir_all(&sessions_dir).await.unwrap();
+    let persistence = SessionPersistence::new(
+        sessions_dir.clone(),
+        std::sync::Arc::new(mirri_os::LocalFs::new()),
+    )
+    .with_workspace_key("wd_current_111111111111".to_string());
+    let session_id = SessionId::new("session-absent");
+
+    let moved = persistence.adopt_session_dir(&session_id).await.unwrap();
+
+    assert!(!moved);
+    assert!(
+        !persistence.session_dir(&session_id).exists(),
+        "no directory is created for a session that does not exist"
+    );
+}
+
+/// Given a compressed (`.gz`) body under a stale bucket, When adoption
+/// runs, Then it moves too — the body probe covers both wire-log shapes, so
+/// a retention-compressed session is not mistaken for a missing one.
+#[tokio::test]
+async fn should_adopt_a_compressed_body_as_well() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sessions_dir = tmp.path().join("v3_sessions");
+    let session_id = SessionId::new("session-compressed");
+    let old_dir = sessions_dir
+        .join("wd_old_000000000000")
+        .join(session_id.as_str());
+    tokio::fs::create_dir_all(&old_dir).await.unwrap();
+    tokio::fs::write(old_dir.join("wire.jsonl.gz"), b"gz")
+        .await
+        .unwrap();
+
+    let persistence = SessionPersistence::new(
+        sessions_dir.clone(),
+        std::sync::Arc::new(mirri_os::LocalFs::new()),
+    )
+    .with_workspace_key("wd_current_111111111111".to_string());
+
+    let moved = persistence.adopt_session_dir(&session_id).await.unwrap();
+
+    assert!(moved, "a compressed body is still a body");
+    assert!(persistence.session_dir(&session_id).join("wire.jsonl.gz").is_file());
+}
 }

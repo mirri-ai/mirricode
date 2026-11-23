@@ -5,8 +5,9 @@
 // behavior has a single home and tests can inject platforms.
 
 import { platformOpenInLaunch } from './open-in/contract';
+import { qualifyWindowsDrivePath } from './open-in/windows-linux';
 
-export { platformOpenInLaunch };
+export { platformOpenInLaunch, qualifyWindowsDrivePath };
 export type { LaunchCommand, OpenInAppOptions } from './open-in/contract';
 
 export function currentPlatform(): NodeJS.Platform {

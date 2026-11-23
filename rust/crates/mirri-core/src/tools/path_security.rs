@@ -229,10 +229,21 @@ impl WorkspacePaths {
 
         // Resolve relative paths against the workspace root so `..` cannot
         // escape the containment check by targeting the process cwd.
-        let requested_absolute = if requested.is_absolute() {
-            requested.to_path_buf()
+        //
+        // Shell-spelled paths come first: a Git-Bash/MSYS input (`/c/Users/me`
+        // or the drive-less `/Users/me`) is NOT absolute on Windows, so the
+        // relative branch below would staple it onto the root and turn a
+        // workspace path into `C:\ws\c\Users\me` — an escape the tool layer
+        // hard-refuses, which is what kept such paths out of YOLO's trusted
+        // scope. Translating first makes them absolute before that decision,
+        // and leaves every native path untouched (the translation declines
+        // anything that is not an MSYS spelling).
+        let shell_translated = mirri_os::translate_msys_path(requested, &self.root);
+        let effective: &Path = shell_translated.as_deref().unwrap_or(requested);
+        let requested_absolute = if effective.is_absolute() {
+            effective.to_path_buf()
         } else {
-            root.join(requested)
+            root.join(effective)
         };
 
         // Lexical normalization: drop `.`, resolve `..` without I/O.
@@ -249,14 +260,27 @@ impl WorkspacePaths {
         // macOS are legitimate inside spellings). The canonical containment
         // below uses only canonical bases; this list only answers "was the
         // request written as inside?".
+        //
+        // Both sides go through `normalize_for_comparison` because Windows
+        // `starts_with` compares prefix components structurally: a
+        // canonicalized base (`\\?\C:\ws`) and a plainly-written request
+        // (`C:\ws\x`) differ at the prefix even though they name the same
+        // directory, and `c:\ws` differs from `C:\ws` byte-wise. Without the
+        // fold, `lexically_inside` is false for paths the sandbox itself
+        // just resolved, and the symlink-escape branch below then reports a
+        // legitimate inside write as an escape.
         let lexical_bases = self.lexical_bases(&root);
+        let normalized_cmp = mirri_os::normalize_for_comparison(&normalized);
         let lexically_inside = lexical_bases
             .iter()
-            .any(|base| normalized.starts_with(base));
+            .any(|base| normalized_cmp.starts_with(mirri_os::normalize_for_comparison(base)));
 
         // A relative path that lexically escapes every base is an escape
-        // shape: refused, not routed to the authorization flow.
-        if !lexically_inside && !requested.is_absolute() {
+        // shape: refused, not routed to the authorization flow. The
+        // `effective` path decides — a shell-spelled absolute path was
+        // already made absolute above, so it takes the authorization route
+        // like any other absolute input.
+        if !lexically_inside && !effective.is_absolute() {
             return PathClassification::Escape {
                 reason: "a relative path cannot escape the workspace; if the target is \
                      intentionally outside, state it as an absolute path"
@@ -273,9 +297,14 @@ impl WorkspacePaths {
             }
         };
 
+        // Same structural-prefix caveat as the lexical check above: the
+        // canonical form carries `\\?\` on Windows while an additional base
+        // may be configured in plain spelling, so both sides are folded
+        // before `starts_with`.
+        let canonical_cmp = mirri_os::normalize_for_comparison(&canonical);
         if canonical_bases
             .iter()
-            .any(|base| canonical.starts_with(base))
+            .any(|base| canonical_cmp.starts_with(mirri_os::normalize_for_comparison(base)))
         {
             return PathClassification::Inside(canonical);
         }
@@ -1053,5 +1082,126 @@ mod tests {
             panic!("a missing in-root target must classify as Inside on the real fs");
         };
         assert!(canonical.starts_with(tmp.path().canonicalize().unwrap()));
+    }
+
+    // -------------------------------------------------------------------------
+    // Git Bash / MSYS spelled paths (the YOLO trusted-scope gap)
+    // -------------------------------------------------------------------------
+
+    /// Given a workspace on a real drive, When a file inside it is requested
+    /// with the Git-Bash drive spelling (`/c/Users/...`), Then it classifies
+    /// as `Inside` — the MSYS translation runs before the absolute/relative
+    /// decision, so the path is not stapled onto the root as a relative one.
+    ///
+    /// The regression this pins: `/c/...` is NOT absolute on Windows
+    /// (`is_absolute()` is false), so the old order joined it onto the root
+    /// as `C:\ws\c\Users\...`, found it outside every base, and refused it as
+    /// a relative escape — which is exactly what kept a Git-Bash-spelled
+    /// workspace path out of YOLO's trusted scope.
+    #[test]
+    #[cfg(windows)]
+    fn should_classify_a_git_bash_drive_spelled_path_as_inside_when_classifying() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("src").join("main.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "fn main() {}").unwrap();
+
+        // Spell the real path the way Git Bash does: strip the drive and
+        // lowercase it into a leading segment. The canonical form carries
+        // the `\\?\` verbatim prefix, so it is normalized first — Git Bash
+        // never spells a path that way.
+        let native = file.canonicalize().unwrap();
+        let plain = mirri_os::normalize_for_comparison(&native);
+        let text = plain.to_string_lossy().replace('\\', "/");
+        let drive = text[..1].to_ascii_lowercase();
+        let msys = format!("/{drive}{}", &text[2..]);
+        assert!(msys.starts_with(&format!("/{drive}/")), "spelling: {msys}");
+
+        let paths = WorkspacePaths::new(tmp.path().to_path_buf());
+        let classification = paths.classify(Path::new(&msys));
+
+        let PathClassification::Inside(canonical) = classification else {
+            panic!("a Git-Bash spelled in-workspace path must be Inside, got {classification:?}");
+        };
+        assert_eq!(
+            canonical,
+            native,
+            "the translated path names the same file the native spelling does"
+        );
+    }
+
+    /// Given a workspace on a real drive, When a file inside it is requested
+    /// with the drive-less MSYS spelling (`/Users/...`), Then it also
+    /// classifies as `Inside` — the drive comes from the workspace root.
+    #[test]
+    #[cfg(windows)]
+    fn should_classify_a_drive_less_msys_path_as_inside_when_classifying() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("notes.txt");
+        std::fs::write(&file, "hi").unwrap();
+
+        let native = file.canonicalize().unwrap();
+        let plain = mirri_os::normalize_for_comparison(&native);
+        let text = plain.to_string_lossy().replace('\\', "/");
+        // Drop the `C:` prefix; the remainder still starts with `/`.
+        let msys = text[2..].to_string();
+        assert!(msys.starts_with('/'), "spelling: {msys}");
+
+        let paths = WorkspacePaths::new(tmp.path().to_path_buf());
+        let classification = paths.classify(Path::new(&msys));
+
+        let PathClassification::Inside(canonical) = classification else {
+            panic!("a drive-less in-workspace path must be Inside, got {classification:?}");
+        };
+        assert_eq!(canonical, native);
+    }
+
+    /// A Git-Bash spelled path that points OUTSIDE the workspace is not
+    /// silently trusted: it classifies as `Outside` (the authorization
+    /// chain's input), never `Inside`, and never as a relative escape.
+    #[test]
+    #[cfg(windows)]
+    fn should_classify_an_outside_git_bash_spelled_path_as_outside_when_classifying() {
+        let workspace = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let file = elsewhere.path().join("other.txt");
+        std::fs::write(&file, "x").unwrap();
+
+        let native = file.canonicalize().unwrap();
+        let plain = mirri_os::normalize_for_comparison(&native);
+        let text = plain.to_string_lossy().replace('\\', "/");
+        let drive = text[..1].to_ascii_lowercase();
+        let msys = format!("/{drive}{}", &text[2..]);
+
+        let paths = WorkspacePaths::new(workspace.path().to_path_buf());
+        let classification = paths.classify(Path::new(&msys));
+
+        assert!(
+            matches!(classification, PathClassification::Outside(_)),
+            "an outside MSYS path takes the authorization route, got {classification:?}"
+        );
+    }
+
+    /// Given a path that is NOT shell-spelled, When it is classified, Then
+    /// behaviour is unchanged — the translation declines it and the native
+    /// logic decides, so this fix cannot alter any existing verdict.
+    #[test]
+    fn should_leave_a_native_path_untouched_when_classifying() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("plain.txt");
+        std::fs::write(&file, "x").unwrap();
+        let paths = WorkspacePaths::new(tmp.path().to_path_buf());
+
+        assert!(
+            matches!(paths.classify(&file), PathClassification::Inside(_)),
+            "an in-root native path stays Inside"
+        );
+        assert!(
+            matches!(
+                paths.classify(Path::new("../escape.txt")),
+                PathClassification::Escape { .. }
+            ),
+            "a relative dotdot path stays an Escape"
+        );
     }
 }

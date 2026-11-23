@@ -97,9 +97,19 @@ const DEFAULT_APPROVE_TOOLS: &[&str] = &[
 /// - SSH private keys (`id_rsa`, `id_ed25519`, `id_ecdsa` without `.pub`).
 /// - Files containing "credentials" in the name.
 /// - `.aws/credentials` and `.gcp/credentials` paths.
+///
+/// **Separator-agnostic on purpose.** The path here is a *display* spelling
+/// (canonical Windows paths use `\`, POSIX ones `/`), so splitting on `/`
+/// alone made every check below fail on Windows: the basename became the
+/// whole path and `.git` / `.aws` component matches never fired. A sensitive
+/// gate that silently never matches is worse than no gate — `.env` reads
+/// then reach YOLO's blanket approval.
 fn is_sensitive_file(path: &str) -> bool {
     let path = path.to_lowercase();
-    let basename = path.rsplit('/').next().unwrap_or(&path);
+    let basename = path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(&path);
 
     // .env files (except .env.example/.sample/.template)
     if basename.starts_with(".env") {
@@ -121,17 +131,22 @@ fn is_sensitive_file(path: &str) -> bool {
         return true;
     }
 
-    // .aws/credentials, .gcp/credentials
-    if path.contains(".aws/credentials") || path.contains(".gcp/credentials") {
-        return true;
-    }
-
-    false
+    // .aws/credentials, .gcp/credentials — matched per path COMPONENT so the
+    // check holds for either separator (and does not fire on a filename that
+    // merely contains the substring).
+    let components: Vec<&str> = path.split(['/', '\\']).collect();
+    components
+        .windows(2)
+        .any(|pair| matches!(pair, [".aws" | ".gcp", "credentials"]))
 }
 
 /// Check whether a file path is inside a `.git` control directory.
+///
+/// Component-split on both separators for the same reason as
+/// [`is_sensitive_file`]: on Windows a `/`-only split never sees a `.git`
+/// component, so the git-control gate silently never fired.
 fn is_git_control_path(path: &str) -> bool {
-    path.split('/').any(|component| component == ".git")
+    path.split(['/', '\\']).any(|component| component == ".git")
 }
 
 // ---------------------------------------------------------------------------
@@ -1475,6 +1490,67 @@ mod tests {
     use crate::tool::ToolAccess;
 
     use super::*;
+
+    // ------------------------------------------------------------------
+    // Sensitive-file / git-control screening (separator agnosticism)
+    // ------------------------------------------------------------------
+
+    /// A Windows-spelled path must be screened the same way a POSIX one is.
+    ///
+    /// The regression this pins: the string forms of these checks split on
+    /// `/` only, so on Windows the basename became the whole path and the
+    /// `.git` component test never fired. The practical consequence was not
+    /// cosmetic — the sensitive gate silently stopped matching, so an
+    /// outside `.env` read fell through to YOLO's blanket approval.
+    #[test]
+    fn should_screen_sensitive_files_written_with_windows_separators() {
+        // Then .env is sensitive however the path is spelled
+        assert!(is_sensitive_file(r"C:\Users\me\proj\.env"));
+        assert!(is_sensitive_file(r"C:\Users\me\proj\.env.production"));
+        assert!(
+            !is_sensitive_file(r"C:\Users\me\proj\.env.example"),
+            "the example variant stays surfaceable"
+        );
+
+        // And the key material and credential stores
+        assert!(is_sensitive_file(r"C:\Users\me\.ssh\id_rsa"));
+        assert!(
+            !is_sensitive_file(r"C:\Users\me\.ssh\id_rsa.pub"),
+            "public keys are not sensitive"
+        );
+        assert!(is_sensitive_file(r"C:\Users\me\.aws\credentials"));
+        assert!(is_sensitive_file(r"C:\Users\me\proj\credentials.json"));
+
+        // And an ordinary file is still ordinary
+        assert!(!is_sensitive_file(r"C:\Users\me\proj\src\main.rs"));
+    }
+
+    /// The `.aws` / `.gcp` credential check is a COMPONENT pair, so a
+    /// filename that merely contains the substring does not hit it.
+    #[test]
+    fn should_match_the_aws_credentials_pair_on_components_only() {
+        assert!(is_sensitive_file(r"C:\Users\me\.aws\credentials"));
+        assert!(is_sensitive_file("/Users/me/.gcp/credentials"));
+        assert!(
+            is_sensitive_file(r"C:\Users\me\.aws\credentials.json"),
+            "a filename under the .aws component is still a credential store"
+        );
+        assert!(
+            !is_sensitive_file(r"C:\Users\me\my.aws\notes.txt"),
+            "a directory merely named like .aws is not the credential store"
+        );
+    }
+
+    /// A `.git` control path must be recognized with either separator.
+    #[test]
+    fn should_recognize_git_control_paths_with_either_separator() {
+        assert!(is_git_control_path(r"C:\Users\me\proj\.git\config"));
+        assert!(is_git_control_path("/Users/me/proj/.git/config"));
+        assert!(
+            !is_git_control_path(r"C:\Users\me\proj\github.com\config"),
+            "a non-component match does not count"
+        );
+    }
 
     // ------------------------------------------------------------------
     // AgentCronBudgetGatePolicy (stage-1 batch-1, S8 / SDR-006)

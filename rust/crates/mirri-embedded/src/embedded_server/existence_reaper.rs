@@ -9,6 +9,16 @@
 //!
 //! Failure posture: every failure logs and leaves the tombstone for the
 //! next run — the reaper is best-effort and never escalates.
+//!
+//! **Defence in depth (the 2026-11-22 data loss).** A tombstone is
+//! supposed to mean "the user deleted this session", but it only proves
+//! that the ROW was deleted — and a row can be deleted by a wrong verdict
+//! (`SessionManager::discard_row_without_body` once probed a single bucket,
+//! read a relocated session as body-less, and wrote the tombstone). This
+//! sweep is the last irreversible step, so it re-checks the one thing that
+//! makes the deletion real: the index must still not carry a row for the
+//! id. If a row is back (or was never gone), the directory is live data
+//! and the tombstone is cleared instead of executed.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -39,6 +49,22 @@ pub(super) fn reap_tombstoned_directories(sessions_root: &Path, index: &SessionI
             }
             continue;
         };
+        // The directory exists AND the id still has a metadata row: the row
+        // was restored (or the tombstone was written by a verdict the row
+        // later refuted). Live data — never reap it, and drop the tombstone
+        // so this cannot repeat on every sweep.
+        if index.get_session(&id).is_some() {
+            tracing::warn!(
+                session_id = %id,
+                directory = %bucket_dir.display(),
+                "tombstoned session directory still has a metadata row; \
+                 clearing the tombstone instead of reaping (live data)"
+            );
+            if let Err(error) = index.clear_tombstone(&id) {
+                tracing::warn!(session_id = %id, %error, "clearing a live tombstone failed");
+            }
+            continue;
+        }
         match std::fs::remove_dir_all(&bucket_dir) {
             Ok(()) => {
                 reaped += 1;
@@ -177,5 +203,44 @@ mod tests {
         assert_eq!(reaped, 0);
         assert!(bucket.join("session_live").exists());
         assert!(index.get_session("session_live").is_some());
+    }
+
+    /// Given a directory carrying BOTH a tombstone and a live metadata row,
+    /// When the reaper runs, Then the directory survives and the tombstone
+    /// is cleared — the row proves the session is live data, and a tombstone
+    /// written by a wrong verdict must not be executable against it.
+    ///
+    /// This is the 2026-11-22 shape: `discard_row_without_body` probed only
+    /// its own bucket, read a relocated session as body-less, dropped the
+    /// row in favour of a tombstone — and the reaper then deleted the real
+    /// directory from the bucket the body actually lived in.
+    #[test]
+    fn should_clear_the_tombstone_instead_of_reaping_when_the_row_is_live() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions_root = tmp.path().join("v3_sessions");
+        let bucket = sessions_root.join("wd_test_000000000000");
+        std::fs::create_dir_all(bucket.join("session_live")).unwrap();
+        let db = tmp.path().join("session-index.db");
+        let index = SessionIndex::open(&db).unwrap();
+        index.bulk_upsert_sessions(&[row("session_live")]).unwrap();
+        index
+            .record_tombstones(&[("session_live".to_string(), chrono::Utc::now())])
+            .unwrap();
+
+        let reaped = reap_tombstoned_directories(&sessions_root, &index);
+
+        assert_eq!(reaped, 0, "a row-backed directory is live data");
+        assert!(
+            bucket.join("session_live").exists(),
+            "the directory survives despite its tombstone"
+        );
+        assert!(
+            !index.tombstone_ids().unwrap().contains("session_live"),
+            "the contradicted tombstone is cleared so this cannot repeat"
+        );
+        assert!(
+            index.get_session("session_live").is_some(),
+            "the row is untouched"
+        );
     }
 }

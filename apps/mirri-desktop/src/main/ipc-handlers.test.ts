@@ -12,6 +12,8 @@ function makeDeps(overrides: Partial<DesktopIpcDeps> = {}): DesktopIpcDeps {
     launch: vi.fn().mockResolvedValue(undefined),
     showNotification: vi.fn().mockReturnValue(true),
     detectOpenInApps: vi.fn().mockResolvedValue([]),
+    existsSync: vi.fn().mockReturnValue(false),
+    readdirSync: vi.fn().mockReturnValue([]),
     setBadgeCount: vi.fn().mockReturnValue(true),
     dockBounce: vi.fn(),
     setLoginItem: vi.fn(),
@@ -94,8 +96,12 @@ describe('desktop:open-in-editor', () => {
 });
 
 describe('desktop:open-in-app', () => {
-  it('should launch the mapped app command', async () => {
-    const deps = makeDeps();
+  it('should launch the resolved bundle on macOS', async () => {
+    const deps = makeDeps({
+      existsSync: vi.fn().mockImplementation((p: string) =>
+        p === '/Applications/Visual Studio Code.app' || p === '/ws',
+      ),
+    });
     await expect(
       channelCaller(IPC_CHANNELS.openInApp, deps)({ appId: 'vscode', path: '/ws' }),
     ).resolves.toEqual({ opened: true });
@@ -103,6 +109,121 @@ describe('desktop:open-in-app', () => {
       command: 'open',
       args: ['-a', 'Visual Studio Code', '/ws'],
     });
+  });
+
+  it('should launch the Community Edition bundle on macOS when that is what is installed', async () => {
+    const deps = makeDeps({
+      existsSync: vi.fn().mockImplementation((p: string) =>
+        p === '/Applications/PyCharm CE.app' || p === '/ws',
+      ),
+    });
+    await expect(
+      channelCaller(IPC_CHANNELS.openInApp, deps)({ appId: 'pycharm', path: '/ws' }),
+    ).resolves.toEqual({ opened: true });
+    expect(deps.launch).toHaveBeenCalledWith({
+      command: 'open',
+      args: ['-a', 'PyCharm CE', '/ws'],
+    });
+  });
+
+  it('should launch the resolved exe directly when the platform is Windows', async () => {
+    const deps = makeDeps({
+      platform: 'win32',
+      env: { LOCALAPPDATA: 'C:\\Users\\demo\\AppData\\Local' },
+      existsSync: vi
+        .fn()
+        .mockImplementation(
+          (p: string) =>
+            p === 'C:\\Users\\demo\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe' ||
+            p === 'C:\\ws',
+        ),
+    });
+    await expect(
+      channelCaller(IPC_CHANNELS.openInApp, deps)({ appId: 'vscode', path: 'C:\\ws' }),
+    ).resolves.toEqual({ opened: true });
+    // A GUI editor must not inherit `windowsHide`: on Windows that shows or
+    // hides the window the launched process creates.
+    expect(deps.launch).toHaveBeenCalledWith({
+      command: 'C:\\Users\\demo\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe',
+      args: ['C:\\ws'],
+      windowsHide: false,
+    });
+  });
+
+  it('should launch a JetBrains IDE found through the versioned install scan on Windows', async () => {
+    const root = 'C:\\Program Files\\JetBrains';
+    const install = `${root}\\IntelliJ IDEA 2024.1`;
+    const deps = makeDeps({
+      platform: 'win32',
+      env: { ProgramFiles: 'C:\\Program Files' },
+      existsSync: vi
+        .fn()
+        .mockImplementation((p: string) => p === root || p === install || p === 'C:\\ws'),
+      readdirSync: vi.fn().mockImplementation((p: string) => {
+        if (p === root) return [{ name: 'IntelliJ IDEA 2024.1', isDirectory: () => true }];
+        if (p === install) return [{ name: 'bin', isDirectory: () => true }];
+        if (p === `${install}\\bin`) return [{ name: 'idea64.exe', isDirectory: () => false }];
+        throw new Error(`ENOENT: ${p}`);
+      }),
+    });
+    await expect(
+      channelCaller(IPC_CHANNELS.openInApp, deps)({ appId: 'intellij', path: 'C:\\ws' }),
+    ).resolves.toEqual({ opened: true });
+    expect(deps.launch).toHaveBeenCalledWith({
+      command: `${install}\\bin\\idea64.exe`,
+      args: ['C:\\ws'],
+      windowsHide: false,
+    });
+  });
+
+  it('should pass windowsHide false when File Explorer is chosen on Windows', async () => {
+    // explorer.exe forwards the inherited show state to the folder window it
+    // creates, so hiding the spawn hides the window and the click looks dead.
+    const deps = makeDeps({
+      platform: 'win32',
+      existsSync: vi.fn().mockImplementation((p: string) => p === 'C:\\my ws'),
+    });
+    await expect(
+      channelCaller(IPC_CHANNELS.openInApp, deps)({ appId: 'finder', path: 'C:\\my ws' }),
+    ).resolves.toEqual({ opened: true });
+    expect(deps.launch).toHaveBeenCalledWith({
+      command: 'explorer.exe',
+      args: ['C:\\my ws'],
+      windowsHide: false,
+    });
+  });
+
+  it('should restore the lost drive prefix when a Windows root arrives driveless', async () => {
+    // Records written by the old path-resolution bug kept `/Users/me/ws` after
+    // dropping the drive; Windows resolves that against its own current drive,
+    // which is never the user's workspace.
+    const deps = makeDeps({
+      platform: 'win32',
+      env: { USERPROFILE: 'C:\\Users\\demo' },
+      existsSync: vi.fn().mockImplementation((p: string) => p === 'C:\\Users\\demo\\ws'),
+    });
+    await expect(
+      channelCaller(IPC_CHANNELS.openInApp, deps)({ appId: 'finder', path: '/Users/demo/ws' }),
+    ).resolves.toEqual({ opened: true });
+    expect(deps.launch).toHaveBeenCalledWith({
+      command: 'explorer.exe',
+      args: ['C:\\Users\\demo\\ws'],
+      windowsHide: false,
+    });
+  });
+
+  it('should refuse to launch when the target directory does not exist', async () => {
+    // Both explorer.exe and editors accept a non-existent path without an
+    // error, so the handler must reject instead of spawning a silent no-op.
+    const deps = makeDeps({
+      platform: 'win32',
+      env: { USERPROFILE: 'C:\\Users\\demo' },
+      existsSync: vi.fn().mockReturnValue(false),
+    });
+    await expect(
+      channelCaller(IPC_CHANNELS.openInApp, deps)({ appId: 'finder', path: '/Users/demo/missing' }),
+    ).rejects.toThrow(/not an existing directory/);
+    expect(deps.launch).not.toHaveBeenCalled();
   });
 
   it('should reject unknown app ids', async () => {

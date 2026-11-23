@@ -17,7 +17,8 @@ import {
   validatePathPayload,
 } from './ipc';
 import { editorLaunchFor, launchDetached, openInAppLaunch, type LaunchCommand } from './file-launch';
-import type { DetectedOpenInApp } from './open-in-apps';
+import { resolveMacBundleName, resolveWindowsExe, type DetectedOpenInApp } from './open-in-apps';
+import { qualifyWindowsDrivePath } from './platform';
 
 /** OS surfaces the handlers need. register-ipc.ts adapts Electron's modules
  *  to this shape; tests provide mocks. */
@@ -30,6 +31,13 @@ export interface DesktopIpcDeps {
   showNotification(title: string, body: string, tag: string | undefined): boolean;
   /** Detect installed open-in apps (with icons). */
   detectOpenInApps(): Promise<DetectedOpenInApp[]>;
+  /** Existence + listing probes for Windows exe resolution (same fs the
+   *  detector uses). */
+  existsSync(path: string): boolean;
+  readdirSync(path: string): ReadonlyArray<{ name: string; isDirectory(): boolean }>;
+  /** macOS application directories scanned for `.app` bundles — the launch
+   *  path re-resolves the installed edition from them. */
+  readonly applicationsDirs?: readonly string[];
   setBadgeCount(count: number): boolean | Promise<boolean>;
   dockBounce(kind: 'informational' | 'critical'): void;
   setLoginItem(open: boolean): void;
@@ -81,7 +89,47 @@ export function createDesktopIpcHandlers(deps: DesktopIpcDeps): DesktopIpcHandle
 
     [IPC_CHANNELS.openInApp]: async (payload) => {
       const parsed = validateOpenInAppPayload(payload) ?? invalid('openInApp');
-      await deps.launch(openInAppLaunch(parsed.appId, parsed.path, {}, deps.platform));
+      // The UI opens the workspace folder, so the target is always a directory.
+      // Windows editors/terminals launch their real exe; resolve it with the
+      // same probe detection used, so the dropdown and the launch agree.
+      //
+      // The path is normalized and verified before anything is spawned: a
+      // short-lived session/workspace record can still carry a Windows path
+      // whose drive prefix was dropped (`/Users/me/proj`), and both
+      // `explorer.exe` and editors accept it silently — Explorer exits, VS Code
+      // shows its Welcome screen. Launching only an existing directory, and
+      // rejecting otherwise, turns that silent no-op into the renderer's
+      // "could not open" notice.
+      const target =
+        deps.platform === 'win32'
+          ? qualifyWindowsDrivePath(parsed.path, deps.env['USERPROFILE'] ?? deps.env['HOME'] ?? '')
+          : parsed.path;
+      if (!deps.existsSync(target)) {
+        throw new Error(`openInApp: ${target} is not an existing directory`);
+      }
+      const windowsExe =
+        deps.platform === 'win32'
+          ? (resolveWindowsExe(parsed.appId, {
+              existsSync: (p) => deps.existsSync(p),
+              readdirSync: (p) => deps.readdirSync(p),
+              env: deps.env,
+            }) ?? undefined)
+          : undefined;
+      const macAppBundleName =
+        deps.platform === 'darwin'
+          ? (resolveMacBundleName(parsed.appId, {
+              existsSync: (p) => deps.existsSync(p),
+              applicationsDirs: deps.applicationsDirs,
+            }) ?? undefined)
+          : undefined;
+      await deps.launch(
+        openInAppLaunch(
+          parsed.appId,
+          target,
+          { isDirectory: true, windowsExe, macAppBundleName },
+          deps.platform,
+        ),
+      );
       return { opened: true };
     },
 

@@ -5158,3 +5158,245 @@ async fn should_keep_the_restored_effort_when_a_later_model_switch_is_recorded()
         Some(crate::profile::ThinkingEffort::None)
     );
 }
+
+// ---------------------------------------------------------------------------
+// The workspace-key drift guard (the 2026-11-22 data loss)
+// ---------------------------------------------------------------------------
+//
+// A session's bucket key is `encode_work_dir_key(workspace cwd)`. When that
+// derivation changes — a fixed key algorithm, a moved/renamed workspace, a
+// data directory copied to another machine — the body stays on disk in the
+// OLD bucket while `session_dir()` starts answering with the NEW one. Every
+// path in this module that asks "where would this workspace write the
+// session" is correct to answer the new bucket; the body-less reclamation is
+// not, because it asks "does the body still exist" and answered it against
+// the new bucket alone. That false verdict dropped the row, wrote a
+// tombstone, and the existence reaper then executed the tombstone against
+// the real directory in the old bucket. These tests pin the guard.
+
+/// A manager over `sessions_dir` whose workspace root and bucket key are
+/// deliberately set up so that the key does NOT match the bucket the body
+/// was written into — the drift shape, built without needing a real
+/// platform-specific key change.
+fn make_drifted_manager(sessions_dir: &std::path::Path) -> SessionManager {
+    let workspace = Arc::new(WorkspaceScope::new(
+        crate::scope::WorkspaceId::new("drift-ws"),
+        sessions_dir.parent().unwrap_or(sessions_dir).to_path_buf(),
+        crate::scope::WorkspaceScopeConfig::default(),
+    ));
+    SessionManager::with_persistence_dir(
+        workspace,
+        sessions_dir.to_path_buf(),
+        Arc::new(mirri_os::LocalFs::new()),
+    )
+}
+
+/// Given a session whose body sits in one bucket and whose metadata row
+/// says it conversed, When the manager's own workspace key points at a
+/// DIFFERENT bucket, Then the body-less reclamation keeps the row — the
+/// body exists, only its bucket moved. Reclaiming here would be a lie, and
+/// the lie is what lets the reaper delete the directory.
+#[tokio::test]
+async fn should_keep_the_row_when_the_body_lives_under_a_different_bucket() {
+    // Given a sessions root with a body under an "old" bucket
+    let tmp = tempfile::tempdir().unwrap();
+    let sessions_dir = tmp.path().join("v3_sessions");
+    let old_bucket = sessions_dir.join("wd_mirricode_000000000000");
+    let session_id = SessionId::new("session-drifted");
+    let old_session_dir = old_bucket.join(session_id.as_str());
+    tokio::fs::create_dir_all(&old_session_dir).await.unwrap();
+    tokio::fs::write(
+        old_session_dir.join("wire.jsonl"),
+        "{\"type\":\"metadata\"}\n",
+    )
+    .await
+    .unwrap();
+
+    // And a manager whose own key lands in a different bucket
+    let manager = make_drifted_manager(&sessions_dir);
+    assert_ne!(
+        manager.persistence().session_dir(&session_id),
+        old_session_dir,
+        "precondition: the manager's own bucket is NOT where the body is"
+    );
+
+    // And a row proving the session once conversed
+    let store = Arc::new(crate::session::metadata_port::InMemoryMetadataStore::new());
+    let manager = manager.with_metadata_store(Arc::clone(&store) as Arc<_>);
+    store
+        .apply(
+            &session_id,
+            &manager.metadata_workspace_id(),
+            crate::session::metadata_port::MetadataPatch {
+                title: Some("drifted".to_string()),
+                last_prompt: Some(Some("a real conversation".to_string())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    // When the body-less reclamation runs
+    let dropped = manager.discard_row_without_body(&session_id).await;
+
+    // Then the row survives, no tombstone was written, and the body is intact
+    assert!(
+        !dropped,
+        "a body that exists under another bucket must never reclaim the row"
+    );
+    assert!(
+        manager.metadata_store().exists(&session_id).await,
+        "the row is still there for the user"
+    );
+    assert!(
+        store.tombstoned_ids().is_empty(),
+        "no tombstone may be written — the reaper would execute it on live data"
+    );
+    assert!(
+        old_session_dir.join("wire.jsonl").is_file(),
+        "the body was never touched"
+    );
+}
+
+/// Given a conversed session whose body exists in NO bucket, When the
+/// reclamation runs, Then the row is dropped — the original intent of the
+/// helper still holds once the body is genuinely gone everywhere.
+#[tokio::test]
+async fn should_drop_the_row_when_no_bucket_holds_the_body() {
+    // Given a sessions root with no body for the id at all
+    let tmp = tempfile::tempdir().unwrap();
+    let sessions_dir = tmp.path().join("v3_sessions");
+    let other_bucket = sessions_dir.join("wd_other_111111111111");
+    tokio::fs::create_dir_all(&other_bucket).await.unwrap();
+    let session_id = SessionId::new("session-really-gone");
+
+    let manager = make_drifted_manager(&sessions_dir);
+    let store = Arc::new(crate::session::metadata_port::InMemoryMetadataStore::new());
+    let manager = manager.with_metadata_store(Arc::clone(&store) as Arc<_>);
+    store
+        .apply(
+            &session_id,
+            &manager.metadata_workspace_id(),
+            crate::session::metadata_port::MetadataPatch {
+                title: Some("gone".to_string()),
+                last_prompt: Some(Some("an old conversation".to_string())),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    // When the body-less reclamation runs
+    let dropped = manager.discard_row_without_body(&session_id).await;
+
+    // Then the row is reclaimed (the body is gone everywhere) and the
+    // deletion is recorded
+    assert!(dropped, "a body gone from every bucket reclaims the row");
+    assert!(!manager.metadata_store().exists(&session_id).await);
+    assert!(store.tombstoned_ids().contains(session_id.as_str()));
+}
+
+/// Given a never-conversed row (empty `last_prompt`), When the body is
+/// missing under every bucket, Then the row is kept — the legal
+/// create-then-persist state, not a crash residue.
+#[tokio::test]
+async fn should_keep_a_never_conversed_row_even_when_no_body_exists() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sessions_dir = tmp.path().join("v3_sessions");
+    let session_id = SessionId::new("session-never-sent");
+
+    let manager = make_drifted_manager(&sessions_dir);
+    let store = Arc::new(crate::session::metadata_port::InMemoryMetadataStore::new());
+    let manager = manager.with_metadata_store(Arc::clone(&store) as Arc<_>);
+    store
+        .apply(
+            &session_id,
+            &manager.metadata_workspace_id(),
+            crate::session::metadata_port::MetadataPatch {
+                title: Some("lazy create".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let dropped = manager.discard_row_without_body(&session_id).await;
+
+    assert!(!dropped, "a never-conversed row is a legal state and stays");
+    assert!(manager.metadata_store().exists(&session_id).await);
+}
+
+/// Given a session whose body sits under a stale bucket, When the resume
+/// path runs, Then it adopts the body into the current bucket and resumes
+/// normally — the relocation is remedied at the single point every read
+/// path goes through.
+///
+/// This is the other half of the drift fix: the guard keeps the row, and
+/// this makes the session usable again instead of merely surviving.
+#[tokio::test]
+async fn should_resume_a_session_parked_under_a_stale_bucket() {
+    // Given a sessions root holding a session under an "old" bucket, with a
+    // wire log a resume can actually replay
+    let tmp = tempfile::tempdir().unwrap();
+    let sessions_dir = tmp.path().join("v3_sessions");
+    let old_bucket = sessions_dir.join("wd_mirricode_000000000000");
+    let session_id = SessionId::new("session-relocated-resume");
+    let old_dir = old_bucket.join(session_id.as_str());
+    tokio::fs::create_dir_all(&old_dir).await.unwrap();
+    let mut wire = String::new();
+    wire.push_str("{\"created_at\":1,\"protocol_version\":\"2.0\",\"type\":\"metadata\"}\n");
+    wire.push_str(&serde_json::to_string(&model_record_op()).unwrap());
+    wire.push('\n');
+    tokio::fs::write(old_dir.join("wire.jsonl"), wire).await.unwrap();
+
+    // And a manager whose own bucket is a DIFFERENT one
+    let workspace = Arc::new(WorkspaceScope::new(
+        crate::scope::WorkspaceId::new("drift-ws"),
+        tmp.path().to_path_buf(),
+        crate::scope::WorkspaceScopeConfig::default(),
+    ));
+    let manager = SessionManager::with_persistence_dir(
+        workspace,
+        sessions_dir.clone(),
+        Arc::new(mirri_os::LocalFs::new()),
+    );
+    let target_dir = manager.persistence().session_dir(&session_id);
+    assert_ne!(target_dir, old_dir, "precondition: the buckets differ");
+
+    // And the metadata row the post-ADR-006 resume reads (the row is the
+    // source of truth; `state.json` is only the pre-ADR-006 fallback)
+    let store = Arc::new(crate::session::metadata_port::InMemoryMetadataStore::new());
+    let manager = manager.with_metadata_store(Arc::clone(&store) as Arc<_>);
+    store
+        .apply(
+            &session_id,
+            &manager.metadata_workspace_id(),
+            crate::session::metadata_port::MetadataPatch {
+                title: Some("relocated".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    // When the session is resumed
+    let resumed = manager.resume_session(&session_id).await;
+
+    // Then the resume found the body — it did not report "wire log not found"
+    assert!(
+        resumed.is_ok(),
+        "a relocated session must resume, got {:?}",
+        resumed.err().map(|error| error.to_string())
+    );
+
+    // And the body was adopted into the current bucket, so every later
+    // operation (fork, compression, tasks) finds it at the ordinary path
+    assert!(
+        target_dir.join("wire.jsonl").is_file(),
+        "the body now lives where session_dir points"
+    );
+    assert!(
+        !old_dir.exists(),
+        "the stale bucket no longer holds the session"
+    );
+}

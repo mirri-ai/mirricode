@@ -5,7 +5,7 @@
 // ipcMain. Not unit-tested — the logic lives in the factory; this file is
 // only the Electron adapter.
 
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -26,6 +26,19 @@ export interface RegisterIpcOptions {
   focusMainWindow(): void;
 }
 
+/** Icon data URL for an "open in" target. macOS reads the .app bundle's
+ *  embedded .icns directly (getFileIcon returns a generic placeholder for
+ *  bundles); other platforms ask Electron for the executable's icon. */
+async function readOpenInAppIcon(appPath: string): Promise<string | undefined> {
+  if (isDarwin()) return readAppBundleIcon(appPath);
+  try {
+    const icon = await app.getFileIcon(appPath, { size: 'normal' });
+    return icon.isEmpty() ? undefined : icon.toDataURL();
+  } catch {
+    return undefined;
+  }
+}
+
 export function registerDesktopIpc(options: RegisterIpcOptions): void {
   // Electron 42+ routes macOS notifications through UNUserNotification, which
   // reports failures (e.g. unsigned builds) via an async `failed` event rather
@@ -33,6 +46,8 @@ export function registerDesktopIpc(options: RegisterIpcOptions): void {
   // true once. Remember it and report unsupported from then on, letting the
   // renderer fall back to the browser notification banner.
   let notificationsBroken = false;
+  // Scanned for macOS `.app` bundles by both detection and the launch path.
+  const applicationsDirs = ['/Applications', join(homedir(), 'Applications')];
   const deps: DesktopIpcDeps = {
     shellOpenPath: (path) => shell.openPath(path),
     shellRevealPath: (path) => shell.showItemInFolder(path),
@@ -59,10 +74,13 @@ export function registerDesktopIpc(options: RegisterIpcOptions): void {
       detectInstalledOpenInApps({
         platform: currentPlatform(),
         existsSync,
-        applicationsDirs: ['/Applications', join(homedir(), 'Applications')],
-        getAppBundleIcon: (bundlePath) => readAppBundleIcon(bundlePath),
+        readdirSync: (path) => readdirSync(path, { withFileTypes: true }),
+        env: process.env,
+        applicationsDirs,
+        getAppIcon: (appPath) => readOpenInAppIcon(appPath),
       }),
-    setBadgeCount: (count) => app.setBadgeCount(count),    dockBounce: (kind) => {
+    setBadgeCount: (count) => app.setBadgeCount(count),
+    dockBounce: (kind) => {
       if (isDarwin() && app.dock !== undefined) {
         app.dock.bounce(kind);
       }
@@ -71,6 +89,9 @@ export function registerDesktopIpc(options: RegisterIpcOptions): void {
       app.setLoginItemSettings({ openAtLogin: open });
     },
     getLoginItem: () => app.getLoginItemSettings().openAtLogin,
+    existsSync,
+    readdirSync: (path) => readdirSync(path, { withFileTypes: true }),
+    applicationsDirs,
     env: process.env,
     platform: currentPlatform(),
   };

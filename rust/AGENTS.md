@@ -28,7 +28,7 @@ rust 引擎还在开发中，很多功能可能还不成熟甚至是错误的。
 ## 架构契约（违反即返工）
 
 1. **契约事实源链**：RPC 方法面的唯一事实源是 `crates/mirri-proto/src/rpc/registry.rs` 注册表，经 `authoritative-methods.tsv` ⇄ EMB 路由表 ⇄ NAPI ⇄ contract-e2e fixture 五环节联动。任何方法面变更必须全链同步，缺一环就是漂移。
-2. **wire log append-only**：`wire.jsonl` 严格追加（torn-final-line 容忍除外），永不截断重写。**新增任何会话状态域（goal/cron/permission/plan/工具集…）必须同时提供写侧（`record_op`）与 reducer 恢复路径**——只有 reducer 分支没有生产写入的代码是死代码，等于功能不存在。
+2. **wire log append-only**：`wire.jsonl` 严格追加（torn-final-line 容忍除外），永不截断重写。**新增任何会话状态域（goal/cron/permission/plan/工具集…）必须同时提供写侧（`record_op`）与 reducer 恢复路径**——只有 reducer 分支没有生产写入的代码是死代码，等于功能不存在。**会话 bucket 归属是派生值，不是身份**：`session_dir` 回答的是"本 workspace 现在会写到哪里"，会随 workspace 路径归一化规则变化而漂移（搬目录/改名/换机器/修 key 算法）；凡是要回答"这个 session 还有没有正文"的地方，必须用 `SessionPersistence::locate_session_dir_anywhere` / `adopt_session_dir` 跨全部 bucket 判定，**只探当前 bucket 再据此删行 + 写 tombstone 会让 reaper 删掉真实目录**（2026-11-22 数据丢失事故，见 `discard_row_without_body` / `existence_reaper` 的守卫与测试）。
 3. **事件词汇唯一源**：引擎事件投影在 `crates/mirri-core/src/session/event_projection.rs`（`event.*` 方法名）。新增客户端可见事件必须先扩投影，再同步 web 投影器（`apps/mirri-web/src/api/daemon/mappers.ts` 的 `toAppEvent` switch）、嵌入式服务端中继（`crates/mirri-embedded/src/embedded_server/event_relay.rs`）、ACP 翻译层（`crates/mirri-acp/src/acp_handler.rs`）与 TS wire 类型（`packages/protocol/src/events.ts`）四处消费端——**任何一处漏同步 = 该端功能静默失效**（历史教训：SDK 翻译层曾只放行 2/26 种事件导致 TUI 状态机整体停摆）。漏在 `mappers.ts` 的事件会落进 `default:` 分支变成 `unknown` 被静默丢弃。契约链的完整环节清单见 `codebase-investigation` skill §4.1。
 4. **ACP 合规真源**：mirri-acp 的测试必须对照官方 ACP v1 schema（`SessionUpdate` 联合、`modeId`/`configId` 参数名）编写，不得按 rust 自认方言自证——自洽测试全绿不等于协议合规。
 5. **缓存可观测**：涉及请求前缀/缓存命中的改动，验收必须给出 usage 三桶（uncachedInput/cacheRead/cacheWrite）数值或请求前缀对比证据，不接受"应该会更好"。

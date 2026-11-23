@@ -159,6 +159,17 @@ fn unquote(token: &str) -> &str {
 /// (`cd` alone), uses `cd -`, or the target contains an expansion (`$`,
 /// backtick, glob characters). A `~`-prefixed target is returned verbatim;
 /// callers must not treat it as workspace-relative.
+///
+/// **Backslash is platform-dependent.** On POSIX it introduces an escape
+/// sequence (`cd foo\ bar`), so a token carrying one is not a static target
+/// and is declined. On Windows it is *the* path separator: declining it there
+/// declined every absolute path, which silently disabled the whole
+/// outside-directory review — `cd C:\somewhere\outside && ...` returned `None`
+/// and [`BashExecutionDirectoryAskPolicy`] never asked. The Bash tool layer
+/// performs no cwd validation of its own, so on Windows that ask is the only
+/// review such a command ever gets.
+///
+/// [`BashExecutionDirectoryAskPolicy`]: crate::permission::policies::BashExecutionDirectoryAskPolicy
 pub fn extract_directory_switch(segment: &str) -> Option<PathBuf> {
     let mut tokens = segment.split_whitespace().peekable();
     while matches!(tokens.peek(), Some(&"builtin") | Some(&"command")) {
@@ -178,7 +189,14 @@ pub fn extract_directory_switch(segment: &str) -> Option<PathBuf> {
         target = Some(unquote(token));
     }
     let target = target?;
-    if target.is_empty() || target == "-" || target.contains(['$', '`', '*', '?', '[', '{', '\\']) {
+    // The expansion/glob metacharacters are shell syntax on every platform.
+    // The backslash is only an escape introducer on POSIX — see the doc above.
+    let metacharacters: &[char] = if cfg!(windows) {
+        &['$', '`', '*', '?', '[', '{']
+    } else {
+        &['$', '`', '*', '?', '[', '{', '\\']
+    };
+    if target.is_empty() || target == "-" || target.contains(metacharacters) {
         return None;
     }
     Some(PathBuf::from(target))
@@ -323,6 +341,41 @@ mod tests {
         );
         assert_eq!(extract_directory_switch("cd $HOME"), None);
         assert_eq!(extract_directory_switch("git status"), None);
+    }
+
+    /// A Windows absolute `cd` target must be recognized — it is the whole
+    /// point of the outside-directory review, and the Bash tool layer has no
+    /// cwd validation of its own.
+    ///
+    /// The regression this pins: the metacharacter screen rejected every
+    /// token containing a backslash, and on Windows every absolute path has
+    /// one, so `cd C:\outside && ...` returned `None` and the ask never
+    /// fired.
+    #[test]
+    #[cfg(windows)]
+    fn should_extract_a_windows_path_target_of_a_cd_segment() {
+        assert_eq!(
+            extract_directory_switch(r"cd C:\Users\me\Desktop"),
+            Some(PathBuf::from(r"C:\Users\me\Desktop"))
+        );
+        // The drive-less MSYS spelling is a plain token and stays recognized.
+        assert_eq!(
+            extract_directory_switch("cd /c/Users/me/Desktop"),
+            Some(PathBuf::from("/c/Users/me/Desktop"))
+        );
+        // Shell expansion is still declined on Windows.
+        assert_eq!(extract_directory_switch(r"cd C:\a\$b"), None);
+    }
+
+    /// On POSIX a backslash introduces an escape sequence, so the token is
+    /// not a static target — that behavior is unchanged.
+    #[test]
+    #[cfg(unix)]
+    fn should_decline_an_escaped_token_when_extracting_a_cd_segment() {
+        assert_eq!(extract_directory_switch(r"cd a\ b"), None);
+        assert_eq!(extract_directory_switch("cd /tmp/plain"), {
+            Some(PathBuf::from("/tmp/plain"))
+        });
     }
 
     #[test]

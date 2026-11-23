@@ -89,10 +89,11 @@ describe('openInAppLaunch', () => {
     });
   });
 
-  it('should select in Explorer on win32', () => {
-    expect(openInAppLaunch('finder', 'C:\\ws', { isDirectory: false }, 'win32')).toEqual({
+  it('should open the containing folder on win32 when a file is targeted', () => {
+    expect(openInAppLaunch('finder', 'C:\\ws\\a.txt', { isDirectory: false }, 'win32')).toEqual({
       command: 'explorer.exe',
-      args: ['/select,C:\\ws']
+      args: ['C:\\ws'],
+      windowsHide: false,
     });
   });
 
@@ -104,44 +105,46 @@ describe('openInAppLaunch', () => {
   });
 
   it('should launch vscode via open -a on macOS', () => {
-    expect(openInAppLaunch('vscode', '/ws', { line: 4 }, MAC)).toEqual({
+    expect(
+      openInAppLaunch('vscode', '/ws', { line: 4, macAppBundleName: 'Visual Studio Code' }, MAC),
+    ).toEqual({
       command: 'open',
       args: ['-a', 'Visual Studio Code', '/ws'],
     });
   });
 
   it('should launch vscode without a line when none given', () => {
-    expect(openInAppLaunch('vscode', '/ws', {}, MAC)).toEqual({
+    expect(openInAppLaunch('vscode', '/ws', { macAppBundleName: 'Visual Studio Code' }, MAC)).toEqual({
       command: 'open',
       args: ['-a', 'Visual Studio Code', '/ws'],
     });
   });
 
   it('should launch cursor via open -a on macOS', () => {
-    expect(openInAppLaunch('cursor', '/ws', { line: 2 }, MAC)).toEqual({
+    expect(openInAppLaunch('cursor', '/ws', { line: 2, macAppBundleName: 'Cursor' }, MAC)).toEqual({
       command: 'open',
       args: ['-a', 'Cursor', '/ws'],
     });
   });
 
   it('should open Terminal/iTerm via open -a on macOS', () => {
-    expect(openInAppLaunch('terminal', '/ws', {}, MAC)).toEqual({
+    expect(openInAppLaunch('terminal', '/ws', { macAppBundleName: 'Terminal' }, MAC)).toEqual({
       command: 'open',
       args: ['-a', 'Terminal', '/ws']
     });
-    expect(openInAppLaunch('iterm', '/ws', {}, MAC)).toEqual({
+    expect(openInAppLaunch('iterm', '/ws', { macAppBundleName: 'iTerm' }, MAC)).toEqual({
       command: 'open',
       args: ['-a', 'iTerm', '/ws']
     });
   });
 
   it('should launch via open -a when the app id is a registry terminal', () => {
-    const cmd = openInAppLaunch('warp', '/work/project', {}, 'darwin');
+    const cmd = openInAppLaunch('warp', '/work/project', { macAppBundleName: 'Warp' }, 'darwin');
     expect(cmd).toEqual({ command: 'open', args: ['-a', 'Warp', '/work/project'] });
   });
 
   it('should launch via open -a when the app id is a registry editor', () => {
-    const cmd = openInAppLaunch('zed', '/work/project', {}, 'darwin');
+    const cmd = openInAppLaunch('zed', '/work/project', { macAppBundleName: 'Zed' }, 'darwin');
     expect(cmd).toEqual({ command: 'open', args: ['-a', 'Zed', '/work/project'] });
   });
 

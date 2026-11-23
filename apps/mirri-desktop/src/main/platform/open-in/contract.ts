@@ -13,11 +13,24 @@ export interface LaunchCommand {
   readonly command: string;
   readonly args: readonly string[];
   readonly shell?: boolean;
+  /** Windows only: hide the launched process's console window. Defaults to
+   *  true for console-backed launches (a `.cmd` shim would otherwise flash a
+   *  window). GUI apps must pass `false`: the flag reaches them as
+   *  `STARTF_USESHOWWINDOW`/`SW_HIDE`, and Explorer honours it for the window
+   *  it creates — the folder opened, but invisibly. */
+  readonly windowsHide?: boolean;
 }
 
 export interface OpenInAppOptions {
   readonly line?: number;
   readonly isDirectory?: boolean;
+  /** Resolved Windows executable for editor/terminal launches on win32 (see
+   *  `resolveWindowsExe`). Ignored on other platforms. */
+  readonly windowsExe?: string;
+  /** Resolved macOS bundle name for editor/terminal launches on darwin (see
+   *  `resolveMacBundleName`) — the edition actually installed. Ignored on
+   *  other platforms. */
+  readonly macAppBundleName?: string;
 }
 
 function registryApp(appId: string): OpenInAppDescriptor {
