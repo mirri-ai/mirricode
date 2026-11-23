@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.5.0
+
+### Minor Changes
+
+- [#242](https://github.com/mirri-ai/mirricode/pull/242) [`6ac9a37`](https://github.com/mirri-ai/mirricode/commit/6ac9a371cf4c18f4968441a7023836cb18bc508a) Thanks [@im-bravo](https://github.com/im-bravo)! - Add JetBrains IDEs to the desktop "Open in" menu: IntelliJ IDEA, WebStorm, PyCharm, GoLand, PhpStorm, CLion, Rider and RustRover are now detected on both macOS and Windows, including Community Edition installs and Toolbox-managed ones. The menu also no longer omits Windows editors such as VS Code and Cursor, and File Explorer now opens the workspace folder instead of failing silently.
+
+### Patch Changes
+
+- [#242](https://github.com/mirri-ai/mirricode/pull/242) [`6ac9a37`](https://github.com/mirri-ai/mirricode/commit/6ac9a371cf4c18f4968441a7023836cb18bc508a) Thanks [@im-bravo](https://github.com/im-bravo)! - Fix "Open in" on Windows doing nothing. File Explorer now shows the folder window instead of opening it invisibly, installed editors launch reliably, and a workspace whose recorded path lost its drive letter is repaired before launching instead of silently doing nothing.
+
 ## 3.4.0
 
 ### Minor Changes
